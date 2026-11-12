@@ -1,0 +1,19 @@
+# 다른 사람의 에셋(바닐라와 다른 모드의 애니메이션). 이 컴퓨터의 시험에만 쓰고 저장소에 넣지 않는다.
+# 출처는 prototypes/_local-assets/README.md 에 적혀 있다.
+prototypes/_local-assets/*.hkx
+
+# 스크립트로 다시 만드는 산출물(빌려 온 클립의 복사본이 들어 있다)
+prototypes/*/out/
+
+# 빌드 산출물은 저장소 밖(G:/skyrim-build)에 두지만, 안에 생기더라도 넣지 않는다
+build/
+cmake-build-*/
+vcpkg_installed/
+
+# 편집기와 로컬 도구 설정
+.vs/
+.idea/
+*.user
+*.VC.db
+*.opendb
+.claude/settings.local.json

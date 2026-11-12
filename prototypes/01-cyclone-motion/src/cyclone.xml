@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  프로토타입 1A: Animation Injector 방식의 사이클론 모션.
+  입력은 Animation Injector가 받지 않는다. 프로토타입 2의 DLL(PoEProtoSkillInput)이
+  플레이어에게 PoEProto_CycloneStart 이벤트를 보내면 회전 반복 동작이 시작되고,
+  PoEProto_CycloneStop 을 보내면 마무리 동작으로 넘어간다.
+
+  이렇게 바꾼 이유(2026-11-12 2차 시험): control="rightAttack" press="hold" 로 시작하게 했더니
+  Animation Injector가 공격 버튼 입력을 잡아 두었다가 합성해서 돌려주는 과정에서 짧은 클릭의 일반 공격이
+  나가지 않았다.
+
+  문법 근거: Animation Injector 1.0.7의 AnimationInjector_XML_GUIDE_EN.md 와
+  소스(커밋 dc3c0b7)의 declarations/XmlV2.cpp, core/PlayerHooks.cpp, runtime/ActionLinks.cpp.
+  - 이벤트 시작은 플레이어의 NotifyAnimationGraph 훅에서 잡힌다. 그래프가 그 이름을 몰라도 된다.
+  - 전이에 from/until 을 쓰지 않으면 창이 처음부터 열려 있어, 이벤트가 오는 즉시 넘어간다.
+  - 키 없이 시작한 반복 동작은 maxHold 초 뒤에 스스로 끝난다. DLL의 MaxSeconds(최대 300)보다 길게 둔다.
+-->
+<AnimationSet version="6" id="PoEProtoCyclone">
+  <!-- 무기를 꺼냈는지 같은 조건은 DLL이 이벤트를 보내기 전에 확인한다. -->
+  <Start event="PoEProto_CycloneStart" actor="player" to="CycloneLoop"/>
+
+  <Action id="CycloneLoop" clip="Animations\PoEProto\cyclone_loop.hkx" enter="0.1" loop="true" maxHold="330">
+    <Rotate from="0" until="330"/>
+    <Transition to="CycloneEnd" event="PoEProto_CycloneStop"/>
+  </Action>
+
+  <!--
+    마무리 동작.
+    Exit의 at은 끝 기준 시각(end, end-N, event:이름)만 받는다. 숫자만 쓰면 파일 전체가 무시된다
+    (2026-11-12 첫 시험에서 at="0.05"로 써서 실제로 무시됐음). at을 빼면 end-0.05로 처리된다.
+    MoveCancel의 at은 반대로 초 단위 숫자나 event:이름만 받는다.
+    0.1초 뒤부터는 이동 키로 마무리를 끊고 바로 움직일 수 있다.
+  -->
+  <Action id="CycloneEnd" clip="Animations\PoEProto\cyclone_end.hkx">
+    <MoveCancel at="0.1" blend="0.2"/>
+    <Exit blend="0.2"/>
+  </Action>
+</AnimationSet>

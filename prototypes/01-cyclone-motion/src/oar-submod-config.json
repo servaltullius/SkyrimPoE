@@ -1,0 +1,30 @@
+{
+    "name": "Cyclone locomotion",
+    "description": "플레이어의 액터 값 Variable09가 1인 동안, 무기를 든 상태의 대기·걷기·달리기·제자리 돌기 클립을 회전 모션으로 바꾼다. 콘솔에서 player.setav variable09 1 로 켜고 0 으로 끈다.",
+    "priority": 2000000000,
+    "interruptible": true,
+    "hasCustomBlendTimeOnInterrupt": true,
+    "blendTimeOnInterrupt": 0.15,
+    "conditions": [
+        {
+            "condition": "IsActorBase",
+            "requiredVersion": "1.0.0.0",
+            "Actor base": {
+                "pluginName": "Skyrim.esm",
+                "formID": "7"
+            }
+        },
+        {
+            "condition": "CompareValues",
+            "requiredVersion": "1.0.0.0",
+            "Value A": {
+                "actorValue": 76,
+                "actorValueType": "Value"
+            },
+            "Comparison": "==",
+            "Value B": {
+                "value": 1.0
+            }
+        }
+    ]
+}
