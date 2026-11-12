@@ -47,6 +47,9 @@ def main() -> int:
         shutil.copyfile(view_dir / name, args.out / name)
     summary = convert_tree.convert(args.pob, args.out / "data", args.version)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if summary["jpeg_not_converted"]:
+        print("주의: Pillow가 없어 JPEG 그림을 그대로 복사했습니다: " + ", ".join(summary["jpeg_not_converted"]),
+              file=sys.stderr)
     print(f"조립함: {args.out}")
     return 0
 

@@ -1,4 +1,14 @@
 /* PoE Proto 4: 패시브 트리 렌더. Prisma UI는 CPU로 그리므로 그림자·필터·흐림은 쓰지 않는다. */
+/* --u: 화면 높이 1080을 기준으로 한 1단위. tree.js가 화면 크기에 맞춰 정한다(3840x2160이면 2px). */
+:root {
+  --u: 1px;
+}
+
+/* display를 따로 준 요소(#game-bar 등)도 hidden 속성으로 숨겨지게 한다. */
+[hidden] {
+  display: none !important;
+}
+
 html, body {
   margin: 0;
   height: 100%;
@@ -6,7 +16,7 @@ html, body {
   background: #0b0a08;
   color: #d8cfb8;
   font-family: "Malgun Gothic", "맑은 고딕", "Noto Sans KR", sans-serif;
-  font-size: 14px;
+  font-size: calc(14 * var(--u));
 }
 
 #tree {
@@ -25,37 +35,37 @@ html, body {
 
 #bar {
   position: absolute;
-  left: 12px;
-  top: 12px;
+  left: calc(12 * var(--u));
+  top: calc(12 * var(--u));
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: calc(6 * var(--u));
   align-items: center;
-  max-width: calc(100% - 24px);
+  max-width: calc(100% - calc(24 * var(--u)));
 }
 
 #search {
-  width: 340px;
+  width: calc(340 * var(--u));
   max-width: 60vw;
-  padding: 6px 8px;
-  border: 1px solid #5a4f38;
+  padding: calc(6 * var(--u)) calc(8 * var(--u));
+  border: calc(1 * var(--u)) solid #5a4f38;
   background: #14120e;
   color: #e8dfc8;
   font: inherit;
 }
 
 #search:focus {
-  outline: 1px solid #c8a85a;
+  outline: calc(1 * var(--u)) solid #c8a85a;
 }
 
 #search-count {
-  min-width: 72px;
+  min-width: calc(72 * var(--u));
   color: #c8a85a;
 }
 
 button {
-  padding: 6px 10px;
-  border: 1px solid #5a4f38;
+  padding: calc(6 * var(--u)) calc(10 * var(--u));
+  border: calc(1 * var(--u)) solid #5a4f38;
   background: #1d1a14;
   color: #d8cfb8;
   font: inherit;
@@ -73,14 +83,14 @@ button:disabled {
 
 #stats {
   position: absolute;
-  right: 12px;
-  top: 12px;
-  padding: 6px 8px;
-  border: 1px solid #3a3324;
+  right: calc(12 * var(--u));
+  top: calc(12 * var(--u));
+  padding: calc(6 * var(--u)) calc(8 * var(--u));
+  border: calc(1 * var(--u)) solid #3a3324;
   background: rgba(11, 10, 8, 0.85);
   color: #b8ad90;
   font-family: Consolas, "Malgun Gothic", monospace;
-  font-size: 12px;
+  font-size: calc(12 * var(--u));
   line-height: 1.5;
   white-space: pre;
   text-align: right;
@@ -88,9 +98,9 @@ button:disabled {
 
 #tooltip {
   position: absolute;
-  max-width: 360px;
-  padding: 8px 10px;
-  border: 1px solid #8a7440;
+  max-width: calc(360 * var(--u));
+  padding: calc(8 * var(--u)) calc(10 * var(--u));
+  border: calc(1 * var(--u)) solid #8a7440;
   background: rgba(16, 14, 10, 0.96);
   pointer-events: none;
   line-height: 1.45;
@@ -99,13 +109,13 @@ button:disabled {
 #tooltip .name {
   color: #f0d890;
   font-weight: bold;
-  margin-bottom: 4px;
+  margin-bottom: calc(4 * var(--u));
 }
 
 #tooltip .kind {
   color: #9a8f74;
-  font-size: 12px;
-  margin-bottom: 4px;
+  font-size: calc(12 * var(--u));
+  margin-bottom: calc(4 * var(--u));
 }
 
 #tooltip .stat {
@@ -117,26 +127,76 @@ button:disabled {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  padding: 14px 18px;
-  border: 1px solid #8a4a3a;
+  padding: calc(14 * var(--u)) calc(18 * var(--u));
+  border: calc(1 * var(--u)) solid #8a4a3a;
   background: #1a100c;
   color: #f0b8a0;
   max-width: 70vw;
   line-height: 1.5;
 }
 
+#game-bar {
+  position: absolute;
+  right: calc(12 * var(--u));
+  bottom: calc(12 * var(--u));
+  display: flex;
+  gap: calc(6 * var(--u));
+  align-items: center;
+}
+
+#game-status {
+  padding: calc(6 * var(--u)) calc(8 * var(--u));
+  border: calc(1 * var(--u)) solid #3a3324;
+  background: rgba(11, 10, 8, 0.85);
+  color: #c8a85a;
+}
+
 #bench {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
+  left: calc(12 * var(--u));
+  bottom: calc(12 * var(--u));
   margin: 0;
-  padding: 10px 12px;
-  border: 1px solid #5a4f38;
+  padding: calc(10 * var(--u)) calc(12 * var(--u));
+  border: calc(1 * var(--u)) solid #5a4f38;
   background: rgba(11, 10, 8, 0.92);
   color: #d8cfb8;
   font-family: Consolas, "Malgun Gothic", monospace;
-  font-size: 12px;
+  font-size: calc(12 * var(--u));
   line-height: 1.5;
   max-height: 60vh;
   overflow: auto;
+}
+
+/* 한글 등 조합형 입력. Prisma UI는 조합 중인 글자를 입력창에 넣어 주지 않고 상태만 알려 주므로, 검색창 아래에 직접 보여 준다. */
+#ime {
+  position: absolute;
+  padding: calc(6 * var(--u)) calc(8 * var(--u));
+  border: calc(1 * var(--u)) solid #8a7440;
+  background: rgba(16, 14, 10, 0.96);
+  color: #f0e8d0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#ime .caret {
+  display: inline-block;
+  width: calc(1 * var(--u));
+  height: 1.1em;
+  margin: 0 calc(1 * var(--u));
+  vertical-align: text-bottom;
+  background: #f0d890;
+}
+
+#ime .candidates {
+  margin-top: calc(4 * var(--u));
+  color: #b8ad90;
+}
+
+#ime .candidates span {
+  margin-right: calc(10 * var(--u));
+}
+
+#ime .candidates .selected {
+  color: #14120e;
+  background: #c8a85a;
 }

@@ -1,0 +1,34 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022-release",
+      "generator": "Ninja",
+      "binaryDir": "G:/skyrim-build/PoEProtoTree/build/release-msvc-$env{VCToolsVersion}",
+      "environment": {
+        "VCPKG_VISUAL_STUDIO_PATH": "C:/Program Files/Microsoft Visual Studio/2022/Community",
+        "VCPKG_PLATFORM_TOOLSET": "v143",
+        "VCPKG_PLATFORM_TOOLSET_VERSION": "$penv{VCToolsVersion}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "POE_BUILD_ROOT": "G:/skyrim-build/PoEProtoTree",
+        "POE_COMMONLIB_DIR": "G:/skyrim project/스카이림 락픽 모드/external/CommonLibSSE-NG",
+        "VCPKG_INSTALLED_DIR": "G:/skyrim-build/PoEProtoTree/vcpkg_installed/msvc-$env{VCToolsVersion}",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vs2022-release",
+      "configurePreset": "vs2022-release"
+    }
+  ]
+}

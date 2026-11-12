@@ -13,6 +13,7 @@
   <input id="search" type="text" placeholder="검색 (이름, 효과, 종류: 키스톤 / 주요 / 마스터리 / 주얼)" autocomplete="off" spellcheck="false">
   <span id="search-count"></span>
   <button id="btn-mode" type="button" title="그리는 방식을 바꿉니다">방식</button>
+  <button id="btn-scale" type="button" title="캔버스의 내부 해상도를 화면 그대로와 절반 사이에서 바꿉니다(절반은 늘려서 보여 줍니다)">해상도</button>
   <button id="btn-alloc" type="button" title="임의의 경로로 123포인트를 찍습니다">123포인트 찍기</button>
   <button id="btn-clear" type="button" title="찍은 노드를 모두 지웁니다">지우기</button>
   <button id="btn-fit" type="button" title="전체가 보이게 맞춥니다">전체 보기</button>
@@ -21,8 +22,16 @@
 
 <div id="stats"></div>
 <div id="tooltip" hidden></div>
+<div id="ime" hidden></div>
 <div id="message" hidden></div>
 <pre id="bench" hidden></pre>
+
+<!-- 게임 안(Prisma UI)에서만 보인다. 측정의 진행 상태와, 키 대신 쓸 수 있는 버튼. -->
+<div id="game-bar" hidden>
+  <span id="game-status"></span>
+  <button id="btn-next" type="button" title="다음 단계로 넘어갑니다(멈추고 열기 → 돌린 채 열기 → 닫기)">다음 단계</button>
+  <button id="btn-close" type="button" title="트리 화면을 닫습니다">닫기</button>
+</div>
 
 <script src="data/tree-data.js"></script>
 <script src="tree.js"></script>

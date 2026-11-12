@@ -31,8 +31,24 @@
     // w, h를 주면 창 크기와 무관하게 그 크기로 그린다. 창이 가려져 크기가 0으로 잡히는 환경에서 재기 위한 것이다.
     forceWidth: clampInt(params.get('w'), 0, 7680, 0),
     forceHeight: clampInt(params.get('h'), 0, 4320, 0),
+    // 캔버스의 내부 해상도를 화면보다 낮춰 그리는 비율(1이면 화면 그대로, 0.5면 가로·세로 절반). 낮춘 그림은 화면 크기로 늘려 보인다.
+    // 화면이 큰 환경(3840x2160)에서 CPU로 그리는 비용을 줄일 수 있는지 재기 위한 것이다.
+    renderScale: clampNumber(params.get('scale'), 0.25, 1, 1),
+    // 글자와 버튼의 배율. 주지 않으면 화면 높이에 맞춘다(1080이 1, 2160이 2).
+    uiScale: clampNumber(params.get('ui'), 0.5, 4, 0),
   };
   var CONTEXT_OPTIONS = { alpha: false, willReadFrequently: settings.cpu };
+
+  // 다음 프레임에 부른다. timer=1이면 화면 갱신 콜백 대신 타이머로 돌린다.
+  // 가려진 브라우저 창에서는 화면 갱신 콜백이 오지 않아 측정 묶음의 흐름을 확인할 수 없기 때문이다(숫자는 뜻이 없다).
+  var useTimerFrames = params.get('timer') === '1';
+  function nextFrame(callback) {
+    if (useTimerFrames) {
+      setTimeout(function () { callback(performance.now()); }, 16);
+    } else {
+      requestAnimationFrame(callback);
+    }
+  }
 
   function clampInt(text, low, high, fallback) {
     var value = parseInt(text, 10);
@@ -141,26 +157,30 @@
 
   // ---------------------------------------------------------------- 그림 불러오기
   var images = [];
+  var missingImages = [];
 
+  // 불러오지 못한 그림이 있어도 멈추지 않는다. 그 그림을 쓰는 부분만 빠진 채로 그리고, 무엇이 빠졌는지 알린다.
+  // 게임 안에서 그림 하나 때문에 화면 전체가 안 뜨면 측정도 못 하기 때문이다.
   function loadImages() {
     return Promise.all(data.atlases.map(function (atlas, index) {
-      return new Promise(function (resolve, reject) {
+      return new Promise(function (resolve) {
         var image = new Image();
         image.onload = function () { images[index] = image; resolve(); };
-        image.onerror = function () { reject(new Error('그림을 불러오지 못함: ' + atlas.file)); };
+        image.onerror = function () { images[index] = null; missingImages.push(atlas.file); resolve(); };
         image.src = 'data/assets/' + atlas.file;
       });
     }));
   }
 
   // ---------------------------------------------------------------- 카메라
-  var view = { width: 1, height: 1, dpr: 1 };
+  var view = { width: 1, height: 1, dpr: 1, ui: 1 };
+  var tileLimit = settings.maxTiles;  // 실제로 쓰는 타일 한도. 화면을 다 덮는 데 필요한 수보다 작으면 타일이 서로를 밀어내므로 resize에서 늘린다
   var camera = { x: 0, y: 0, scale: 0.1 };  // 화면 가운데의 트리 좌표와 배율(트리 1단위당 CSS 픽셀)
   var minScale = 0.02;
   var dirty = true;
 
   function resize() {
-    view.dpr = Math.min(window.devicePixelRatio || 1, settings.dprCap);
+    view.dpr = Math.min(window.devicePixelRatio || 1, settings.dprCap) * settings.renderScale;
     if (settings.forceWidth && settings.forceHeight) {
       canvas.style.width = settings.forceWidth + 'px';
       canvas.style.height = settings.forceHeight + 'px';
@@ -172,6 +192,11 @@
     }
     canvas.width = Math.round(view.width * view.dpr);
     canvas.height = Math.round(view.height * view.dpr);
+    // 타일이 가장 작게(한 변이 TILE의 절반) 보일 때 화면을 덮는 수. 한도가 이보다 작으면 이번 프레임에 쓴 타일끼리 밀어내 끝내 다 채우지 못한다.
+    var visibleWorst = (Math.ceil(canvas.width / (TILE / 2)) + 1) * (Math.ceil(canvas.height / (TILE / 2)) + 1);
+    tileLimit = Math.max(settings.maxTiles, Math.ceil(visibleWorst * 1.25));
+    view.ui = settings.uiScale || Math.min(3, Math.max(1, Math.round(view.height / 1080 * 20) / 20));
+    document.documentElement.style.setProperty('--u', view.ui + 'px');
     var b = data.bounds;
     minScale = Math.min(view.width / (b.maxX - b.minX + 2000), view.height / (b.maxY - b.minY + 2000)) * 0.9;
     camera.scale = Math.max(camera.scale, minScale);
@@ -204,9 +229,11 @@
   var counters = { nodesDrawn: 0, edgesDrawn: 0, tilesRendered: 0, tilesDrawn: 0, tilesMissing: 0 };
 
   function drawSprite(target, rect, x, y) {
+    var image = images[rect[0]];
+    if (!image) { return; }
     var w = rect[3] / imageScale;
     var h = rect[4] / imageScale;
-    target.drawImage(images[rect[0]], rect[1], rect[2], rect[3], rect[4], x - w / 2, y - h / 2, w, h);
+    target.drawImage(image, rect[1], rect[2], rect[3], rect[4], x - w / 2, y - h / 2, w, h);
   }
 
   // 트리 좌표의 사각형 [x0, y0, x1, y1]에 걸리는 바닥을 target에 그린다.
@@ -228,6 +255,9 @@
         continue;
       }
       var image = images[g[3]];
+      if (!image) {
+        continue;
+      }
       if (half) {
         // 위쪽 절반만 든 그림: 그대로 한 번, 위아래를 뒤집어 한 번.
         target.drawImage(image, g[4], g[5], g[6], g[7], g[0] - gw / 2, g[1] - gh, gw, gh);
@@ -347,12 +377,15 @@
   }
 
   function evictTiles() {
-    if (tiles.size <= settings.maxTiles) {
+    if (tiles.size <= tileLimit) {
       return;
     }
     var entries = Array.from(tiles.entries());
     entries.sort(function (a, b) { return a[1].used - b[1].used; });
-    for (var i = 0; i < entries.length - settings.maxTiles; i++) {
+    for (var i = 0; i < entries.length - tileLimit; i++) {
+      if (entries[i][1].used === tileClock) {
+        break;  // 이번 프레임에 쓴 타일은 버리지 않는다
+      }
       tiles.delete(entries[i][0]);
     }
   }
@@ -381,12 +414,15 @@
     return false;
   }
 
-  function drawTiles(x0, y0, x1, y1, pixelScale, deadline) {
+  // 없는 타일은 프레임마다 TILE_BUDGET_MS만큼만 새로 만든다. 재는 것은 타일을 만드는 데 쓴 시간이다.
+  // (프레임이 시작된 뒤의 시간으로 재면, 있는 타일을 그리는 데만 한도를 다 쓰는 큰 화면에서 뒤쪽 타일이 끝내 만들어지지 않는다.
+  //  2026-11-13 게임 안 2차 시험의 3840x2160에서 실제로 그랬다.) 프레임마다 적어도 하나는 만든다.
+  function drawTiles(x0, y0, x1, y1, pixelScale) {
     var level = pickLevel(camera.scale * view.dpr);
     var world = TILE / TILE_LEVELS[level];
     var tx0 = Math.floor(x0 / world), tx1 = Math.floor(x1 / world);
     var ty0 = Math.floor(y0 / world), ty1 = Math.floor(y1 / world);
-    var missing = 0;
+    var missing = 0, created = 0, spent = 0;
     tileClock++;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     for (var ty = ty0; ty <= ty1; ty++) {
@@ -398,9 +434,12 @@
         var dw = Math.round(((tx + 1) * world - x0) * pixelScale) - dx;
         var key = tileKey(level, tx, ty);
         var tile = tiles.get(key);
-        if (!tile && performance.now() < deadline) {
+        if (!tile && (created === 0 || spent < TILE_BUDGET_MS)) {
+          var createStarted = performance.now();
           tile = { canvas: renderTile(level, tx, ty), used: tileClock };
           tiles.set(key, tile);
+          created++;
+          spent += performance.now() - createStarted;
         }
         if (tile) {
           tile.used = tileClock;
@@ -508,7 +547,7 @@
 
     var pending = 0;
     if (settings.mode === 'tiles') {
-      pending = drawTiles(x0, y0, x1, y1, pixelScale, started + TILE_BUDGET_MS);
+      pending = drawTiles(x0, y0, x1, y1, pixelScale);
     } else {
       ctx.setTransform(pixelScale, 0, 0, pixelScale, -x0 * pixelScale, -y0 * pixelScale);
       drawStatic(ctx, x0, y0, x1, y1, pixelScale);
@@ -524,9 +563,24 @@
   var lastFrameAt = 0;
   var lastStatsAt = 0;
   var bench = null;
+  var renderCount = 0;      // 지금까지 그린 프레임 수. 아무것도 안 그리는 기준 측정이 정말 조용했는지 확인하는 데 쓴다
+  var loopRunning = false;
+  var suspended = false;    // 게임 쪽에서 화면을 닫은 동안. 숨긴 화면도 스크립트는 계속 돌기 때문에 스스로 멈춘다
+
+  function startLoop() {
+    if (!loopRunning) {
+      loopRunning = true;
+      nextFrame(frame);
+    }
+  }
 
   function frame(now) {
-    requestAnimationFrame(frame);
+    if (suspended) {
+      loopRunning = false;
+      lastFrameAt = 0;
+      return;
+    }
+    nextFrame(frame);
     if (bench) {
       stepBench(now);
     }
@@ -536,6 +590,7 @@
     }
     dirty = false;
     var pending = render();
+    renderCount++;
     if (pending > 0) {
       dirty = true;  // 아직 못 그린 타일이 있으면 다음 프레임에 이어서 그린다
     }
@@ -560,9 +615,9 @@
     average = frameTimes.length ? average / frameTimes.length : 0;
     var lines = [
       (average ? (1000 / average).toFixed(0) + ' FPS' : '대기 중') + '  그리기 ' + lastRenderMs.toFixed(1) + 'ms',
-      '방식 ' + (settings.mode === 'tiles' ? '타일' : '직접') + '  배율 ' + camera.scale.toFixed(3) + '  DPR ' + view.dpr,
+      '방식 ' + (settings.mode === 'tiles' ? '타일' : '직접') + '  배율 ' + camera.scale.toFixed(3) + '  그림 ' + canvas.width + 'x' + canvas.height,
       settings.mode === 'tiles'
-        ? '타일 ' + counters.tilesDrawn + '장(보관 ' + tiles.size + '/' + settings.maxTiles + ', 대기 ' + counters.tilesMissing + ')'
+        ? '타일 ' + counters.tilesDrawn + '장(보관 ' + tiles.size + '/' + tileLimit + ', 대기 ' + counters.tilesMissing + ')'
         : '노드 ' + counters.nodesDrawn + '  선 ' + counters.edgesDrawn,
       '노드 ' + nodeCount + '  찍음 ' + allocatedList.length + '  검색 ' + matchList.length,
     ];
@@ -695,10 +750,11 @@
       }
       elTooltip.hidden = false;
     }
-    var left = pointer.x + 18, top = pointer.y + 18;
+    var gap = 18 * view.ui, edge = 8 * view.ui;
+    var left = pointer.x + gap, top = pointer.y + gap;
     var box = elTooltip.getBoundingClientRect();
-    if (left + box.width > view.width - 8) { left = Math.max(8, pointer.x - box.width - 18); }
-    if (top + box.height > view.height - 8) { top = Math.max(8, view.height - box.height - 8); }
+    if (left + box.width > view.width - edge) { left = Math.max(edge, pointer.x - box.width - gap); }
+    if (top + box.height > view.height - edge) { top = Math.max(edge, view.height - box.height - edge); }
     elTooltip.style.left = left + 'px';
     elTooltip.style.top = top + 'px';
   }
@@ -714,8 +770,83 @@
   var searchText = null;
   var matchCursor = -1;
 
+  // 조합형 입력(한글 등)의 상태. Prisma UI는 표준 조합 이벤트를 보내지 않고 창에 'prismaIME_state' 이벤트로 알려 준다.
+  // 조합 중인 글자는 입력창에 들어오지 않고, 확정된 글자만 보통의 글자 입력으로 들어온다.
+  var elIme = document.getElementById('ime');
+  var ime = { active: false, composition: '', caret: 0, candidates: [], selectedIndex: -1 };
+
+  // 조합 중인 글자나 후보가 실제로 있을 때만 참. Prisma UI는 후보 창이 닫힐 때도 active를 참으로 알려 오므로
+  // active만 보면 조합이 끝난 뒤에도 Enter와 Esc가 막힐 수 있다.
+  function imeBusy() {
+    return ime.composition !== '' || ime.candidates.length > 0;
+  }
+
+  // 검색어. 검색창에서 조합 중인 글자가 있으면 커서 자리에 끼워 넣은 것으로 본다(조합 중에도 결과가 따라오게).
+  function searchQuery() {
+    var value = elSearch.value;
+    if (ime.composition && document.activeElement === elSearch) {
+      var at = typeof elSearch.selectionStart === 'number' ? elSearch.selectionStart : value.length;
+      value = value.slice(0, at) + ime.composition + value.slice(at);
+    }
+    return value.trim().toLowerCase();
+  }
+
+  function renderIme() {
+    var show = document.activeElement === elSearch && (ime.composition !== '' || ime.candidates.length > 0);
+    if (!show) {
+      elIme.hidden = true;
+      return;
+    }
+    elIme.textContent = '';
+    var line = document.createElement('div');
+    var caretAt = Math.min(Math.max(ime.caret, 0), ime.composition.length);
+    line.appendChild(document.createTextNode(ime.composition.slice(0, caretAt)));
+    var caret = document.createElement('span');
+    caret.className = 'caret';
+    line.appendChild(caret);
+    line.appendChild(document.createTextNode(ime.composition.slice(caretAt)));
+    elIme.appendChild(line);
+    if (ime.candidates.length) {
+      var list = document.createElement('div');
+      list.className = 'candidates';
+      for (var i = 0; i < ime.candidates.length; i++) {
+        var item = document.createElement('span');
+        item.textContent = (i + 1) + ' ' + ime.candidates[i];
+        if (i === ime.selectedIndex) { item.className = 'selected'; }
+        list.appendChild(item);
+      }
+      elIme.appendChild(list);
+    }
+    var box = elSearch.getBoundingClientRect();
+    elIme.style.left = box.left + 'px';
+    elIme.style.top = (box.bottom + 4 * view.ui) + 'px';
+    elIme.hidden = false;
+  }
+
+  function clearIme() {
+    ime = { active: false, composition: '', caret: 0, candidates: [], selectedIndex: -1 };
+    elIme.hidden = true;
+  }
+
+  window.addEventListener('prismaIME_state', function (event) {
+    var detail = event.detail || {};
+    var before = ime.composition;
+    ime = {
+      active: !!detail.active,
+      composition: typeof detail.composition === 'string' ? detail.composition : '',
+      caret: typeof detail.caret === 'number' ? detail.caret : 0,
+      candidates: Array.isArray(detail.candidates) ? detail.candidates.map(String) : [],
+      selectedIndex: typeof detail.selectedIndex === 'number' ? detail.selectedIndex : -1,
+    };
+    renderIme();
+    if (ime.composition !== before) {
+      if (document.activeElement === elSearch) { runSearch(); }
+      reportInput("조합 '" + ime.composition + "'" + (ime.active ? '' : ' (끝)') + (ime.candidates.length ? ', 후보 ' + ime.candidates.length + '개' : ''));
+    }
+  });
+
   function runSearch() {
-    var query = elSearch.value.trim().toLowerCase();
+    var query = searchQuery();
     var started = performance.now();
     matched.fill(0);
     matchList = [];
@@ -739,11 +870,19 @@
     return elapsed;
   }
 
-  // 한글은 조합 중에도 input 이벤트가 오므로 그때마다 찾는다. 조합이 끝날 때도 한 번 더 찾는다.
-  elSearch.addEventListener('input', runSearch);
+  // 브라우저에서는 조합 중에도 input 이벤트가 오므로 그때마다 찾는다. 조합이 끝날 때도 한 번 더 찾는다.
+  // Prisma UI에서는 확정된 글자가 input 이벤트로 오고, 조합 중인 글자는 위의 prismaIME_state로 온다.
+  elSearch.addEventListener('input', function () {
+    runSearch();
+    reportInput("입력값 '" + elSearch.value + "', 결과 " + matchList.length + '개');
+  });
   elSearch.addEventListener('compositionend', runSearch);
+  elSearch.addEventListener('focus', function () { renderIme(); reportInput('포커스를 받음'); });
+  elSearch.addEventListener('blur', function () { elIme.hidden = true; reportInput('포커스를 잃음'); });
   elSearch.addEventListener('keydown', function (event) {
-    if (event.key === 'Enter' && !event.isComposing && matchList.length) {
+    // 조합 중의 Enter, Esc, 방향키는 입력기의 것이다. 여기서 받으면 조합이 끝나기 전에 검색이 넘어가거나 지워진다.
+    if (imeBusy() || event.isComposing) { return; }
+    if (event.key === 'Enter' && matchList.length) {
       matchCursor = (matchCursor + 1) % matchList.length;
       var index = matchList[matchCursor];
       camera.x = nodeX[index];
@@ -789,7 +928,25 @@
     dirty = true;
   }
 
+  var elScale = document.getElementById('btn-scale');
+
+  function setRenderScale(scale) {
+    scale = Math.min(1, Math.max(0.25, scale));
+    if (scale !== settings.renderScale) {
+      settings.renderScale = scale;
+      resize();
+      frameTimes.length = 0;
+    }
+    elScale.textContent = '해상도: ' + (scale === 1 ? '전체' : Math.round(scale * 100) + '%');
+  }
+
   elMode.addEventListener('click', function () { setMode(settings.mode === 'tiles' ? 'direct' : 'tiles'); });
+  elScale.addEventListener('click', function () {
+    // 측정이 도는 중에는 측정이 해상도를 정한다.
+    if (!suiteStage) {
+      setRenderScale(settings.renderScale === 1 ? 0.5 : 1);
+    }
+  });
   document.getElementById('btn-alloc').addEventListener('click', function () { allocateDemo(123); });
   document.getElementById('btn-clear').addEventListener('click', function () { allocated.fill(0); rebuildAllocated(); });
   document.getElementById('btn-fit').addEventListener('click', fitMain);
@@ -858,6 +1015,19 @@
     return bench.promise;
   }
 
+  // 도는 중인 측정을 버린다. 기다리던 쪽에는 null이 간다.
+  function cancelBench() {
+    if (!bench) { return; }
+    var cancelled = bench;
+    bench = null;
+    camera.x = cancelled.saved.x;
+    camera.y = cancelled.saved.y;
+    camera.scale = cancelled.saved.scale;
+    dirty = true;
+    elBenchButton.disabled = false;
+    cancelled.resolve(null);
+  }
+
   function stepBench(now) {
     if (!bench.started) {
       bench.started = now;
@@ -902,6 +1072,8 @@
       width: view.width,
       height: view.height,
       dpr: view.dpr,
+      canvas: canvas.width + 'x' + canvas.height,
+      renderScale: settings.renderScale,
       nodes: nodeCount,
       edges: edges.length,
       allocated: allocatedList.length,
@@ -949,7 +1121,7 @@
 
   function showBench(result) {
     var lines = [
-      '측정 결과 (' + (result.mode === 'tiles' ? '타일' : '직접') + ' 방식, ' + result.width + 'x' + result.height + ', DPR ' + result.dpr + ')',
+      '측정 결과 (' + (result.mode === 'tiles' ? '타일' : '직접') + ' 방식, 화면 ' + result.width + 'x' + result.height + ', 그림 ' + result.canvas + ')',
       '평균 ' + result.fpsAvg + ' FPS, 가장 느린 1% ' + result.fpsLow1 + ' FPS, 프레임 ' + result.frames + '개 / ' + result.seconds + '초',
       '프레임 간격(ms): 평균 ' + result.intervalMs.avg + ', 중앙 ' + result.intervalMs.p50 + ', 95% ' + result.intervalMs.p95 + ', 99% ' + result.intervalMs.p99 + ', 최대 ' + result.intervalMs.max,
       '그리는 시간(ms): 평균 ' + result.renderMs.avg + ', 95% ' + result.renderMs.p95 + ', 99% ' + result.renderMs.p99 + ', 최대 ' + result.renderMs.max,
@@ -1032,11 +1204,349 @@
     return result;
   }
 
-  // 밖에서(브라우저 도구나 나중의 DLL 쪽에서) 부를 수 있게 내놓는다.
+  // ---------------------------------------------------------------- 게임 안(Prisma UI)
+  // DLL(plugin/src/main.cpp)이 화면에 전역 함수 poeTreeReport, poeTreeCommand를 만들어 두고,
+  // 화면이 열릴 때 poeTreeOnShow(단계 이름)를 부른다. 브라우저에서는 이 함수들이 없으므로 아무 일도 하지 않는다.
+  var elGameBar = document.getElementById('game-bar');
+  var elGameStatus = document.getElementById('game-status');
+  var suiteStage = null;   // 측정 묶음이 도는 중이면 그 단계의 이름
+  var suiteToken = 0;      // 묶음을 새로 시작하거나 버릴 때마다 올린다. 옛 묶음의 남은 단계가 스스로 멈추게 하는 표시
+  var SUITE_ABORTED = {};
+  var measuredStages = {};  // 이번 실행에서 측정을 끝낸 단계. 다시 열면 재지 않고 바로 만져 볼 수 있게 한다
+  var shownStage = null;    // 지금 열려 있는 단계의 이름. 닫혀 있으면 null
+
+  function inGame() {
+    return typeof window.poeTreeReport === 'function';
+  }
+
+  function reportToGame(text) {
+    if (inGame()) {
+      try { window.poeTreeReport(String(text)); } catch (error) { /* 보낼 곳이 사라진 경우 */ }
+    }
+  }
+
+  // 검색창에서 일어난 일을 게임 쪽 로그에 남긴다. 한글 입력이 어디까지 되는지를 로그로 가르기 위한 것이다.
+  // 친 글자가 로그에 그대로 남으므로 INI의 LogSearchInput을 켰을 때만 한다.
+  var logSearchInput = false;
+  function reportInput(text) {
+    if (logSearchInput) {
+      reportToGame('검색창: ' + text);
+    }
+  }
+
+  // DLL이 부른다. "이름=값" 꼴의 설정 하나.
+  window.poeTreeSetOption = function (argument) {
+    var text = String(argument || '');
+    var at = text.indexOf('=');
+    var name = at < 0 ? text : text.slice(0, at);
+    var value = at < 0 ? '' : text.slice(at + 1);
+    if (name === 'logSearchInput') {
+      logSearchInput = value === 'true';
+    } else {
+      reportToGame("모르는 설정: '" + text + "'");
+    }
+  };
+
+  // 게임 쪽에 다음 단계로 넘겨 달라고 한다. 지금 단계를 함께 보내, 늦게 도착했을 때(그 사이에 사용자가 넘기거나 닫았을 때)
+  // 게임 쪽이 버릴 수 있게 한다.
+  function requestNext() {
+    if (shownStage) {
+      sendCommand('next:' + shownStage);
+    }
+  }
+
+  function sendCommand(command) {
+    if (typeof window.poeTreeCommand === 'function') {
+      try { window.poeTreeCommand(command); } catch (error) { /* 보낼 곳이 사라진 경우 */ }
+    }
+  }
+
+  function setGameStatus(text) {
+    elGameBar.hidden = false;
+    elGameStatus.textContent = text;
+  }
+
+  function environment() {
+    return {
+      userAgent: navigator.userAgent,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      canvas: canvas.width + 'x' + canvas.height,
+      renderScale: settings.renderScale,
+      offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
+      cores: navigator.hardwareConcurrency || 0,
+      imagesLoadMs: window.__loadMs,
+      missingImages: missingImages.slice(),
+      nodes: nodeCount,
+      edges: edges.length,
+      maxTiles: tileLimit,
+      uiScale: view.ui,
+      lod: settings.lod,
+    };
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  // 사람이 읽는 요약 줄. 로그에서 바로 통과 기준과 견줄 수 있게 한다.
+  function describeRaf(name, r) {
+    return name + ' ' + r.canvas + ': 평균 ' + r.fpsAvg + ' FPS, 가장 느린 1% ' + r.fpsLow1 + ' FPS, 프레임 ' + r.frames + '개/' + r.seconds +
+      '초, 간격 평균 ' + r.intervalMs.avg + ' 중앙 ' + r.intervalMs.p50 + ' 95% ' + r.intervalMs.p95 + ' 99% ' + r.intervalMs.p99 +
+      ' 최대 ' + r.intervalMs.max + 'ms, 그리기 평균 ' + r.renderMs.avg + ' 95% ' + r.renderMs.p95 + ' 최대 ' + r.renderMs.max +
+      'ms, 새 타일 ' + r.tilesRendered + '장';
+  }
+
+  function describeFrames(name, r) {
+    return name + ': 평균 ' + r.fpsAvg + ' FPS, 프레임 ' + r.frames + '개/' + r.seconds + '초, 간격 평균 ' + r.intervalMs.avg +
+      ' 중앙 ' + r.intervalMs.p50 + ' 95% ' + r.intervalMs.p95 + ' 최대 ' + r.intervalMs.max + 'ms, 그 사이 트리를 다시 그린 횟수 ' + r.treeRenders;
+  }
+
+  // 트리를 움직이지 않고 화면 갱신 간격만 잰다. 게임 자신의 프레임 시간을 알기 위한 기준이다.
+  // touch가 참이면 프레임마다 캔버스의 점 몇 개만 바꾼다. 화면이 조금이라도 바뀌면 드는 고정 비용(화면 전체 복사)을 보려는 것이다.
+  function measureFrames(options) {
+    return new Promise(function (resolve, reject) {
+      var intervals = [];
+      var started = 0, last = 0, flip = false;
+      var rendersBefore = renderCount;
+      function step(now) {
+        if (options.token !== suiteToken) {
+          reject(SUITE_ABORTED);
+          return;
+        }
+        if (!started) { started = now; }
+        if (last) { intervals.push(now - last); }
+        last = now;
+        if (now - started >= options.seconds * 1000) {
+          var summary = summarize(intervals);
+          resolve({
+            touch: !!options.touch,
+            seconds: +((now - started) / 1000).toFixed(2),
+            frames: summary.count,
+            fpsAvg: +(summary.avg ? 1000 / summary.avg : 0).toFixed(1),
+            intervalMs: roundAll(summary),
+            treeRenders: renderCount - rendersBefore,
+          });
+          return;
+        }
+        if (options.touch) {
+          flip = !flip;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.fillStyle = flip ? '#0b0a08' : '#0c0b09';
+          ctx.fillRect(0, 0, 2, 2);
+        }
+        nextFrame(step);
+      }
+      nextFrame(step);
+    });
+  }
+
+  // 타일을 다 그려 화면이 더 바뀌지 않을 때까지 기다린다(길어도 3초).
+  function waitUntilQuiet(token) {
+    return new Promise(function (resolve, reject) {
+      var started = 0, quiet = 0;
+      function step(now) {
+        if (token !== suiteToken) {
+          reject(SUITE_ABORTED);
+          return;
+        }
+        if (!started) { started = now; }
+        quiet = dirty ? 0 : quiet + 1;
+        if (quiet >= 5 || now - started > 3000) {
+          resolve();
+          return;
+        }
+        nextFrame(step);
+      }
+      nextFrame(step);
+    });
+  }
+
+  // 도는 중인 측정 묶음을 버리고 화면을 평소 상태로 되돌린다.
+  function abortSuite(reason) {
+    if (!suiteStage) { return; }
+    var stage = suiteStage;
+    suiteStage = null;
+    suiteToken++;
+    cancelBench();
+    setRenderScale(1);
+    setMode('tiles');
+    reportToGame('[' + stage + '] 측정 중단: ' + reason);
+  }
+
+  // 한 단계의 측정 묶음(약 36초). 모두 화면 갱신에 맞춰 재므로 게임을 세우지 않는다.
+  //   1. 기준: 트리를 그리지 않을 때의 프레임 간격(게임 자신의 몫)
+  //   2. 기준: 캔버스의 점 몇 개만 바꿀 때(화면이 바뀌면 드는 고정 비용)
+  //   3. 타일 방식, 화면 그대로의 해상도
+  //   4. 타일 방식, 가로·세로 절반 해상도
+  // 도중에 단계가 바뀌거나 화면이 닫히면 버리고, 새 단계에서 처음부터 다시 잰다.
+  function runGameSuite(stage) {
+    abortSuite('단계가 바뀜');
+    cancelBench();  // 화면의 "측정" 버튼으로 돌리던 것이 있으면 그 결과가 이 묶음의 것으로 섞이지 않게 버린다
+    var token = ++suiteToken;
+    suiteStage = stage;
+    var out = { stage: stage, env: null };
+    function alive() {
+      if (token !== suiteToken) { throw SUITE_ABORTED; }
+    }
+    function status(step) {
+      setGameStatus(stageLabel(stage) + ' · 측정 중 (' + step + ') · F6을 누르면 이 측정을 버리고 넘어갑니다');
+    }
+    function extra(result) {
+      return +(result.intervalMs.avg - out.idle.intervalMs.avg).toFixed(2);
+    }
+    setMode('tiles');
+    setRenderScale(1);
+    resize();
+    fitMain();
+    if (!allocatedList.length) { allocateDemo(123); }
+    out.env = environment();
+    reportToGame('[' + stage + '] 측정 시작. 환경 ' + JSON.stringify(out.env));
+    status('1/4 기준');
+    waitUntilQuiet(token).then(function () {
+      alive();
+      return measureFrames({ seconds: 3, touch: false, token: token });
+    }).then(function (result) {
+      alive();
+      out.idle = result;
+      reportToGame('[' + stage + '] ' + describeFrames('기준(트리를 그리지 않음)', result));
+      status('2/4 기준');
+      return measureFrames({ seconds: 3, touch: true, token: token });
+    }).then(function (result) {
+      alive();
+      out.touch = result;
+      dirty = true;
+      reportToGame('[' + stage + '] ' + describeFrames('기준(점 몇 개만 바꿈)', result));
+      status('3/4 타일, 전체 해상도');
+      return runBench({ mode: 'tiles' });
+    }).then(function (result) {
+      alive();
+      out.tilesFull = result;
+      reportToGame('[' + stage + '] ' + describeRaf('타일', result));
+      setRenderScale(0.5);
+      status('4/4 타일, 절반 해상도');
+      return runBench({ mode: 'tiles' });
+    }).then(function (result) {
+      alive();
+      out.tilesHalf = result;
+      reportToGame('[' + stage + '] ' + describeRaf('타일', result));
+      setRenderScale(1);
+      fitMain();
+      elBench.hidden = true;  // 결과는 로그에 남는다. 화면에 남겨 두면 직접 만져 볼 때 트리를 가린다
+      reportToGame('[' + stage + '] 검색: ' + runSearchProbe());
+      out.extraMs = { touch: extra(out.touch), tilesFull: extra(out.tilesFull), tilesHalf: extra(out.tilesHalf) };
+      reportToGame('[' + stage + '] 요약: 기준 간격 ' + out.idle.intervalMs.avg + 'ms(' + out.idle.fpsAvg + ' FPS). 거기에 더해진 시간: 점 몇 개만 바꿈 ' +
+        out.extraMs.touch + 'ms, 타일 ' + out.tilesFull.canvas + ' ' + out.extraMs.tilesFull + 'ms(' + out.tilesFull.fpsAvg + ' FPS), 타일 ' +
+        out.tilesHalf.canvas + ' ' + out.extraMs.tilesHalf + 'ms(' + out.tilesHalf.fpsAvg + ' FPS)');
+      reportToGame('[' + stage + '] 자세한 값 ' + JSON.stringify(out));
+      reportToGame('[' + stage + '] 측정 끝');
+      suiteStage = null;
+      measuredStages[stage] = true;
+      if (stage === 'paused' && !measuredStages.live) {
+        // 사람이 눌러 주기를 기다리지 않고 이어서 잰다. 게임 쪽이 단계를 바꾸고 poeTreeOnShow('live')를 부른다.
+        setGameStatus(stageLabel(stage) + ' · 측정 끝. 이어서 게임을 돌린 채 잽니다');
+        requestNext();
+      } else {
+        setGameStatus(stageLabel(stage) + ' · 측정이 모두 끝났습니다. 닫았다가(F6) 다시 열면 측정 없이 만져 볼 수 있습니다');
+      }
+    }).catch(function (error) {
+      if (error === SUITE_ABORTED) {
+        return;  // abortSuite가 이미 정리했다
+      }
+      reportToGame('[' + stage + '] 측정 중 오류: ' + (error && error.stack ? error.stack : error));
+      if (token === suiteToken) {
+        // 아직 이 묶음이 화면의 주인일 때만 정리하고 알린다. 새 묶음이 돌고 있으면 그쪽의 표시를 건드리지 않는다.
+        suiteStage = null;
+        cancelBench();
+        setRenderScale(1);
+        setGameStatus(stageLabel(stage) + ' · 측정 중 오류(로그 확인)');
+      }
+    });
+  }
+
+  function runSearchProbe() {
+    var parts = [];
+    ['키스톤', 'maximum life', 'resolute technique'].forEach(function (query) {
+      elSearch.value = query;
+      var ms = runSearch();
+      parts.push("'" + query + "' " + matchList.length + '개 ' + ms.toFixed(1) + 'ms');
+    });
+    elSearch.value = '';
+    runSearch();
+    return parts.join(', ');
+  }
+
+  function stageLabel(stage) {
+    return stage === 'paused' ? '게임을 멈추고 엶' : (stage === 'live' ? '게임을 돌린 채 엶' : stage);
+  }
+
+  // DLL이 부른다. 단계 이름 앞에 '-'가 붙어 있으면 측정하지 않고 열기만 한다(INI의 AutoBench = false).
+  // 측정이 도는 중에 다른 단계로 넘어오면 하던 측정을 버리고 새 단계에서 다시 잰다.
+  window.poeTreeOnShow = function (argument) {
+    var text = String(argument || '');
+    var skip = text.charAt(0) === '-';
+    var stage = skip ? text.slice(1) : text;
+    shownStage = stage;
+    suspended = false;
+    startLoop();
+    if (skip) {
+      abortSuite('측정 없이 다시 열림');
+      resize();
+      setGameStatus(stageLabel(stage));
+      reportToGame('[' + stage + '] 열림(측정 안 함). 환경 ' + JSON.stringify(environment()));
+    } else if (measuredStages[stage]) {
+      abortSuite('이미 잰 단계로 넘어감');
+      resize();
+      setGameStatus(stageLabel(stage) + ' · 이 단계는 이미 쟀습니다. 직접 만져 보세요');
+      reportToGame('[' + stage + '] 열림(이번 실행에서 이미 잼)');
+    } else {
+      runGameSuite(stage);
+    }
+  };
+
+  // DLL이 부른다. 화면이 닫혔다. 숨긴 화면도 스크립트는 계속 돌고 그 시간만큼 게임의 프레임이 늦어지므로, 하던 일을 모두 멈춘다.
+  window.poeTreeOnHide = function () {
+    abortSuite('화면이 닫힘');
+    drag = null;
+    canvas.classList.remove('dragging');
+    hideTooltip();
+    clearIme();
+    elSearch.blur();
+    shownStage = null;
+    suspended = true;
+    // 닫혀 있는 동안에는 타일을 쥐고 있지 않는다(한 장에 약 1MB, 한도까지 차면 160MB가 넘는다). 다시 열면 몇 프레임에 걸쳐 다시 만든다.
+    tiles.clear();
+    dirty = true;
+    setGameStatus('닫힘');
+    reportToGame('닫힘: 화면 갱신을 멈춤');
+  };
+
+  // 측정 도중에 눌러도 된다. 게임 쪽이 다음 단계를 알려 오면 하던 측정을 버리고 새로 잰다.
+  document.getElementById('btn-next').addEventListener('click', requestNext);
+  document.getElementById('btn-close').addEventListener('click', function () { sendCommand('close'); });
+  window.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && inGame() && document.activeElement !== elSearch && !imeBusy()) {
+      sendCommand('close');
+    }
+  });
+
+  // 화면의 오류가 게임 쪽 로그에 남게 한다.
+  window.addEventListener('error', function (event) {
+    reportToGame('화면 오류: ' + event.message + ' (' + event.filename + ':' + event.lineno + ')');
+  });
+  // 한글 입력 확인용: 조합이 시작되고 끝날 때의 글자를 게임 쪽 로그에 남긴다.
+  elSearch.addEventListener('compositionstart', function () { reportInput('표준 조합 이벤트 시작'); });
+  elSearch.addEventListener('compositionend', function (event) {
+    reportInput("표준 조합 이벤트 끝 '" + event.data + "', 입력값 '" + elSearch.value + "'");
+  });
+
+  // 밖에서(브라우저 도구나 DLL 쪽에서) 부를 수 있게 내놓는다.
   window.PoETree = {
     runBench: runBench,
     runSyncBench: runSyncBench,
     setMode: setMode,
+    setRenderScale: setRenderScale,
     allocateDemo: allocateDemo,
     search: function (text) { elSearch.value = text; return { ms: runSearch(), matches: matchList.length }; },
     info: function () {
@@ -1048,15 +1558,23 @@
   // ---------------------------------------------------------------- 시작
   window.addEventListener('resize', resize);
   setMode(settings.mode);
+  setRenderScale(settings.renderScale);
   resize();
   fitMain();
   var loadStarted = performance.now();
   loadImages().then(function () {
     window.__loadMs = +(performance.now() - loadStarted).toFixed(1);
-    requestAnimationFrame(frame);
+    // 그림이 다 오기 전에 화면이 열렸다면 그림 없이 만든 타일이 있다. 버리고 다시 만들게 한다.
+    tiles.clear();
+    dirty = true;
+    if (missingImages.length) {
+      var text = '불러오지 못한 그림: ' + missingImages.join(', ');
+      showMessage(text + '\n해당 그림을 쓰는 부분은 빠진 채로 그립니다. tools/build_site.py 를 다시 실행해 보세요.');
+      setTimeout(function () { elMessage.hidden = true; }, 6000);
+      reportToGame(text);
+    }
+    startLoop();
     if (params.get('alloc') === '1') { allocateDemo(123); }
     if (params.get('bench') === '1') { setTimeout(function () { runBench(); }, 500); }
-  }).catch(function (error) {
-    showMessage(error.message + '\ntools/build_site.py 를 다시 실행해 그림 파일을 복사해 주세요.');
   });
 })();

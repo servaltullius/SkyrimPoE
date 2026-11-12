@@ -214,7 +214,7 @@ def as_list(value) -> list:
     return list(value)
 
 
-def convert(pob_root: Path, out_dir: Path, version: str) -> dict:
+def convert(pob_root: Path, out_dir: Path, version: str, convert_jpeg: bool = True) -> dict:
     tree_dir = pob_root / "TreeData" / version
     tree = load_lua_table(tree_dir / "tree.lua")
     sprites_file = load_lua_table(tree_dir / "sprites.lua")
@@ -377,12 +377,33 @@ def convert(pob_root: Path, out_dir: Path, version: str) -> dict:
     }
 
     # ---- 쓰기
+    # JPEG 그림은 PNG로 바꿔 둔다. Prisma UI의 문서가 지원한다고 적은 그림 형식은 PNG와 WebP이고,
+    # 이 컴퓨터에 설치된 다른 Prisma UI 화면들도 PNG만 쓴다. Pillow가 없으면 그대로 복사하고 그 사실을 알린다.
     assets_dir = out_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
+    # 앞서 다른 형식으로 만들어 둔 같은 그림(JPEG 그대로 / PNG로 바꾼 것)이 남아 있으면 지운다.
+    # 폴더를 통째로 비우지 않는다. 출력 폴더는 사용자가 정하므로 이 스크립트가 만들지 않은 파일이 있을 수 있다.
+    for atlas in atlases:
+        original = Path(atlas["file"])
+        for stale in {original.name, original.stem + ".png"}:
+            (assets_dir / stale).unlink(missing_ok=True)
+    kept_jpeg: list[str] = []
     for atlas in atlases:
         source = tree_dir / atlas["file"]
         if not source.is_file():
             raise FileNotFoundError(f"그림 파일이 없음: {source}")
+        if source.suffix.lower() in (".jpg", ".jpeg") and convert_jpeg:
+            try:
+                from PIL import Image
+            except ImportError:
+                Image = None
+            if Image is not None:
+                target_name = source.stem + ".png"
+                with Image.open(source) as image:
+                    image.convert("RGB").save(assets_dir / target_name, optimize=True)
+                atlas["file"] = target_name
+                continue
+            kept_jpeg.append(atlas["file"])
         shutil.copyfile(source, assets_dir / atlas["file"])
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     (out_dir / "tree-data.js").write_text("window.POE_TREE=" + payload + ";\n", encoding="utf-8")
@@ -402,6 +423,7 @@ def convert(pob_root: Path, out_dir: Path, version: str) -> dict:
         "arcs": sum(1 for e in edges if len(e) > 2),
         "groups_with_background": len(group_backgrounds),
         "atlases": [a["file"] for a in atlases],
+        "jpeg_not_converted": kept_jpeg,
         "data_bytes": len(payload.encode("utf-8")),
     }
 
@@ -411,12 +433,15 @@ def main() -> int:
     parser.add_argument("pob_root", type=Path, help="Path of Building Community 폴더")
     parser.add_argument("out_dir", type=Path, help="출력 폴더(tree-data.js 와 assets/ 가 생긴다)")
     parser.add_argument("--version", default="3_29", help="TreeData 아래의 버전 폴더 이름")
+    parser.add_argument("--keep-jpeg", action="store_true", help="JPEG 그림을 PNG로 바꾸지 않고 그대로 복사한다")
     args = parser.parse_args()
     if not (args.pob_root / "TreeData" / args.version / "tree.lua").is_file():
         print(f"트리 데이터를 찾지 못함: {args.pob_root / 'TreeData' / args.version / 'tree.lua'}", file=sys.stderr)
         return 2
-    summary = convert(args.pob_root, args.out_dir, args.version)
+    summary = convert(args.pob_root, args.out_dir, args.version, convert_jpeg=not args.keep_jpeg)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if summary["jpeg_not_converted"]:
+        print("주의: Pillow가 없어 JPEG 그림을 그대로 복사했습니다: " + ", ".join(summary["jpeg_not_converted"]), file=sys.stderr)
     return 0
 
 
