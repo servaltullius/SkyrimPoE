@@ -35,6 +35,7 @@ include("${POE_COMMONLIB_DIR}/cmake/CommonLibSSE.cmake")
 add_library(poe_proto_core STATIC
     src/Core/Config.cpp
     src/Core/EventNames.cpp
+    src/Core/Spin.cpp
 )
 target_include_directories(poe_proto_core PUBLIC src)
 target_compile_options(poe_proto_core PUBLIC /utf-8)
@@ -68,7 +69,7 @@ add_custom_target(package_mod
 )
 
 if(BUILD_TESTING)
-    foreach(test_name ConfigTests EventNamesTests)
+    foreach(test_name ConfigTests EventNamesTests SpinTests)
         add_executable(${test_name} tests/${test_name}.cpp)
         target_link_libraries(${test_name} PRIVATE poe_proto_core)
         add_test(NAME ${test_name} COMMAND ${test_name})

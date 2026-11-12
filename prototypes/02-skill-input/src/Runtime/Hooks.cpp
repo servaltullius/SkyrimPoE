@@ -65,6 +65,29 @@ namespace poe
         private:
             InputSink() = default;
         };
+
+        // 누가 누구를 맞혔는지 듣기만 한다.
+        class HitSink final : public RE::BSTEventSink<RE::TESHitEvent>
+        {
+        public:
+            static HitSink& Get()
+            {
+                static HitSink instance;
+                return instance;
+            }
+
+            RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* a_event,
+                RE::BSTEventSource<RE::TESHitEvent>*) override
+            {
+                if (a_event) {
+                    Channel::Get().OnHit(*a_event);
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+        private:
+            HitSink() = default;
+        };
     }
 
     void InstallPlayerHooks()
@@ -76,6 +99,17 @@ namespace poe
         UpdateHook::func = actor.write_vfunc(0xAD, UpdateHook::thunk);
 
         SKSE::log::info("플레이어 훅 설치: NotifyAnimationGraph, Update");
+    }
+
+    void InstallHitSink()
+    {
+        auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
+        if (!holder) {
+            SKSE::log::error("이벤트 원본을 찾지 못해 적중을 기록할 수 없음. 채널링 자체에는 영향이 없습니다.");
+            return;
+        }
+        holder->AddEventSink<RE::TESHitEvent>(&HitSink::Get());
+        SKSE::log::info("적중 싱크 등록(읽기 전용)");
     }
 
     void InstallInputSink()

@@ -7,4 +7,7 @@ namespace poe
 
     // 입력 장치 관리자에 읽기 전용 싱크를 붙인다. SKSE의 kInputLoaded 뒤에 한 번.
     void InstallInputSink();
+
+    // 적중 이벤트를 받아 로그와 집계에 쓴다. SKSE의 kDataLoaded 뒤에 한 번.
+    void InstallHitSink();
 }

@@ -168,11 +168,45 @@ namespace poe
                 } else {
                     Warn(warnings, lineNumber, rawKey, "1~300 범위의 숫자가 아니어서 기본값 유지");
                 }
+            } else if (key == "minseconds") {
+                const auto parsed = ParseFloat(value);
+                if (parsed && *parsed >= 0.0f && *parsed <= kMaxMinSeconds) {
+                    config.minSeconds = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "0~10 범위의 숫자가 아니어서 기본값 유지");
+                }
             } else if (key == "cyclekey") {
                 if (const auto parsed = ParseKeyCode(value)) {
                     config.cycleKey = *parsed;
                 } else {
                     Warn(warnings, lineNumber, rawKey, "0~255 범위의 키 코드가 아니어서 기본값 유지");
+                }
+            } else if (key == "spinbydll" || key == "spinclockwise" || key == "hitsbydll" || key == "hitneutral") {
+                if (const auto parsed = ParseBool(value)) {
+                    (key == "spinbydll" ? config.spinByDll :
+                        key == "spinclockwise" ? config.spinClockwise :
+                        key == "hitsbydll" ? config.hitsByDll : config.hitNeutral) = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "true 또는 false가 아니어서 기본값 유지");
+                }
+            } else if (key == "hitspersecond" || key == "turnsperhit" || key == "hitradius" || key == "hitdamagemult") {
+                // 키마다 받는 범위: 초당 타격 0.5~20, 타격당 바퀴 0.1~4, 반경 50~600, 피해 배율 0.05~5
+                const float low = key == "hitspersecond" ? 0.5f : key == "turnsperhit" ? 0.1f : key == "hitradius" ? 50.0f : 0.05f;
+                const float high = key == "hitspersecond" ? 20.0f : key == "turnsperhit" ? 4.0f : key == "hitradius" ? 600.0f : 5.0f;
+                const auto parsed = ParseFloat(value);
+                if (parsed && *parsed >= low && *parsed <= high) {
+                    (key == "hitspersecond" ? config.hitsPerSecond :
+                        key == "turnsperhit" ? config.turnsPerHit :
+                        key == "hitradius" ? config.hitRadius : config.hitDamageMult) = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "받는 범위의 숫자가 아니어서 기본값 유지");
+                }
+            } else if (key == "clipvariants" || key == "clipvariant") {
+                const auto parsed = ParseKeyCode(value);
+                if (parsed && *parsed >= 1 && *parsed <= kMaxClipVariants) {
+                    (key == "clipvariants" ? config.clipVariants : config.clipVariant) = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "1~9 범위의 정수가 아니어서 기본값 유지");
                 }
             } else if (key == "extrachannelkey") {
                 if (const auto parsed = ParseKeyCode(value)) {
@@ -183,6 +217,10 @@ namespace poe
             } else {
                 Warn(warnings, lineNumber, rawKey, "알 수 없는 키라서 무시함");
             }
+        }
+        if (config.clipVariant > config.clipVariants) {
+            warnings.push_back("ClipVariant가 ClipVariants보다 커서 1번 클립으로 시작함");
+            config.clipVariant = 1;
         }
         return config;
     }

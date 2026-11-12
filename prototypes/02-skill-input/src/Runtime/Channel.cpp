@@ -4,8 +4,11 @@
 
 #include <SKSE/SKSE.h>
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace poe
 {
@@ -114,6 +117,94 @@ namespace poe
         {
             return motion == Motion::kInjector ? "Animation Injector" : "OAR 클립 교체";
         }
+
+        // ---- 회전: 스켈레톤의 "NPC" 노드 ----
+        // 플레이어 3D의 뿌리 바로 아래에 "NPC" 노드가 있고 그 아래에 "NPC Root [Root]"부터 뼈가 달린다
+        // (바닐라와 XPMSSE 스켈레톤에서 확인). 애니메이션은 "NPC Root [Root]"부터 쓰므로 이 노드의 회전은
+        // 애니메이션이 덮어쓰지 않는다. 여기를 돌리면 액터의 방향·이동·충돌은 그대로 두고 보이는 몸만 돈다.
+        constexpr float kMaxFrameSeconds = 0.1f; // 프레임이 길게 끊겼을 때 한 번에 너무 많이 돌지 않게 한다
+
+        RE::NiAVObject* FindSpinNode(RE::PlayerCharacter* player)
+        {
+            static const RE::BSFixedString name{ "NPC" };
+            auto* root = player ? player->Get3D(false) : nullptr;
+            return root ? root->GetObjectByName(name) : nullptr;
+        }
+
+        // 세로축(Z) 둘레로 angle 라디안 돌리는 행렬. 양의 각이 위에서 볼 때 반시계 방향이다.
+        RE::NiMatrix3 RotationAboutUp(float angle)
+        {
+            const float c = std::cos(angle);
+            const float s = std::sin(angle);
+            RE::NiMatrix3 m;
+            m.entry[0][0] = c;
+            m.entry[0][1] = -s;
+            m.entry[1][0] = s;
+            m.entry[1][1] = c;
+            return m;
+        }
+
+        RE::NiMatrix3 Multiply(const RE::NiMatrix3& a, const RE::NiMatrix3& b)
+        {
+            RE::NiMatrix3 out;
+            for (int r = 0; r < 3; ++r) {
+                for (int col = 0; col < 3; ++col) {
+                    out.entry[r][col] = a.entry[r][0] * b.entry[0][col] + a.entry[r][1] * b.entry[1][col] +
+                                        a.entry[r][2] * b.entry[2][col];
+                }
+            }
+            return out;
+        }
+
+        float MaxDifference(const RE::NiMatrix3& a, const RE::NiMatrix3& b)
+        {
+            float worst = 0.0f;
+            for (int r = 0; r < 3; ++r) {
+                for (int col = 0; col < 3; ++col) {
+                    worst = std::max(worst, std::abs(a.entry[r][col] - b.entry[r][col]));
+                }
+            }
+            return worst;
+        }
+
+        // ---- 타격: 엔진의 근접 타격 함수 ----
+        // 공격자가 든 무기로 대상에게 근접 타격 한 번을 적용한다(피해, 방어·막기, 경직, 적중 이벤트).
+        // 주소와 인자는 Precision(ersh1/Precision, GPL-3.0)의 Offsets.h가 쓰는 DealDamage와 같다.
+        using DealDamageFn = void*(RE::Actor* attacker, RE::Actor* target, RE::Projectile* projectile, bool leftHand);
+        const REL::Relocation<DealDamageFn> kDealDamage{ REL::RelocationID(37673, 38627) };
+
+        constexpr float kHitHeight = 150.0f;  // 타격 대상과의 높이 차이 한도
+        constexpr float kMinHitsPerSecond = 0.5f;
+        constexpr float kMaxHitsPerSecond = 20.0f;
+        constexpr float kMinTurnsPerSecond = 0.2f;
+        constexpr float kMaxTurnsPerSecond = 5.0f;
+
+        // 공격 피해 배율을 잠깐 바꿨다가 범위를 벗어날 때 되돌린다.
+        class DamageScale
+        {
+        public:
+            DamageScale(RE::Actor* actor, float mult)
+            {
+                _owner = actor ? actor->AsActorValueOwner() : nullptr;
+                if (_owner) {
+                    const float current = _owner->GetActorValue(RE::ActorValue::kAttackDamageMult);
+                    _delta = current * (mult - 1.0f);
+                    _owner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kAttackDamageMult, _delta);
+                }
+            }
+            ~DamageScale()
+            {
+                if (_owner) {
+                    _owner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kAttackDamageMult, -_delta);
+                }
+            }
+            DamageScale(const DamageScale&) = delete;
+            DamageScale& operator=(const DamageScale&) = delete;
+
+        private:
+            RE::ActorValueOwner* _owner = nullptr;
+            float                _delta = 0.0f;
+        };
     }
 
     Channel& Channel::Get()
@@ -131,6 +222,7 @@ namespace poe
     {
         const std::scoped_lock lock(_mutex);
         _config = config;
+        _logHits.store(config.logEvents);
     }
 
     void Channel::SetBackends(bool oarAvailable, bool injectorAvailable)
@@ -407,13 +499,40 @@ namespace poe
         ExpireStaleKeys(now);
 
         if (_active) {
-            if (!IsDown(_channelKey)) {
-                Stop(player, "버튼을 뗌", false);
-            } else if (const char* blocked = PlayerBlockReason(player)) {
+            const float elapsed = std::chrono::duration<float>(now - _startedAt).count();
+            const float frame = std::clamp(std::chrono::duration<float>(now - _lastTick).count(), 0.0f, kMaxFrameSeconds);
+            _lastTick = now;
+
+            if (const char* blocked = PlayerBlockReason(player)) {
                 Stop(player, blocked, true);
-            } else if (std::chrono::duration<float>(now - _startedAt).count() >= _config.maxSeconds) {
+                return;
+            }
+            const bool held = IsDown(_channelKey);
+            if (held && elapsed >= _config.maxSeconds) {
                 Stop(player, "최대 시간에 도달", true);
-            } else if (_activeMotion == Motion::kInjector && !_injectorChecked && now - _startedAt >= kInjectorGrace) {
+                return;
+            }
+            // 일찍 떼도 최소 시간은 돈다. 그 사이에 다시 누르면 그대로 이어진다.
+            // 최소 시간이 최대 시간보다 길게 설정돼 있어도 최대 시간을 넘기지 않는다.
+            // 버튼을 떼면 남은 바퀴를 마저 돌아 정면에서 끝낸다(마무리).
+            if (held) {
+                _spin.Resume();
+            } else if (!_spin.Settling() && elapsed >= std::min(_config.minSeconds, _config.maxSeconds)) {
+                _spin.BeginSettle(_turnsPerSecond);
+            }
+
+            // DLL이 몸을 돌리지 않는 경우에는 마저 돌 것이 없으므로 마무리가 곧 끝이다.
+            const bool turnFinished = _spinning ? AdvanceSpin(player, frame) : _spin.Settling();
+            if (_hitting && now >= _nextHitAt) {
+                AreaHit(player);
+                // 프레임이 길게 끊겨도 밀린 타격을 한꺼번에 내지 않는다.
+                _nextHitAt = std::max(_nextHitAt + _hitInterval, now);
+            }
+            if (_spin.Settling() && turnFinished) {
+                Stop(player, "버튼을 뗌", false);
+                return;
+            }
+            if (_activeMotion == Motion::kInjector && !_injectorChecked && now - _startedAt >= kInjectorGrace) {
                 _injectorChecked = true;
                 SKSE::log::info("[채널링] Animation Injector 동작 확인: bAnimationDriven = {}",
                     AnimationDriven(player) ? "켜짐(동작이 시작된 것으로 보임)" :
@@ -421,6 +540,9 @@ namespace poe
             }
             return;
         }
+
+        // 끝날 때 몸의 방향을 되돌리지 못했다면(3D가 잠깐 없던 경우) 되돌릴 수 있을 때까지 다시 시도한다.
+        RestoreSpinNode(player);
 
         if (_needRelease) {
             if (!AnyChannelKeyDown()) {
@@ -466,13 +588,62 @@ namespace poe
         _channelKey = key;
         _startedAt = Clock::now();
         _injectorChecked = false;
+        _hits.store(0);
+        _hitVariant.store(static_cast<int>(_config.clipVariant));
+        _hitActive.store(true);
+
+        _lastTick = _startedAt;
+        _spin.Reset();
+        _spinning = false;
+        _hitting = false;
+        // 앞선 채널링이 몸의 방향을 되돌리지 못한 채 끝났다면, 그 값을 기준으로 삼기 전에 먼저 되돌린다.
+        RestoreSpinNode(player);
 
         if (_activeMotion == Motion::kOar) {
-            SetOarValue(player, 1.0f);
+            // 액터 값이 클립 번호다. OAR의 서브모드마다 이 값이 자기 번호와 같을 때만 클립을 바꾼다.
+            SetOarValue(player, static_cast<float>(_config.clipVariant));
             // 누르는 순간 시작된 일반 공격을 끊어 이동 상태로 돌려보낸다. 회전 모션은 이동 클립 자리에 재생된다.
             const bool accepted = Send(player, kAttackStopEvent);
-            SKSE::log::info("[채널링] 시작({}, {}, {}): Variable09 = 1, attackStop {}", MotionLabel(_activeMotion), why,
-                KeyLabel(key), accepted ? "받아들여짐" : "거부됨(공격 중이 아니었을 수 있음)");
+            SKSE::log::info("[채널링] 시작({}, {}, {}): 클립 {}번(Variable09 = {}), attackStop {}",
+                MotionLabel(_activeMotion), why, KeyLabel(key), _config.clipVariant, _config.clipVariant,
+                accepted ? "받아들여짐" : "거부됨(공격 중이 아니었을 수 있음)");
+
+            // 회전 속도와 타격 주기는 든 무기의 속도에 맞춘다.
+            float weaponSpeed = 1.0f;
+            if (const auto* form = player->GetEquippedObject(false)) {
+                if (const auto* weapon = form->As<RE::TESObjectWEAP>()) {
+                    weaponSpeed = weapon->GetSpeed();
+                }
+            }
+            float speedMult = 1.0f;
+            if (auto* owner = player->AsActorValueOwner()) {
+                const float value = owner->GetActorValue(RE::ActorValue::kWeaponSpeedMult);
+                if (value > 0.0f) {
+                    speedMult = value;  // 0은 "배율 없음"을 뜻한다
+                }
+            }
+            const float hitsPerSecond =
+                std::clamp(_config.hitsPerSecond * weaponSpeed * speedMult, kMinHitsPerSecond, kMaxHitsPerSecond);
+            _turnsPerSecond = std::clamp(hitsPerSecond * _config.turnsPerHit, kMinTurnsPerSecond, kMaxTurnsPerSecond);
+            _hitInterval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<float>(1.0f / hitsPerSecond));
+
+            if (_config.spinByDll) {
+                if (auto* node = FindSpinNode(player)) {
+                    _spinBase = node->local.rotate;
+                    _spinApplied = _spinBase;
+                    _spinning = true;
+                    _spinResetWarned = false;
+                } else {
+                    SKSE::log::warn("[회전] 플레이어 3D에서 'NPC' 노드를 찾지 못해 몸을 돌리지 못함. 자세만 바뀝니다.");
+                }
+            }
+            if (_config.hitsByDll) {
+                _hitting = true;
+                _nextHitAt = _startedAt + _hitInterval / 2;
+            }
+            SKSE::log::info("[채널링] 무기 속도 {:.2f} x 배율 {:.2f}: 초당 타격 {:.2f}회, 초당 {:.2f}바퀴, 회전 {}, 타격 {}",
+                weaponSpeed, speedMult, hitsPerSecond, _turnsPerSecond, _spinning ? "DLL" : "클립에 맡김",
+                _hitting ? "DLL" : "클립에 맡김");
         } else {
             const bool accepted = Send(player, kInjectorStartEvent);
             SKSE::log::info("[채널링] 시작({}, {}, {}): '{}' {}", MotionLabel(_activeMotion), why, KeyLabel(key),
@@ -488,33 +659,116 @@ namespace poe
         } else {
             Send(player, kInjectorStopEvent);
         }
+        if (_spinning) {
+            // 몸의 방향을 시작할 때의 값으로 되돌린다. 지금 노드를 찾지 못하면 다음 프레임들에서 다시 시도한다.
+            _spinning = false;
+            _spinRestorePending = true;
+            RestoreSpinNode(player);
+        }
+        _hitting = false;
+        _spin.Reset();
         FlushEventLog();
-        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초", MotionLabel(_activeMotion), why, seconds);
+        _hitActive.store(false);
+        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회", MotionLabel(_activeMotion), why, seconds,
+            _hits.load());
         _active = false;
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
         _needRelease = needRelease;
     }
 
+    // 몸을 frame초만큼 더 돌린다. 마무리 중이고 정면으로 돌아왔으면 true.
+    bool Channel::AdvanceSpin(RE::PlayerCharacter* player, float frame)
+    {
+        const bool finished = _spin.Advance(_turnsPerSecond, frame);
+
+        auto* node = FindSpinNode(player);
+        if (!node) {
+            return finished;  // 3D가 잠깐 없는 프레임. 각도만 진행한다
+        }
+        // 우리가 써 둔 값이 바뀌어 있으면 다른 무엇인가가 이 노드를 썼거나 3D가 새로 만들어진 것이다. 한 번만 알린다.
+        if (!_spinResetWarned && MaxDifference(node->local.rotate, _spinApplied) > 1e-3f) {
+            _spinResetWarned = true;
+            SKSE::log::warn("[회전] 'NPC' 노드의 회전이 우리가 쓴 값과 다름. 3D가 새로 만들어졌거나(장비 교체 등) "
+                            "다른 모드·엔진이 이 노드를 덮어쓴 것입니다. 회전이 보이지 않는다면 뒤쪽입니다.");
+        }
+        const float signedAngle = _config.spinClockwise ? -_spin.Angle() : _spin.Angle();
+        _spinApplied = Multiply(RotationAboutUp(signedAngle), _spinBase);
+        node->local.rotate = _spinApplied;
+        return finished;
+    }
+
+    // 끝난 채널링이 돌려 둔 몸의 방향을 되돌린다. 노드를 찾지 못하면 표시만 남겨 두고 나중에 다시 시도한다.
+    void Channel::RestoreSpinNode(RE::PlayerCharacter* player)
+    {
+        if (!_spinRestorePending) {
+            return;
+        }
+        auto* node = FindSpinNode(player);
+        if (!node) {
+            return;
+        }
+        // 노드가 우리가 마지막으로 쓴 값을 그대로 갖고 있을 때만 되돌린다.
+        // 값이 다르면 3D가 새로 만들어져 이미 기본값이거나 다른 것이 써 넣은 것이므로 건드리지 않는다.
+        if (MaxDifference(node->local.rotate, _spinApplied) <= 1e-3f) {
+            node->local.rotate = _spinBase;
+        }
+        _spinRestorePending = false;
+    }
+
+    // 플레이어 둘레의 적에게 근접 타격을 한 번씩 적용한다.
+    void Channel::AreaHit(RE::PlayerCharacter* player)
+    {
+        auto* lists = RE::ProcessLists::GetSingleton();
+        if (!lists) {
+            return;
+        }
+        const auto origin = player->GetPosition();
+        const float radiusSquared = _config.hitRadius * _config.hitRadius;
+        std::vector<RE::NiPointer<RE::Actor>> targets;
+        for (const auto& handle : lists->highActorHandles) {
+            auto actor = handle.get();
+            if (!actor || actor.get() == player) {
+                continue;
+            }
+            if (actor->IsDead() || !actor->Is3DLoaded() || actor->IsGhost() || actor->IsPlayerTeammate() ||
+                actor->IsInKillMove()) {
+                continue;
+            }
+            if (!_config.hitNeutral && !actor->IsHostileToActor(player)) {
+                continue;
+            }
+            const auto offset = actor->GetPosition() - origin;
+            if (std::abs(offset.z) > kHitHeight || offset.x * offset.x + offset.y * offset.y > radiusSquared) {
+                continue;
+            }
+            targets.push_back(std::move(actor));
+        }
+        if (targets.empty()) {
+            return;
+        }
+        // 대상 목록을 먼저 만든 뒤에 타격한다. 타격이 액터 목록을 바꿀 수 있기 때문이다.
+        const DamageScale scale(player, _config.hitDamageMult);
+        for (const auto& target : targets) {
+            kDealDamage(player, target.get(), nullptr, false);
+        }
+    }
+
     void Channel::CycleMode()
     {
         if (_active) {
             if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-                Stop(player, "방식 전환", true);
+                Stop(player, "클립 전환", true);
             }
         }
 
-        // OAR+강공격 -> 인젝터+강공격 -> OAR+길게 -> 인젝터+길게 -> 처음으로
-        if (_config.motion == Motion::kOar) {
-            _config.motion = Motion::kInjector;
-        } else {
-            _config.motion = Motion::kOar;
-            _config.trigger = _config.trigger == Trigger::kPowerAttack ? Trigger::kHold : Trigger::kPowerAttack;
-        }
+        // 회전 클립의 번호만 바꾼다. 모션 쪽과 시작 계기는 INI로만 정한다.
+        _config.clipVariant = _config.clipVariant >= _config.clipVariants ? 1 : _config.clipVariant + 1;
 
-        std::string message = "[PoE Proto] 모션: ";
-        message += MotionLabel(_config.motion);
-        message += _config.trigger == Trigger::kPowerAttack ? " / 시작: 강공격 가로채기" : " / 시작: 길게 누르기";
+        std::string message = "[PoE Proto] 회전 클립 ";
+        message += std::to_string(_config.clipVariant);
+        message += "/";
+        message += std::to_string(_config.clipVariants);
         if (const char* backend = BackendBlockReason()) {
             message += " (동작하지 않음: ";
             message += backend;
@@ -522,6 +776,29 @@ namespace poe
         }
         RE::SendHUDMessage::ShowHUDMessage(message.c_str());
         SKSE::log::info("{}", message);
+    }
+
+    void Channel::OnHit(const RE::TESHitEvent& event)
+    {
+        // 적중 처리는 어느 스레드에서든 올 수 있으므로 잠그지 않고 원자 값만 읽고 쓴다.
+        const auto* cause = event.cause.get();
+        if (!cause || !cause->IsPlayerRef()) {
+            return;
+        }
+        const bool channeling = _hitActive.load();
+        if (channeling) {
+            _hits.fetch_add(1);
+        }
+        if (!_logHits.load()) {
+            return;
+        }
+        auto* target = event.target.get();
+        const char* name = target ? target->GetDisplayFullName() : nullptr;
+        SKSE::log::info("[타격] 대상 '{}'({:08X}) 수단 {:08X}{}{} / {}", name ? name : "?",
+            target ? target->GetFormID() : 0, event.source,
+            event.flags.any(RE::TESHitEvent::Flag::kPowerAttack) ? " 강공격" : "",
+            event.flags.any(RE::TESHitEvent::Flag::kHitBlocked) ? " 막힘" : "",
+            channeling ? fmt::format("채널링 중(클립 {}번)", _hitVariant.load()) : std::string("채널링 아님"));
     }
 
     void Channel::OnLoad(bool playerReady)
@@ -537,6 +814,7 @@ namespace poe
             Stop(player, playerReady ? "세이브를 불러옴" : "세이브 로드 시작", false);
         }
         _active = false;
+        _hitActive.store(false);
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
         _needRelease = false;
@@ -547,7 +825,7 @@ namespace poe
         if (!playerReady) {
             return;
         }
-        // 회전 중에 저장된 세이브는 Variable09가 1로 남아 있다. 불러온 직후에는 항상 꺼 둔다.
+        // 회전 중에 저장된 세이브는 Variable09가 클립 번호로 남아 있다. 불러온 직후에는 항상 꺼 둔다.
         auto* owner = player ? player->AsActorValueOwner() : nullptr;
         if (owner && owner->GetActorValue(kOarValue) != 0.0f) {
             owner->SetActorValue(kOarValue, 0.0f);

@@ -52,6 +52,7 @@ namespace
             poe::InstallInputSink();
             break;
         case SKSE::MessagingInterface::kDataLoaded:
+            poe::InstallHitSink();
             {
                 const bool oar = REX::W32::GetModuleHandleW(kOarModule) != nullptr;
                 const bool injector = REX::W32::GetModuleHandleW(kInjectorModule) != nullptr;
@@ -83,10 +84,15 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     for (const auto& warning : warnings) {
         SKSE::log::warn("설정: {}", warning);
     }
-    SKSE::log::info("설정: Enabled={} Motion={} Trigger={} HoldSeconds={:.2f} MaxSeconds={:.0f} CycleKey=0x{:02X} "
-                    "ExtraChannelKey=0x{:02X} LogEvents={}",
+    SKSE::log::info("설정: Enabled={} Motion={} Trigger={} HoldSeconds={:.2f} MinSeconds={:.2f} MaxSeconds={:.0f} CycleKey=0x{:02X} "
+                    "ExtraChannelKey=0x{:02X} ClipVariant={}/{} LogEvents={}",
         config.enabled, poe::MotionName(config.motion), poe::TriggerName(config.trigger), config.holdSeconds,
-        config.maxSeconds, config.cycleKey, config.extraChannelKey, config.logEvents);
+        config.minSeconds, config.maxSeconds, config.cycleKey, config.extraChannelKey, config.clipVariant,
+        config.clipVariants, config.logEvents);
+    SKSE::log::info("설정: SpinByDll={} SpinClockwise={} HitsByDll={} HitNeutral={} HitsPerSecond={:.2f} TurnsPerHit={:.2f} "
+                    "HitRadius={:.0f} HitDamageMult={:.2f}",
+        config.spinByDll, config.spinClockwise, config.hitsByDll, config.hitNeutral, config.hitsPerSecond,
+        config.turnsPerHit, config.hitRadius, config.hitDamageMult);
 
     if (!config.enabled) {
         SKSE::log::info("INI에서 꺼져 있어 아무 훅도 설치하지 않음");

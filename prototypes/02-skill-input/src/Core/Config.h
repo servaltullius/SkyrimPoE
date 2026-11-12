@@ -29,8 +29,21 @@ namespace poe
         Trigger       trigger = Trigger::kPowerAttack;
         float         holdSeconds = 0.3f;
         float         maxSeconds = 60.0f;
+        float         minSeconds = 0.6f;     // 버튼을 일찍 떼도 이만큼은 돈다. 0 = 떼는 즉시 끝남
         std::uint32_t cycleKey = 0x44;       // 키보드 DirectInput 스캔 코드. 0x44 = F10, 0 = 쓰지 않음
         std::uint32_t extraChannelKey = 0;   // 강공격 전용 키를 따로 쓰는 환경용. 키보드 스캔 코드, 0 = 없음
+        std::uint32_t clipVariants = 1;      // OAR 방식에서 비교할 회전 클립의 가짓수(서브모드 수)
+        std::uint32_t clipVariant = 1;       // 처음에 쓸 클립 번호. 채널링 중 Variable09에 이 값을 넣는다
+
+        // OAR 방식에서 회전과 타격을 DLL이 맡는다(클립은 정지 자세).
+        bool  spinByDll = true;              // 스켈레톤의 NPC 노드를 매 프레임 돌린다
+        bool  spinClockwise = false;         // 위에서 볼 때 시계 방향으로 돌린다
+        bool  hitsByDll = true;              // 일정 주기로 주변의 적을 타격한다
+        bool  hitNeutral = false;            // 적대적이지 않은 액터도 타격한다(시험용)
+        float hitsPerSecond = 3.0f;          // 무기 속도 1.0일 때의 초당 타격 수. 실제 값은 무기 속도와 공격 속도 배율을 곱한다
+        float turnsPerHit = 0.75f;           // 타격 한 번에 도는 바퀴 수. 회전 속도 = 초당 타격 수 x 이 값
+        float hitRadius = 160.0f;            // 타격 반경(게임 단위)
+        float hitDamageMult = 0.5f;          // 타격 한 번의 피해 배율(무기의 평소 타격 대비)
         bool          logEvents = true;
     };
 
@@ -38,6 +51,8 @@ namespace poe
     inline constexpr float kMaxHoldSeconds = 2.0f;
     inline constexpr float kMinMaxSeconds = 1.0f;
     inline constexpr float kMaxMaxSeconds = 300.0f;
+    inline constexpr float kMaxMinSeconds = 10.0f;
+    inline constexpr std::uint32_t kMaxClipVariants = 9;
 
     // INI 본문을 읽어 설정을 만든다. 알 수 없는 키나 범위를 벗어난 값은 기본값을 유지하고 warnings에 사유를 남긴다.
     Config ParseConfig(std::string_view text, std::vector<std::string>& warnings);

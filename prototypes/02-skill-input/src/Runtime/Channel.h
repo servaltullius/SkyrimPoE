@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Core/Config.h"
+#include "Core/Spin.h"
 
 #include <RE/Skyrim.h>
 
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -36,6 +38,9 @@ namespace poe
 
         // 세이브 로드 직전(playerReady = false)과 로드·새 게임 직후(playerReady = true).
         void OnLoad(bool playerReady);
+
+        // 누군가 맞았을 때. 플레이어가 때린 것만 세고 기록한다. 어느 스레드에서든 불릴 수 있다.
+        void OnHit(const RE::TESHitEvent& event);
 
         // 이 DLL이 직접 보내는 애니메이션 이벤트가 훅을 지나는 중인지.
         static bool IsSending();
@@ -75,6 +80,9 @@ namespace poe
         void Start(RE::PlayerCharacter* player, Key key, const char* why);
         void Stop(RE::PlayerCharacter* player, const char* why, bool needRelease);
         void CycleMode();
+        bool AdvanceSpin(RE::PlayerCharacter* player, float frame);
+        void RestoreSpinNode(RE::PlayerCharacter* player);
+        void AreaHit(RE::PlayerCharacter* player);
         void LogEvent(std::string_view name, std::string_view outcome);
         void FlushEventLog();
 
@@ -94,6 +102,25 @@ namespace poe
         bool              _injectorChecked = false;  // 인젝터 동작이 실제로 시작됐는지 한 번 확인했는가
         bool              _needRelease = false;      // 조건 때문에 끝났으면 버튼을 한 번 떼야 다시 시작한다
         Key               _pendingStart = Key::kNone;
+
+        // 회전과 주기 타격(OAR 방식에서 DLL이 맡을 때). 메인 스레드에서만 쓴다.
+        Clock::time_point _lastTick{};
+        bool              _spinning = false;        // 이번 채널링에서 DLL이 몸을 돌리는가
+        bool              _spinResetWarned = false;
+        bool              _spinRestorePending = false;  // 끝날 때 노드를 못 찾아 되돌리지 못했는가
+        SpinClock         _spin;                    // 돈 각도와 마무리 상태
+        float             _turnsPerSecond = 1.0f;
+        RE::NiMatrix3     _spinBase;                // 시작할 때 NPC 노드의 회전. 끝나면 이 값으로 되돌린다
+        RE::NiMatrix3     _spinApplied;             // 마지막으로 써 넣은 회전(다른 것이 덮어쓰는지 확인용)
+        bool              _hitting = false;         // 이번 채널링에서 DLL이 타격을 내는가
+        Clock::duration   _hitInterval{};
+        Clock::time_point _nextHitAt{};
+
+        // 적중 집계. OnHit이 잠금 없이 읽고 쓴다.
+        std::atomic<bool> _hitActive{ false };  // 채널링 중인가
+        std::atomic<int>  _hitVariant{ 1 };     // 그 채널링의 클립 번호
+        std::atomic<int>  _hits{ 0 };           // 그 채널링에서 플레이어가 맞힌 횟수
+        std::atomic<bool> _logHits{ true };
 
         std::string _lastEventName;
         std::string _lastEventOutcome;
