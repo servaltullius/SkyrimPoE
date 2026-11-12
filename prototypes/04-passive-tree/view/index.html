@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PoE Proto 4: 패시브 트리 렌더</title>
+<link rel="stylesheet" href="tree.css">
+</head>
+<body>
+<canvas id="tree"></canvas>
+
+<div id="bar">
+  <input id="search" type="text" placeholder="검색 (이름, 효과, 종류: 키스톤 / 주요 / 마스터리 / 주얼)" autocomplete="off" spellcheck="false">
+  <span id="search-count"></span>
+  <button id="btn-mode" type="button" title="그리는 방식을 바꿉니다">방식</button>
+  <button id="btn-alloc" type="button" title="임의의 경로로 123포인트를 찍습니다">123포인트 찍기</button>
+  <button id="btn-clear" type="button" title="찍은 노드를 모두 지웁니다">지우기</button>
+  <button id="btn-fit" type="button" title="전체가 보이게 맞춥니다">전체 보기</button>
+  <button id="btn-bench" type="button" title="정해진 경로로 화면을 움직이며 프레임을 잽니다">측정</button>
+</div>
+
+<div id="stats"></div>
+<div id="tooltip" hidden></div>
+<div id="message" hidden></div>
+<pre id="bench" hidden></pre>
+
+<script src="data/tree-data.js"></script>
+<script src="tree.js"></script>
+</body>
+</html>

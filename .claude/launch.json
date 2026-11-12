@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "passive-tree",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-I", "-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", "prototypes/04-passive-tree/out/site"],
+      "port": 8765
+    }
+  ]
+}
