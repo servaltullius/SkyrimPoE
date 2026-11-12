@@ -140,6 +140,20 @@ namespace poe
         _injectorAvailable = injectorAvailable;
     }
 
+    const char* Channel::KeyLabel(Key key)
+    {
+        switch (key) {
+        case Key::kRight:
+            return "오른손 공격 버튼";
+        case Key::kLeft:
+            return "왼손 공격·방어 버튼";
+        case Key::kExtra:
+            return "추가 채널 키";
+        default:
+            return "알 수 없는 버튼";
+        }
+    }
+
     // 지금 고른 모션 쪽을 쓸 수 없는 이유. 쓸 수 있으면 nullptr.
     const char* Channel::BackendBlockReason() const
     {
@@ -257,16 +271,21 @@ namespace poe
             return;
         }
 
+        const auto now = Clock::now();
         if (!pressed) {
             if (const auto key = FindDown(device, idCode); key != Key::kNone) {
                 auto& state = State(key);
+                if (_config.logEvents) {
+                    FlushEventLog();
+                    SKSE::log::info("[입력] {} 뗌 / {:.2f}초", KeyLabel(key),
+                        std::chrono::duration<float>(now - state.downAt).count());
+                }
                 state.down = false;
                 state.eligible = false;
             }
             return;
         }
 
-        const auto now = Clock::now();
         if (!first) {
             if (const auto key = FindDown(device, idCode); key != Key::kNone) {
                 State(key).lastSeen = now;
@@ -292,6 +311,11 @@ namespace poe
         state.idCode = idCode;
         state.downAt = now;
         state.lastSeen = now;
+        if (_config.logEvents) {
+            FlushEventLog();
+            SKSE::log::info("[입력] {} 누름 (장치 {}, 코드 {}){}", KeyLabel(key), static_cast<int>(device), idCode,
+                state.eligible ? "" : " / 게임이 멈춘 상태라 채널링 대상에서 제외");
+        }
     }
 
     bool Channel::OnNotify(const RE::BSFixedString& event)
@@ -447,12 +471,12 @@ namespace poe
             SetOarValue(player, 1.0f);
             // 누르는 순간 시작된 일반 공격을 끊어 이동 상태로 돌려보낸다. 회전 모션은 이동 클립 자리에 재생된다.
             const bool accepted = Send(player, kAttackStopEvent);
-            SKSE::log::info("[채널링] 시작({}, {}): Variable09 = 1, attackStop {}", MotionLabel(_activeMotion), why,
-                accepted ? "받아들여짐" : "거부됨(공격 중이 아니었을 수 있음)");
+            SKSE::log::info("[채널링] 시작({}, {}, {}): Variable09 = 1, attackStop {}", MotionLabel(_activeMotion), why,
+                KeyLabel(key), accepted ? "받아들여짐" : "거부됨(공격 중이 아니었을 수 있음)");
         } else {
             const bool accepted = Send(player, kInjectorStartEvent);
-            SKSE::log::info("[채널링] 시작({}, {}): '{}' {}", MotionLabel(_activeMotion), why, kInjectorStartEvent,
-                accepted ? "받아들여짐" : "거부됨");
+            SKSE::log::info("[채널링] 시작({}, {}, {}): '{}' {}", MotionLabel(_activeMotion), why, KeyLabel(key),
+                kInjectorStartEvent, accepted ? "받아들여짐" : "거부됨");
         }
     }
 

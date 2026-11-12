@@ -70,6 +70,7 @@ namespace poe
         bool            AnyChannelKeyDown() const;
         void            ExpireStaleKeys(Clock::time_point now);
         const char*     BackendBlockReason() const;
+        static const char* KeyLabel(Key key);
 
         void Start(RE::PlayerCharacter* player, Key key, const char* why);
         void Stop(RE::PlayerCharacter* player, const char* why, bool needRelease);
