@@ -1,15 +1,18 @@
 // PoE Proto 4: 패시브 트리 화면을 Prisma UI 뷰로 띄우는 시험용 플러그인.
-// 하는 일은 셋뿐이다. 뷰를 하나 만들고, 키로 열고 닫고, 화면이 보내는 측정 결과를 로그에 남긴다.
+// 뷰를 하나 만들고, 키로 열고 닫고, 화면이 보내는 측정 결과를 로그에 남긴다.
+// 화면이 열려 있는 동안에는 키보드 입력이 게임과 다른 모드로 새지 않게 막고, SimpleIME가 있으면 글자 입력을 이어 준다(TextBridge).
 // 키를 누를 때마다 "닫힘 → 게임을 멈추고 열기 → 게임을 돌린 채 열기 → 닫힘"으로 넘어가며,
 // 단계마다 처음 열릴 때 화면이 측정을 스스로 돌리고, 멈춘 단계의 측정이 끝나면 화면이 다음 단계로 넘겨 달라고 알려 온다.
 // 게임을 한 번 켜서 두 경우의 숫자를 모두 얻으려는 것이다. 측정 도중에 넘어가면 화면이 하던 측정을 버리고 새 단계에서 다시 잰다.
 
 #include "PrismaUIApi.h"
+#include "TextBridge.h"
 
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
 
 #include <atomic>
+#include <bitset>
 #include <charconv>
 #include <exception>
 #include <filesystem>
@@ -24,16 +27,19 @@ namespace
     constexpr auto kConfigPath = "Data/SKSE/Plugins/PoEProtoTree.ini";
     constexpr auto kViewPath = "PoEProtoTree/index.html";
     constexpr auto kReportListener = "poeTreeReport";    // 화면 → DLL: 측정 결과와 오류
-    constexpr auto kCommandListener = "poeTreeCommand";  // 화면 → DLL: "next:<보낼 때의 단계>", "close"
+    constexpr auto kCommandListener = "poeTreeCommand";  // 화면 → DLL: "next:<보낼 때의 단계>", "close", "text:on", "text:off"
     constexpr auto kShowFunction = "poeTreeOnShow";      // DLL → 화면: 열렸음을 알림(인자는 단계 이름)
     constexpr auto kHideFunction = "poeTreeOnHide";      // DLL → 화면: 닫혔음을 알림(화면이 하던 일을 멈춘다)
     constexpr auto kOptionFunction = "poeTreeSetOption"; // DLL → 화면: "이름=값" 꼴의 설정 하나
+    constexpr auto kTextFunction = "poeTreeText";        // DLL → 화면: 입력 다리로 받은 글자(UTF-8)
+    constexpr auto kKeyFunction = "poeTreeKey";          // DLL → 화면: 입력 다리로 받은 편집 키의 이름
 
     struct Settings
     {
         std::uint32_t toggleKey = 0x40;  // 키보드 DirectInput 스캔 코드. 0x40 = F6
         bool          autoBench = true;  // 단계마다 처음 열릴 때 화면이 측정을 스스로 돌린다
         bool          logSearchInput = false;  // 검색창에 들어온 글자와 조합 상태를 로그에 남긴다(입력 문제를 가를 때)
+        TextBridge::Mode imeBridge = TextBridge::Mode::kAuto;  // SimpleIME와 함께 쓰는 입력 다리
     };
 
     enum class Stage
@@ -48,6 +54,10 @@ namespace
     PRISMA_UI_API::PrismaView     g_view = 0;
     std::atomic<bool>             g_domReady{ false };
     Stage                         g_stage = Stage::kClosed;  // 메인 스레드에서만 읽고 쓴다
+    bool                          g_searchFocused = false;   // 화면의 검색창에 포커스가 있는가. 메인 스레드에서만 읽고 쓴다
+    bool                          g_inputHooked = false;     // 입력 이벤트를 돌리는 자리에 끼어들었는가
+    // 눌림을 다른 쪽에 넘기지 않은 키(스캔 코드). 그 키를 뗄 때까지의 이벤트를 모두 넘기지 않는다. 메인 스레드에서만 읽고 쓴다
+    std::bitset<256>              g_hiddenKeys;
 
     bool InitializeLogging()
     {
@@ -138,6 +148,16 @@ namespace
                 ReadBool(key, value, settings.autoBench);
             } else if (key == "LogSearchInput") {
                 ReadBool(key, value, settings.logSearchInput);
+            } else if (key == "ImeBridge") {
+                if (value == "auto") {
+                    settings.imeBridge = TextBridge::Mode::kAuto;
+                } else if (value == "on") {
+                    settings.imeBridge = TextBridge::Mode::kOn;
+                } else if (value == "off") {
+                    settings.imeBridge = TextBridge::Mode::kOff;
+                } else {
+                    SKSE::log::warn("설정: ImeBridge '{}'는 auto, on, off 가운데 하나가 아니어서 기본값 유지", value);
+                }
             } else {
                 SKSE::log::warn("설정: 알 수 없는 키 '{}'", key);
             }
@@ -171,6 +191,9 @@ namespace
     // 메인 스레드에서. 뷰를 닫는다. 이미 닫혀 있으면 아무 일도 하지 않는다.
     void CloseView()
     {
+        // 검색창에 포커스를 둔 채로 닫아도 게임의 글자 입력 상태가 남지 않게 먼저 되돌린다(남으면 게임의 단축키가 먹지 않는다).
+        TextBridge::SetTextEntry(false);
+        g_searchFocused = false;
         if (!ViewUsable() || g_stage == Stage::kClosed) {
             g_stage = Stage::kClosed;
             return;
@@ -187,6 +210,7 @@ namespace
     }
 
     void CreateView();
+    bool InstallInputHook();
 
     // 메인 스레드에서. 다음 단계로 넘어간다: 닫힘 → 멈추고 열기 → 돌린 채 열기 → 닫힘.
     void AdvanceStage()
@@ -213,6 +237,11 @@ namespace
             return;
         }
         const bool pause = g_stage == Stage::kClosed;
+        if (!g_inputHooked) {
+            // 처음 열 때 끼어든다. 같은 자리에 끼어드는 다른 모드(휠러 같은 ImGui 화면들)는 나중에 끼어든 쪽이 입력을 먼저 받으므로,
+            // 게임을 시작할 때 끼어들면 그 모드들이 우리보다 먼저 키를 받는다(10차 시험: 트리 화면에서 G를 누르자 휠러가 열림).
+            g_inputHooked = InstallInputHook();
+        }
         if (g_api->HasFocus(g_view)) {
             g_api->Unfocus(g_view);
         }
@@ -275,8 +304,36 @@ namespace
             QueueOnMain([] { AdvanceFrom(Stage::kLive); });
         } else if (command == "close") {
             QueueOnMain([] { CloseView(); });
+        } else if (command == "text:on") {
+            // 검색창이 포커스를 받았다. 닫힌 뒤에 늦게 도착한 것이면 켜지 않는다.
+            QueueOnMain([] {
+                if (g_stage != Stage::kClosed) {
+                    g_searchFocused = true;
+                    TextBridge::SetTextEntry(true);
+                }
+            });
+        } else if (command == "text:off") {
+            QueueOnMain([] {
+                g_searchFocused = false;
+                TextBridge::SetTextEntry(false);
+            });
         } else {
             SKSE::log::warn("화면이 모르는 명령을 보냄: '{}'", command);
+        }
+    }
+
+    // 입력 다리가 받은 글자와 편집 키를 화면으로 넘긴다. 메뉴의 메시지 처리(메인 스레드)에서 불린다.
+    void OnBridgeText(const char* utf8Text)
+    {
+        if (ViewUsable() && g_stage != Stage::kClosed) {
+            g_api->InteropCall(g_view, kTextFunction, utf8Text);
+        }
+    }
+
+    void OnBridgeKey(const char* keyName)
+    {
+        if (ViewUsable() && g_stage != Stage::kClosed) {
+            g_api->InteropCall(g_view, kKeyFunction, keyName);
         }
     }
 
@@ -302,7 +359,130 @@ namespace
         SKSE::log::info("Prisma UI 뷰를 만듦: view={}, path={}, 순서 {}", g_view, kViewPath, g_api->GetOrder(g_view));
     }
 
-    // 키 입력을 읽기만 한다. 이벤트를 고치거나 멈추지 않는다.
+    // 메인 스레드에서(게임의 입력 처리 중). 이번에 들어온 입력 이벤트에서 우리가 쓸 키를 처리한다.
+    void HandleInput(RE::InputEvent* events)
+    {
+        constexpr std::uint32_t kEscape = 0x01;
+        for (auto* event = events; event; event = event->next) {
+            const auto* button = event->AsButtonEvent();
+            if (!button || button->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
+                continue;
+            }
+            const auto code = button->GetIDCode();
+            if (code == g_settings.toggleKey) {
+                if (button->IsDown()) {
+                    QueueOnMain([] { AdvanceStage(); });
+                }
+            } else if (g_stage == Stage::kClosed) {
+                continue;
+            } else if (TextBridge::TextEntryActive()) {
+                // 글자 입력칸이 열린 동안의 편집 키(지우기, 방향키, Enter, Esc 등)는 입력 다리가 화면으로 넘긴다.
+                // 글자는 SimpleIME가 보내 주지만 이런 키는 게임의 입력으로만 오기 때문이다.
+                if (g_settings.logSearchInput && button->IsDown()) {
+                    // 한/영 전환 같은 키가 눌렸는지를 로그로 가를 수 있게 남긴다.
+                    SKSE::log::info("[입력 다리] 게임 입력의 키 0x{:02X}", code);
+                }
+                TextBridge::OnGameKey(code, button->IsPressed(), button->HeldDuration());
+            } else if (code == kEscape && button->IsDown() && !g_searchFocused) {
+                // 검색창 밖에서의 Esc는 화면을 닫는다. Prisma UI가 키를 직접 받는 환경에서는 화면도 같은 일을 하지만,
+                // SimpleIME가 켜져 있으면 화면에는 키가 가지 않으므로 여기서도 닫는다(두 번 닫아도 한 번만 반영된다).
+                QueueOnMain([] { CloseView(); });
+            }
+        }
+    }
+
+    // 이 이벤트를 다른 쪽에 넘기지 않을 것인가. 트리 화면이 열려 있는 동안 새로 눌린 키는, 눌림부터 뗌까지를 통째로 넘기지 않는다.
+    // 눌림만 빼고 뗌을 넘기면 뗄 때 반응하는 단축키가 그대로 돌고, 화면을 닫은 뒤에도 아직 누르고 있는 키가 게임에 들어간다.
+    // 화면을 열기 전부터 누르고 있던 키는 건드리지 않는다(눌림이 이미 넘어갔으므로 뗌도 넘겨야 눌린 채로 남지 않는다).
+    bool HideFromOthers(const RE::InputEvent& event)
+    {
+        if (event.GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
+            return false;
+        }
+        const bool open = g_stage != Stage::kClosed;
+        if (const auto* button = event.AsButtonEvent()) {
+            const auto code = button->GetIDCode();
+            if (code >= g_hiddenKeys.size()) {
+                return false;
+            }
+            if (g_hiddenKeys.test(code)) {
+                if (!button->IsPressed()) {
+                    g_hiddenKeys.reset(code);
+                }
+                return true;
+            }
+            if (open && button->IsDown()) {
+                g_hiddenKeys.set(code);
+                return true;
+            }
+            return false;
+        }
+        return open && event.GetEventType() == RE::INPUT_EVENT_TYPE::kChar;
+    }
+
+    // 게임이 입력 이벤트를 듣는 쪽들(게임의 메뉴·조작 처리, SKSE의 Papyrus 키 이벤트, 다른 플러그인)에게 돌리는 자리에 끼어든다.
+    // 우리가 쓸 키를 먼저 처리하고, 트리 화면이 열려 있으면 키보드 입력을 빼고 돌린다.
+    // 빼지 않으면 검색창에 친 글자가 다른 모드의 단축키로도 들어가 그 모드의 창이 열린다(9차 시험: '='를 치자 다른 화면이 포커스를 가져감).
+    // Prisma UI는 화면에 포커스가 있어도 이 이벤트들을 막지 않는다. 마우스와 게임패드는 Prisma UI가 이 길로 받으므로 건드리지 않는다.
+    struct InputDispatchHook
+    {
+        static void thunk(RE::BSTEventSource<RE::InputEvent*>* a_source, RE::InputEvent* const* a_events)
+        {
+            if (!a_events || !*a_events) {
+                func(a_source, a_events);
+                return;
+            }
+            HandleInput(*a_events);
+            if (g_stage == Stage::kClosed && g_hiddenKeys.none()) {
+                func(a_source, a_events);
+                return;
+            }
+            // 남길 이벤트만 다시 잇는다. 이 목록은 게임이 입력을 읽을 때마다 새로 만드는 것이라 이어 붙인 것이 다음으로 넘어가지 않는다.
+            RE::InputEvent* head = nullptr;
+            RE::InputEvent* tail = nullptr;
+            for (auto* event = *a_events; event;) {
+                auto* next = event->next;
+                if (!HideFromOthers(*event)) {
+                    if (tail) {
+                        tail->next = event;
+                    } else {
+                        head = event;
+                    }
+                    tail = event;
+                }
+                event = next;
+            }
+            if (tail) {
+                tail->next = nullptr;
+            }
+            RE::InputEvent* const remaining = head;
+            func(a_source, &remaining);
+        }
+
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
+    // BSInputDeviceManager::PollInputDevices 안에서 이벤트를 돌리는 호출. 여러 UI 플러그인이 같은 자리에 끼어든다.
+    // 실행 파일이 암호화돼 있어 미리 확인하지 못했으므로, 실행 중에 그 자리가 호출 명령(E8)인지 보고 아니면 끼어들지 않는다.
+    // 메인 스레드에서 부른다(그 호출도 메인 스레드에서 실행되므로, 고치는 동안 실행 중일 수 없다).
+    bool InstallInputHook()
+    {
+        const REL::Relocation<std::uintptr_t> target{ RELOCATION_ID(67315, 68617), 0x7B };
+        const auto address = target.address();
+        if (*reinterpret_cast<const std::uint8_t*>(address) != 0xE8) {
+            static bool reported = false;
+            if (!reported) {
+                reported = true;
+                SKSE::log::error("입력 이벤트를 돌리는 호출을 찾지 못함(그 자리가 호출 명령이 아님). 키 입력을 막지 않고 읽기만 합니다.");
+            }
+            return false;
+        }
+        InputDispatchHook::func = SKSE::GetTrampoline().write_call<5>(address, InputDispatchHook::thunk);
+        SKSE::log::info("입력 이벤트를 돌리는 호출에 끼어듦: 트리 화면이 열려 있는 동안 키보드 입력을 다른 쪽에 넘기지 않습니다.");
+        return true;
+    }
+
+    // 끼어들기 전(트리 화면을 처음 열기 전)과 끼어들지 못했을 때 키 입력을 읽는다. 읽기만 하고 막지는 못한다.
     class InputSink final : public RE::BSTEventSink<RE::InputEvent*>
     {
     public:
@@ -314,17 +494,9 @@ namespace
 
         RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_events, RE::BSTEventSource<RE::InputEvent*>*) override
         {
-            if (!a_events) {
-                return RE::BSEventNotifyControl::kContinue;
-            }
-            for (auto* event = *a_events; event; event = event->next) {
-                const auto* button = event->AsButtonEvent();
-                if (!button || button->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
-                    continue;
-                }
-                if (button->GetIDCode() == g_settings.toggleKey && button->IsDown()) {
-                    QueueOnMain([] { AdvanceStage(); });
-                }
+            // 끼어든 뒤에는 그쪽에서 처리한다. 여기서도 하면 같은 키를 두 번 처리한다.
+            if (a_events && !g_inputHooked) {
+                HandleInput(*a_events);
             }
             return RE::BSEventNotifyControl::kContinue;
         }
@@ -348,6 +520,7 @@ namespace
             }
             break;
         case SKSE::MessagingInterface::kDataLoaded:
+            TextBridge::Initialize({ .mode = g_settings.imeBridge, .logEvents = g_settings.logSearchInput }, OnBridgeText, OnBridgeKey);
             CreateView();
             break;
         case SKSE::MessagingInterface::kPreLoadGame:
@@ -364,7 +537,7 @@ namespace
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse)
 {
-    SKSE::Init(skse);
+    SKSE::Init(skse, { .trampoline = true, .trampolineSize = 14 });
     InitializeLogging();
 
     g_settings = LoadSettings();

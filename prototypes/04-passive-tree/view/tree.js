@@ -877,25 +877,125 @@
     reportInput("입력값 '" + elSearch.value + "', 결과 " + matchList.length + '개');
   });
   elSearch.addEventListener('compositionend', runSearch);
-  elSearch.addEventListener('focus', function () { renderIme(); reportInput('포커스를 받음'); });
-  elSearch.addEventListener('blur', function () { elIme.hidden = true; reportInput('포커스를 잃음'); });
+  // 검색창이 포커스를 받고 잃는 것을 게임 쪽에 알린다. 게임 쪽은 이것으로 Esc의 뜻(검색창에서 나오기 / 화면 닫기)을 가르고,
+  // SimpleIME와 함께 쓸 때는 그동안 글자 입력칸이 열렸다고 게임에 알려 받은 글자와 편집 키를 poeTreeText, poeTreeKey로 넘겨 준다.
+  elSearch.addEventListener('focus', function () {
+    renderIme();
+    reportInput('포커스를 받음');
+    sendCommand('text:on');
+  });
+  elSearch.addEventListener('blur', function () {
+    elIme.hidden = true;
+    reportInput('포커스를 잃음');
+    sendCommand('text:off');
+  });
+
+  // 검색 결과 사이를 차례로 옮겨 다닌다(검색창의 Enter).
+  function jumpToNextMatch() {
+    if (!matchList.length) { return; }
+    matchCursor = (matchCursor + 1) % matchList.length;
+    var index = matchList[matchCursor];
+    camera.x = nodeX[index];
+    camera.y = nodeY[index];
+    camera.scale = Math.max(camera.scale, 0.3);
+    clampCamera();
+    dirty = true;
+  }
+
+  // 검색어를 지우고 검색창에서 나온다(검색창의 Esc).
+  function leaveSearch() {
+    elSearch.value = '';
+    runSearch();
+    elSearch.blur();
+  }
+
   elSearch.addEventListener('keydown', function (event) {
     // 조합 중의 Enter, Esc, 방향키는 입력기의 것이다. 여기서 받으면 조합이 끝나기 전에 검색이 넘어가거나 지워진다.
     if (imeBusy() || event.isComposing) { return; }
-    if (event.key === 'Enter' && matchList.length) {
-      matchCursor = (matchCursor + 1) % matchList.length;
-      var index = matchList[matchCursor];
-      camera.x = nodeX[index];
-      camera.y = nodeY[index];
-      camera.scale = Math.max(camera.scale, 0.3);
-      clampCamera();
-      dirty = true;
+    if (event.key === 'Enter') {
+      jumpToNextMatch();
     } else if (event.key === 'Escape') {
-      elSearch.value = '';
-      runSearch();
-      elSearch.blur();
+      leaveSearch();
     }
   });
+
+  // 검색창의 선택 범위. 엔진이 알려 주지 않으면 끝으로 본다.
+  function searchSelection() {
+    var length = elSearch.value.length;
+    var start = typeof elSearch.selectionStart === 'number' ? elSearch.selectionStart : length;
+    var end = typeof elSearch.selectionEnd === 'number' ? elSearch.selectionEnd : start;
+    return { start: Math.min(start, end), end: Math.max(start, end) };
+  }
+
+  // 검색창의 [start, end) 를 text로 바꾸고 커서를 그 뒤에 둔다. 그리고 다시 찾는다.
+  function replaceSearchRange(start, end, text) {
+    var value = elSearch.value;
+    elSearch.value = value.slice(0, start) + text + value.slice(end);
+    var caret = start + text.length;
+    try { elSearch.setSelectionRange(caret, caret); } catch (error) { /* 선택 범위를 못 정하는 엔진 */ }
+    runSearch();
+    reportInput("입력값 '" + elSearch.value + "', 결과 " + matchList.length + '개 (입력 다리)');
+  }
+
+  // 커서 옆의 글자 하나의 길이(UTF-16 단위). 대행 문자 쌍은 2.
+  function charLengthBefore(value, at) {
+    if (at <= 0) { return 0; }
+    var low = value.charCodeAt(at - 1);
+    var high = at >= 2 ? value.charCodeAt(at - 2) : 0;
+    return (low >= 0xDC00 && low <= 0xDFFF && high >= 0xD800 && high <= 0xDBFF) ? 2 : 1;
+  }
+
+  function charLengthAfter(value, at) {
+    if (at >= value.length) { return 0; }
+    var high = value.charCodeAt(at);
+    var low = at + 1 < value.length ? value.charCodeAt(at + 1) : 0;
+    return (high >= 0xD800 && high <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) ? 2 : 1;
+  }
+
+  // DLL이 부른다. 입력 다리로 받은 글자를 검색창의 커서 자리에 넣는다. 검색창에 포커스가 없으면 버린다.
+  window.poeTreeText = function (argument) {
+    var text = String(argument || '');
+    if (!text || document.activeElement !== elSearch) { return; }
+    var selection = searchSelection();
+    replaceSearchRange(selection.start, selection.end, text);
+  };
+
+  // DLL이 부른다. 입력 다리로 받은 편집 키. 창 메시지로 키가 오지 않는 환경에서 검색창을 고칠 수 있게 한다.
+  window.poeTreeKey = function (argument) {
+    var key = String(argument || '');
+    if (document.activeElement !== elSearch) { return; }
+    var value = elSearch.value;
+    var selection = searchSelection();
+    var caret;
+    if (key === 'Backspace') {
+      if (selection.start !== selection.end) {
+        replaceSearchRange(selection.start, selection.end, '');
+      } else if (selection.start > 0) {
+        replaceSearchRange(selection.start - charLengthBefore(value, selection.start), selection.start, '');
+      }
+    } else if (key === 'Delete') {
+      if (selection.start !== selection.end) {
+        replaceSearchRange(selection.start, selection.end, '');
+      } else if (selection.start < value.length) {
+        replaceSearchRange(selection.start, selection.start + charLengthAfter(value, selection.start), '');
+      }
+    } else if (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'Home' || key === 'End') {
+      if (key === 'Home') {
+        caret = 0;
+      } else if (key === 'End') {
+        caret = value.length;
+      } else if (key === 'ArrowLeft') {
+        caret = selection.start !== selection.end ? selection.start : selection.start - charLengthBefore(value, selection.start);
+      } else {
+        caret = selection.start !== selection.end ? selection.end : selection.end + charLengthAfter(value, selection.end);
+      }
+      try { elSearch.setSelectionRange(caret, caret); } catch (error) { /* 선택 범위를 못 정하는 엔진 */ }
+    } else if (key === 'Enter') {
+      jumpToNextMatch();
+    } else if (key === 'Escape') {
+      leaveSearch();
+    }
+  };
 
   // ---------------------------------------------------------------- 시험용 조작
   // 연결된 노드를 따라 임의로 123개를 찍는다. 실제 규칙(시작점, 전직)은 따르지 않고 찍힌 경로의 모양만 흉내 낸다.

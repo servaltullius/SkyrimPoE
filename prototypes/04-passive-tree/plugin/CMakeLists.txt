@@ -36,6 +36,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
     VERSION "${PROJECT_VERSION}"
     SOURCES
         src/main.cpp
+        src/TextBridge.cpp
 )
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 # CommonLib v9가 <Windows.h>를 끌어오므로 min/max 매크로를 막는다.
