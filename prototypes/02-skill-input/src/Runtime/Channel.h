@@ -81,6 +81,7 @@ namespace poe
         const KeyState& State(Key key) const;
         bool            IsDown(Key key) const;
         Key             HeldChannelKey() const;
+        bool            PowerInputAccepts(Key key) const;
         bool            AnyChannelKeyDown() const;
         void            ExpireStaleKeys(Clock::time_point now);
         const char*     BackendBlockReason() const;
@@ -91,8 +92,19 @@ namespace poe
         void CycleMode();
         bool AdvanceSpin(RE::PlayerCharacter* player, float frame);
         void RestoreSpinNode(RE::PlayerCharacter* player);
+        // 범위 안에 있었지만 대상에서 뺀 액터의 집계. 아군이 실제로 빠졌는지를 로그로 확인하는 데 쓴다.
+        struct Excluded
+        {
+            int         teammates = 0;   // 동료
+            int         notHostile = 0;  // 적대적이지 않음(HitNeutral이 꺼져 있을 때만 뺀다)
+            int         other = 0;       // 유령, 킬무브 중
+            std::string teammateNames;   // 뺀 동료의 이름(쉼표로 이음)
+
+            [[nodiscard]] std::string Describe() const;
+        };
+
         std::vector<RE::NiPointer<RE::Actor>> CollectTargets(RE::PlayerCharacter* player, const RE::NiPoint3& origin,
-            float radius) const;
+            float radius, Excluded& excluded) const;
         void AreaHit(RE::PlayerCharacter* player);
         void RollTrigger(RE::PlayerCharacter* player, RE::Actor* target);
         bool TriggerBySpell(RE::PlayerCharacter* player, RE::Actor* target);
@@ -136,6 +148,8 @@ namespace poe
         RE::BGSExplosion* _triggerExplosion = nullptr; // direct 방식에서 연출로 띄울 폭발. 없으면 연출 없이 피해만 준다
         std::mt19937      _random{ std::random_device{}() };
         Clock::time_point _nextTriggerAt{};
+        int               _misses = 0;  // 이번 채널링에서 대상을 잡았지만 타격이 들어가지 않은 횟수
+        std::string       _lastAreaCensus;  // 범위 타격의 대상·제외 집계를 마지막으로 남긴 내용(바뀔 때만 남긴다)
         int               _rolls = 0;   // 이번 채널링에서 치명타를 굴린 횟수
         int               _crits = 0;   // 그중 치명타로 나온 횟수
         int               _casts = 0;   // 이번 채널링의 발동 수(쿨다운에 걸린 치명타는 빠진다)
@@ -148,6 +162,9 @@ namespace poe
         std::atomic<int>  _hitVariant{ 1 };     // 그 채널링의 클립 번호
         std::atomic<int>  _hits{ 0 };           // 그 채널링에서 플레이어가 맞힌 횟수
         std::atomic<bool> _logHits{ true };
+        // 범위 타격이 지금 엔진의 타격 함수를 부르고 있는 대상(없으면 0)과, 그 사이에 그 대상의 적중 이벤트가 왔는지.
+        std::atomic<RE::FormID> _probeTarget{ 0 };
+        std::atomic<bool>       _probeHit{ false };
 
         std::string _lastEventName;
         std::string _lastEventOutcome;

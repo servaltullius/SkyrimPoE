@@ -119,6 +119,18 @@ namespace poe
         return trigger == Trigger::kHold ? "hold" : "powerAttack";
     }
 
+    std::string_view PowerInputName(PowerInput input)
+    {
+        switch (input) {
+        case PowerInput::kLeftHand:
+            return "leftHand";
+        case PowerInput::kAny:
+            return "any";
+        default:
+            return "rightHand";
+        }
+    }
+
     std::string_view TriggerModeName(TriggerMode mode)
     {
         return mode == TriggerMode::kSpell ? "spell" : "direct";
@@ -185,6 +197,17 @@ namespace poe
                     config.trigger = Trigger::kHold;
                 } else {
                     Warn(warnings, lineNumber, rawKey, "powerAttack 또는 hold가 아니어서 기본값 유지");
+                }
+            } else if (key == "powerattackinput") {
+                const auto lower = Lower(value);
+                if (lower == "righthand") {
+                    config.powerInput = PowerInput::kRightHand;
+                } else if (lower == "lefthand") {
+                    config.powerInput = PowerInput::kLeftHand;
+                } else if (lower == "any") {
+                    config.powerInput = PowerInput::kAny;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "rightHand, leftHand, any 중 하나가 아니어서 기본값 유지");
                 }
             } else if (key == "holdseconds") {
                 const auto parsed = ParseFloat(value);

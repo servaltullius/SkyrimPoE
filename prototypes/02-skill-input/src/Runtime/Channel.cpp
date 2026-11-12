@@ -367,6 +367,20 @@ namespace poe
         return best;
     }
 
+    // 이 버튼에서 나온 강공격을 채널링으로 바꿀 것인가(INI의 PowerAttackInput).
+    // 추가 채널 키는 사용자가 강공격 전용으로 지정한 키이므로 어느 설정에서든 바꾼다.
+    bool Channel::PowerInputAccepts(Key key) const
+    {
+        switch (_config.powerInput) {
+        case PowerInput::kRightHand:
+            return key != Key::kLeft;
+        case PowerInput::kLeftHand:
+            return key != Key::kRight;
+        default:
+            return true;
+        }
+    }
+
     void Channel::ExpireStaleKeys(Clock::time_point now)
     {
         for (const auto key : { Key::kRight, Key::kLeft, Key::kExtra }) {
@@ -467,6 +481,9 @@ namespace poe
             const auto key = HeldChannelKey();
             if (key == Key::kNone) {
                 outcome = "통과(누르고 있는 공격 버튼이 없음)";
+            } else if (!PowerInputAccepts(key)) {
+                // 가장 나중에 누른 버튼이 바꾸지 않기로 한 쪽이면 원래의 강공격으로 둔다.
+                outcome = "통과(이 버튼의 강공격은 채널링으로 바꾸지 않음)";
             } else if (const char* backend = BackendBlockReason()) {
                 outcome = backend;
             } else if (const char* blocked = PlayerBlockReason(RE::PlayerCharacter::GetSingleton())) {
@@ -613,6 +630,8 @@ namespace poe
         _startedAt = Clock::now();
         _injectorChecked = false;
         _hits.store(0);
+        _misses = 0;
+        _lastAreaCensus.clear();
         _rolls = 0;
         _crits = 0;
         _casts = 0;
@@ -698,8 +717,9 @@ namespace poe
         _spin.Reset();
         FlushEventLog();
         _hitActive.store(false);
-        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 치명타 판정 {}번 중 {}번, 발동 {}회(직접 피해 {}건)",
-            MotionLabel(_activeMotion), why, seconds, _hits.load(), _rolls, _crits, _casts, _directHits);
+        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 타격이 안 들어간 차례 {}번 / "
+                        "치명타 판정 {}번 중 {}번, 발동 {}회(직접 피해 {}건)",
+            MotionLabel(_activeMotion), why, seconds, _hits.load(), _misses, _rolls, _crits, _casts, _directHits);
         _active = false;
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
@@ -745,12 +765,32 @@ namespace poe
         _spinRestorePending = false;
     }
 
+    std::string Channel::Excluded::Describe() const
+    {
+        if (teammates == 0 && notHostile == 0 && other == 0) {
+            return "제외 없음";
+        }
+        std::string text = "제외:";
+        if (teammates > 0) {
+            text += fmt::format(" 동료 {}명({})", teammates, teammateNames);
+        }
+        if (notHostile > 0) {
+            text += fmt::format(" 적대적이지 않음 {}명", notHostile);
+        }
+        if (other > 0) {
+            text += fmt::format(" 유령·킬무브 {}명", other);
+        }
+        return text;
+    }
+
     // origin 둘레에서 플레이어의 스킬이 맞힐 수 있는 액터를 모은다.
     // 플레이어 자신, 동료, 죽은 액터, 유령, 킬무브 중인 액터는 빼고, HitNeutral이 꺼져 있으면 적대적인 액터만 남긴다.
+    // 범위 안에 살아 있었는데 뺀 액터는 이유별로 excluded에 센다.
     std::vector<RE::NiPointer<RE::Actor>> Channel::CollectTargets(RE::PlayerCharacter* player, const RE::NiPoint3& origin,
-        float radius) const
+        float radius, Excluded& excluded) const
     {
         std::vector<RE::NiPointer<RE::Actor>> targets;
+        excluded = Excluded{};
         auto* lists = RE::ProcessLists::GetSingleton();
         if (!lists) {
             return targets;
@@ -761,15 +801,29 @@ namespace poe
             if (!actor || actor.get() == player) {
                 continue;
             }
-            if (actor->IsDead() || !actor->Is3DLoaded() || actor->IsGhost() || actor->IsPlayerTeammate() ||
-                actor->IsInKillMove()) {
-                continue;
-            }
-            if (!_config.hitNeutral && !actor->IsHostileToActor(player)) {
+            if (actor->IsDead() || !actor->Is3DLoaded()) {
                 continue;
             }
             const auto offset = actor->GetPosition() - origin;
             if (std::abs(offset.z) > kHitHeight || offset.x * offset.x + offset.y * offset.y > radiusSquared) {
+                continue;
+            }
+            // 여기부터는 범위 안에 살아 있는 액터다. 빼는 것은 이유를 센다.
+            if (actor->IsPlayerTeammate()) {
+                ++excluded.teammates;
+                const char* name = actor->GetDisplayFullName();
+                if (!excluded.teammateNames.empty()) {
+                    excluded.teammateNames += ", ";
+                }
+                excluded.teammateNames += (name && *name) ? name : "?";
+                continue;
+            }
+            if (actor->IsGhost() || actor->IsInKillMove()) {
+                ++excluded.other;
+                continue;
+            }
+            if (!_config.hitNeutral && !actor->IsHostileToActor(player)) {
+                ++excluded.notHostile;
                 continue;
             }
             targets.push_back(std::move(actor));
@@ -781,20 +835,57 @@ namespace poe
     void Channel::AreaHit(RE::PlayerCharacter* player)
     {
         // 대상 목록을 먼저 만든 뒤에 타격한다. 타격이 액터 목록을 바꿀 수 있기 때문이다.
-        const auto targets = CollectTargets(player, player->GetPosition(), _config.hitRadius);
+        Excluded excluded;
+        const auto targets = CollectTargets(player, player->GetPosition(), _config.hitRadius, excluded);
+        if (_config.logEvents) {
+            // 차례마다 남기면 로그가 묻히므로 집계가 바뀔 때만 남긴다.
+            auto census = fmt::format("반경 {:.0f} 안의 대상 {}명, {}", _config.hitRadius, targets.size(), excluded.Describe());
+            if (census != _lastAreaCensus) {
+                SKSE::log::info("[범위 타격] {}", census);
+                _lastAreaCensus = std::move(census);
+            }
+        }
         if (targets.empty()) {
             return;
         }
+        // 타격이 실제로 들어간 대상만 모은다. 엔진의 타격 함수는 대상의 상태에 따라 아무 일도 하지 않고 돌아올 수 있다
+        // (8차 시험에서 적중 이벤트도 체력 변화도 없는 차례가 있었다). 치명타는 적중한 타격에 붙는 것이므로
+        // 들어가지 않은 타격에는 굴리지 않는다.
+        // 들어갔다고 보는 근거는 둘 중 하나다: 함수가 도는 동안 그 대상의 적중 이벤트가 왔거나, 체력이 줄었거나 죽었거나.
+        std::vector<RE::Actor*> landed;
+        landed.reserve(targets.size());
         {
             const DamageScale scale(player, _config.hitDamageMult);
             for (const auto& target : targets) {
+                auto*       owner = target->AsActorValueOwner();
+                const float before = owner->GetActorValue(RE::ActorValue::kHealth);
+                _probeHit.store(false);
+                _probeTarget.store(target->GetFormID());
                 kDealDamage(player, target.get(), nullptr, false);
+                _probeTarget.store(0);
+                const bool eventSeen = _probeHit.load();
+                const bool hurt = target->IsDead() || owner->GetActorValue(RE::ActorValue::kHealth) < before;
+                if (eventSeen || hurt) {
+                    landed.push_back(target.get());
+                } else {
+                    ++_misses;
+                }
+                if (_config.logEvents && eventSeen != hurt) {
+                    // 두 근거가 어긋나는 경우는 따로 남겨 둔다(피해 없이 적중만 났거나, 이벤트가 함수 안에서 오지 않았거나).
+                    const char* name = target->GetDisplayFullName();
+                    SKSE::log::info("[범위 타격] '{}'({:08X}) 적중 이벤트 {}, 체력 {}", name ? name : "?", target->GetFormID(),
+                        eventSeen ? "있음" : "없음", hurt ? "줄어듦" : "그대로");
+                } else if (_config.logEvents && !eventSeen) {
+                    const char* name = target->GetDisplayFullName();
+                    SKSE::log::info("[범위 타격] '{}'({:08X}) 타격이 들어가지 않음(적중 이벤트 없음, 체력 그대로). 치명타를 굴리지 않음",
+                        name ? name : "?", target->GetFormID());
+                }
             }
         }
         // 피해 배율을 되돌린 뒤에 발동을 굴린다. 발동으로 나간 피해는 여기를 다시 지나지 않으므로
-        // 발동이 발동을 부르는 일은 없다.
-        for (const auto& target : targets) {
-            RollTrigger(player, target.get());
+        // 발동이 발동을 부르는 일은 없다. targets가 액터를 붙들고 있으므로 landed의 포인터는 이 함수 안에서 유효하다.
+        for (auto* target : landed) {
+            RollTrigger(player, target);
         }
     }
 
@@ -855,7 +946,8 @@ namespace poe
     bool Channel::TriggerDirect(RE::PlayerCharacter* player, RE::Actor* target)
     {
         // 피해를 주면 대상의 상태가 바뀌므로 맞을 대상을 먼저 모은다. 치명타를 맞은 대상도 여기에 들어 있다.
-        const auto victims = CollectTargets(player, target->GetPosition(), _config.triggerRadius);
+        Excluded   excluded;
+        const auto victims = CollectTargets(player, target->GetPosition(), _config.triggerRadius, excluded);
         if (_triggerExplosion) {
             target->PlaceObjectAtMe(_triggerExplosion, false);
         }
@@ -867,9 +959,9 @@ namespace poe
         ++_directCasts;
         if (_config.logEvents) {
             const char* name = target->GetDisplayFullName();
-            SKSE::log::info("[발동] 치명타 -> 직접 피해 {:.0f}, 중심 '{}'({:08X}), 반경 {:.0f} 안의 대상 {}명, 난이도 인자 {}{}",
+            SKSE::log::info("[발동] 치명타 -> 직접 피해 {:.0f}, 중심 '{}'({:08X}), 반경 {:.0f} 안의 대상 {}명, {}, 난이도 인자 {}{}",
                 _config.triggerDamage, name ? name : "?", target->GetFormID(), _config.triggerRadius, victims.size(),
-                difficultyArg, _triggerExplosion ? "" : ", 연출 없음");
+                excluded.Describe(), difficultyArg, _triggerExplosion ? "" : ", 연출 없음");
         }
         for (const auto& victim : victims) {
             auto* owner = victim->AsActorValueOwner();
@@ -996,10 +1088,14 @@ namespace poe
         if (channeling) {
             _hits.fetch_add(1);
         }
+        auto* target = event.target.get();
+        // 범위 타격이 지금 치고 있는 대상의 적중이면 표시해 둔다(AreaHit이 타격이 들어갔는지 판단하는 근거).
+        if (target && target->GetFormID() == _probeTarget.load()) {
+            _probeHit.store(true);
+        }
         if (!_logHits.load()) {
             return;
         }
-        auto* target = event.target.get();
         const char* name = target ? target->GetDisplayFullName() : nullptr;
         SKSE::log::info("[타격] 대상 '{}'({:08X}) 수단 {:08X}{}{} / {}", name ? name : "?",
             target ? target->GetFormID() : 0, event.source,

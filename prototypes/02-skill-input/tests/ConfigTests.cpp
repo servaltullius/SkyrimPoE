@@ -178,6 +178,25 @@ int main()
         Expect(warnings.size() == 5, "잘못된 줄마다 경고 하나(직접 피해)");
     }
     {
+        std::vector<std::string> warnings;
+        const auto d = poe::ParseConfig("", warnings);
+        Expect(d.powerInput == poe::PowerInput::kRightHand, "강공격 입력의 기본값은 오른손 공격 버튼");
+        const auto left = poe::ParseConfig("PowerAttackInput = LeftHand\n", warnings);
+        Expect(left.powerInput == poe::PowerInput::kLeftHand, "PowerAttackInput=leftHand(대소문자를 가리지 않음)");
+        const auto any = poe::ParseConfig("PowerAttackInput = any ; 둘 다\n", warnings);
+        Expect(any.powerInput == poe::PowerInput::kAny, "PowerAttackInput=any");
+        const auto right = poe::ParseConfig("PowerAttackInput = any\nPowerAttackInput = rightHand\n", warnings);
+        Expect(right.powerInput == poe::PowerInput::kRightHand, "PowerAttackInput=rightHand");
+        Expect(warnings.empty(), "올바른 강공격 입력 설정에는 경고가 없음");
+        const auto bad = poe::ParseConfig("PowerAttackInput = both\nPowerAttackInput =\n", warnings);
+        Expect(bad.powerInput == poe::PowerInput::kRightHand, "잘못된 강공격 입력은 기본값 유지");
+        Expect(warnings.size() == 2, "잘못된 줄마다 경고 하나(강공격 입력)");
+        Expect(poe::PowerInputName(poe::PowerInput::kRightHand) == "rightHand" &&
+               poe::PowerInputName(poe::PowerInput::kLeftHand) == "leftHand" &&
+               poe::PowerInputName(poe::PowerInput::kAny) == "any",
+            "PowerInputName");
+    }
+    {
         Expect(poe::TriggerModeName(poe::TriggerMode::kDirect) == "direct" &&
                poe::TriggerModeName(poe::TriggerMode::kSpell) == "spell",
             "TriggerModeName");

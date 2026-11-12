@@ -22,6 +22,15 @@ namespace poe
         kHold,         // 공격 버튼을 정해진 시간 넘게 누르고 있으면 시작한다
     };
 
+    // 강공격을 내는 입력이 여럿일 때 어느 쪽의 강공격을 채널링으로 바꿀지(Trigger = powerAttack일 때).
+    // 바꾸지 않는 쪽은 원래의 강공격으로 남는다(설계-현황 결정 54).
+    enum class PowerInput
+    {
+        kRightHand,  // 오른손 공격 버튼(기본 좌클릭)을 길게 눌러 나오는 강공격만 바꾼다
+        kLeftHand,   // 왼손 공격·방어 버튼(기본 우클릭)에서 나오는 강공격만 바꾼다
+        kAny,        // 어느 버튼에서 나오든 바꾼다
+    };
+
     // 치명타로 발동한 스킬이 피해를 주는 방식.
     enum class TriggerMode
     {
@@ -34,6 +43,7 @@ namespace poe
         bool          enabled = true;
         Motion        motion = Motion::kOar;
         Trigger       trigger = Trigger::kPowerAttack;
+        PowerInput    powerInput = PowerInput::kRightHand;
         float         holdSeconds = 0.3f;
         float         maxSeconds = 60.0f;
         float         minSeconds = 0.6f;     // 버튼을 일찍 떼도 이만큼은 돈다. 0 = 떼는 즉시 끝남
@@ -87,5 +97,6 @@ namespace poe
 
     std::string_view MotionName(Motion motion);
     std::string_view TriggerName(Trigger trigger);
+    std::string_view PowerInputName(PowerInput input);
     std::string_view TriggerModeName(TriggerMode mode);
 }
