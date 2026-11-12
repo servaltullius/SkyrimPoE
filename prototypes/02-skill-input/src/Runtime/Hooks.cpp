@@ -15,10 +15,16 @@ namespace poe
         {
             static bool thunk(RE::IAnimationGraphManagerHolder* a_this, const RE::BSFixedString& a_event)
             {
-                if (!Channel::IsSending() && Channel::Get().OnNotify(a_event)) {
+                if (Channel::IsSending()) {
+                    return func(a_this, a_event);
+                }
+                if (Channel::Get().OnNotify(a_event)) {
                     return false;
                 }
-                return func(a_this, a_event);
+                // 통과시킨 이벤트를 그래프가 받았는지 알려 준다(지금은 경직 시작 이벤트의 진단에만 쓴다).
+                const bool accepted = func(a_this, a_event);
+                Channel::Get().OnNotifyResult(a_event, accepted);
+                return accepted;
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };

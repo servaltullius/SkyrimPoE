@@ -85,22 +85,14 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     for (const auto& warning : warnings) {
         SKSE::log::warn("설정: {}", warning);
     }
-    SKSE::log::info("설정: Enabled={} Motion={} Trigger={} PowerAttackInput={} HoldSeconds={:.2f} MinSeconds={:.2f} MaxSeconds={:.0f} "
-                    "CycleKey=0x{:02X} ExtraChannelKey=0x{:02X} ClipVariant={}/{} LogEvents={}",
-        config.enabled, poe::MotionName(config.motion), poe::TriggerName(config.trigger),
-        poe::PowerInputName(config.powerInput), config.holdSeconds, config.minSeconds, config.maxSeconds, config.cycleKey,
-        config.extraChannelKey, config.clipVariant, config.clipVariants, config.logEvents);
-    SKSE::log::info("설정: SpinByDll={} SpinClockwise={} HitsByDll={} HitNeutral={} HitsPerSecond={:.2f} TurnsPerHit={:.2f} "
-                    "HitRadius={:.0f} HitDamageMult={:.2f}",
-        config.spinByDll, config.spinClockwise, config.hitsByDll, config.hitNeutral, config.hitsPerSecond,
-        config.turnsPerHit, config.hitRadius, config.hitDamageMult);
+    poe::Channel::LogConfig(config);
 
     if (!config.enabled) {
         SKSE::log::info("INI에서 꺼져 있어 아무 훅도 설치하지 않음");
         return true;
     }
 
-    poe::Channel::Get().Configure(config);
+    poe::Channel::Get().Configure(config, std::filesystem::path(kConfigPath));
 
     const auto* messaging = SKSE::GetMessagingInterface();
     if (!messaging || !messaging->RegisterListener(OnMessage)) {

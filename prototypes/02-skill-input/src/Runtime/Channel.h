@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <mutex>
 #include <random>
 #include <string>
@@ -26,7 +27,11 @@ namespace poe
     public:
         static Channel& Get();
 
-        void Configure(const Config& config);
+        // configPath는 게임 안에서 ReloadKey로 설정을 다시 읽을 때 쓰는 INI의 경로.
+        void Configure(const Config& config, std::filesystem::path configPath);
+
+        // 설정 전체를 "키=값"으로 로그에 남긴다.
+        static void LogConfig(const Config& config);
         void SetBackends(bool oarAvailable, bool injectorAvailable);
 
         // 설정에 적힌 발동용 폼(주문 또는 연출용 폭발)을 찾아 둔다. 게임 데이터가 다 불린 뒤(kDataLoaded)에 한 번.
@@ -37,6 +42,9 @@ namespace poe
 
         // 플레이어의 NotifyAnimationGraph 훅에서. true를 돌려주면 그 이벤트를 게임에 넘기지 않는다.
         bool OnNotify(const RE::BSFixedString& event);
+
+        // OnNotify가 통과시킨 이벤트를 원래 함수가 처리한 결과. 경직 시작 이벤트면 로그에 남기고 그 뒤의 상태를 지켜본다.
+        void OnNotifyResult(const RE::BSFixedString& event, bool accepted);
 
         // 플레이어 Update가 끝난 뒤 매 프레임.
         void Tick();
@@ -109,11 +117,17 @@ namespace poe
         void RollTrigger(RE::PlayerCharacter* player, RE::Actor* target);
         bool TriggerBySpell(RE::PlayerCharacter* player, RE::Actor* target);
         bool TriggerDirect(RE::PlayerCharacter* player, RE::Actor* target);
+        bool OnStaggerStart(std::string_view name);
+        void WatchStagger(RE::PlayerCharacter* player, Clock::time_point now);
+        void ToggleStaggerTest();
+        void ReloadConfig();
+        void RunStaggerTestStep(RE::PlayerCharacter* player, Clock::time_point now);
         void LogEvent(std::string_view name, std::string_view outcome);
         void FlushEventLog();
 
         mutable std::recursive_mutex _mutex;
         Config                       _config;
+        std::filesystem::path        _configPath;
         bool                         _oarAvailable = false;
         bool                         _injectorAvailable = false;
 
@@ -149,6 +163,16 @@ namespace poe
         std::mt19937      _random{ std::random_device{}() };
         Clock::time_point _nextTriggerAt{};
         int               _misses = 0;  // 이번 채널링에서 대상을 잡았지만 타격이 들어가지 않은 횟수
+        int               _staggersIgnored = 0;  // 이번 채널링에서 무시한 경직의 수
+        // 진단: 통과시킨 경직 시작 이벤트 뒤로 잠깐 동안 플레이어의 경직 상태를 지켜보고, 바뀔 때마다 로그에 남긴다.
+        bool              _staggerWatching = false;
+        bool              _staggerWatchSeen = false;   // 지켜보는 동안 경직 상태가 켜진 적이 있는가
+        Clock::time_point _staggerWatchStart{};
+        Clock::time_point _staggerWatchUntil{};
+        std::string       _staggerWatchLast;           // 마지막으로 남긴 상태(바뀔 때만 남긴다)
+        // 시험: TestStaggerKey를 누르면 세기가 다른 경직을 차례로 건다. -1이면 쉬는 중, 아니면 다음에 걸 차례의 번호.
+        int               _staggerTestStep = -1;
+        Clock::time_point _staggerTestNextAt{};
         std::string       _lastAreaCensus;  // 범위 타격의 대상·제외 집계를 마지막으로 남긴 내용(바뀔 때만 남긴다)
         int               _rolls = 0;   // 이번 채널링에서 치명타를 굴린 횟수
         int               _crits = 0;   // 그중 치명타로 나온 횟수

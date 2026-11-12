@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,10 @@ int main()
         const auto c = poe::LoadConfig(std::filesystem::temp_directory_path() / "poe_proto_missing_file.ini", warnings);
         Expect(c.enabled && c.motion == poe::Motion::kOar, "파일이 없으면 기본값");
         Expect(warnings.size() == 1, "파일이 없으면 경고 하나");
+        std::vector<std::string> tryWarnings;
+        const auto missing =
+            poe::TryLoadConfig(std::filesystem::temp_directory_path() / "poe_proto_missing_file.ini", tryWarnings);
+        Expect(!missing.has_value() && tryWarnings.size() == 1, "TryLoadConfig는 파일이 없으면 값을 돌려주지 않음");
     }
     {
         std::vector<std::string> warnings;
@@ -195,6 +200,77 @@ int main()
                poe::PowerInputName(poe::PowerInput::kLeftHand) == "leftHand" &&
                poe::PowerInputName(poe::PowerInput::kAny) == "any",
             "PowerInputName");
+    }
+    {
+        std::vector<std::string> warnings;
+        const auto d = poe::ParseConfig("", warnings);
+        Expect(d.channelIgnoreStagger == 0.5f, "채널링 중 무시하는 경직 세기의 기본값");
+        const auto off = poe::ParseConfig("ChannelIgnoreStagger = -1\n", warnings);
+        Expect(off.channelIgnoreStagger == -1.0f, "ChannelIgnoreStagger=-1(무시하지 않음)");
+        const auto all = poe::ParseConfig("ChannelIgnoreStagger = 1\n", warnings);
+        Expect(all.channelIgnoreStagger == 1.0f, "ChannelIgnoreStagger=1(모두 무시)");
+        Expect(warnings.empty(), "올바른 경직 설정에는 경고가 없음");
+        const auto bad = poe::ParseConfig("ChannelIgnoreStagger = 2\nChannelIgnoreStagger = all\n", warnings);
+        Expect(bad.channelIgnoreStagger == 0.5f, "범위를 벗어난 경직 설정은 기본값 유지");
+        Expect(warnings.size() == 2, "잘못된 줄마다 경고 하나(경직)");
+
+        Expect(d.testStaggerKey == 0, "시험용 경직 키는 기본으로 꺼짐");
+        const auto key = poe::ParseConfig("TestStaggerKey = 0x42\n", warnings);
+        Expect(key.testStaggerKey == 0x42 && key.extraChannelKey == 0, "TestStaggerKey=0x42");
+        Expect(warnings.size() == 2, "올바른 시험 키에는 경고가 늘지 않음");
+        const auto badKey = poe::ParseConfig("TestStaggerKey = 0x1FF\n", warnings);
+        Expect(badKey.testStaggerKey == 0, "잘못된 시험 키는 기본값 유지");
+        Expect(warnings.size() == 3, "잘못된 시험 키에 경고 하나");
+
+        Expect(poe::ShouldIgnoreStagger(0.5f, 0.0f) && poe::ShouldIgnoreStagger(0.5f, 0.25f) &&
+               poe::ShouldIgnoreStagger(0.5f, 0.5f),
+            "한도 이하의 경직은 무시(한도 포함)");
+        Expect(!poe::ShouldIgnoreStagger(0.5f, 0.75f) && !poe::ShouldIgnoreStagger(0.5f, 1.0f), "한도를 넘는 경직은 무시하지 않음");
+        Expect(poe::ShouldIgnoreStagger(0.5f, 0.5004f) && !poe::ShouldIgnoreStagger(0.5f, 0.51f), "한도 근처의 오차 허용");
+        Expect(!poe::ShouldIgnoreStagger(-1.0f, 0.0f), "음수 한도면 무시하지 않음");
+        Expect(poe::ShouldIgnoreStagger(0.0f, 0.0f) && !poe::ShouldIgnoreStagger(0.0f, 0.5f), "한도 0이면 세기 0만 무시");
+        Expect(poe::ShouldIgnoreStagger(1.0f, 1.0f), "한도 1이면 모두 무시");
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        Expect(!poe::ShouldIgnoreStagger(0.5f, nan) && !poe::ShouldIgnoreStagger(nan, 0.0f), "NaN은 무시하지 않음");
+    }
+    {
+        // 목록으로 바꿨다가 "키 = 값" 줄로 다시 읽으면 같은 설정이 된다(키 이름과 값 표기가 읽는 쪽과 맞는지).
+        const auto roundTrip = [](const poe::Config& config, const char* what) {
+            std::string text;
+            for (const auto& [key, value] : poe::ConfigEntries(config)) {
+                text += key + " = " + value + "\n";
+            }
+            std::vector<std::string> warnings;
+            const auto again = poe::ParseConfig(text, warnings);
+            Expect(warnings.empty(), what);
+            Expect(poe::ConfigEntries(again) == poe::ConfigEntries(config), what);
+            Expect(poe::DescribeConfigChanges(config, again).empty(), what);
+        };
+        std::vector<std::string> warnings;
+        const auto defaults = poe::ParseConfig("", warnings);
+        roundTrip(defaults, "기본 설정의 왕복");
+        const auto custom = poe::ParseConfig(
+            "Enabled = false\nMotion = injector\nTrigger = hold\nPowerAttackInput = any\nHoldSeconds = 0.45\n"
+            "MinSeconds = 0\nMaxSeconds = 120\nChannelIgnoreStagger = -1\nSpinByDll = false\nSpinClockwise = true\n"
+            "HitsByDll = false\nHitNeutral = true\nHitsPerSecond = 4.5\nTurnsPerHit = 1\nHitRadius = 200\n"
+            "HitDamageMult = 0.25\nCritChance = 0.15\nAddSkyrimCrit = false\nTriggerCooldown = 0\nTriggerMode = spell\n"
+            "TriggerDamage = 125.5\nTriggerRadius = 0\nTriggerDifficultyTest = true\nTriggerExplosion =\n"
+            "TriggerSpell = My Mod.esp|0xABCD\nClipVariants = 4\nClipVariant = 3\nCycleKey = 0\nExtraChannelKey = 47\n"
+            "TestStaggerKey = 0x42\nReloadKey = 0x41\nLogEvents = false\n",
+            warnings);
+        Expect(warnings.empty(), "모든 키를 바꾼 설정에는 경고가 없음");
+        Expect(custom.reloadKey == 0x41 && defaults.reloadKey == 0, "ReloadKey와 그 기본값");
+        roundTrip(custom, "모든 키를 바꾼 설정의 왕복");
+
+        const auto changes = poe::DescribeConfigChanges(defaults, custom);
+        Expect(changes.size() == poe::ConfigEntries(defaults).size(), "모든 키를 바꾸면 모든 키가 바뀐 것으로 나옴");
+        const auto one = poe::ParseConfig("CritChance = 0.3\n", warnings);
+        const auto oneChange = poe::DescribeConfigChanges(defaults, one);
+        Expect(oneChange.size() == 1 && oneChange[0] == "CritChance: 0.25 -> 0.3", "값 하나가 바뀐 경우의 표기");
+        const auto noEffect = poe::ParseConfig("TriggerExplosion =\n", warnings);
+        const auto cleared = poe::DescribeConfigChanges(defaults, noEffect);
+        Expect(cleared.size() == 1 && cleared[0] == "TriggerExplosion: Skyrim.esm|0x0439C0 -> (비어 있음)", "비운 값의 표기");
+        Expect(poe::DescribeConfigChanges(defaults, defaults).empty(), "같은 설정이면 바뀐 것이 없음");
     }
     {
         Expect(poe::TriggerModeName(poe::TriggerMode::kDirect) == "direct" &&

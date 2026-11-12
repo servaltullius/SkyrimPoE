@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace poe
@@ -47,8 +49,15 @@ namespace poe
         float         holdSeconds = 0.3f;
         float         maxSeconds = 60.0f;
         float         minSeconds = 0.6f;     // 버튼을 일찍 떼도 이만큼은 돈다. 0 = 떼는 즉시 끝남
+        // 채널링 중에는 세기(staggerMagnitude)가 이 값 이하인 경직을 무시한다(설계-현황 결정 56).
+        // 0.5 = 작은·중간 경직 무시, 1 = 모두 무시, 음수 = 무시하지 않음(어떤 경직에도 끊김)
+        float         channelIgnoreStagger = 0.5f;
         std::uint32_t cycleKey = 0x44;       // 키보드 DirectInput 스캔 코드. 0x44 = F10, 0 = 쓰지 않음
         std::uint32_t extraChannelKey = 0;   // 강공격 전용 키를 따로 쓰는 환경용. 키보드 스캔 코드, 0 = 없음
+        // 시험용: 이 키를 누르면 플레이어에게 세기가 다른 경직을 차례로 건다. 키보드 스캔 코드, 0 = 쓰지 않음
+        std::uint32_t testStaggerKey = 0;
+        // 게임 안에서 이 키를 누르면 INI를 다시 읽어 적용한다(게임을 다시 켜지 않고 값을 바꿔 보려는 것). 0 = 쓰지 않음
+        std::uint32_t reloadKey = 0;
         std::uint32_t clipVariants = 1;      // OAR 방식에서 비교할 회전 클립의 가짓수(서브모드 수)
         std::uint32_t clipVariant = 1;       // 처음에 쓸 클립 번호. 채널링 중 Variable09에 이 값을 넣는다
 
@@ -95,8 +104,23 @@ namespace poe
     // 파일을 읽어 설정을 만든다. 파일이 없거나 읽지 못하면 기본값을 돌려주고 warnings에 사유를 남긴다.
     Config LoadConfig(const std::filesystem::path& path, std::vector<std::string>& warnings);
 
+    // 위와 같지만 파일을 읽지 못하면 값을 돌려주지 않는다(warnings에는 사유가 남는다).
+    // 실행 중에 다시 읽을 때 쓴다. 읽지 못했다고 쓰던 설정을 기본값으로 덮지 않기 위함이다.
+    std::optional<Config> TryLoadConfig(const std::filesystem::path& path, std::vector<std::string>& warnings);
+
+    // 설정을 INI의 키 이름과 값의 목록으로 바꾼다(로그와 비교용).
+    // 이 목록을 "키 = 값" 줄로 적어 다시 읽으면 같은 설정이 된다.
+    std::vector<std::pair<std::string, std::string>> ConfigEntries(const Config& config);
+
+    // 두 설정에서 값이 다른 키를 "키: 옛값 -> 새값" 모양으로 돌려준다. 같으면 빈 목록.
+    std::vector<std::string> DescribeConfigChanges(const Config& before, const Config& after);
+
     std::string_view MotionName(Motion motion);
     std::string_view TriggerName(Trigger trigger);
     std::string_view PowerInputName(PowerInput input);
     std::string_view TriggerModeName(TriggerMode mode);
+
+    // 세기가 magnitude인 경직을 채널링 중에 무시할 것인가. ignoreUpTo는 Config::channelIgnoreStagger.
+    // 음수면 무시하지 않는다. 세기를 알 수 없는 값(NaN)은 무시하지 않는다.
+    bool ShouldIgnoreStagger(float ignoreUpTo, float magnitude);
 }

@@ -16,4 +16,7 @@ namespace poe
 
     // 그 가운데 강공격을 시작하라는 이벤트인가.
     bool IsPowerAttackStartEvent(std::string_view name);
+
+    // 경직을 시작하라는 이벤트인가(staggerStart). 경직의 세기는 그래프 변수 staggerMagnitude에 들어 있다.
+    bool IsStaggerStartEvent(std::string_view name);
 }

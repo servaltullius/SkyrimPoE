@@ -40,4 +40,12 @@ namespace poe
     {
         return IsAttackStartEvent(name) && ContainsNoCase(name, "power");
     }
+
+    bool IsStaggerStartEvent(std::string_view name)
+    {
+        constexpr std::string_view kStaggerStart = "staggerstart";
+        return name.size() == kStaggerStart.size() &&
+               std::equal(name.begin(), name.end(), kStaggerStart.begin(),
+                   [](char a, char b) { return LowerAscii(a) == b; });
+    }
 }

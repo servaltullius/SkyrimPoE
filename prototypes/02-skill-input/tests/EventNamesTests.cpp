@@ -54,6 +54,15 @@ int main()
         Expect(!IsAttackStartEvent(name), name);
     }
 
+    // 경직 시작은 이름이 정확히 staggerStart일 때만(대소문자는 가리지 않음).
+    for (const std::string_view name : { "staggerStart", "StaggerStart", "STAGGERSTART" }) {
+        Expect(poe::IsStaggerStartEvent(name), name);
+    }
+    for (const std::string_view name : { "", "staggerStop", "staggerStartLeft", "xstaggerStart", "stagger", "attackStart",
+             "recoilStart" }) {
+        Expect(!poe::IsStaggerStartEvent(name), name);
+    }
+
     if (g_failures == 0) {
         std::printf("EventNamesTests: all passed\n");
     }

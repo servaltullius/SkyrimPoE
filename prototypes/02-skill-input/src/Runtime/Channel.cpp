@@ -6,6 +6,7 @@
 #include <SKSE/SKSE.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 #include <string_view>
@@ -175,6 +176,11 @@ namespace poe
         const REL::Relocation<DealDamageFn> kDealDamage{ REL::RelocationID(37673, 38627) };
 
         constexpr float kHitHeight = 150.0f;  // 타격 대상과의 높이 차이 한도
+        constexpr auto  kStaggerWatch = std::chrono::milliseconds(1000);  // 통과시킨 경직 뒤로 상태를 지켜보는 시간
+        // 시험용 경직 키가 차례로 거는 세기. 이 모드팩의 단계값(0, 0.5, 0.75, 1)과 10차 시험에서 본 0.26 근처를 덮는다.
+        constexpr std::array<float, 5> kStaggerTestMagnitudes{ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+        constexpr auto kStaggerTestLead = std::chrono::milliseconds(1000);      // 키를 누른 뒤 첫 경직까지
+        constexpr auto kStaggerTestInterval = std::chrono::milliseconds(2500);  // 경직 사이의 간격
         constexpr float kMinHitsPerSecond = 0.5f;
         constexpr float kMaxHitsPerSecond = 20.0f;
         constexpr float kMinTurnsPerSecond = 0.2f;
@@ -242,11 +248,72 @@ namespace poe
         return t_sending;
     }
 
-    void Channel::Configure(const Config& config)
+    void Channel::Configure(const Config& config, std::filesystem::path configPath)
     {
         const std::scoped_lock lock(_mutex);
         _config = config;
+        _configPath = std::move(configPath);
         _logHits.store(config.logEvents);
+    }
+
+    void Channel::LogConfig(const Config& config)
+    {
+        // 한 줄이 너무 길어지지 않게 여러 줄로 나눈다.
+        constexpr std::size_t kPerLine = 8;
+        const auto entries = ConfigEntries(config);
+        for (std::size_t i = 0; i < entries.size(); i += kPerLine) {
+            std::string line;
+            for (std::size_t j = i; j < entries.size() && j < i + kPerLine; ++j) {
+                line += fmt::format("{}{}={}", j == i ? "" : " ", entries[j].first, entries[j].second);
+            }
+            SKSE::log::info("설정: {}", line);
+        }
+    }
+
+    // 게임 안에서 INI를 다시 읽어 적용한다(ReloadKey). 게임을 다시 켜지 않고 값을 바꿔 보려는 것이다.
+    // 진행 중인 채널링은 끝내고, 발동용 폼도 다시 찾는다. 잠금을 쥔 채로 불린다.
+    void Channel::ReloadConfig()
+    {
+        std::vector<std::string> warnings;
+        auto fresh = TryLoadConfig(_configPath, warnings);
+        for (const auto& warning : warnings) {
+            SKSE::log::warn("설정: {}", warning);
+        }
+        if (!fresh) {
+            const char* failed = "[PoE Proto] 설정 파일을 읽지 못해 그대로 둠";
+            RE::SendHUDMessage::ShowHUDMessage(failed);
+            SKSE::log::warn("{}", failed);
+            return;
+        }
+        // 훅은 게임을 켤 때만 설치하고, 꺼 버리면 이 키도 받지 못하게 된다. Enabled는 실행 중에 바꾸지 않는다.
+        if (!fresh->enabled) {
+            fresh->enabled = true;
+            SKSE::log::warn("설정: Enabled = false는 게임을 다시 켜야 적용됩니다. 지금은 켜진 채로 둡니다.");
+            warnings.emplace_back();
+        }
+        const auto changes = DescribeConfigChanges(_config, *fresh);
+
+        if (_active) {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                Stop(player, "설정을 다시 읽음", true);
+            }
+        }
+        _staggerTestStep = -1;
+        _config = *fresh;
+        _logHits.store(_config.logEvents);
+
+        SKSE::log::info("[설정] 다시 읽음: {}개 바뀜{}", changes.size(),
+            warnings.empty() ? std::string() : fmt::format(", 경고 {}개", warnings.size()));
+        for (const auto& change : changes) {
+            SKSE::log::info("[설정]   {}", change);
+        }
+        ResolveForms();
+
+        auto message = fmt::format("[PoE Proto] 설정 다시 읽음: {}개 바뀜", changes.size());
+        if (!warnings.empty()) {
+            message += fmt::format(" (경고 {}개, 로그 확인)", warnings.size());
+        }
+        RE::SendHUDMessage::ShowHUDMessage(message.c_str());
     }
 
     void Channel::SetBackends(bool oarAvailable, bool injectorAvailable)
@@ -429,6 +496,17 @@ namespace poe
             }
             return;
         }
+        // 설정 다시 읽기는 게임이 멈춰 있을 때도 받는다. 창을 바꿔 INI를 고치고 돌아와 바로 누를 수 있게 하려는 것이다.
+        if (device == RE::INPUT_DEVICE::kKeyboard && _config.reloadKey != 0 && idCode == _config.reloadKey) {
+            ReloadConfig();
+            return;
+        }
+        if (device == RE::INPUT_DEVICE::kKeyboard && _config.testStaggerKey != 0 && idCode == _config.testStaggerKey) {
+            if (!GamePaused()) {
+                ToggleStaggerTest();
+            }
+            return;
+        }
 
         const auto key = Classify(device, idCode);
         if (key == Key::kNone) {
@@ -455,7 +533,8 @@ namespace poe
             return false;
         }
         const std::string_view name(raw);
-        if (!IsAttackRelatedEvent(name)) {
+        const bool             staggerStart = IsStaggerStartEvent(name);
+        if (!staggerStart && !IsAttackRelatedEvent(name)) {
             return false;
         }
 
@@ -464,6 +543,9 @@ namespace poe
         const std::unique_lock lock(_mutex, std::try_to_lock);
         if (!lock.owns_lock() || !_config.enabled) {
             return false;
+        }
+        if (staggerStart) {
+            return OnStaggerStart(name);
         }
 
         const bool       attackStart = IsAttackStartEvent(name);
@@ -502,6 +584,120 @@ namespace poe
         return swallow;
     }
 
+    // 플레이어를 경직시키라는 이벤트가 왔다. 채널링 중이고 세기가 한도 이하면 받지 않고 버려서 회전을 잇는다
+    // (설계-현황 결정 56). 한도를 넘는 경직은 그대로 통과시키고, 그러면 Tick이 경직 상태를 보고 채널링을 끝낸다.
+    // 세기는 엔진이 이벤트를 보내기 전에 그래프 변수 staggerMagnitude에 넣어 둔다. 잠금을 쥔 채로 불린다.
+    bool Channel::OnStaggerStart(std::string_view name)
+    {
+        auto*      player = RE::PlayerCharacter::GetSingleton();
+        float      magnitude = 0.0f;
+        const bool known = player && player->GetGraphVariableFloat("staggerMagnitude", magnitude);
+        bool       swallow = false;
+        const char* outcome = "통과(채널링 중이 아님)";
+        if (_active) {
+            if (!known) {
+                outcome = "통과(세기를 읽지 못함)";
+            } else if (ShouldIgnoreStagger(_config.channelIgnoreStagger, magnitude)) {
+                swallow = true;
+                ++_staggersIgnored;
+                outcome = "채널링 중이라 무시";
+            } else {
+                outcome = "통과(세기가 무시 한도를 넘음)";
+            }
+        }
+        if (_config.logEvents) {
+            FlushEventLog();
+            SKSE::log::info("[경직] '{}' 세기 {} / 한도 {:.2f} -> {}", name, known ? fmt::format("{:.2f}", magnitude) : std::string("?"),
+                _config.channelIgnoreStagger, outcome);
+        }
+        return swallow;
+    }
+
+    void Channel::OnNotifyResult(const RE::BSFixedString& event, bool accepted)
+    {
+        const char* raw = event.c_str();
+        if (!raw || !IsStaggerStartEvent(raw)) {
+            return;
+        }
+        const std::unique_lock lock(_mutex, std::try_to_lock);
+        if (!lock.owns_lock() || !_config.enabled || !_config.logEvents) {
+            return;
+        }
+        // 10차 시험에서 세기 1.00인 경직을 통과시켰는데 채널링이 끊기지 않았다. 그래프가 받았는지와
+        // 그 뒤에 경직 상태가 켜지는지를 남겨 원인을 가른다.
+        SKSE::log::info("[경직] 통과시킨 '{}': 그래프가 {}(반환값 {}) / {}", raw, accepted ? "받음" : "받지 않음", accepted,
+            _active ? "채널링 중" : "채널링 아님");
+        _staggerWatching = true;
+        _staggerWatchSeen = false;
+        _staggerWatchStart = Clock::now();
+        _staggerWatchUntil = _staggerWatchStart + kStaggerWatch;
+        _staggerWatchLast.clear();
+    }
+
+    // 통과시킨 경직 뒤로 플레이어의 경직 상태를 지켜본다. 엔진의 상태 표시와 그래프 변수를 함께 읽고 바뀔 때만 남긴다.
+    void Channel::WatchStagger(RE::PlayerCharacter* player, Clock::time_point now)
+    {
+        const auto* state = player->AsActorState();
+        const bool  staggered = state && state->IsStaggered();
+        bool        graphFlag = false;
+        const bool  graphKnown = player->GetGraphVariableBool("IsStaggering", graphFlag);
+        _staggerWatchSeen = _staggerWatchSeen || staggered || (graphKnown && graphFlag);
+
+        auto text = fmt::format("IsStaggered={}, 그래프 IsStaggering={}", staggered,
+            graphKnown ? (graphFlag ? "true" : "false") : "읽지 못함");
+        if (text != _staggerWatchLast) {
+            SKSE::log::info("[경직] 관찰 +{:.2f}초: {} / {}", std::chrono::duration<float>(now - _staggerWatchStart).count(), text,
+                _active ? "채널링 중" : "채널링 아님");
+            _staggerWatchLast = std::move(text);
+        }
+        if (now >= _staggerWatchUntil) {
+            SKSE::log::info("[경직] 관찰 끝({:.1f}초): 경직 상태가 {}", std::chrono::duration<float>(kStaggerWatch).count(),
+                _staggerWatchSeen ? "켜진 적 있음" : "한 번도 켜지지 않음");
+            _staggerWatching = false;
+        }
+    }
+
+    // 시험용 경직 키. 누르면 세기가 다른 경직을 차례로 걸기 시작하고, 진행 중에 다시 누르면 그만둔다.
+    // 경직이 언제 올지 고를 수 없어서(11차 시험), 채널링 중과 평소의 반응을 한 번에 비교하려고 둔 것이다.
+    void Channel::ToggleStaggerTest()
+    {
+        std::string message;
+        if (_staggerTestStep >= 0) {
+            _staggerTestStep = -1;
+            message = "[PoE Proto] 경직 시험을 그만둠";
+        } else {
+            _staggerTestStep = 0;
+            _staggerTestNextAt = Clock::now() + kStaggerTestLead;
+            message = fmt::format("[PoE Proto] 경직 시험 시작: 세기 {}단계를 {:.1f}초 간격으로", kStaggerTestMagnitudes.size(),
+                std::chrono::duration<float>(kStaggerTestInterval).count());
+        }
+        RE::SendHUDMessage::ShowHUDMessage(message.c_str());
+        SKSE::log::info("{} / {}", message, _active ? "채널링 중" : "채널링 아님");
+    }
+
+    // 시험의 한 차례: 엔진이 하듯 세기를 그래프 변수에 넣고 경직 시작 이벤트를 플레이어에게 보낸다.
+    // 다른 곳에서 온 경직과 같은 길을 지나야 하므로 Send()를 쓰지 않는다(이 DLL의 훅과 다른 모드의 훅을 모두 거친다).
+    void Channel::RunStaggerTestStep(RE::PlayerCharacter* player, Clock::time_point now)
+    {
+        const auto  step = static_cast<std::size_t>(_staggerTestStep);
+        const float magnitude = kStaggerTestMagnitudes[step];
+        const bool  variableSet = player->SetGraphVariableFloat("staggerMagnitude", magnitude);
+        SKSE::log::info("[시험] 경직 {}/{}: 세기 {:.2f}을 보냄(그래프 변수 설정 {}) / {}", step + 1, kStaggerTestMagnitudes.size(),
+            magnitude, variableSet ? "됨" : "안 됨", _active ? "채널링 중" : "채널링 아님");
+        const bool accepted = player->NotifyAnimationGraph("staggerStart");
+        SKSE::log::info("[시험]   돌아온 값 {}: {}", accepted, accepted ? "그래프가 받음" : "받지 않음(이 DLL이 버렸거나 그래프가 거절)");
+
+        if (step + 1 >= kStaggerTestMagnitudes.size()) {
+            _staggerTestStep = -1;
+            const char* done = "[PoE Proto] 경직 시험 끝";
+            RE::SendHUDMessage::ShowHUDMessage(done);
+            SKSE::log::info("{}", done);
+        } else {
+            ++_staggerTestStep;
+            _staggerTestNextAt = now + kStaggerTestInterval;
+        }
+    }
+
     // 버튼을 누르고 있는 동안 같은 이벤트가 매 프레임 올 수 있어, 연달아 같은 줄은 횟수만 센다.
     void Channel::LogEvent(std::string_view name, std::string_view outcome)
     {
@@ -538,6 +734,14 @@ namespace poe
         }
         const auto now = Clock::now();
         ExpireStaleKeys(now);
+
+        // 경직 상태를 보고 채널링을 끝내는 것보다 먼저 남겨야 순서가 로그에 그대로 보인다.
+        if (_staggerWatching) {
+            WatchStagger(player, now);
+        }
+        if (_staggerTestStep >= 0 && now >= _staggerTestNextAt) {
+            RunStaggerTestStep(player, now);
+        }
 
         if (_active) {
             const float elapsed = std::chrono::duration<float>(now - _startedAt).count();
@@ -631,6 +835,7 @@ namespace poe
         _injectorChecked = false;
         _hits.store(0);
         _misses = 0;
+        _staggersIgnored = 0;
         _lastAreaCensus.clear();
         _rolls = 0;
         _crits = 0;
@@ -717,9 +922,10 @@ namespace poe
         _spin.Reset();
         FlushEventLog();
         _hitActive.store(false);
-        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 타격이 안 들어간 차례 {}번 / "
+        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 타격이 안 들어간 차례 {}번 / 무시한 경직 {}번 / "
                         "치명타 판정 {}번 중 {}번, 발동 {}회(직접 피해 {}건)",
-            MotionLabel(_activeMotion), why, seconds, _hits.load(), _misses, _rolls, _crits, _casts, _directHits);
+            MotionLabel(_activeMotion), why, seconds, _hits.load(), _misses, _staggersIgnored, _rolls, _crits, _casts,
+            _directHits);
         _active = false;
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
@@ -907,12 +1113,21 @@ namespace poe
                 skyrim.actorValue, skyrim.withPerks, name ? name : "?");
         }
         ++_rolls;
-        if (std::uniform_real_distribution<float>(0.0f, 1.0f)(_random) >= chance) {
+        const float roll = std::uniform_real_distribution<float>(0.0f, 1.0f)(_random);
+        const bool  crit = roll < chance;
+        if (_config.logEvents) {
+            // 7~10차 시험에서 치명타 비율이 설정보다 낮게 나왔다. 굴린 값과 그때의 확률을 그대로 남겨 확인한다.
+            SKSE::log::info("[판정] 굴림 {:.3f} / 확률 {:.3f} -> {}", roll, chance, crit ? "치명타" : "치명타 아님");
+        }
+        if (!crit) {
             return;
         }
         ++_crits;
         const auto now = Clock::now();
         if (now < _nextTriggerAt || target->IsDead()) {
+            if (_config.logEvents) {
+                SKSE::log::info("[판정] 치명타였지만 발동하지 않음({})", target->IsDead() ? "대상이 방금 죽음" : "쿨다운 중");
+            }
             return;  // 쿨다운 중이거나 방금 타격으로 죽은 대상
         }
         const bool fired = _config.triggerMode == TriggerMode::kSpell ? TriggerBySpell(player, target) :
@@ -1117,6 +1332,8 @@ namespace poe
             Stop(player, playerReady ? "세이브를 불러옴" : "세이브 로드 시작", false);
         }
         _active = false;
+        _staggerWatching = false;
+        _staggerTestStep = -1;
         _hitActive.store(false);
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;

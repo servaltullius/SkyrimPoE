@@ -136,6 +136,15 @@ namespace poe
         return mode == TriggerMode::kSpell ? "spell" : "direct";
     }
 
+    bool ShouldIgnoreStagger(float ignoreUpTo, float magnitude)
+    {
+        if (!(ignoreUpTo >= 0.0f) || !(magnitude == magnitude)) {
+            return false;  // 꺼져 있거나 값이 NaN
+        }
+        // 단계 값(0.5, 0.75 등)이 부동소수점 오차로 한도를 살짝 넘어도 같은 단계로 본다.
+        return magnitude <= ignoreUpTo + 0.001f;
+    }
+
     Config ParseConfig(std::string_view text, std::vector<std::string>& warnings)
     {
         Config config;
@@ -259,6 +268,13 @@ namespace poe
                 } else {
                     Warn(warnings, lineNumber, rawKey, "받는 범위의 숫자가 아니어서 기본값 유지");
                 }
+            } else if (key == "channelignorestagger") {
+                const auto parsed = ParseFloat(value);
+                if (parsed && *parsed >= -1.0f && *parsed <= 1.0f) {
+                    config.channelIgnoreStagger = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "-1 ~ 1의 숫자가 아니어서 기본값 유지");
+                }
             } else if (key == "critchance") {
                 const auto parsed = ParseFloat(value);
                 if (parsed && *parsed >= 0.0f && *parsed <= 1.0f) {
@@ -316,9 +332,10 @@ namespace poe
                 } else {
                     Warn(warnings, lineNumber, rawKey, "1~9 범위의 정수가 아니어서 기본값 유지");
                 }
-            } else if (key == "extrachannelkey") {
+            } else if (key == "extrachannelkey" || key == "teststaggerkey" || key == "reloadkey") {
                 if (const auto parsed = ParseKeyCode(value)) {
-                    config.extraChannelKey = *parsed;
+                    (key == "extrachannelkey" ? config.extraChannelKey :
+                        key == "teststaggerkey" ? config.testStaggerKey : config.reloadKey) = *parsed;
                 } else {
                     Warn(warnings, lineNumber, rawKey, "0~255 범위의 키 코드가 아니어서 기본값 유지");
                 }
@@ -333,19 +350,120 @@ namespace poe
         return config;
     }
 
-    Config LoadConfig(const std::filesystem::path& path, std::vector<std::string>& warnings)
+    std::optional<Config> TryLoadConfig(const std::filesystem::path& path, std::vector<std::string>& warnings)
     {
         std::ifstream file(path, std::ios::binary);
         if (!file) {
-            warnings.push_back("설정 파일을 열지 못해 기본값을 씀: " + path.string());
-            return {};
+            warnings.push_back("설정 파일을 열지 못함: " + path.string());
+            return std::nullopt;
         }
         std::ostringstream buffer;
         buffer << file.rdbuf();
         if (file.bad()) {
-            warnings.push_back("설정 파일을 읽는 중 오류가 나 기본값을 씀: " + path.string());
-            return {};
+            warnings.push_back("설정 파일을 읽는 중 오류가 남: " + path.string());
+            return std::nullopt;
         }
         return ParseConfig(buffer.str(), warnings);
+    }
+
+    Config LoadConfig(const std::filesystem::path& path, std::vector<std::string>& warnings)
+    {
+        if (auto config = TryLoadConfig(path, warnings)) {
+            return *config;
+        }
+        warnings.back() += " (기본값을 씀)";
+        return {};
+    }
+
+    namespace
+    {
+        // 다시 읽었을 때 같은 값이 되는 가장 짧은 표기.
+        std::string FloatText(float value)
+        {
+            char buffer[32];
+            const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+            return result.ec == std::errc{} ? std::string(buffer, result.ptr) : std::string("0");
+        }
+
+        std::string KeyText(std::uint32_t code)
+        {
+            char buffer[16];
+            const auto result = std::to_chars(buffer, buffer + sizeof(buffer), code, 16);
+            std::string digits(buffer, result.ptr);
+            std::transform(digits.begin(), digits.end(), digits.begin(),
+                [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            return (digits.size() < 2 ? "0x0" : "0x") + digits;
+        }
+
+        std::string FormRefText(const std::string& plugin, std::uint32_t formId)
+        {
+            if (plugin.empty() || formId == 0) {
+                return {};
+            }
+            char buffer[16];
+            const auto result = std::to_chars(buffer, buffer + sizeof(buffer), formId, 16);
+            std::string digits(buffer, result.ptr);
+            std::transform(digits.begin(), digits.end(), digits.begin(),
+                [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            return plugin + "|0x" + std::string(digits.size() < 6 ? 6 - digits.size() : 0, '0') + digits;
+        }
+
+        const char* BoolText(bool value)
+        {
+            return value ? "true" : "false";
+        }
+    }
+
+    std::vector<std::pair<std::string, std::string>> ConfigEntries(const Config& c)
+    {
+        // ClipVariants가 ClipVariant보다 먼저 와야 다시 읽을 때 범위 확인이 같은 결과를 낸다.
+        return {
+            { "Enabled", BoolText(c.enabled) },
+            { "Motion", std::string(MotionName(c.motion)) },
+            { "Trigger", std::string(TriggerName(c.trigger)) },
+            { "PowerAttackInput", std::string(PowerInputName(c.powerInput)) },
+            { "HoldSeconds", FloatText(c.holdSeconds) },
+            { "MinSeconds", FloatText(c.minSeconds) },
+            { "MaxSeconds", FloatText(c.maxSeconds) },
+            { "ChannelIgnoreStagger", FloatText(c.channelIgnoreStagger) },
+            { "SpinByDll", BoolText(c.spinByDll) },
+            { "SpinClockwise", BoolText(c.spinClockwise) },
+            { "HitsByDll", BoolText(c.hitsByDll) },
+            { "HitNeutral", BoolText(c.hitNeutral) },
+            { "HitsPerSecond", FloatText(c.hitsPerSecond) },
+            { "TurnsPerHit", FloatText(c.turnsPerHit) },
+            { "HitRadius", FloatText(c.hitRadius) },
+            { "HitDamageMult", FloatText(c.hitDamageMult) },
+            { "CritChance", FloatText(c.critChance) },
+            { "AddSkyrimCrit", BoolText(c.addSkyrimCrit) },
+            { "TriggerCooldown", FloatText(c.triggerCooldown) },
+            { "TriggerMode", std::string(TriggerModeName(c.triggerMode)) },
+            { "TriggerDamage", FloatText(c.triggerDamage) },
+            { "TriggerRadius", FloatText(c.triggerRadius) },
+            { "TriggerDifficultyTest", BoolText(c.triggerDifficultyTest) },
+            { "TriggerExplosion", FormRefText(c.triggerExplosionPlugin, c.triggerExplosionFormId) },
+            { "TriggerSpell", FormRefText(c.triggerSpellPlugin, c.triggerSpellFormId) },
+            { "ClipVariants", std::to_string(c.clipVariants) },
+            { "ClipVariant", std::to_string(c.clipVariant) },
+            { "CycleKey", KeyText(c.cycleKey) },
+            { "ExtraChannelKey", KeyText(c.extraChannelKey) },
+            { "TestStaggerKey", KeyText(c.testStaggerKey) },
+            { "ReloadKey", KeyText(c.reloadKey) },
+            { "LogEvents", BoolText(c.logEvents) },
+        };
+    }
+
+    std::vector<std::string> DescribeConfigChanges(const Config& before, const Config& after)
+    {
+        const auto was = ConfigEntries(before);
+        const auto now = ConfigEntries(after);
+        std::vector<std::string> changes;
+        for (std::size_t i = 0; i < was.size() && i < now.size(); ++i) {
+            if (was[i].second != now[i].second) {
+                const auto show = [](const std::string& value) { return value.empty() ? std::string("(비어 있음)") : value; };
+                changes.push_back(was[i].first + ": " + show(was[i].second) + " -> " + show(now[i].second));
+            }
+        }
+        return changes;
     }
 }
