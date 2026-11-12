@@ -211,15 +211,23 @@ namespace poe
         // 액터 값 CriticalChance에서 시작해 플레이어의 퍽이 가진 "Calculate My Critical Hit Chance" 진입점을 거친다.
         // 진입점의 인자는 퍽 소유자, 무기, 대상 세 개다(퍽 레코드의 조건 탭 수가 3).
         // 대상의 퍽이 깎는 쪽("Mod Enemy Critical Hit Chance")은 넣지 않았다.
-        float SkyrimCritPercent(RE::PlayerCharacter* player, RE::Actor* target)
+        struct SkyrimCrit
         {
-            float chance = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kCriticalChance);
+            float actorValue = 0.0f;  // 액터 값 CriticalChance
+            float withPerks = 0.0f;   // 퍽의 진입점을 거친 뒤의 값. 엔진이 쓰는 값이 이것이다
+        };
+
+        SkyrimCrit SkyrimCritPercent(RE::PlayerCharacter* player, RE::Actor* target)
+        {
+            SkyrimCrit out;
+            out.actorValue = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kCriticalChance);
+            out.withPerks = out.actorValue;
             auto* form = player->GetEquippedObject(false);
             if (auto* weapon = form ? form->As<RE::TESObjectWEAP>() : nullptr) {
                 RE::BGSEntryPoint::HandleEntryPoint(RE::BGSEntryPoint::ENTRY_POINT::kCalculateMyCriticalHitChance, player,
-                    weapon, target, std::addressof(chance));
+                    weapon, target, std::addressof(out.withPerks));
             }
-            return chance;
+            return out;
         }
     }
 
@@ -605,6 +613,7 @@ namespace poe
         _startedAt = Clock::now();
         _injectorChecked = false;
         _hits.store(0);
+        _rolls = 0;
         _crits = 0;
         _casts = 0;
         _directHits = 0;
@@ -689,8 +698,8 @@ namespace poe
         _spin.Reset();
         FlushEventLog();
         _hitActive.store(false);
-        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 치명타 {}회, 발동 {}회(직접 피해 {}건)",
-            MotionLabel(_activeMotion), why, seconds, _hits.load(), _crits, _casts, _directHits);
+        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 치명타 판정 {}번 중 {}번, 발동 {}회(직접 피해 {}건)",
+            MotionLabel(_activeMotion), why, seconds, _hits.load(), _rolls, _crits, _casts, _directHits);
         _active = false;
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
@@ -796,14 +805,17 @@ namespace poe
             return;
         }
         // 우리 쪽 확률(지금은 INI의 임시 값)에 스카이림의 치명타 확률을 더한다(설계-현황 결정 51).
-        const float skyrimPercent = _config.addSkyrimCrit ? SkyrimCritPercent(player, target) : 0.0f;
-        const float chance = CombineCritChance(_config.critChance, skyrimPercent);
+        const SkyrimCrit skyrim = _config.addSkyrimCrit ? SkyrimCritPercent(player, target) : SkyrimCrit{};
+        const float chance = CombineCritChance(_config.critChance, skyrim.withPerks);
         if (_config.logEvents && !_critChanceLogged) {
             _critChanceLogged = true;  // 채널링마다 첫 판정에서 한 번만 남긴다
             const char* name = target->GetDisplayFullName();
-            SKSE::log::info("[발동] 치명타 확률 {:.1f}% = 기본 {:.1f}% + 스카이림 {:.1f}%{} (대상 '{}')", chance * 100.0f,
-                _config.critChance * 100.0f, skyrimPercent, _config.addSkyrimCrit ? "" : "(합산 끔)", name ? name : "?");
+            SKSE::log::info("[발동] 치명타 확률 {:.1f}% = 기본 {:.1f}% + 스카이림 {:.1f}%{} (액터 값 {:.1f}, 퍽 반영 뒤 {:.1f}, "
+                            "대상 '{}')",
+                chance * 100.0f, _config.critChance * 100.0f, skyrim.withPerks, _config.addSkyrimCrit ? "" : "(합산 끔)",
+                skyrim.actorValue, skyrim.withPerks, name ? name : "?");
         }
+        ++_rolls;
         if (std::uniform_real_distribution<float>(0.0f, 1.0f)(_random) >= chance) {
             return;
         }
@@ -847,23 +859,29 @@ namespace poe
         if (_triggerExplosion) {
             target->PlaceObjectAtMe(_triggerExplosion, false);
         }
+        // DoDamage의 셋째 인자(헤더의 이름은 a_dontAdjustDifficulty). 평소에는 true로 넘겨 난이도 배율을 빼려 한다.
+        // 시험 설정이 켜져 있으면 발동마다 번갈아 넘겨, 이 인자가 깎이는 양을 바꾸는지 로그로 가른다.
+        const bool skipDifficulty = _config.triggerDifficultyTest ? (_directCasts % 2 == 0) : true;
+        ++_directCasts;
         if (_config.logEvents) {
             const char* name = target->GetDisplayFullName();
-            SKSE::log::info("[발동] 치명타 -> 직접 피해 {:.0f}, 중심 '{}'({:08X}), 반경 {:.0f} 안의 대상 {}명{}",
+            SKSE::log::info("[발동] 치명타 -> 직접 피해 {:.0f}, 중심 '{}'({:08X}), 반경 {:.0f} 안의 대상 {}명, 난이도 인자 {}{}",
                 _config.triggerDamage, name ? name : "?", target->GetFormID(), _config.triggerRadius, victims.size(),
-                _triggerExplosion ? "" : ", 연출 없음");
+                skipDifficulty, _triggerExplosion ? "" : ", 연출 없음");
         }
         for (const auto& victim : victims) {
             auto* owner = victim->AsActorValueOwner();
             const float before = owner->GetActorValue(RE::ActorValue::kHealth);
-            // 공격자를 플레이어로 넘겨 처치와 어그로가 플레이어의 것으로 남게 한다. 난이도 배율은 적용하지 않는다.
-            const bool result = victim->DoDamage(_config.triggerDamage, player, true);
+            // 공격자를 플레이어로 넘겨 처치와 어그로가 플레이어의 것으로 남게 한다.
+            const bool result = victim->DoDamage(_config.triggerDamage, player, skipDifficulty);
             ++_directHits;
             if (_config.logEvents) {
+                const float after = owner->GetActorValue(RE::ActorValue::kHealth);
                 const char* name = victim->GetDisplayFullName();
-                SKSE::log::info("[발동]   '{}'({:08X}) 체력 {:.1f} -> {:.1f}{} (DoDamage 반환 {})", name ? name : "?",
-                    victim->GetFormID(), before, owner->GetActorValue(RE::ActorValue::kHealth),
-                    victim->IsDead() ? ", 사망" : "", result);
+                SKSE::log::info("[발동]   '{}'({:08X}) 체력 {:.1f} -> {:.1f}, 깎인 양 {:.1f}(요청의 {:.0f}%){} "
+                                "(DoDamage 반환 {})",
+                    name ? name : "?", victim->GetFormID(), before, after, before - after,
+                    (before - after) / _config.triggerDamage * 100.0f, victim->IsDead() ? ", 사망" : "", result);
             }
         }
         return true;
@@ -915,10 +933,11 @@ namespace poe
                     _config.triggerExplosionPlugin, _config.triggerExplosionFormId);
             }
         }
-        SKSE::log::info("치명타 시 발동(direct 방식): 기본 확률 {:.0f}%{}, 쿨다운 {:.2f}초, 피해 {:.0f}, 반경 {:.0f}, 연출 {}",
+        SKSE::log::info("치명타 시 발동(direct 방식): 기본 확률 {:.0f}%{}, 쿨다운 {:.2f}초, 피해 {:.0f}, 반경 {:.0f}, 연출 {}{}",
             _config.critChance * 100.0f, critNote, _config.triggerCooldown, _config.triggerDamage, _config.triggerRadius,
             _triggerExplosion ? fmt::format("{}|0x{:06X}", _config.triggerExplosionPlugin, _config.triggerExplosionFormId) :
-                                std::string("없음"));
+                                std::string("없음"),
+            _config.triggerDifficultyTest ? ", 난이도 인자 교대 시험 켬" : "");
     }
 
     void Channel::CycleMode()
@@ -948,15 +967,16 @@ namespace poe
     void Channel::OnDeath(const RE::TESDeathEvent& event)
     {
         // 어느 스레드에서든 올 수 있으므로 잠그지 않고 원자 값만 읽는다.
-        // 엔진은 죽기 시작할 때와 죽은 뒤에 한 번씩, 모두 두 번 알린다. 뒤쪽만 남긴다.
-        if (!event.dead || !_logHits.load()) {
+        // 엔진은 죽기 시작할 때와 죽은 뒤에 한 번씩, 모두 두 번 알린다. 뒤쪽은 2초쯤 늦으므로 둘 다 남긴다.
+        if (!_logHits.load()) {
             return;
         }
         auto* dying = event.actorDying.get();
         auto* killer = event.actorKiller.get();
         const char* dyingName = dying ? dying->GetDisplayFullName() : nullptr;
         const char* killerName = killer ? killer->GetDisplayFullName() : nullptr;
-        SKSE::log::info("[사망] '{}'({:08X}) / 처치자 {} / {}", dyingName ? dyingName : "?", dying ? dying->GetFormID() : 0,
+        SKSE::log::info("[사망{}] '{}'({:08X}) / 처치자 {} / {}", event.dead ? " 확정" : " 시작", dyingName ? dyingName : "?",
+            dying ? dying->GetFormID() : 0,
             killer ? fmt::format("'{}'({:08X}){}", killerName ? killerName : "?", killer->GetFormID(),
                          killer->IsPlayerRef() ? " = 플레이어" : "") :
                      std::string("없음"),

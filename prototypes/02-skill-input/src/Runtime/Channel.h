@@ -136,9 +136,11 @@ namespace poe
         RE::BGSExplosion* _triggerExplosion = nullptr; // direct 방식에서 연출로 띄울 폭발. 없으면 연출 없이 피해만 준다
         std::mt19937      _random{ std::random_device{}() };
         Clock::time_point _nextTriggerAt{};
-        int               _crits = 0;   // 이번 채널링의 치명타 판정 수
+        int               _rolls = 0;   // 이번 채널링에서 치명타를 굴린 횟수
+        int               _crits = 0;   // 그중 치명타로 나온 횟수
         int               _casts = 0;   // 이번 채널링의 발동 수(쿨다운에 걸린 치명타는 빠진다)
         int               _directHits = 0;  // 이번 채널링에서 direct 방식으로 피해를 준 횟수(대상 수의 합)
+        int               _directCasts = 0; // direct 방식으로 발동한 누적 횟수. 난이도 인자 교대 시험의 순번으로 쓴다
         bool              _critChanceLogged = false;  // 이번 채널링의 치명타 확률을 로그에 남겼는가
 
         // 적중 집계. OnHit이 잠금 없이 읽고 쓴다.

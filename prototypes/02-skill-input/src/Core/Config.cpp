@@ -214,12 +214,13 @@ namespace poe
                     Warn(warnings, lineNumber, rawKey, "0~255 범위의 키 코드가 아니어서 기본값 유지");
                 }
             } else if (key == "spinbydll" || key == "spinclockwise" || key == "hitsbydll" || key == "hitneutral" ||
-                       key == "addskyrimcrit") {
+                       key == "addskyrimcrit" || key == "triggerdifficultytest") {
                 if (const auto parsed = ParseBool(value)) {
                     (key == "spinbydll" ? config.spinByDll :
                         key == "spinclockwise" ? config.spinClockwise :
                         key == "hitsbydll" ? config.hitsByDll :
-                        key == "hitneutral" ? config.hitNeutral : config.addSkyrimCrit) = *parsed;
+                        key == "hitneutral" ? config.hitNeutral :
+                        key == "addskyrimcrit" ? config.addSkyrimCrit : config.triggerDifficultyTest) = *parsed;
                 } else {
                     Warn(warnings, lineNumber, rawKey, "true 또는 false가 아니어서 기본값 유지");
                 }

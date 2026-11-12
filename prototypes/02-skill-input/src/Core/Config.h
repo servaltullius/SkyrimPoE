@@ -60,6 +60,7 @@ namespace poe
         // direct 방식: 치명타를 맞은 대상 둘레의 적대 대상에게 DLL이 피해를 직접 준다.
         float         triggerDamage = 40.0f;              // 대상 하나가 받는 체력 피해
         float         triggerRadius = 200.0f;             // 치명타를 맞은 대상으로부터의 반경(게임 단위). 0이면 그 대상만
+        bool          triggerDifficultyTest = false;      // 시험용: 발동마다 DoDamage의 난이도 인자를 번갈아 넘긴다
         std::string   triggerExplosionPlugin = "Skyrim.esm";  // 연출로 띄울 폭발이 정의된 플러그인. 비우면 연출 없음
         std::uint32_t triggerExplosionFormId = 0x0439C0;      // 기본은 FireBallExp01(레코드 자체에는 피해가 없음)
         // spell 방식: 이 주문을 치명타를 맞은 대상에게 시전한다.

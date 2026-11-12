@@ -151,6 +151,9 @@ int main()
         Expect(d.triggerMode == poe::TriggerMode::kDirect && d.triggerDamage == 40.0f && d.triggerRadius == 200.0f,
             "직접 피해 발동 기본값");
         Expect(d.triggerExplosionPlugin == "Skyrim.esm" && d.triggerExplosionFormId == 0x0439C0, "연출용 폭발 기본값");
+        Expect(!d.triggerDifficultyTest, "난이도 인자 시험은 기본으로 꺼짐");
+        const auto diff = poe::ParseConfig("TriggerDifficultyTest = true\n", warnings);
+        Expect(diff.triggerDifficultyTest, "TriggerDifficultyTest=true");
         const auto c = poe::ParseConfig(
             "TriggerMode = SPELL\nTriggerDamage = 125.5\nTriggerRadius = 0\nTriggerExplosion = My Mod.esp|0x801\n", warnings);
         Expect(c.triggerMode == poe::TriggerMode::kSpell, "TriggerMode는 대소문자를 가리지 않음");
