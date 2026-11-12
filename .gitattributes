@@ -1,4 +1,5 @@
-* text=auto
+# 작업 폴더의 텍스트 파일은 LF로 둔다(이 컴퓨터의 git은 autocrlf=true라서 지정하지 않으면 CRLF로 바뀐다)
+* text=auto eol=lf
 
 # cmd는 줄바꿈이 LF뿐인 배치 파일을 잘못 읽을 수 있다
 *.bat text eol=crlf
