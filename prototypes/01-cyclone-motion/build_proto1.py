@@ -101,6 +101,7 @@ def main() -> None:
     parser.add_argument("--clip", type=Path, default=DEFAULT_CLIP, help="회전 모션으로 쓸 HKX 파일")
     parser.add_argument("--end-clip", type=Path, help="1A에서 버튼을 뗐을 때 재생할 마무리 HKX. 주지 않으면 --clip 과 같은 파일")
     parser.add_argument("--deploy", type=Path, help="MO2의 mods 폴더. 주면 그 안에도 모드 폴더를 만든다")
+    parser.add_argument("--only", choices=("1a", "1b"), help="한쪽 모드만 만든다. 주지 않으면 둘 다 만든다")
     args = parser.parse_args()
 
     clip: Path = args.clip
@@ -122,11 +123,14 @@ def main() -> None:
 
     for root in targets:
         root.mkdir(parents=True, exist_ok=True)
-        count_a = build_1a(root, clip, end_clip)
-        count_b = build_1b(root, clip)
-        print(f"{root}\n  {MOD_1A}: 파일 {count_a}개\n  {MOD_1B}: 파일 {count_b}개")
+        print(root)
+        if args.only != "1b":
+            print(f"  {MOD_1A}: 파일 {build_1a(root, clip, end_clip)}개")
+        if args.only != "1a":
+            print(f"  {MOD_1B}: 파일 {build_1b(root, clip)}개")
     print(f"회전 모션 원본: {clip} ({clip.stat().st_size} bytes)")
-    print(f"마무리 모션 원본: {end_clip} ({end_clip.stat().st_size} bytes)")
+    if args.only != "1b":
+        print(f"마무리 모션 원본(1A만 씀): {end_clip} ({end_clip.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,9 @@ build/
 cmake-build-*/
 vcpkg_installed/
 
+# 파이썬 캐시
+__pycache__/
+
 # 편집기와 로컬 도구 설정
 .vs/
 .idea/
