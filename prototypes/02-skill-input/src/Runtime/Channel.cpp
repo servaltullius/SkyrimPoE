@@ -859,21 +859,23 @@ namespace poe
         if (_triggerExplosion) {
             target->PlaceObjectAtMe(_triggerExplosion, false);
         }
-        // DoDamage의 셋째 인자(헤더의 이름은 a_dontAdjustDifficulty). 평소에는 true로 넘겨 난이도 배율을 빼려 한다.
-        // 시험 설정이 켜져 있으면 발동마다 번갈아 넘겨, 이 인자가 깎이는 양을 바꾸는지 로그로 가른다.
-        const bool skipDifficulty = _config.triggerDifficultyTest ? (_directCasts % 2 == 0) : true;
+        // DoDamage의 셋째 인자(헤더의 이름은 a_dontAdjustDifficulty). 7차 시험에서 true와 false의 결과가 같았다.
+        // 플레이어가 NPC에게 주는 피해에는 어느 쪽이든 난이도 배율이 곱해지고, 스킬 피해는 그 배율을 받게 두기로 했다
+        // (설계-현황 결정 53). 이 인자가 실제로 하는 일은 모르므로 평소에는 지금까지 써 온 true로 둔다.
+        // 시험 설정이 켜져 있으면 발동마다 번갈아 넘기고 로그에 남긴다.
+        const bool difficultyArg = _config.triggerDifficultyTest ? (_directCasts % 2 == 0) : true;
         ++_directCasts;
         if (_config.logEvents) {
             const char* name = target->GetDisplayFullName();
             SKSE::log::info("[발동] 치명타 -> 직접 피해 {:.0f}, 중심 '{}'({:08X}), 반경 {:.0f} 안의 대상 {}명, 난이도 인자 {}{}",
                 _config.triggerDamage, name ? name : "?", target->GetFormID(), _config.triggerRadius, victims.size(),
-                skipDifficulty, _triggerExplosion ? "" : ", 연출 없음");
+                difficultyArg, _triggerExplosion ? "" : ", 연출 없음");
         }
         for (const auto& victim : victims) {
             auto* owner = victim->AsActorValueOwner();
             const float before = owner->GetActorValue(RE::ActorValue::kHealth);
             // 공격자를 플레이어로 넘겨 처치와 어그로가 플레이어의 것으로 남게 한다.
-            const bool result = victim->DoDamage(_config.triggerDamage, player, skipDifficulty);
+            const bool result = victim->DoDamage(_config.triggerDamage, player, difficultyArg);
             ++_directHits;
             if (_config.logEvents) {
                 const float after = owner->GetActorValue(RE::ActorValue::kHealth);
