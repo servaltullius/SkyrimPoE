@@ -146,6 +146,38 @@ int main()
         Expect(warnings.size() == 7, "잘못된 줄마다 경고 하나(발동)");
     }
     {
+        std::vector<std::string> warnings;
+        const auto d = poe::ParseConfig("", warnings);
+        Expect(d.triggerMode == poe::TriggerMode::kDirect && d.triggerDamage == 40.0f && d.triggerRadius == 200.0f,
+            "직접 피해 발동 기본값");
+        Expect(d.triggerExplosionPlugin == "Skyrim.esm" && d.triggerExplosionFormId == 0x0439C0, "연출용 폭발 기본값");
+        const auto c = poe::ParseConfig(
+            "TriggerMode = SPELL\nTriggerDamage = 125.5\nTriggerRadius = 0\nTriggerExplosion = My Mod.esp|0x801\n", warnings);
+        Expect(c.triggerMode == poe::TriggerMode::kSpell, "TriggerMode는 대소문자를 가리지 않음");
+        Expect(c.triggerDamage == 125.5f && c.triggerRadius == 0.0f, "직접 피해와 반경(0 허용)");
+        Expect(c.triggerExplosionPlugin == "My Mod.esp" && c.triggerExplosionFormId == 0x801, "연출용 폭발 지정");
+        Expect(c.triggerSpellPlugin == "Skyrim.esm" && c.triggerSpellFormId == 0x01C789, "폭발을 바꿔도 주문 지정은 그대로");
+        const auto none = poe::ParseConfig("TriggerExplosion =\n", warnings);
+        Expect(none.triggerExplosionPlugin.empty() && none.triggerExplosionFormId == 0, "빈 값이면 연출 없음");
+        Expect(none.triggerSpellPlugin == "Skyrim.esm", "폭발을 비워도 주문 지정은 그대로");
+        Expect(warnings.empty(), "올바른 직접 피해 설정에는 경고가 없음");
+    }
+    {
+        std::vector<std::string> warnings;
+        const auto c = poe::ParseConfig(
+            "TriggerMode = melee\nTriggerDamage = 0\nTriggerRadius = 1001\nTriggerExplosion = Skyrim.esm\n"
+            "TriggerExplosion = Skyrim.esm|0\n",
+            warnings);
+        Expect(c.triggerMode == poe::TriggerMode::kDirect && c.triggerDamage == 40.0f && c.triggerRadius == 200.0f,
+            "범위를 벗어난 직접 피해 설정은 기본값 유지");
+        Expect(c.triggerExplosionPlugin == "Skyrim.esm" && c.triggerExplosionFormId == 0x0439C0,
+            "잘못된 폭발 지정은 기본값 유지");
+        Expect(warnings.size() == 5, "잘못된 줄마다 경고 하나(직접 피해)");
+    }
+    {
+        Expect(poe::TriggerModeName(poe::TriggerMode::kDirect) == "direct" &&
+               poe::TriggerModeName(poe::TriggerMode::kSpell) == "spell",
+            "TriggerModeName");
         Expect(poe::MotionName(poe::Motion::kInjector) == "injector", "MotionName");
         Expect(poe::TriggerName(poe::Trigger::kHold) == "hold", "TriggerName");
     }

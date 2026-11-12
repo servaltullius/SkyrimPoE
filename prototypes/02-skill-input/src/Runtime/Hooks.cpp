@@ -88,6 +88,29 @@ namespace poe
         private:
             HitSink() = default;
         };
+
+        // 누가 누구에게 죽었는지 듣기만 한다.
+        class DeathSink final : public RE::BSTEventSink<RE::TESDeathEvent>
+        {
+        public:
+            static DeathSink& Get()
+            {
+                static DeathSink instance;
+                return instance;
+            }
+
+            RE::BSEventNotifyControl ProcessEvent(const RE::TESDeathEvent* a_event,
+                RE::BSTEventSource<RE::TESDeathEvent>*) override
+            {
+                if (a_event) {
+                    Channel::Get().OnDeath(*a_event);
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+        private:
+            DeathSink() = default;
+        };
     }
 
     void InstallPlayerHooks()
@@ -105,11 +128,12 @@ namespace poe
     {
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
         if (!holder) {
-            SKSE::log::error("이벤트 원본을 찾지 못해 적중을 기록할 수 없음. 채널링 자체에는 영향이 없습니다.");
+            SKSE::log::error("이벤트 원본을 찾지 못해 적중과 사망을 기록할 수 없음. 채널링 자체에는 영향이 없습니다.");
             return;
         }
         holder->AddEventSink<RE::TESHitEvent>(&HitSink::Get());
-        SKSE::log::info("적중 싱크 등록(읽기 전용)");
+        holder->AddEventSink<RE::TESDeathEvent>(&DeathSink::Get());
+        SKSE::log::info("적중·사망 싱크 등록(읽기 전용)");
     }
 
     void InstallInputSink()

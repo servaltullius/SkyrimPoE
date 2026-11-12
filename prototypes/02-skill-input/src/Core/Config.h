@@ -22,6 +22,13 @@ namespace poe
         kHold,         // 공격 버튼을 정해진 시간 넘게 누르고 있으면 시작한다
     };
 
+    // 치명타로 발동한 스킬이 피해를 주는 방식.
+    enum class TriggerMode
+    {
+        kDirect,  // 피해 없는 연출만 띄우고, 피해는 DLL이 적대 대상에게 직접 준다(설계-현황 결정 52의 후보 3)
+        kSpell,   // 주문을 대상에게 시전한다. 주문의 범위 효과가 아군과 자신에게도 닿는다(비교용)
+    };
+
     struct Config
     {
         bool          enabled = true;
@@ -48,8 +55,15 @@ namespace poe
         // 치명타 시 시전(발동 젬의 시험). DLL이 낸 범위 타격이 치명타로 판정되면 주문을 시전한다.
         float         critChance = 0.25f;                 // 타격 한 번이 치명타일 확률(0 ~ 1). 0이면 끔
         bool          addSkyrimCrit = true;               // 스카이림의 치명타 확률(액터 값과 퍽)을 위 확률에 더한다
-        float         triggerCooldown = 0.15f;            // 시전 사이의 최소 간격(초). PoE의 치명타 시 시전과 같은 0.15
-        std::string   triggerSpellPlugin = "Skyrim.esm";  // 시전할 주문이 정의된 플러그인. 비우면 끔
+        float         triggerCooldown = 0.15f;            // 발동 사이의 최소 간격(초). PoE의 치명타 시 시전과 같은 0.15
+        TriggerMode   triggerMode = TriggerMode::kDirect;
+        // direct 방식: 치명타를 맞은 대상 둘레의 적대 대상에게 DLL이 피해를 직접 준다.
+        float         triggerDamage = 40.0f;              // 대상 하나가 받는 체력 피해
+        float         triggerRadius = 200.0f;             // 치명타를 맞은 대상으로부터의 반경(게임 단위). 0이면 그 대상만
+        std::string   triggerExplosionPlugin = "Skyrim.esm";  // 연출로 띄울 폭발이 정의된 플러그인. 비우면 연출 없음
+        std::uint32_t triggerExplosionFormId = 0x0439C0;      // 기본은 FireBallExp01(레코드 자체에는 피해가 없음)
+        // spell 방식: 이 주문을 치명타를 맞은 대상에게 시전한다.
+        std::string   triggerSpellPlugin = "Skyrim.esm";  // 시전할 주문이 정의된 플러그인
         std::uint32_t triggerSpellFormId = 0x01C789;      // 그 플러그인 안의 FormID. 기본은 화염구(MAG_Fireball)
         bool          logEvents = true;
     };
@@ -60,6 +74,9 @@ namespace poe
     inline constexpr float kMaxMaxSeconds = 300.0f;
     inline constexpr float kMaxMinSeconds = 10.0f;
     inline constexpr std::uint32_t kMaxClipVariants = 9;
+    inline constexpr float kMinTriggerDamage = 1.0f;
+    inline constexpr float kMaxTriggerDamage = 100000.0f;
+    inline constexpr float kMaxTriggerRadius = 1000.0f;
 
     // INI 본문을 읽어 설정을 만든다. 알 수 없는 키나 범위를 벗어난 값은 기본값을 유지하고 warnings에 사유를 남긴다.
     Config ParseConfig(std::string_view text, std::vector<std::string>& warnings);
@@ -69,4 +86,5 @@ namespace poe
 
     std::string_view MotionName(Motion motion);
     std::string_view TriggerName(Trigger trigger);
+    std::string_view TriggerModeName(TriggerMode mode);
 }

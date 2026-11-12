@@ -11,6 +11,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace poe
 {
@@ -28,7 +29,7 @@ namespace poe
         void Configure(const Config& config);
         void SetBackends(bool oarAvailable, bool injectorAvailable);
 
-        // 설정에 적힌 발동 주문을 찾아 둔다. 게임 데이터가 다 불린 뒤(kDataLoaded)에 한 번.
+        // 설정에 적힌 발동용 폼(주문 또는 연출용 폭발)을 찾아 둔다. 게임 데이터가 다 불린 뒤(kDataLoaded)에 한 번.
         void ResolveForms();
 
         // 입력 싱크에서 버튼 이벤트 하나마다. pressed = 눌려 있음, first = 이번에 처음 눌림.
@@ -45,6 +46,10 @@ namespace poe
 
         // 누군가 맞았을 때. 플레이어가 때린 것만 세고 기록한다. 어느 스레드에서든 불릴 수 있다.
         void OnHit(const RE::TESHitEvent& event);
+
+        // 누군가 죽었을 때. 누가 죽였는지를 기록한다(직접 준 피해의 처치가 플레이어의 것으로 남는지 확인용).
+        // 어느 스레드에서든 불릴 수 있다.
+        void OnDeath(const RE::TESDeathEvent& event);
 
         // 이 DLL이 직접 보내는 애니메이션 이벤트가 훅을 지나는 중인지.
         static bool IsSending();
@@ -86,8 +91,12 @@ namespace poe
         void CycleMode();
         bool AdvanceSpin(RE::PlayerCharacter* player, float frame);
         void RestoreSpinNode(RE::PlayerCharacter* player);
+        std::vector<RE::NiPointer<RE::Actor>> CollectTargets(RE::PlayerCharacter* player, const RE::NiPoint3& origin,
+            float radius) const;
         void AreaHit(RE::PlayerCharacter* player);
         void RollTrigger(RE::PlayerCharacter* player, RE::Actor* target);
+        bool TriggerBySpell(RE::PlayerCharacter* player, RE::Actor* target);
+        bool TriggerDirect(RE::PlayerCharacter* player, RE::Actor* target);
         void LogEvent(std::string_view name, std::string_view outcome);
         void FlushEventLog();
 
@@ -121,12 +130,15 @@ namespace poe
         Clock::duration   _hitInterval{};
         Clock::time_point _nextHitAt{};
 
-        // 치명타 시 시전. 주문은 게임이 끝날 때까지 살아 있는 기본 폼이라 포인터로 들고 있어도 된다.
-        RE::SpellItem*    _triggerSpell = nullptr;
+        // 치명타 시 발동. 주문과 폭발은 게임이 끝날 때까지 살아 있는 기본 폼이라 포인터로 들고 있어도 된다.
+        bool              _triggerReady = false;       // 발동을 쓸 수 있는가(설정이 켜져 있고 필요한 폼을 찾았는가)
+        RE::SpellItem*    _triggerSpell = nullptr;     // spell 방식에서 시전할 주문
+        RE::BGSExplosion* _triggerExplosion = nullptr; // direct 방식에서 연출로 띄울 폭발. 없으면 연출 없이 피해만 준다
         std::mt19937      _random{ std::random_device{}() };
         Clock::time_point _nextTriggerAt{};
         int               _crits = 0;   // 이번 채널링의 치명타 판정 수
-        int               _casts = 0;   // 이번 채널링의 시전 수(쿨다운에 걸린 치명타는 빠진다)
+        int               _casts = 0;   // 이번 채널링의 발동 수(쿨다운에 걸린 치명타는 빠진다)
+        int               _directHits = 0;  // 이번 채널링에서 direct 방식으로 피해를 준 횟수(대상 수의 합)
         bool              _critChanceLogged = false;  // 이번 채널링의 치명타 확률을 로그에 남겼는가
 
         // 적중 집계. OnHit이 잠금 없이 읽고 쓴다.

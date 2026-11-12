@@ -80,6 +80,27 @@ namespace poe
             return ParseUnsigned(value, 0xFF);
         }
 
+        struct FormRef
+        {
+            std::string_view plugin;
+            std::uint32_t    formId = 0;
+        };
+
+        // "플러그인.esp|0x1234" 형식. 플러그인 이름이 비었거나 FormID가 0이거나 24비트를 넘으면 받지 않는다.
+        std::optional<FormRef> ParseFormRef(std::string_view value)
+        {
+            const auto bar = value.find('|');
+            if (bar == std::string_view::npos) {
+                return std::nullopt;
+            }
+            const auto plugin = Trim(value.substr(0, bar));
+            const auto form = ParseUnsigned(Trim(value.substr(bar + 1)), 0xFFFFFF);
+            if (plugin.empty() || !form || *form == 0) {
+                return std::nullopt;
+            }
+            return FormRef{ plugin, *form };
+        }
+
         void Warn(std::vector<std::string>& warnings, std::size_t line, std::string_view key, std::string_view why)
         {
             std::ostringstream message;
@@ -96,6 +117,11 @@ namespace poe
     std::string_view TriggerName(Trigger trigger)
     {
         return trigger == Trigger::kHold ? "hold" : "powerAttack";
+    }
+
+    std::string_view TriggerModeName(TriggerMode mode)
+    {
+        return mode == TriggerMode::kSpell ? "spell" : "direct";
     }
 
     Config ParseConfig(std::string_view text, std::vector<std::string>& warnings)
@@ -223,22 +249,41 @@ namespace poe
                 } else {
                     Warn(warnings, lineNumber, rawKey, "0~5 범위의 숫자가 아니어서 기본값 유지");
                 }
-            } else if (key == "triggerspell") {
-                // "플러그인.esp|0x1234" 형식. 값이 비어 있으면 발동을 끈다.
-                if (value.empty()) {
-                    config.triggerSpellPlugin.clear();
-                    config.triggerSpellFormId = 0;
+            } else if (key == "triggermode") {
+                const auto lower = Lower(value);
+                if (lower == "direct") {
+                    config.triggerMode = TriggerMode::kDirect;
+                } else if (lower == "spell") {
+                    config.triggerMode = TriggerMode::kSpell;
                 } else {
-                    const auto bar = value.find('|');
-                    const auto plugin = bar == std::string_view::npos ? std::string_view{} : Trim(value.substr(0, bar));
-                    const auto form = bar == std::string_view::npos ? std::nullopt :
-                                                                      ParseUnsigned(Trim(value.substr(bar + 1)), 0xFFFFFF);
-                    if (!plugin.empty() && form && *form != 0) {
-                        config.triggerSpellPlugin.assign(plugin);
-                        config.triggerSpellFormId = *form;
-                    } else {
-                        Warn(warnings, lineNumber, rawKey, "'플러그인 이름|FormID' 형식이 아니어서 기본값 유지");
-                    }
+                    Warn(warnings, lineNumber, rawKey, "direct 또는 spell이 아니어서 기본값 유지");
+                }
+            } else if (key == "triggerdamage") {
+                const auto parsed = ParseFloat(value);
+                if (parsed && *parsed >= kMinTriggerDamage && *parsed <= kMaxTriggerDamage) {
+                    config.triggerDamage = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "1~100000 범위의 숫자가 아니어서 기본값 유지");
+                }
+            } else if (key == "triggerradius") {
+                const auto parsed = ParseFloat(value);
+                if (parsed && *parsed >= 0.0f && *parsed <= kMaxTriggerRadius) {
+                    config.triggerRadius = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "0~1000 범위의 숫자가 아니어서 기본값 유지");
+                }
+            } else if (key == "triggerspell" || key == "triggerexplosion") {
+                // "플러그인.esp|0x1234" 형식. 값이 비어 있으면 그 폼을 쓰지 않는다.
+                auto& plugin = key == "triggerspell" ? config.triggerSpellPlugin : config.triggerExplosionPlugin;
+                auto& formId = key == "triggerspell" ? config.triggerSpellFormId : config.triggerExplosionFormId;
+                if (value.empty()) {
+                    plugin.clear();
+                    formId = 0;
+                } else if (const auto parsed = ParseFormRef(value)) {
+                    plugin.assign(parsed->plugin);
+                    formId = parsed->formId;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "'플러그인 이름|FormID' 형식이 아니어서 기본값 유지");
                 }
             } else if (key == "clipvariants" || key == "clipvariant") {
                 const auto parsed = ParseKeyCode(value);

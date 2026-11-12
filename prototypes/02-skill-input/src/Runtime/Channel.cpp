@@ -607,6 +607,7 @@ namespace poe
         _hits.store(0);
         _crits = 0;
         _casts = 0;
+        _directHits = 0;
         _critChanceLogged = false;
         _hitVariant.store(static_cast<int>(_config.clipVariant));
         _hitActive.store(true);
@@ -688,8 +689,8 @@ namespace poe
         _spin.Reset();
         FlushEventLog();
         _hitActive.store(false);
-        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 치명타 {}회, 발동 시전 {}회",
-            MotionLabel(_activeMotion), why, seconds, _hits.load(), _crits, _casts);
+        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 치명타 {}회, 발동 {}회(직접 피해 {}건)",
+            MotionLabel(_activeMotion), why, seconds, _hits.load(), _crits, _casts, _directHits);
         _active = false;
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
@@ -735,16 +736,17 @@ namespace poe
         _spinRestorePending = false;
     }
 
-    // 플레이어 둘레의 적에게 근접 타격을 한 번씩 적용한다.
-    void Channel::AreaHit(RE::PlayerCharacter* player)
+    // origin 둘레에서 플레이어의 스킬이 맞힐 수 있는 액터를 모은다.
+    // 플레이어 자신, 동료, 죽은 액터, 유령, 킬무브 중인 액터는 빼고, HitNeutral이 꺼져 있으면 적대적인 액터만 남긴다.
+    std::vector<RE::NiPointer<RE::Actor>> Channel::CollectTargets(RE::PlayerCharacter* player, const RE::NiPoint3& origin,
+        float radius) const
     {
+        std::vector<RE::NiPointer<RE::Actor>> targets;
         auto* lists = RE::ProcessLists::GetSingleton();
         if (!lists) {
-            return;
+            return targets;
         }
-        const auto origin = player->GetPosition();
-        const float radiusSquared = _config.hitRadius * _config.hitRadius;
-        std::vector<RE::NiPointer<RE::Actor>> targets;
+        const float radiusSquared = radius * radius;
         for (const auto& handle : lists->highActorHandles) {
             auto actor = handle.get();
             if (!actor || actor.get() == player) {
@@ -763,27 +765,34 @@ namespace poe
             }
             targets.push_back(std::move(actor));
         }
+        return targets;
+    }
+
+    // 플레이어 둘레의 적에게 근접 타격을 한 번씩 적용한다.
+    void Channel::AreaHit(RE::PlayerCharacter* player)
+    {
+        // 대상 목록을 먼저 만든 뒤에 타격한다. 타격이 액터 목록을 바꿀 수 있기 때문이다.
+        const auto targets = CollectTargets(player, player->GetPosition(), _config.hitRadius);
         if (targets.empty()) {
             return;
         }
-        // 대상 목록을 먼저 만든 뒤에 타격한다. 타격이 액터 목록을 바꿀 수 있기 때문이다.
         {
             const DamageScale scale(player, _config.hitDamageMult);
             for (const auto& target : targets) {
                 kDealDamage(player, target.get(), nullptr, false);
             }
         }
-        // 피해 배율을 되돌린 뒤에 발동을 굴린다. 발동으로 나간 주문의 피해는 여기를 다시 지나지 않으므로
+        // 피해 배율을 되돌린 뒤에 발동을 굴린다. 발동으로 나간 피해는 여기를 다시 지나지 않으므로
         // 발동이 발동을 부르는 일은 없다.
         for (const auto& target : targets) {
             RollTrigger(player, target.get());
         }
     }
 
-    // 타격 한 번에 대해 치명타를 굴리고, 치명타이고 쿨다운이 끝났으면 발동 주문을 그 대상에게 시전한다.
+    // 타격 한 번에 대해 치명타를 굴리고, 치명타이고 쿨다운이 끝났으면 그 대상을 중심으로 스킬을 발동한다.
     void Channel::RollTrigger(RE::PlayerCharacter* player, RE::Actor* target)
     {
-        if (!_triggerSpell || _config.critChance <= 0.0f) {
+        if (!_triggerReady) {
             return;
         }
         // 우리 쪽 확률(지금은 INI의 임시 값)에 스카이림의 치명타 확률을 더한다(설계-현황 결정 51).
@@ -803,42 +812,113 @@ namespace poe
         if (now < _nextTriggerAt || target->IsDead()) {
             return;  // 쿨다운 중이거나 방금 타격으로 죽은 대상
         }
-        auto* caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
-        if (!caster) {
-            return;
+        const bool fired = _config.triggerMode == TriggerMode::kSpell ? TriggerBySpell(player, target) :
+                                                                         TriggerDirect(player, target);
+        if (fired) {
+            _nextTriggerAt = now + std::chrono::duration_cast<Clock::duration>(
+                                       std::chrono::duration<float>(_config.triggerCooldown));
+            ++_casts;
         }
-        _nextTriggerAt = now + std::chrono::duration_cast<Clock::duration>(
-                                   std::chrono::duration<float>(_config.triggerCooldown));
-        ++_casts;
-        // 손이나 매지카를 쓰지 않는 즉시 시전. 조준형 주문은 대상을 향해 날아간다.
+    }
+
+    // spell 방식: 주문을 대상에게 시전한다. 손이나 매지카를 쓰지 않는 즉시 시전이고, 조준형 주문은 대상을 향해 날아간다.
+    // 주문의 범위 효과는 엔진이 적용하므로 아군과 플레이어 자신에게도 닿는다.
+    bool Channel::TriggerBySpell(RE::PlayerCharacter* player, RE::Actor* target)
+    {
+        auto* caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+        if (!caster || !_triggerSpell) {
+            return false;
+        }
         caster->CastSpellImmediate(_triggerSpell, false, target, 1.0f, false, 0.0f, player);
         if (_config.logEvents) {
             const char* name = target->GetDisplayFullName();
             SKSE::log::info("[발동] 치명타 -> '{}' 시전, 대상 '{}'({:08X})", _triggerSpell->GetName(), name ? name : "?",
                 target->GetFormID());
         }
+        return true;
+    }
+
+    // direct 방식: 대상의 자리에 피해 없는 폭발을 연출로 띄우고, 그 둘레의 적대 대상에게 체력 피해를 직접 준다.
+    // 누가 맞는지를 엔진의 범위 판정이 아니라 우리가 정하므로 아군과 플레이어 자신은 맞지 않는다(설계-현황 결정 52).
+    bool Channel::TriggerDirect(RE::PlayerCharacter* player, RE::Actor* target)
+    {
+        // 피해를 주면 대상의 상태가 바뀌므로 맞을 대상을 먼저 모은다. 치명타를 맞은 대상도 여기에 들어 있다.
+        const auto victims = CollectTargets(player, target->GetPosition(), _config.triggerRadius);
+        if (_triggerExplosion) {
+            target->PlaceObjectAtMe(_triggerExplosion, false);
+        }
+        if (_config.logEvents) {
+            const char* name = target->GetDisplayFullName();
+            SKSE::log::info("[발동] 치명타 -> 직접 피해 {:.0f}, 중심 '{}'({:08X}), 반경 {:.0f} 안의 대상 {}명{}",
+                _config.triggerDamage, name ? name : "?", target->GetFormID(), _config.triggerRadius, victims.size(),
+                _triggerExplosion ? "" : ", 연출 없음");
+        }
+        for (const auto& victim : victims) {
+            auto* owner = victim->AsActorValueOwner();
+            const float before = owner->GetActorValue(RE::ActorValue::kHealth);
+            // 공격자를 플레이어로 넘겨 처치와 어그로가 플레이어의 것으로 남게 한다. 난이도 배율은 적용하지 않는다.
+            const bool result = victim->DoDamage(_config.triggerDamage, player, true);
+            ++_directHits;
+            if (_config.logEvents) {
+                const char* name = victim->GetDisplayFullName();
+                SKSE::log::info("[발동]   '{}'({:08X}) 체력 {:.1f} -> {:.1f}{} (DoDamage 반환 {})", name ? name : "?",
+                    victim->GetFormID(), before, owner->GetActorValue(RE::ActorValue::kHealth),
+                    victim->IsDead() ? ", 사망" : "", result);
+            }
+        }
+        return true;
     }
 
     void Channel::ResolveForms()
     {
         const std::scoped_lock lock(_mutex);
         _triggerSpell = nullptr;
-        if (_config.critChance <= 0.0f || _config.triggerSpellPlugin.empty() || _config.triggerSpellFormId == 0) {
-            SKSE::log::info("치명타 시 시전: 꺼져 있음");
+        _triggerExplosion = nullptr;
+        _triggerReady = false;
+        if (_config.critChance <= 0.0f) {
+            SKSE::log::info("치명타 시 발동: 꺼져 있음(CritChance = 0)");
             return;
         }
         auto* data = RE::TESDataHandler::GetSingleton();
-        auto* spell = data ? data->LookupForm<RE::SpellItem>(_config.triggerSpellFormId, _config.triggerSpellPlugin) : nullptr;
-        if (!spell) {
-            SKSE::log::warn("치명타 시 시전: 주문을 찾지 못해 끔({}|0x{:06X}). 플러그인이 켜져 있는지, FormID가 주문인지 "
-                            "확인하세요.",
-                _config.triggerSpellPlugin, _config.triggerSpellFormId);
+        const char* critNote = _config.addSkyrimCrit ? " + 스카이림의 치명타 확률" : "(스카이림 값은 더하지 않음)";
+
+        if (_config.triggerMode == TriggerMode::kSpell) {
+            if (_config.triggerSpellPlugin.empty() || _config.triggerSpellFormId == 0) {
+                SKSE::log::info("치명타 시 발동: 꺼져 있음(spell 방식인데 TriggerSpell이 비어 있음)");
+                return;
+            }
+            auto* spell =
+                data ? data->LookupForm<RE::SpellItem>(_config.triggerSpellFormId, _config.triggerSpellPlugin) : nullptr;
+            if (!spell) {
+                SKSE::log::warn("치명타 시 발동: 주문을 찾지 못해 끔({}|0x{:06X}). 플러그인이 켜져 있는지, FormID가 주문인지 "
+                                "확인하세요.",
+                    _config.triggerSpellPlugin, _config.triggerSpellFormId);
+                return;
+            }
+            _triggerSpell = spell;
+            _triggerReady = true;
+            SKSE::log::info("치명타 시 발동(spell 방식): 기본 확률 {:.0f}%{}, 쿨다운 {:.2f}초, 주문 '{}'({}|0x{:06X})",
+                _config.critChance * 100.0f, critNote, _config.triggerCooldown, spell->GetName(), _config.triggerSpellPlugin,
+                _config.triggerSpellFormId);
             return;
         }
-        _triggerSpell = spell;
-        SKSE::log::info("치명타 시 시전: 기본 확률 {:.0f}%{}, 쿨다운 {:.2f}초, 주문 '{}'({}|0x{:06X})",
-            _config.critChance * 100.0f, _config.addSkyrimCrit ? " + 스카이림의 치명타 확률" : "(스카이림 값은 더하지 않음)",
-            _config.triggerCooldown, spell->GetName(), _config.triggerSpellPlugin, _config.triggerSpellFormId);
+
+        // direct 방식. 폭발은 연출일 뿐이라 찾지 못해도 발동은 켠다.
+        _triggerReady = true;
+        if (!_config.triggerExplosionPlugin.empty() && _config.triggerExplosionFormId != 0) {
+            _triggerExplosion = data ? data->LookupForm<RE::BGSExplosion>(_config.triggerExplosionFormId,
+                                           _config.triggerExplosionPlugin) :
+                                       nullptr;
+            if (!_triggerExplosion) {
+                SKSE::log::warn("치명타 시 발동: 연출용 폭발을 찾지 못해 연출 없이 진행({}|0x{:06X}). 플러그인이 켜져 있는지, "
+                                "FormID가 폭발인지 확인하세요.",
+                    _config.triggerExplosionPlugin, _config.triggerExplosionFormId);
+            }
+        }
+        SKSE::log::info("치명타 시 발동(direct 방식): 기본 확률 {:.0f}%{}, 쿨다운 {:.2f}초, 피해 {:.0f}, 반경 {:.0f}, 연출 {}",
+            _config.critChance * 100.0f, critNote, _config.triggerCooldown, _config.triggerDamage, _config.triggerRadius,
+            _triggerExplosion ? fmt::format("{}|0x{:06X}", _config.triggerExplosionPlugin, _config.triggerExplosionFormId) :
+                                std::string("없음"));
     }
 
     void Channel::CycleMode()
@@ -863,6 +943,24 @@ namespace poe
         }
         RE::SendHUDMessage::ShowHUDMessage(message.c_str());
         SKSE::log::info("{}", message);
+    }
+
+    void Channel::OnDeath(const RE::TESDeathEvent& event)
+    {
+        // 어느 스레드에서든 올 수 있으므로 잠그지 않고 원자 값만 읽는다.
+        // 엔진은 죽기 시작할 때와 죽은 뒤에 한 번씩, 모두 두 번 알린다. 뒤쪽만 남긴다.
+        if (!event.dead || !_logHits.load()) {
+            return;
+        }
+        auto* dying = event.actorDying.get();
+        auto* killer = event.actorKiller.get();
+        const char* dyingName = dying ? dying->GetDisplayFullName() : nullptr;
+        const char* killerName = killer ? killer->GetDisplayFullName() : nullptr;
+        SKSE::log::info("[사망] '{}'({:08X}) / 처치자 {} / {}", dyingName ? dyingName : "?", dying ? dying->GetFormID() : 0,
+            killer ? fmt::format("'{}'({:08X}){}", killerName ? killerName : "?", killer->GetFormID(),
+                         killer->IsPlayerRef() ? " = 플레이어" : "") :
+                     std::string("없음"),
+            _hitActive.load() ? "채널링 중" : "채널링 아님");
     }
 
     void Channel::OnHit(const RE::TESHitEvent& event)
