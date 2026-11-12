@@ -27,7 +27,7 @@
 - 커밋 작성자는 저장소 설정의 `servaltullius <223570863+servaltullius@users.noreply.github.com>`입니다.
 - `prototypes/_local-assets/`의 HKX와 `prototypes/*/out/`은 다른 사람의 에셋이거나 그 복사본이라 `.gitignore`로 뺐습니다. 저장소에 넣지 않습니다.
 - 공개 저장소이므로 문서와 코드에 Windows 사용자 이름이 든 경로(`C:\Users\...`는 `USERNAME`으로 적음), 이메일, 계정 정보, 로그 속 개인 정보를 적지 않습니다. `G:\...` 같은 작업 경로는 그대로 적어도 됩니다.
-- 이 컴퓨터의 전역 git 작성자 설정은 사용자가 모르는 값이었습니다(2026-11-12 확인). 커밋하기 전에 `git config user.name`과 `user.email`이 위의 저장소 설정 값인지 확인합니다.
+- 이 컴퓨터의 전역 git 작성자 설정은 사용자가 모르는 값이었고, 2026-11-12에 사용자 요청으로 위와 같은 값으로 바꿨습니다. 커밋하기 전에 `git config user.name`과 `user.email`이 위의 값인지 확인합니다.
 
 ## 환경
 
