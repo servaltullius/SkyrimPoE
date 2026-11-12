@@ -1,6 +1,6 @@
 {
     "name": "Cyclone locomotion",
-    "description": "플레이어의 액터 값 Variable09가 1인 동안, 무기를 든 상태의 대기·걷기·달리기·제자리 돌기 클립을 회전 모션으로 바꾼다. 콘솔에서 player.setav variable09 1 로 켜고 0 으로 끈다.",
+    "description": "플레이어의 액터 값 Variable09가 이 서브모드의 번호와 같은 동안, 무기를 든 상태의 대기·걷기·달리기·제자리 돌기 클립을 회전 모션으로 바꾼다. 이 파일은 틀이다. build_proto1.py가 클립마다 번호(조건의 비교 값)와 우선순위를 바꿔 서브모드를 만든다. 콘솔에서 player.setav variable09 번호 로 켜고 0 으로 끈다.",
     "priority": 2000000000,
     "interruptible": true,
     "hasCustomBlendTimeOnInterrupt": true,

@@ -1,4 +1,9 @@
-"""사이클론 회전 모션(반복 클립)을 숫자로 만들어 hkxc XML로 쓴다.
+"""사이클론의 자세 클립을 숫자로 만들어 hkxc XML로 쓴다.
+
+방식은 두 가지다(--mode).
+  static(기본)  무기를 뻗은 정지 자세만 담는다. 몸을 돌리는 것과 타격은 DLL이 맡는다. 아래 구성의 1~4와 축발 맞추기까지.
+  spin          회전과 타격 주석을 클립에 굽는다(처음 방식). 이동 중에 이동 클립 여러 벌이 섞이면서 모션이 끊기고
+                타격이 안 되는 문제가 있어 기본에서 뺐다. 아래 구성의 1~6 전부.
 
 구성:
   1. 바닐라 양손 대기 자세의 첫 프레임을 바탕으로 삼는다(손가락이 손잡이를 쥔 모양과 뼈 길이를 얻는다).
@@ -14,7 +19,7 @@ OAR의 이동 클립 자리에 재생할 것이므로 제자리 클립이다(앞
 실제 이동은 게임의 평소 이동이 맡는다.
 
 사용:
-  python gen_cyclone.py --skeleton skeleton.xml --base 2hm_idle.xml --out out/cyclone_loop.xml
+  python gen_cyclone.py --skeleton skeleton.xml --base 2hm_idle.xml --out out/cyclone_pose.xml
 """
 from __future__ import annotations
 
@@ -231,27 +236,59 @@ def build_pose(sk: Skeleton, base_t: np.ndarray, base_q: np.ndarray, design: Des
     return rig.lt, rig.lq, report
 
 
-def annotations(duration: float) -> list[tuple[float, str]]:
-    """한 바퀴에 한 번의 타격.
-    weaponSwing과 HitFrame은 게임의 표준 이벤트이고, Collision_* 은 Precision이 읽는 주석이다(없으면 무시된다).
-    앞으로 밀려 나가는 이동 주석은 넣지 않는다."""
-    # 시각은 한 바퀴 길이에 대한 비율로 둔다. 바퀴 길이를 바꿔도 순서와 간격의 비가 유지된다.
-    marks = [
+# 타격 주석의 배치. 어느 배치에서 실제로 맞는지 게임에서 비교하려고 세 가지를 둔다.
+#   zero            충돌 시작 표시를 0초에 둔다(처음 만든 배치. 2026-11-12 시험에서 맞지 않는 것 같다는 관찰)
+#   shifted         충돌 시작 표시를 0초에서 뗀다(0초의 주석은 재생이 시작되거나 반복될 때 놓칠 수 있다는 가설)
+#   shifted-prehit  거기에 preHitFrame을 더한다(맞았던 빌린 클립과 같은 순서)
+ANNOTATION_SETS = {
+    "zero": [
         (0.000, "Collision_AttackStart"),
         (0.055, "Collision_Add.node(WEAPON)|DamageMult(0.8)|scale(2)|NoRecoil"),
         (0.055, "Collision_ClearTargets.Node(WEAPON)"),
         (0.170, "weaponSwing"),
         (0.280, "HitFrame"),
         (0.985, "Collision_AttackEnd"),
-    ]
-    return [(round(fraction * duration, 4), text) for fraction, text in marks]
+    ],
+    "shifted": [
+        (0.170, "Collision_AttackStart"),
+        (0.220, "Collision_Add.node(WEAPON)|DamageMult(0.8)|scale(2)|NoRecoil"),
+        (0.220, "Collision_ClearTargets.Node(WEAPON)"),
+        (0.220, "weaponSwing"),
+        (0.300, "HitFrame"),
+        (0.985, "Collision_AttackEnd"),
+    ],
+    "shifted-prehit": [
+        (0.055, "preHitFrame"),
+        (0.170, "Collision_AttackStart"),
+        (0.220, "Collision_Add.node(WEAPON)|DamageMult(0.8)|scale(2)|NoRecoil"),
+        (0.220, "Collision_ClearTargets.Node(WEAPON)"),
+        (0.220, "weaponSwing"),
+        (0.300, "HitFrame"),
+        (0.985, "Collision_AttackEnd"),
+    ],
+}
+DEFAULT_ANNOTATION_SET = "shifted-prehit"
 
 
-def generate(skeleton_xml: Path, base_xml: Path, design: Design):
+def annotations(duration: float, name: str) -> list[tuple[float, str]]:
+    """한 바퀴에 한 번의 타격.
+    weaponSwing, preHitFrame, HitFrame은 게임의 표준 이벤트이고, Collision_* 은 Precision이 읽는 주석이다(없으면 무시된다).
+    앞으로 밀려 나가는 이동 주석은 넣지 않는다.
+    시각은 한 바퀴 길이에 대한 비율로 둔다. 바퀴 길이를 바꿔도 순서와 간격의 비가 유지된다."""
+    return [(round(fraction * duration, 4), text) for fraction, text in ANNOTATION_SETS[name]]
+
+
+STATIC_FRAMES = 16  # 정지 자세 클립의 프레임 수. 모든 프레임이 같은 자세다
+
+
+def generate(skeleton_xml: Path, base_xml: Path, design: Design, mode: str, annotation_set: str):
+    """mode가 static이면 회전도 오르내림도 주석도 없는 정지 자세 클립을 만든다(회전과 타격은 DLL이 맡는다).
+    spin이면 회전을 클립에 구워 넣는다(프로토타입 3의 첫 방식. 이동 중에 여러 벌이 섞여 끊기는 문제가 있었다)."""
     sk = Skeleton(str(skeleton_xml))
     base = fit_to_skeleton(load_spline(str(base_xml)), sk)
     com = sk.idx("COM")
-    nf = design.frames_per_turn + 1  # 마지막 프레임은 첫 프레임과 같은 자세(고리)
+    spinning = mode == "spin"
+    nf = design.frames_per_turn + 1 if spinning else STATIC_FRAMES  # 회전: 마지막 프레임 = 첫 프레임(고리)
     nb = len(sk.names)
     T = np.zeros((nf, nb, 3))
     Q = np.zeros((nf, nb, 4))
@@ -259,8 +296,8 @@ def generate(skeleton_xml: Path, base_xml: Path, design: Design):
     sign = 1.0 if design.turns_ccw else -1.0
     worst = None
     for f in range(nf):
-        phase = f / design.frames_per_turn
-        bob = design.bob * np.cos(4.0 * np.pi * phase)
+        phase = f / design.frames_per_turn if spinning else 0.0
+        bob = design.bob * np.cos(4.0 * np.pi * phase) if spinning else 0.0
         lt, lq, report = build_pose(sk, base.t[0], base.q[0], design, bob)
         if worst is None:
             worst = report
@@ -280,7 +317,8 @@ def generate(skeleton_xml: Path, base_xml: Path, design: Design):
         flip = np.sum(Q[f] * Q[f - 1], axis=1) < 0
         Q[f][flip] *= -1.0
     duration = (nf - 1) / FPS
-    anim = Animation(T, Q, S, duration, sk.names, annotations(duration))
+    marks = annotations(duration, annotation_set) if spinning else []
+    anim = Animation(T, Q, S, duration, sk.names, marks)
     return sk, anim, worst
 
 
@@ -327,8 +365,12 @@ def main() -> None:
     parser.add_argument("--skeleton", type=Path, required=True, help="바닐라 스켈레톤의 hkxc XML")
     parser.add_argument("--base", type=Path, required=True, help="바탕 자세로 쓸 바닐라 양손 대기 모션의 hkxc XML")
     parser.add_argument("--out", type=Path, required=True, help="쓸 XML 경로")
+    parser.add_argument("--mode", choices=("static", "spin"), default="static",
+                        help="static(기본): 정지 자세만. 회전과 타격은 DLL이 맡는다. spin: 회전과 타격 주석을 클립에 굽는다")
     parser.add_argument("--frames-per-turn", type=int, default=Design.frames_per_turn,
-                        help="한 바퀴의 프레임 수(30fps). 기본 18 = 0.6초")
+                        help="spin 방식에서 한 바퀴의 프레임 수(30fps). 기본 18 = 0.6초")
+    parser.add_argument("--annotations", choices=sorted(ANNOTATION_SETS), default=DEFAULT_ANNOTATION_SET,
+                        help=f"spin 방식에서 타격 주석의 배치. 기본 {DEFAULT_ANNOTATION_SET}")
     args = parser.parse_args()
 
     for label, path in (("스켈레톤", args.skeleton), ("바탕 자세", args.base)):
@@ -339,13 +381,17 @@ def main() -> None:
 
     design = Design(frames_per_turn=args.frames_per_turn)
     try:
-        sk, anim, report = generate(args.skeleton, args.base, design)
+        sk, anim, report = generate(args.skeleton, args.base, design, args.mode, args.annotations)
     except (KeyError, ValueError, AttributeError, IndexError) as exc:
         fail(f"자세를 만들지 못했습니다(입력 파일이 hkxc가 만든 스켈레톤·모션 XML인지 확인): {exc!r}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     anim.save_xml(str(args.out))
 
-    print(f"{args.out}: {anim.nframes}프레임, {anim.duration:.3f}초, 한 바퀴 {design.frames_per_turn}프레임")
+    if args.mode == "spin":
+        print(f"{args.out}: {anim.nframes}프레임, {anim.duration:.3f}초, 한 바퀴 {design.frames_per_turn}프레임, "
+              f"주석 배치 {args.annotations}")
+    else:
+        print(f"{args.out}: {anim.nframes}프레임, {anim.duration:.3f}초, 정지 자세(회전·주석 없음)")
     print("  팔다리 뻗음(가장 편 프레임): " + ", ".join(f"{k} {v:.0%}" for k, v in report["reach"].items()))
     print(f"  오른 손목 돌림 {report['wrist_twist_deg']:.0f}도, 무기 방향 {np.round(report['blade_dir'], 2)}, "
           f"골반 높이 {report['pelvis_height']:.1f}")
