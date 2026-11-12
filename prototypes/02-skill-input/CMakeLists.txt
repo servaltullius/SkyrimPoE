@@ -34,6 +34,7 @@ include("${POE_COMMONLIB_DIR}/cmake/CommonLibSSE.cmake")
 # 게임 타입에 기대지 않는 부분. 테스트가 이것만 링크한다.
 add_library(poe_proto_core STATIC
     src/Core/Config.cpp
+    src/Core/Crit.cpp
     src/Core/EventNames.cpp
     src/Core/Spin.cpp
 )
@@ -69,7 +70,7 @@ add_custom_target(package_mod
 )
 
 if(BUILD_TESTING)
-    foreach(test_name ConfigTests EventNamesTests SpinTests)
+    foreach(test_name ConfigTests CritTests EventNamesTests SpinTests)
         add_executable(${test_name} tests/${test_name}.cpp)
         target_link_libraries(${test_name} PRIVATE poe_proto_core)
         add_test(NAME ${test_name} COMMAND ${test_name})

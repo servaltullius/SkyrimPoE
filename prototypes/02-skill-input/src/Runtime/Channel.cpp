@@ -1,5 +1,6 @@
 #include "Runtime/Channel.h"
 
+#include "Core/Crit.h"
 #include "Core/EventNames.h"
 
 #include <SKSE/SKSE.h>
@@ -205,6 +206,21 @@ namespace poe
             RE::ActorValueOwner* _owner = nullptr;
             float                _delta = 0.0f;
         };
+
+        // 스카이림이 이 대상에 대한 타격에 매기는 치명타 확률(퍼센트, 10이 10%).
+        // 액터 값 CriticalChance에서 시작해 플레이어의 퍽이 가진 "Calculate My Critical Hit Chance" 진입점을 거친다.
+        // 진입점의 인자는 퍽 소유자, 무기, 대상 세 개다(퍽 레코드의 조건 탭 수가 3).
+        // 대상의 퍽이 깎는 쪽("Mod Enemy Critical Hit Chance")은 넣지 않았다.
+        float SkyrimCritPercent(RE::PlayerCharacter* player, RE::Actor* target)
+        {
+            float chance = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kCriticalChance);
+            auto* form = player->GetEquippedObject(false);
+            if (auto* weapon = form ? form->As<RE::TESObjectWEAP>() : nullptr) {
+                RE::BGSEntryPoint::HandleEntryPoint(RE::BGSEntryPoint::ENTRY_POINT::kCalculateMyCriticalHitChance, player,
+                    weapon, target, std::addressof(chance));
+            }
+            return chance;
+        }
     }
 
     Channel& Channel::Get()
@@ -589,6 +605,9 @@ namespace poe
         _startedAt = Clock::now();
         _injectorChecked = false;
         _hits.store(0);
+        _crits = 0;
+        _casts = 0;
+        _critChanceLogged = false;
         _hitVariant.store(static_cast<int>(_config.clipVariant));
         _hitActive.store(true);
 
@@ -669,8 +688,8 @@ namespace poe
         _spin.Reset();
         FlushEventLog();
         _hitActive.store(false);
-        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회", MotionLabel(_activeMotion), why, seconds,
-            _hits.load());
+        SKSE::log::info("[채널링] 끝({}): {} / {:.2f}초 / 적중 {}회 / 치명타 {}회, 발동 시전 {}회",
+            MotionLabel(_activeMotion), why, seconds, _hits.load(), _crits, _casts);
         _active = false;
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
@@ -748,10 +767,78 @@ namespace poe
             return;
         }
         // 대상 목록을 먼저 만든 뒤에 타격한다. 타격이 액터 목록을 바꿀 수 있기 때문이다.
-        const DamageScale scale(player, _config.hitDamageMult);
-        for (const auto& target : targets) {
-            kDealDamage(player, target.get(), nullptr, false);
+        {
+            const DamageScale scale(player, _config.hitDamageMult);
+            for (const auto& target : targets) {
+                kDealDamage(player, target.get(), nullptr, false);
+            }
         }
+        // 피해 배율을 되돌린 뒤에 발동을 굴린다. 발동으로 나간 주문의 피해는 여기를 다시 지나지 않으므로
+        // 발동이 발동을 부르는 일은 없다.
+        for (const auto& target : targets) {
+            RollTrigger(player, target.get());
+        }
+    }
+
+    // 타격 한 번에 대해 치명타를 굴리고, 치명타이고 쿨다운이 끝났으면 발동 주문을 그 대상에게 시전한다.
+    void Channel::RollTrigger(RE::PlayerCharacter* player, RE::Actor* target)
+    {
+        if (!_triggerSpell || _config.critChance <= 0.0f) {
+            return;
+        }
+        // 우리 쪽 확률(지금은 INI의 임시 값)에 스카이림의 치명타 확률을 더한다(설계-현황 결정 51).
+        const float skyrimPercent = _config.addSkyrimCrit ? SkyrimCritPercent(player, target) : 0.0f;
+        const float chance = CombineCritChance(_config.critChance, skyrimPercent);
+        if (_config.logEvents && !_critChanceLogged) {
+            _critChanceLogged = true;  // 채널링마다 첫 판정에서 한 번만 남긴다
+            const char* name = target->GetDisplayFullName();
+            SKSE::log::info("[발동] 치명타 확률 {:.1f}% = 기본 {:.1f}% + 스카이림 {:.1f}%{} (대상 '{}')", chance * 100.0f,
+                _config.critChance * 100.0f, skyrimPercent, _config.addSkyrimCrit ? "" : "(합산 끔)", name ? name : "?");
+        }
+        if (std::uniform_real_distribution<float>(0.0f, 1.0f)(_random) >= chance) {
+            return;
+        }
+        ++_crits;
+        const auto now = Clock::now();
+        if (now < _nextTriggerAt || target->IsDead()) {
+            return;  // 쿨다운 중이거나 방금 타격으로 죽은 대상
+        }
+        auto* caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+        if (!caster) {
+            return;
+        }
+        _nextTriggerAt = now + std::chrono::duration_cast<Clock::duration>(
+                                   std::chrono::duration<float>(_config.triggerCooldown));
+        ++_casts;
+        // 손이나 매지카를 쓰지 않는 즉시 시전. 조준형 주문은 대상을 향해 날아간다.
+        caster->CastSpellImmediate(_triggerSpell, false, target, 1.0f, false, 0.0f, player);
+        if (_config.logEvents) {
+            const char* name = target->GetDisplayFullName();
+            SKSE::log::info("[발동] 치명타 -> '{}' 시전, 대상 '{}'({:08X})", _triggerSpell->GetName(), name ? name : "?",
+                target->GetFormID());
+        }
+    }
+
+    void Channel::ResolveForms()
+    {
+        const std::scoped_lock lock(_mutex);
+        _triggerSpell = nullptr;
+        if (_config.critChance <= 0.0f || _config.triggerSpellPlugin.empty() || _config.triggerSpellFormId == 0) {
+            SKSE::log::info("치명타 시 시전: 꺼져 있음");
+            return;
+        }
+        auto* data = RE::TESDataHandler::GetSingleton();
+        auto* spell = data ? data->LookupForm<RE::SpellItem>(_config.triggerSpellFormId, _config.triggerSpellPlugin) : nullptr;
+        if (!spell) {
+            SKSE::log::warn("치명타 시 시전: 주문을 찾지 못해 끔({}|0x{:06X}). 플러그인이 켜져 있는지, FormID가 주문인지 "
+                            "확인하세요.",
+                _config.triggerSpellPlugin, _config.triggerSpellFormId);
+            return;
+        }
+        _triggerSpell = spell;
+        SKSE::log::info("치명타 시 시전: 기본 확률 {:.0f}%{}, 쿨다운 {:.2f}초, 주문 '{}'({}|0x{:06X})",
+            _config.critChance * 100.0f, _config.addSkyrimCrit ? " + 스카이림의 치명타 확률" : "(스카이림 값은 더하지 않음)",
+            _config.triggerCooldown, spell->GetName(), _config.triggerSpellPlugin, _config.triggerSpellFormId);
     }
 
     void Channel::CycleMode()

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <random>
 #include <string>
 #include <string_view>
 
@@ -26,6 +27,9 @@ namespace poe
 
         void Configure(const Config& config);
         void SetBackends(bool oarAvailable, bool injectorAvailable);
+
+        // 설정에 적힌 발동 주문을 찾아 둔다. 게임 데이터가 다 불린 뒤(kDataLoaded)에 한 번.
+        void ResolveForms();
 
         // 입력 싱크에서 버튼 이벤트 하나마다. pressed = 눌려 있음, first = 이번에 처음 눌림.
         void OnButton(RE::INPUT_DEVICE device, std::uint32_t idCode, bool pressed, bool first);
@@ -83,6 +87,7 @@ namespace poe
         bool AdvanceSpin(RE::PlayerCharacter* player, float frame);
         void RestoreSpinNode(RE::PlayerCharacter* player);
         void AreaHit(RE::PlayerCharacter* player);
+        void RollTrigger(RE::PlayerCharacter* player, RE::Actor* target);
         void LogEvent(std::string_view name, std::string_view outcome);
         void FlushEventLog();
 
@@ -115,6 +120,14 @@ namespace poe
         bool              _hitting = false;         // 이번 채널링에서 DLL이 타격을 내는가
         Clock::duration   _hitInterval{};
         Clock::time_point _nextHitAt{};
+
+        // 치명타 시 시전. 주문은 게임이 끝날 때까지 살아 있는 기본 폼이라 포인터로 들고 있어도 된다.
+        RE::SpellItem*    _triggerSpell = nullptr;
+        std::mt19937      _random{ std::random_device{}() };
+        Clock::time_point _nextTriggerAt{};
+        int               _crits = 0;   // 이번 채널링의 치명타 판정 수
+        int               _casts = 0;   // 이번 채널링의 시전 수(쿨다운에 걸린 치명타는 빠진다)
+        bool              _critChanceLogged = false;  // 이번 채널링의 치명타 확률을 로그에 남겼는가
 
         // 적중 집계. OnHit이 잠금 없이 읽고 쓴다.
         std::atomic<bool> _hitActive{ false };  // 채널링 중인가

@@ -44,6 +44,13 @@ namespace poe
         float turnsPerHit = 0.75f;           // 타격 한 번에 도는 바퀴 수. 회전 속도 = 초당 타격 수 x 이 값
         float hitRadius = 160.0f;            // 타격 반경(게임 단위)
         float hitDamageMult = 0.5f;          // 타격 한 번의 피해 배율(무기의 평소 타격 대비)
+
+        // 치명타 시 시전(발동 젬의 시험). DLL이 낸 범위 타격이 치명타로 판정되면 주문을 시전한다.
+        float         critChance = 0.25f;                 // 타격 한 번이 치명타일 확률(0 ~ 1). 0이면 끔
+        bool          addSkyrimCrit = true;               // 스카이림의 치명타 확률(액터 값과 퍽)을 위 확률에 더한다
+        float         triggerCooldown = 0.15f;            // 시전 사이의 최소 간격(초). PoE의 치명타 시 시전과 같은 0.15
+        std::string   triggerSpellPlugin = "Skyrim.esm";  // 시전할 주문이 정의된 플러그인. 비우면 끔
+        std::uint32_t triggerSpellFormId = 0x01C789;      // 그 플러그인 안의 FormID. 기본은 화염구(MAG_Fireball)
         bool          logEvents = true;
     };
 

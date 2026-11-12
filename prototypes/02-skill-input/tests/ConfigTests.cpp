@@ -117,6 +117,35 @@ int main()
         Expect(warnings.size() == 5, "잘못된 줄마다 경고 하나(회전·타격)");
     }
     {
+        std::vector<std::string> warnings;
+        const auto d = poe::ParseConfig("", warnings);
+        Expect(d.critChance == 0.25f && d.triggerCooldown == 0.15f, "발동 기본 확률과 쿨다운");
+        Expect(d.triggerSpellPlugin == "Skyrim.esm" && d.triggerSpellFormId == 0x01C789, "발동 기본 주문");
+        Expect(d.addSkyrimCrit, "스카이림 치명타 확률 합산은 기본으로 켜짐");
+        const auto noSkyrim = poe::ParseConfig("AddSkyrimCrit = off\n", warnings);
+        Expect(!noSkyrim.addSkyrimCrit, "AddSkyrimCrit=off");
+        const auto c = poe::ParseConfig(
+            "CritChance = 1\nTriggerCooldown = 0\nTriggerSpell = My Mod.esp | 0x00ABCD\n", warnings);
+        Expect(c.critChance == 1.0f && c.triggerCooldown == 0.0f, "발동 확률과 쿨다운");
+        Expect(c.triggerSpellPlugin == "My Mod.esp" && c.triggerSpellFormId == 0xABCD, "플러그인 이름의 공백과 16진수 FormID");
+        const auto dec = poe::ParseConfig("TriggerSpell = Update.esm|4660\n", warnings);
+        Expect(dec.triggerSpellPlugin == "Update.esm" && dec.triggerSpellFormId == 4660, "10진수 FormID");
+        const auto off = poe::ParseConfig("TriggerSpell =\n", warnings);
+        Expect(off.triggerSpellPlugin.empty() && off.triggerSpellFormId == 0, "빈 값이면 발동 끔");
+        Expect(warnings.empty(), "올바른 발동 설정에는 경고가 없음");
+    }
+    {
+        std::vector<std::string> warnings;
+        const auto c = poe::ParseConfig(
+            "CritChance = 1.5\nTriggerCooldown = -1\nTriggerSpell = Skyrim.esm\nTriggerSpell = |0x10\n"
+            "TriggerSpell = Skyrim.esm|0x1000000\nTriggerSpell = Skyrim.esm|0\nAddSkyrimCrit = sometimes\n",
+            warnings);
+        Expect(c.critChance == 0.25f && c.triggerCooldown == 0.15f, "범위를 벗어난 발동 수치는 기본값 유지");
+        Expect(c.triggerSpellPlugin == "Skyrim.esm" && c.triggerSpellFormId == 0x01C789, "잘못된 주문 지정은 기본값 유지");
+        Expect(c.addSkyrimCrit, "잘못된 합산 설정은 기본값 유지");
+        Expect(warnings.size() == 7, "잘못된 줄마다 경고 하나(발동)");
+    }
+    {
         Expect(poe::MotionName(poe::Motion::kInjector) == "injector", "MotionName");
         Expect(poe::TriggerName(poe::Trigger::kHold) == "hold", "TriggerName");
     }

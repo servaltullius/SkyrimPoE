@@ -56,8 +56,8 @@ namespace poe
             return out;
         }
 
-        // 10진수 또는 0x로 시작하는 16진수.
-        std::optional<std::uint32_t> ParseKeyCode(std::string_view value)
+        // 10진수 또는 0x로 시작하는 16진수. max를 넘으면 받지 않는다.
+        std::optional<std::uint32_t> ParseUnsigned(std::string_view value, std::uint32_t max)
         {
             int base = 10;
             if (value.size() > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X')) {
@@ -68,10 +68,16 @@ namespace poe
             const auto* first = value.data();
             const auto* last = value.data() + value.size();
             const auto result = std::from_chars(first, last, out, base);
-            if (value.empty() || result.ec != std::errc{} || result.ptr != last || out > 0xFF) {
+            if (value.empty() || result.ec != std::errc{} || result.ptr != last || out > max) {
                 return std::nullopt;
             }
             return out;
+        }
+
+        // 키보드 스캔 코드처럼 0~255인 값.
+        std::optional<std::uint32_t> ParseKeyCode(std::string_view value)
+        {
+            return ParseUnsigned(value, 0xFF);
         }
 
         void Warn(std::vector<std::string>& warnings, std::size_t line, std::string_view key, std::string_view why)
@@ -181,11 +187,13 @@ namespace poe
                 } else {
                     Warn(warnings, lineNumber, rawKey, "0~255 범위의 키 코드가 아니어서 기본값 유지");
                 }
-            } else if (key == "spinbydll" || key == "spinclockwise" || key == "hitsbydll" || key == "hitneutral") {
+            } else if (key == "spinbydll" || key == "spinclockwise" || key == "hitsbydll" || key == "hitneutral" ||
+                       key == "addskyrimcrit") {
                 if (const auto parsed = ParseBool(value)) {
                     (key == "spinbydll" ? config.spinByDll :
                         key == "spinclockwise" ? config.spinClockwise :
-                        key == "hitsbydll" ? config.hitsByDll : config.hitNeutral) = *parsed;
+                        key == "hitsbydll" ? config.hitsByDll :
+                        key == "hitneutral" ? config.hitNeutral : config.addSkyrimCrit) = *parsed;
                 } else {
                     Warn(warnings, lineNumber, rawKey, "true 또는 false가 아니어서 기본값 유지");
                 }
@@ -200,6 +208,37 @@ namespace poe
                         key == "hitradius" ? config.hitRadius : config.hitDamageMult) = *parsed;
                 } else {
                     Warn(warnings, lineNumber, rawKey, "받는 범위의 숫자가 아니어서 기본값 유지");
+                }
+            } else if (key == "critchance") {
+                const auto parsed = ParseFloat(value);
+                if (parsed && *parsed >= 0.0f && *parsed <= 1.0f) {
+                    config.critChance = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "0~1 범위의 숫자가 아니어서 기본값 유지");
+                }
+            } else if (key == "triggercooldown") {
+                const auto parsed = ParseFloat(value);
+                if (parsed && *parsed >= 0.0f && *parsed <= 5.0f) {
+                    config.triggerCooldown = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "0~5 범위의 숫자가 아니어서 기본값 유지");
+                }
+            } else if (key == "triggerspell") {
+                // "플러그인.esp|0x1234" 형식. 값이 비어 있으면 발동을 끈다.
+                if (value.empty()) {
+                    config.triggerSpellPlugin.clear();
+                    config.triggerSpellFormId = 0;
+                } else {
+                    const auto bar = value.find('|');
+                    const auto plugin = bar == std::string_view::npos ? std::string_view{} : Trim(value.substr(0, bar));
+                    const auto form = bar == std::string_view::npos ? std::nullopt :
+                                                                      ParseUnsigned(Trim(value.substr(bar + 1)), 0xFFFFFF);
+                    if (!plugin.empty() && form && *form != 0) {
+                        config.triggerSpellPlugin.assign(plugin);
+                        config.triggerSpellFormId = *form;
+                    } else {
+                        Warn(warnings, lineNumber, rawKey, "'플러그인 이름|FormID' 형식이 아니어서 기본값 유지");
+                    }
                 }
             } else if (key == "clipvariants" || key == "clipvariant") {
                 const auto parsed = ParseKeyCode(value);

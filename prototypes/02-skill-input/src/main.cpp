@@ -57,6 +57,7 @@ namespace
                 const bool oar = REX::W32::GetModuleHandleW(kOarModule) != nullptr;
                 const bool injector = REX::W32::GetModuleHandleW(kInjectorModule) != nullptr;
                 poe::Channel::Get().SetBackends(oar, injector);
+                poe::Channel::Get().ResolveForms();
                 SKSE::log::info("Open Animation Replacer: {}", oar ? "로드됨" : "없음(oar 방식은 시작하지 않음)");
                 SKSE::log::info("Animation Injector: {}", injector ? "로드됨" : "없음(injector 방식은 시작하지 않음)");
             }
