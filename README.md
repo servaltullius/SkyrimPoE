@@ -38,7 +38,7 @@ A work-in-progress SKSE mod that aims to bring Path of Exile 1 style builds, loo
 
 소스 코드는 [GPL-3.0](LICENSE)입니다.
 
-프로토타입 2는 엔진의 근접 타격 함수의 주소와 인자를 [Precision](https://github.com/ersh1/Precision)(ersh1, GPL-3.0)의 소스에서 확인해 씁니다. 빌드에는 [CommonLibSSE-NG](https://github.com/alandtse/CommonLibSSE-NG)(v9.0.2로 빌드함)가 필요하며, 이 저장소에는 포함하지 않았습니다.
+프로토타입 2는 엔진의 근접 타격 함수의 주소와 인자를 [Precision](https://github.com/ersh1/Precision)(ersh1, GPL-3.0)의 소스에서 확인해 씁니다. 빌드에는 [CommonLibSSE-NG](https://github.com/alandtse/CommonLibSSE-NG)(alandtse, GPL-3.0-or-later와 모딩 예외)가 필요합니다. 프로토타입은 v9.0.2로 빌드했고 그 판은 이 저장소에 포함하지 않았습니다. 본 모드는 v16.4.0으로 빌드하기로 했고, 그 판을 `external/CommonLibSSE-NG`에 서브모듈로 두었습니다(`git submodule update --init external/CommonLibSSE-NG`로 받습니다).
 
 ## 알림
 
