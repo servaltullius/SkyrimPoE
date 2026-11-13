@@ -45,10 +45,16 @@ namespace
     // 시험이 만드는 세이브의 이름. 플레이하던 세이브는 건드리지 않는다.
     constexpr auto kBaselineSave = "PoEProto5_baseline";
     constexpr auto kMarkedSave = "PoEProto5_marked";
+    constexpr auto kWatchSave = "PoEProto5_watch";  // 지켜보기 시험의 저장 왕복이 쓰는 세이브
     // 코세이브의 플러그인 표식과 레코드.
     constexpr std::uint32_t kCosaveId = 'PPI5';
     constexpr std::uint32_t kRecordMarks = 'MARK';
     constexpr std::uint32_t kRecordVersion = 2;  // 2: 바닥에 있는 표시도 적는다(6차부터)
+    // 지켜보기 시험의 기록. 자동 시험의 기록('MARK')은 "플레이어, 시험 상자, 바닥" 셋 가운데 어디인지를 적지만, 이 기록은
+    // 결정 59의 키를 그대로 적는다: 표시마다 (가진 쪽의 폼 ID, 번호). 가진 쪽은 상인의 상자, 동료, 시체처럼 무엇이든 될 수 있고,
+    // 불러올 때 폼 ID를 게임에 다시 물어 푼다. 본 모드가 코세이브에 적을 모양과 같다.
+    constexpr std::uint32_t kRecordWatch = 'WKEY';
+    constexpr std::uint32_t kWatchRecordVersion = 1;
     // 바닥의 참조에 직접 남기는 고유 ID의 번호가 시작하는 곳("번호 남기기"). 표시 번호를 더해 쓴다.
     constexpr std::uint16_t kStampBase = 0x7F00;
     // 어느 표시인지 묻는 물음의 답이 표시 번호가 아닐 때의 값.
@@ -204,9 +210,20 @@ namespace
         kExtra,        // 손 조작이 기록된 뒤의 마무리 단계가 도는 중
         kWatchSetup,   // 지켜보기 시험의 준비 단계가 도는 중
         kWatch,        // 지켜보기: 사용자가 상인·동료·시체·제작을 직접 하고, 플러그인은 따라가며 판정을 남기는 중
+        kWatchRoundTrip,  // 지켜보기 도중의 저장 왕복(저장하고 그 세이브를 불러옴)이 도는 중
         kDone,
     };
     Phase                   g_phase = Phase::kIdle;
+    // 지켜보기 시험이 어디까지 왔는가. 0: 저장 왕복 전(시작 키 = 저장 왕복), 1: 저장 왕복 뒤(시작 키 = 끝).
+    int                     g_watchStage = 0;
+    // 지켜보기 기록이 든 세이브가 시험의 요청 없이 불려 왔다(게임을 다시 켜고 불렀거나 메뉴에서 불렀다). 불러오기가 끝나면 판정을 남긴다.
+    bool                    g_watchColdLoad = false;
+    std::atomic<Clock::rep> g_afterLoadVerdictAt{ 0 };  // 그 판정을 남길 시각. 0이면 없음. 진행을 깨우는 스레드가 읽는다
+    std::uint32_t           g_afterLoadRevert = 0;      // 그 판정을 맡길 때의 되돌리기 횟수. 그 뒤에 다른 불러오기가 시작됐으면 판정을 버린다
+    // 지켜보기 기록을 코세이브에 쓴 횟수와, 저장 왕복을 시작할 때의 그 값. 저장 왕복의 불러오기 단계가 "방금 저장이 실제로 됐는가"를
+    // 이것으로 본다. 저장이 안 됐는데 불러오면 예전 실행이 남긴 같은 이름의 세이브가 불려 와 통과처럼 보인다.
+    std::uint32_t           g_watchSaveCount = 0;
+    std::uint32_t           g_roundTripSaveBase = 0;
     std::size_t             g_step = 0;
     Clock::time_point       g_nextAt{};
     RE::ObjectRefHandle     g_chest;
@@ -378,6 +395,17 @@ namespace
         SKSE::log::info("{}", message);
     }
 
+    void Notify(const std::string& message)
+    {
+        Notify(message.c_str());
+    }
+
+    // 화면 안내에 적는 시작 키의 이름. INI의 StartKey를 바꾸면 안내도 따라간다.
+    std::string StartKeyName()
+    {
+        return g_settings.startKey == 0x44 ? std::string("F10") : std::format("시작 키(스캔 코드 0x{:02X})", g_settings.startKey);
+    }
+
     RE::TESBoundObject* TestForm(RE::FormID id)
     {
         return RE::TESForm::LookupByID<RE::TESBoundObject>(id);
@@ -431,9 +459,12 @@ namespace
         return nullptr;
     }
 
+    // 읽기만 한다. GetInventoryChanges()를 인자 없이 부르면 인벤토리 변경 데이터가 없는 참조에 그 자리에서 만들어 붙인다
+    // (CommonLibSSE-NG의 구현: InitInventoryIfRequired, ForceInitInventoryChanges. 레벨드 아이템까지 굴린다). 지켜보기의 판정은
+    // 상인의 상자나 NPC처럼 남의 참조를 들여다보므로, 보는 것만으로 그쪽 상태를 바꾸지 않게 "없으면 만들지 않음"으로 부른다.
     RE::InventoryEntryData* FindEntry(RE::TESObjectREFR* owner, RE::TESBoundObject* object)
     {
-        auto* changes = owner ? owner->GetInventoryChanges() : nullptr;
+        auto* changes = owner ? owner->GetInventoryChanges(true) : nullptr;
         if (!changes || !changes->entryList) {
             return nullptr;
         }
@@ -789,6 +820,46 @@ namespace
             id == g_chestId ? ", 시험이 놓은 상자" : id == g_corpseId ? ", 시험이 놓은 시체" : "");
     }
 
+    // 키의 자리에 묶음이 없을 때 덧붙이는 말: 가진 쪽이 그 폼을 몇 개 가졌는지와, 그 표시의 것이 다른 고유 ID로 거기 있는지.
+    // "아이템이 없어졌다"와 "아이템은 있는데 번호가 달라졌다(키가 낡았다)"와 "인벤토리를 읽을 수 없다"를 가르려는 것이다.
+    // 저장 왕복 뒤의 끊김에서 이 구분이 필요하다.
+    std::string DescribeBroken(Mark mark, RE::TESObjectREFR* owner)
+    {
+        auto* form = TestForm(FormOf(mark));
+        if (!owner->GetInventoryChanges(true)) {  // true: 없으면 만들지 않는다(FindEntry의 설명)
+            return " | 가진 쪽의 인벤토리 변경 데이터가 없음(읽을 수 없는 상태일 수 있음)";
+        }
+        std::string text = std::format(" | 가진 쪽이 그 폼을 {}개 가짐", TotalCount(owner, form));
+        if (!HasContentTruth(mark)) {
+            return text;
+        }
+        const auto byContent = FindIn(mark, owner, "");
+        return text + (byContent.extra ? ", 그 표시의 것이 다른 고유 ID로 있음(키가 낡음): " + Describe(*byContent.extra) : ", 그 표시의 것은 없음");
+    }
+
+    // 지켜보기 시험이 놓은 스키버. 놓지 않았거나 그 참조를 지금 찾을 수 없으면 없다.
+    RE::Actor* CorpseActor()
+    {
+        auto* ref = g_corpseId != 0 ? RE::TESForm::LookupByID<RE::TESObjectREFR>(g_corpseId) : nullptr;
+        return ref ? ref->As<RE::Actor>() : nullptr;
+    }
+
+    // 그 스키버의 상태. 준비 단계가 죽이는 데 성공했는지와, 저장 왕복 뒤에도 그 참조가 있는지를 본다.
+    void LogCorpse(const char* label)
+    {
+        if (g_corpseId == 0) {
+            SKSE::log::info("[시체:{}] 놓은 스키버가 없음", label);
+            return;
+        }
+        auto* actor = CorpseActor();
+        if (!actor) {
+            SKSE::log::info("[시체:{}] 스키버 {:08X}: 찾을 수 없음(그 폼 ID의 액터 참조가 지금 없음)", label, g_corpseId);
+            return;
+        }
+        SKSE::log::info("[시체:{}] 스키버 {:08X}: 죽은 상태 {}, 체력 {:.1f}, 3D {}", label, g_corpseId, actor->IsDead(),
+            actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth), actor->Is3DLoaded() ? "있음" : "없음");
+    }
+
     void WatchVerdict(const std::string& reason)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -815,8 +886,8 @@ namespace
                 continue;
             }
             if (!found.extra) {
-                SKSE::log::info("[경로 판정:{}] {}: 끊김 - 키 {} 의 자리({})에 묶음이 없음{}", reason, kMarkNames[i], DescribeKey(mark),
-                    DescribeOwner(key.owner), stale);
+                SKSE::log::info("[경로 판정:{}] {}: 끊김 - 키 {} 의 자리({})에 묶음이 없음{}{}", reason, kMarkNames[i], DescribeKey(mark),
+                    DescribeOwner(key.owner), DescribeBroken(mark, found.owner), stale);
                 continue;
             }
             const char* verdict = !HasContentTruth(mark)        ? "키의 자리에 묶음이 있음(내용으로 확인할 수 없는 표시)" :
@@ -839,10 +910,12 @@ namespace
             g_watchVerdictQueued = false;
             return;
         }
-        tasks->AddTask([reason = std::move(reason)] {
+        // 맡긴 뒤에 다른 세이브의 불러오기가 시작되면(되돌리기 횟수가 달라짐) 이 판정은 버린다. 불려 오는 세이브에도 지켜보기
+        // 기록이 있으면 단계가 다시 kWatch가 되므로 단계만 봐서는 가를 수 없고, 화면이 넘어가는 중의 인벤토리를 훑게 된다.
+        tasks->AddTask([reason = std::move(reason), revert = g_revertCount] {
             g_watchVerdictQueued = false;
             const auto lock = LockState("지켜보기 판정", std::chrono::seconds(5));
-            if (g_phase == Phase::kWatch) {
+            if (g_phase == Phase::kWatch && revert == g_revertCount) {
                 WatchVerdict(reason);
             }
         });
@@ -1982,10 +2055,44 @@ namespace
         } else {
             SKSE::log::error("[시체] 플레이어에게서 검/고유ID+꼬리표B 를 찾지 못해 시체에 넣지 못함");
         }
-        // 죽이는 데는 프로토타입 2에서 게임 안 동작을 본 Actor::DoDamage를 쓴다.
-        const bool damaged = actor->DoDamage(100000.0f, player, true);
-        SKSE::log::info("[시체] 스키버 {:08X}을(를) 놓고 'PoE5 B'를 넣은 뒤 죽임: DoDamage {}, 죽은 상태 {}", g_corpseId, damaged, actor->IsDead());
-        Observe("W2 스키버에게 'PoE5 B'를 넣고 죽임");
+        LogCorpse("놓은 직후");
+        Observe("W2 스키버에게 'PoE5 B'를 넣음");
+    }
+
+    // 놓은 스키버를 죽인다. 9차에서는 놓은 바로 그 작업 안에서 Actor::DoDamage를 불렀고, 함수가 false를 돌려줬으며 직후에는
+    // 죽은 상태가 아니었다. 그 뒤에 죽었는지는 로그에 없어 그 방법이 통했는지 알 수 없다. 그래서 놓고 나서 한 박자 뒤에 부르고,
+    // 다음 단계에서 죽었는지를 다시 본다.
+    void StepWatchKill()
+    {
+        auto* actor = CorpseActor();
+        if (!actor) {
+            SKSE::log::error("[시체] 놓은 스키버를 찾지 못함");
+            return;
+        }
+        LogCorpse("죽이기 전");
+        if (!actor->IsDead()) {
+            // 프로토타입 2에서 게임 안 동작을 본 함수. 그때는 이미 자리를 잡은 액터에게 불렀다.
+            const bool result = actor->DoDamage(100000.0f, RE::PlayerCharacter::GetSingleton(), true);
+            SKSE::log::info("[시체] DoDamage(100000)을 부름: 반환 {}", result);
+        }
+        LogCorpse("DoDamage 직후");
+    }
+
+    // 죽었는지 다시 본다. 아직 살아 있으면 체력 수치를 직접 깎는다(액터 값의 가상 함수라 주소 번호가 틀릴 일이 없다).
+    // 그래도 죽지 않으면 사용자가 직접 잡아야 한다는 것을 화면에 알린다.
+    void StepWatchKillCheck()
+    {
+        auto* actor = CorpseActor();
+        if (!actor) {
+            return;
+        }
+        LogCorpse("DoDamage 1.5초 뒤");
+        if (!actor->IsDead()) {
+            // (이 CommonLibSSE-NG 9.0.2에서는 이 가상 함수(06)의 이름이 ModActorValue다. 피해 쪽 수정치에 음수를 더한다.)
+            actor->AsActorValueOwner()->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, -100000.0f);
+            SKSE::log::info("[시체] 아직 살아 있어 체력 수치를 직접 깎음");
+            LogCorpse("체력을 깎은 직후");
+        }
     }
 
     // 지켜보기 시험의 준비 단계. 표시는 자동 시험과 같은 방법으로 붙인다.
@@ -1997,17 +2104,77 @@ namespace
             { "표시 2/3: 꼬리표 붙여 줍기", StepMarkTagAndPickUp, 1000, false },
             { "표시 3/3: 고유 ID 붙이기", StepMarkUnique, 500, false },
             { "이름 붙이기와 단련 재료", StepWatchNames, 500, false },
-            { "시체 준비", StepWatchCorpse, 1500, false },
+            { "시체 준비: 스키버를 놓고 검을 넣음", StepWatchCorpse, 1500, false },
+            { "시체 준비: 죽임", StepWatchKill, 1500, false },
+            { "시체 준비: 확인", StepWatchKillCheck, 1500, false },
         };
     }
 
-    // 지금 도는 단계 목록: 자동 단계, 손 조작 뒤의 마무리 단계, 또는 지켜보기 시험의 준비 단계.
+    // 지켜보기의 저장 왕복: 사용자가 아이템을 상인·동료·시체·상자에 둔 채로 시작 키를 누르면, 지금 상태를 저장하고 그 세이브를
+    // 불러온 뒤 키가 여전히 맞는지를 본다. 코세이브에는 결정 59의 키를 그대로 적고(SaveWatch), 불러올 때 가진 쪽의 폼 ID를
+    // 게임에 다시 물어 푼다(LoadWatch).
+    void StepWatchBeforeSave()
+    {
+        WatchVerdict("저장 직전");
+        LogCorpse("저장 직전");
+        Observe("W5 저장 직전");
+    }
+
+    void AfterLoadReport(const char* how)
+    {
+        SKSE::log::info("[코세이브:불러온 뒤] {} / 되돌리기 콜백 {}번째, 불러오기 콜백 {}", how, g_revertCount, g_cosaveLoaded ? "불림" : "안 불림");
+        WatchVerdict("불러온 뒤");
+        LogCorpse("불러온 뒤");
+        Observe("W6 불러온 뒤");
+    }
+
+    // 저장 왕복의 불러오기. 바로 앞 단계의 저장에서 코세이브 콜백이 지켜보기 기록을 쓰지 않았으면 불러오지 않는다.
+    // 그대로 불러오면 예전 실행이 남긴 같은 이름의 세이브(그때의 키가 든)가 불려 와 판정이 통과처럼 남는다.
+    void StepWatchLoad()
+    {
+        if (g_watchSaveCount == g_roundTripSaveBase) {
+            SKSE::log::error("저장 왕복: 저장 요청 뒤에 코세이브의 지켜보기 기록이 쓰이지 않음(저장이 되지 않은 것으로 봄). 불러오지 않고 저장 왕복을 그만둠");
+            Notify(std::format("[PoE Proto 5] 저장이 되지 않아 불러오지 않았습니다(로그 확인). {}을 다시 누르면 다시 해 봅니다.", StartKeyName()));
+            g_running = false;
+            g_phase = Phase::kWatch;  // 저장 왕복 전의 지켜보기로 돌아간다. g_watchStage는 0 그대로다
+            return;
+        }
+        RequestLoad(kWatchSave);
+    }
+
+    std::vector<Step> BuildWatchRoundTripSteps()
+    {
+        return {
+            { "저장 직전의 판정", StepWatchBeforeSave, 500, false },
+            { "저장", [] { RequestSave(kWatchSave); }, 6000, false },
+            { "불러오기", StepWatchLoad, 3000, false },
+            { "불러온 뒤의 판정", [] { AfterLoadReport("시험이 요청한 불러오기"); }, 500, false },
+        };
+    }
+
+    // 지금 도는 단계 목록: 자동 단계, 손 조작 뒤의 마무리 단계, 지켜보기 시험의 준비 단계, 또는 지켜보기의 저장 왕복.
     const std::vector<Step>& Steps()
     {
         static const std::vector<Step> main = BuildSteps();
         static const std::vector<Step> extra = BuildExtraSteps();
         static const std::vector<Step> watch = BuildWatchSteps();
-        return g_phase == Phase::kExtra ? extra : g_phase == Phase::kWatchSetup ? watch : main;
+        static const std::vector<Step> roundTrip = BuildWatchRoundTripSteps();
+        return g_phase == Phase::kExtra ? extra : g_phase == Phase::kWatchSetup ? watch : g_phase == Phase::kWatchRoundTrip ? roundTrip : main;
+    }
+
+    void NotifyWatchTodo()
+    {
+        if (g_watchStage == 0 && g_settings.saveLoad) {
+            Notify("[PoE Proto 5] 맡기기: 'PoE5 A'는 상인에게 팔기 / 'PoE5 helmet'은 동료에게");
+            Notify("[PoE Proto 5] 'PoE5 name tag'는 발밑 상자에 / 'PoE5 B'는 스키버에 그대로");
+            Notify(std::format("[PoE Proto 5] 다 맡겼으면 메뉴를 닫고 {}(저장하고 불러옵니다)", StartKeyName()));
+        } else if (g_settings.saveLoad) {
+            Notify("[PoE Proto 5] 불러왔습니다. 되찾기: 상인에게서 'PoE5 A' / 동료에게서 'PoE5 helmet'");
+            Notify("[PoE Proto 5] 상자에서 'PoE5 name tag' / 스키버 시체에서 'PoE5 B'");
+            Notify(std::format("[PoE Proto 5] 다 되찾았으면 {}(끝)", StartKeyName()));
+        } else {
+            Notify(std::format("[PoE Proto 5] 'PoE5'로 시작하는 아이템을 팔고, 건네고, 꺼내고, 단련해 보세요. 다 했으면 {}(끝).", StartKeyName()));
+        }
     }
 
     // 손 조작(버리고 줍기)이 기록됐다. 자동 단계가 끝나고 손 조작을 기다리던 중이었으면 마무리 단계를 시작한다.
@@ -2062,6 +2229,22 @@ namespace
     {
         for (;;) {
             std::this_thread::sleep_for(kTick);
+            // 지켜보기 기록이 든 세이브가 시험의 요청 없이 불려 온 경우: 화면이 자리를 잡은 뒤에 판정을 한 번 남긴다.
+            if (const auto at = g_afterLoadVerdictAt.load(); at != 0 && Clock::now().time_since_epoch().count() >= at) {
+                g_afterLoadVerdictAt = 0;
+                if (const auto* tasks = SKSE::GetTaskInterface()) {
+                    tasks->AddTask([] {
+                        const auto lock = LockState("불러온 뒤의 판정", std::chrono::seconds(5));
+                        // 맡겨진 뒤에 다른 불러오기가 시작됐으면(되돌리기 횟수가 달라짐) 버린다. 그 불러오기가 제 판정을 따로 맡긴다.
+                        if (g_phase == Phase::kWatch && g_revertCount == g_afterLoadRevert) {
+                            SKSE::log::info("=== 지켜보기: 기록이 든 세이브가 불려 와 이어 감({}) (스레드 {})",
+                                g_watchStage == 0 ? "저장 왕복 전의 세이브" : "저장 왕복의 세이브", Tid());
+                            AfterLoadReport("시험이 요청하지 않은 불러오기(메뉴에서, 또는 게임을 다시 켠 뒤)");
+                            NotifyWatchTodo();
+                        }
+                    });
+                }
+            }
             if (!g_running) {
                 continue;
             }
@@ -2083,7 +2266,31 @@ namespace
             if (Clock::now().time_since_epoch().count() >= g_loadDeadline) {
                 g_running = false;
                 g_waitingForLoad = false;
+                SKSE::log::error("불러오기가 끝났다는 알림이 제한 시간 안에 오지 않아 시험을 멈춤({}단계)", g_step);
                 Notify("[PoE Proto 5] 불러오기가 끝나지 않아 시험을 멈춤(로그 확인)");
+                if (g_phase == Phase::kWatchRoundTrip) {
+                    // 저장 왕복을 끝내지 못했다. 불러오기가 어디까지 갔는지에 따라 남은 상태가 다르다.
+                    const bool anyKey = std::any_of(g_keys.begin(), g_keys.end(), [](const Key& key) { return key.valid; });
+                    if (anyKey && g_cosaveLoaded) {
+                        // 불러오기 콜백까지는 왔다(키는 그 세이브의 것이고 단계는 저장 왕복 뒤). 끝났다는 알림이 늦게라도 오면
+                        // 시험이 요청하지 않은 불러오기와 같은 길로 판정을 남긴다.
+                        g_phase = Phase::kWatch;
+                        g_watchColdLoad = true;
+                        SKSE::log::warn("저장 왕복: 불러오기 콜백은 왔으나 끝났다는 알림이 없음. 알림이 오면 그때 판정을 남김");
+                    } else if (anyKey) {
+                        // 불러오기가 시작되지 않았다(되돌리기 콜백이 오지 않아 키가 그대로다). 저장 왕복 전의 지켜보기로 돌아간다.
+                        g_phase = Phase::kWatch;
+                        g_watchStage = 0;
+                        SKSE::log::warn("저장 왕복: 불러오기가 시작되지 않음. 지켜보기를 이어 가고, 시작 키를 다시 누르면 다시 해 봄");
+                    } else {
+                        // 되돌리기 콜백이 키를 비웠는데 불러오기 콜백은 오지 않았다. 따라갈 키가 없으므로 지켜보기를 이어 갈 수 없다.
+                        // 끝난 것으로 둔다(이 상태에서 새 시험을 시작하지 않게. 세이브를 불러오면 처음으로 돌아간다).
+                        g_phase = Phase::kDone;
+                        g_watchStage = 0;
+                        SKSE::log::error("저장 왕복: 불러오기가 시작된 뒤 끝나지 않아 키가 비워진 채임. 지켜보기를 그만둠");
+                        Notify("[PoE Proto 5] 지켜보기를 이어 갈 수 없습니다. 플레이하던 세이브를 불러오세요.");
+                    }
+                }
             }
             return;
         }
@@ -2105,12 +2312,23 @@ namespace
             if (g_phase == Phase::kWatchSetup) {
                 // 준비가 끝났다. 여기부터는 사용자가 직접 하고, 플러그인은 키를 따라가며 판정을 남긴다.
                 g_phase = Phase::kWatch;
+                g_watchStage = 0;
                 SKSE::log::info("=== 준비 끝. 여기부터 지켜보기 (스레드 {})", Tid());
                 WatchVerdict("준비 직후");
-                Notify("[PoE Proto 5] 준비 끝. 'PoE5'로 시작하는 아이템으로 아래를 직접 해 주세요(할 수 있는 것만).");
-                Notify("[PoE Proto 5] 상인: 'PoE5 A' 팔았다 되사기 / 동료: 'PoE5 helmet' 줬다 받기");
-                Notify("[PoE Proto 5] 발밑 스키버 시체: 'PoE5 B' 꺼내기 / 숫돌: 'PoE5 name tag' 단련");
-                Notify("[PoE Proto 5] 다 했으면 F10을 누르세요. 저장하지 마세요.");
+                LogCorpse("준비 끝");
+                if (auto* corpse = CorpseActor(); corpse && !corpse->IsDead()) {
+                    Notify("[PoE Proto 5] 스키버가 죽지 않았습니다. 직접 잡아 주세요(검은 그 안에 있습니다).");
+                }
+                Notify("[PoE Proto 5] 준비 끝.");
+                NotifyWatchTodo();
+                return;
+            }
+            if (g_phase == Phase::kWatchRoundTrip) {
+                // 저장하고 불러왔다. 불러온 세이브에서 지켜보기를 이어 간다. 사용자가 맡겨 둔 것을 되찾는 동안의 판정이 남는다.
+                g_phase = Phase::kWatch;
+                g_watchStage = 1;
+                SKSE::log::info("=== 저장 왕복 끝. 불러온 세이브에서 지켜보기를 이어 감 (스레드 {})", Tid());
+                NotifyWatchTodo();
                 return;
             }
             // 키가 살아 있는 동안에는 손으로 버리고 줍는 것도 기록된다. 인벤토리 메뉴와 조준해서 줍기가 어느 길을 타는지,
@@ -2124,7 +2342,11 @@ namespace
         const auto& step = steps[g_step];
         ++g_step;
         SKSE::log::info("=== {} {}/{}: {} (스레드 {})",
-            g_phase == Phase::kExtra ? "마무리 단계" : g_phase == Phase::kWatchSetup ? "지켜보기 준비" : "단계", g_step, steps.size(), step.name, Tid());
+            g_phase == Phase::kExtra          ? "마무리 단계" :
+            g_phase == Phase::kWatchSetup     ? "지켜보기 준비" :
+            g_phase == Phase::kWatchRoundTrip ? "지켜보기 저장 왕복" :
+                                                "단계",
+            g_step, steps.size(), step.name, Tid());
         g_nextAt = Clock::now() + std::chrono::milliseconds(step.waitMs);
         step.run();
     }
@@ -2160,13 +2382,40 @@ namespace
             Notify("[PoE Proto 5] 인벤토리에서 'PoE5 name tag' 검을 버린 뒤, 조준해서 다시 주워 주세요.");
             return;
         }
+        if (g_phase == Phase::kWatch && g_settings.saveLoad && g_watchStage == 0) {
+            // 첫 번째 시작 키: 지금 상태(아이템이 상인·동료·시체·상자에 있는 채)를 저장하고 그 세이브를 불러온다.
+            if (auto* ui = RE::UI::GetSingleton(); !ui || ui->GameIsPaused()) {
+                Notify("[PoE Proto 5] 메뉴를 닫고 게임 안에서 눌러 주세요");
+                return;
+            }
+            g_phase = Phase::kWatchRoundTrip;
+            g_roundTripSaveBase = g_watchSaveCount;
+            g_step = 0;
+            g_waitingForLoad = false;
+            g_pumpQueued = false;
+            g_nextAt = Clock::now();
+            SKSE::log::info("=== 지켜보기: 저장 왕복을 시작함(사용자가 시작 키를 누름) (스레드 {})", Tid());
+            Notify("[PoE Proto 5] 지금 상태를 저장하고 불러옵니다. 끝났다는 안내가 뜰 때까지 조작하지 말고 두세요.");
+            g_running = true;
+            return;
+        }
         if (g_phase == Phase::kWatch) {
             // 지켜보기를 끝낸다. 마지막 판정을 남긴다.
             SKSE::log::info("=== 지켜보기 끝(사용자가 시작 키를 누름) (스레드 {})", Tid());
             WatchVerdict("끝");
+            LogCorpse("끝");
             Observe("W9 지켜보기 끝");
             g_phase = Phase::kDone;
             Notify("[PoE Proto 5] 지켜보기 끝. 플레이하던 세이브를 불러오세요(지금 상태로 저장하지 마세요).");
+            return;
+        }
+        if (g_phase == Phase::kDone) {
+            // 시험이 끝난 세이브에 머물러 있다. 여기서 새 시험을 시작하지 않는다. 아래의 "이전 시험의 아이템" 검사는 플레이어의
+            // 인벤토리만 보므로, 표시한 것을 상인·시체·상자에 둔 채 끝냈으면 통과해 버린다. 7~10차의 로그에서 시작 키 누름이
+            // 매번 1초쯤 뒤에 한 번 더 들어왔으므로(까닭은 모름) 끝낸 직후의 두 번째 누름이 여기로 온다.
+            // 세이브를 불러오면 되돌리기 콜백이 단계를 처음으로 돌린다.
+            SKSE::log::info("시작하지 않음: 시험이 끝난 세이브에 머물러 있음(세이브를 불러온 뒤에 시작할 수 있음)");
+            Notify("[PoE Proto 5] 시험은 끝났습니다. 플레이하던 세이브를 불러온 뒤에 새로 시작할 수 있습니다.");
             return;
         }
         const auto* player = RE::PlayerCharacter::GetSingleton();
@@ -2208,6 +2457,9 @@ namespace
             g_hasContent[static_cast<std::size_t>(mark)] = true;  // 꼬리표나 이름표를 처음부터 가진 셋
         }
         g_corpseId = 0;
+        g_watchStage = 0;
+        g_watchColdLoad = false;
+        g_afterLoadVerdictAt = 0;
         g_step = 0;
         g_waitingForLoad = false;
         g_pumpQueued = false;
@@ -2502,9 +2754,115 @@ namespace
         return LockState(what, std::chrono::seconds(2));
     }
 
+    // 지켜보기 시험의 기록을 쓴다: 결정 59의 키를 그대로. 가진 쪽이 무엇인지(플레이어, 상자, 상인의 상자, 동료, 시체, 바닥의
+    // 참조)는 따지지 않고 폼 ID와 번호만 적는다.
+    void SaveWatch(SKSE::SerializationInterface* intfc)
+    {
+        if (!intfc->OpenRecord(kRecordWatch, kWatchRecordVersion)) {
+            SKSE::log::error("[코세이브] 저장: 지켜보기 레코드를 열지 못함");
+            return;
+        }
+        // 저장 왕복이 만드는 세이브는 "저장 왕복 뒤"의 단계로 불려 온다. 그 밖의 저장(자동 저장 등)은 지금 단계 그대로.
+        const auto    stage = static_cast<std::uint8_t>(g_phase == Phase::kWatchRoundTrip ? 1 : g_watchStage);
+        std::uint8_t  content = 0;
+        std::uint32_t count = 0;
+        for (std::size_t i = 0; i < g_keys.size(); ++i) {
+            if (g_hasContent[i]) {
+                content = static_cast<std::uint8_t>(content | (1u << i));
+            }
+            if (g_keys[i].valid) {
+                ++count;
+            }
+        }
+        bool ok = intfc->WriteRecordData(stage) && intfc->WriteRecordData(content) && intfc->WriteRecordData(g_chestId) &&
+                  intfc->WriteRecordData(g_corpseId) && intfc->WriteRecordData(count);
+        for (std::size_t i = 0; i < g_keys.size(); ++i) {
+            const auto& key = g_keys[i];
+            if (!key.valid) {
+                SKSE::log::info("[코세이브] 저장: {} 은(는) 키가 없어 적지 않음", kMarkNames[i]);
+                continue;
+            }
+            const auto mark = static_cast<std::uint8_t>(i);
+            const auto world = static_cast<std::uint8_t>(key.world ? 1 : 0);
+            ok = ok && intfc->WriteRecordData(mark) && intfc->WriteRecordData(world) && intfc->WriteRecordData(key.uid) &&
+                 intfc->WriteRecordData(key.owner);
+            SKSE::log::info("[코세이브] 저장: {} 의 키 {} (가진 쪽 {})", kMarkNames[i], DescribeKey(static_cast<Mark>(i)), DescribeOwner(key.owner));
+        }
+        if (ok) {
+            ++g_watchSaveCount;
+        }
+        SKSE::log::info("[코세이브] 저장: 지켜보기 키 {}건 {} (불려 올 단계 {}, 스레드 {})", count, ok ? "씀" : "쓰다가 실패", stage, Tid());
+    }
+
+    // 지켜보기 시험의 기록을 읽는다. 가진 쪽의 폼 ID는 게임에 다시 물어 푼다(경량 플러그인의 참조는 플러그인 순서가 바뀌면
+    // 앞자리가 달라지고, 실행 중에 만들어진 참조는 그 세이브에 있어야 한다). 풀지 못한 키는 버리고 그 사실을 남긴다.
+    void LoadWatch(SKSE::SerializationInterface* intfc)
+    {
+        std::uint8_t  stage = 0, content = 0;
+        RE::FormID    chest = 0, corpse = 0;
+        std::uint32_t count = 0;
+        if (!intfc->ReadRecordData(stage) || !intfc->ReadRecordData(content) || !intfc->ReadRecordData(chest) || !intfc->ReadRecordData(corpse) ||
+            !intfc->ReadRecordData(count) || count > g_keys.size()) {
+            SKSE::log::error("[코세이브] 불러오기: 지켜보기 레코드의 머리를 읽지 못함");
+            return;
+        }
+        const auto resolve = [&](RE::FormID saved, const char* what) {
+            RE::FormID resolved = 0;
+            if (saved == 0) {
+                return resolved;
+            }
+            if (!intfc->ResolveFormID(saved, resolved)) {
+                SKSE::log::warn("[코세이브] 불러오기: {} {:08X}을(를) 이 세이브에서 풀지 못함", what, saved);
+                return RE::FormID{ 0 };
+            }
+            return resolved;
+        };
+        std::uint32_t restored = 0;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            std::uint8_t  mark = 0, world = 0;
+            std::uint16_t uid = 0;
+            RE::FormID    owner = 0;
+            if (!intfc->ReadRecordData(mark) || !intfc->ReadRecordData(world) || !intfc->ReadRecordData(uid) || !intfc->ReadRecordData(owner)) {
+                SKSE::log::error("[코세이브] 불러오기: 지켜보기 키 {}번째를 읽다가 끝남", i);
+                break;
+            }
+            if (mark >= g_keys.size()) {
+                SKSE::log::error("[코세이브] 불러오기: 알 수 없는 표시 번호 {}", mark);
+                continue;
+            }
+            const auto resolved = resolve(owner, "가진 쪽");
+            if (resolved == 0) {
+                SKSE::log::error("[코세이브] 불러오기: {} 의 키 {:08X}:{:04X} 를 되살리지 못함(가진 쪽을 풀지 못함)", kMarkNames[mark], owner, uid);
+                continue;
+            }
+            g_keys[mark] = Key{ resolved, uid, true, world != 0 };
+            ++restored;
+            SKSE::log::info("[코세이브] 불러오기: {} 의 키: 저장 때 {:08X}:{:04X}{} -> 푼 뒤 {:08X}:{:04X} ({})", kMarkNames[mark], owner, uid,
+                world != 0 ? "(바닥)" : "", resolved, uid, resolved == owner ? "폼 ID 그대로" : "폼 ID가 달라짐");
+        }
+        for (std::size_t i = 0; i < g_hasContent.size(); ++i) {
+            g_hasContent[i] = (content & (1u << i)) != 0;
+        }
+        g_chestId = resolve(chest, "시험이 놓은 상자");
+        g_chest = RE::ObjectRefHandle();
+        g_corpseId = resolve(corpse, "시험이 놓은 스키버");
+        g_watchStage = stage;
+        if (g_phase != Phase::kWatchRoundTrip) {
+            // 시험이 요청한 불러오기가 아니다(메뉴에서 불렀거나 게임을 다시 켠 뒤 불렀다). 지켜보기를 이 세이브에서 이어 간다.
+            g_phase = Phase::kWatch;
+            g_watchColdLoad = true;
+        }
+        SKSE::log::info("[코세이브] 불러오기: 지켜보기 키 {}건 가운데 {}건을 되살림 (단계 {}, 스레드 {})", count, restored, stage, Tid());
+    }
+
     void OnSave(SKSE::SerializationInterface* intfc)
     {
         const auto lock = LockForCallback("[코세이브] 저장");
+        if (g_phase == Phase::kWatch || g_phase == Phase::kWatchRoundTrip) {
+            // 지켜보기 중의 저장은 시험이 요청한 것이든 게임의 자동 저장이든 키를 적는다. 그 세이브를 부르면 지켜보기가 이어진다.
+            SaveWatch(intfc);
+            return;
+        }
         const auto marks = g_running ? CollectMarks() : std::vector<SavedMark>{};
         if (marks.empty()) {
             SKSE::log::info("[코세이브] 저장: 적을 기록이 없어 아무것도 쓰지 않음");
@@ -2528,6 +2886,10 @@ namespace
         g_cosaveLoaded = true;
         std::uint32_t type = 0, version = 0, length = 0;
         while (intfc->GetNextRecordInfo(type, version, length)) {
+            if (type == kRecordWatch && version == kWatchRecordVersion) {
+                LoadWatch(intfc);
+                continue;
+            }
             if (type != kRecordMarks || version != kRecordVersion) {
                 SKSE::log::warn("[코세이브] 불러오기: 모르는 레코드 {:08X} v{} ({}바이트)는 건너뜀", type, version, length);
                 continue;
@@ -2599,11 +2961,15 @@ namespace
         if (!g_running) {
             if (g_phase == Phase::kAwaitManual) {
                 SKSE::log::warn("손 조작(버리고 줍기)이 기록되기 전에 세이브가 불려 옴. 손 조작과 마무리 단계의 기록이 없음");
-            } else if (g_phase == Phase::kWatch) {
-                SKSE::log::info("=== 지켜보기 끝(세이브가 불려 옴. 시작 키로 끝내지 않아 마지막 판정은 없음)");
+            } else if (g_phase == Phase::kWatch || g_phase == Phase::kWatchRoundTrip) {
+                // 불려 오는 세이브에 지켜보기 기록이 있으면 바로 뒤의 불러오기 콜백이 지켜보기를 다시 켠다.
+                SKSE::log::info("=== 지켜보기가 멈춤(세이브가 불려 옴. 시작 키로 끝내지 않아 마지막 판정은 없음)");
             }
             g_phase = Phase::kIdle;
+            g_watchStage = 0;
         }
+        g_watchColdLoad = false;
+        g_afterLoadVerdictAt = 0;
         g_corpseId = 0;
         g_inTestDrop = false;
         g_stampInEvent = {};
@@ -2658,6 +3024,11 @@ namespace
                 g_nextAt = Clock::now() + std::chrono::milliseconds(2500);
                 g_pumpQueued = false;
                 g_waitingForLoad = false;
+            } else if (!g_running && g_watchColdLoad && message->data != nullptr) {
+                // 지켜보기 기록이 든 세이브가 시험의 요청 없이 불려 왔다. 화면이 자리를 잡은 뒤 판정을 남기도록 맡긴다.
+                g_watchColdLoad = false;
+                g_afterLoadRevert = g_revertCount;
+                g_afterLoadVerdictAt = (Clock::now() + std::chrono::seconds(4)).time_since_epoch().count();
             }
             break;
         }
