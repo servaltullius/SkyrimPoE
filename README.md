@@ -23,7 +23,8 @@ A work-in-progress SKSE mod that aims to bring Path of Exile 1 style builds, loo
 | `prototypes/01-cyclone-motion/` | 사이클론 회전 모션을 재생하는 두 방식의 비교 |
 | `prototypes/02-skill-input/` | 강공격 입력에 채널링 스킬을 얹는 SKSE 플러그인(회전, 범위 타격, 치명타 시 발동) |
 | `prototypes/03-cyclone-clip/` | 회전 자세 애니메이션 클립을 만드는 스크립트 |
-| `prototypes/04-passive-tree/` | 패시브 트리를 Canvas 2D로 그리는 화면과 PoB 트리 데이터 변환 스크립트(브라우저 단계) |
+| `prototypes/04-passive-tree/` | 패시브 트리를 Canvas 2D로 그리는 화면과 PoB 트리 데이터 변환 스크립트, 그것을 게임 안(Prisma UI)에 띄우는 플러그인 |
+| `prototypes/05-item-identity/` | 아이템에 붙인 표시가 옮기기·버리기·장착·저장을 거쳐도 남는지 스스로 시험하는 플러그인 |
 
 각 프로토타입 폴더의 `README.md`에 동작 방식, 시험 방법, 시험 결과가 있습니다.
 
