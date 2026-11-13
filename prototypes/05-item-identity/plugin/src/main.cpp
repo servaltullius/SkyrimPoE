@@ -41,6 +41,7 @@ namespace
     constexpr RE::FormID kIronHelmet = 0x00012E4D;   // ArmorIronHelmet
     constexpr RE::FormID kIronIngot = 0x0005ACE4;    // IngotIron
     constexpr RE::FormID kEmptyChest = 0x000F8478;   // TreasChestSmallEMPTYNoRespawn
+    constexpr RE::FormID kSkeever = 0x00023AB7;      // EncSkeever (지켜보기 시험의 시체로 씀. houseCARL로 대조)
     // 시험이 만드는 세이브의 이름. 플레이하던 세이브는 건드리지 않는다.
     constexpr auto kBaselineSave = "PoEProto5_baseline";
     constexpr auto kMarkedSave = "PoEProto5_marked";
@@ -72,6 +73,7 @@ namespace
         std::uint32_t startKey = 0x44;  // 키보드 DirectInput 스캔 코드. 0x44 = F10 (F9는 게임의 빠른 불러오기라 쓰지 않는다)
         bool          saveLoad = true;  // 저장하고 불러오는 단계까지 돌린다
         bool          hookPickUp = true;  // 플레이어의 줍기 함수에 끼어들어, 주운 참조와 그때 생긴 묶음을 직접 본다
+        bool          watch = false;      // 참이면 자동 단계 대신 "지켜보기" 시험을 돌린다(Scenario = watch)
     };
 
     // 시험 아이템 하나를 가리키는 이름표와, 그것을 인벤토리에서 다시 찾는 방법.
@@ -200,6 +202,8 @@ namespace
         kMain,         // 자동 단계가 도는 중
         kAwaitManual,  // 자동 단계가 끝나고, 사용자가 손으로 버리고 줍기를 기다리는 중
         kExtra,        // 손 조작이 기록된 뒤의 마무리 단계가 도는 중
+        kWatchSetup,   // 지켜보기 시험의 준비 단계가 도는 중
+        kWatch,        // 지켜보기: 사용자가 상인·동료·시체·제작을 직접 하고, 플러그인은 따라가며 판정을 남기는 중
         kDone,
     };
     Phase                   g_phase = Phase::kIdle;
@@ -207,6 +211,8 @@ namespace
     Clock::time_point       g_nextAt{};
     RE::ObjectRefHandle     g_chest;
     RE::FormID              g_chestId = 0;
+    RE::FormID              g_corpseId = 0;                 // 지켜보기 시험에서 놓은 시체
+    std::atomic<bool>       g_watchVerdictQueued{ false };  // 지켜보기의 판정 작업을 이미 맡겼다
     // 아래 상태(키, 보고 있는 줍기 등)를 지키는 잠금. 시험의 단계, 이벤트 수신부, 줍기 함수, 코세이브 콜백이 모두 이것을 잡는다.
     // 6차 시험에서 알게 된 것: SKSE에 맡긴 작업이 도는 스레드는 하나가 아니다(단계마다 달랐다). 그래서 "메인 스레드에서 온
     // 이벤트만 쓴다"는 식으로는 거를 수 없다(6차는 그렇게 걸러서 이벤트 대부분을 버렸다). 스레드를 따지지 않고 잠근다.
@@ -220,6 +226,9 @@ namespace
     bool                    g_inTestDrop = false;
     // 표시마다: 지금 내려놓는 것에 고유 ID 변경 이벤트 안에서 번호를 남기라는 요청.
     std::array<bool, static_cast<std::size_t>(Mark::kCount)> g_stampInEvent{};
+    // 표시마다: 내용(이름이나 꼬리표)으로 가려낼 수 있는가. 지켜보기 시험의 판정이 쓴다. 꼬리표나 이름표가 있는 셋은 처음부터
+    // 참이고, 투구는 이름이 실제로 붙었을 때만 참이 된다. 이름이 붙지 않았는데 참으로 두면 멀쩡한 키가 "틀림"으로 찍힌다.
+    std::array<bool, static_cast<std::size_t>(Mark::kCount)> g_hasContent{};
     std::array<Key, static_cast<std::size_t>(Mark::kCount)> g_keys;  // 표시마다 따라가고 있는 키
     // 표시를 붙일 때의 부가 데이터 묶음(주소만 견준다). 컨테이너 사이를 옮겨도 같은 묶음이 옮겨 다니므로,
     // 키로 찾은 것이 처음 표시한 그 아이템인지를 키와 따로 확인하는 데 쓴다. 불러오면 묶음이 새로 만들어져 쓸 수 없다.
@@ -348,6 +357,14 @@ namespace
                 } else {
                     SKSE::log::warn("설정: HookPickUp '{}'는 true 또는 false가 아니어서 기본값 유지", value);
                 }
+            } else if (key == "Scenario") {
+                if (value == "watch") {
+                    settings.watch = true;
+                } else if (value == "auto") {
+                    settings.watch = false;
+                } else {
+                    SKSE::log::warn("설정: Scenario '{}'는 auto 또는 watch가 아니어서 기본값(auto) 유지", value);
+                }
             } else {
                 SKSE::log::warn("설정: 알 수 없는 키 '{}'", key);
             }
@@ -460,10 +477,34 @@ namespace
         return std::abs(HealthOf(extra) - tag) < 0.00004f;
     }
 
-    bool HasNameTag(const RE::ExtraDataList& extra)
+    // 표시 이름이 그 글자로 시작하는가. 같은지가 아니라 시작하는지를 본다: 단련하면 게임이 이름 뒤에 품질 글자를 붙인다.
+    bool NameStartsWith(const RE::ExtraDataList& extra, std::string_view prefix)
     {
         const auto* text = extra.GetByType<RE::ExtraTextDisplayData>();
-        return text && text->displayName.c_str() && std::strcmp(text->displayName.c_str(), kNameTag) == 0;
+        return text && text->displayName.c_str() && std::string_view(text->displayName.c_str()).starts_with(prefix);
+    }
+
+    bool HasNameTag(const RE::ExtraDataList& extra)
+    {
+        return NameStartsWith(extra, kNameTag);
+    }
+
+    // 지켜보기 시험에서 표시마다 붙이는 눈에 보이는 이름. 메뉴에서 사용자가 골라낼 수 있어야 하고, 꼬리표(단련 수치)가
+    // 단련으로 바뀌어도 이름으로 가려낼 수 있어야 한다. 없는 표시는 고유 ID로만 따라간다.
+    const char* WatchNameOf(Mark mark)
+    {
+        switch (mark) {
+        case Mark::kSwordUidTagA:
+            return "PoE5 A";
+        case Mark::kSwordUidTagB:
+            return "PoE5 B";
+        case Mark::kSwordName:
+            return kNameTag;
+        case Mark::kHelmetUid:
+            return "PoE5 helmet";
+        default:
+            return nullptr;
+        }
     }
 
     // 부가 데이터 한 묶음을 한 줄로.
@@ -480,6 +521,9 @@ namespace
         }
         if (const auto* health = extra.GetByType<RE::ExtraHealth>()) {
             out += std::format(" 단련={:.4f}", health->health);
+        }
+        if (extra.HasType(RE::ExtraDataType::kEnchantment)) {
+            out += " 마법부여";
         }
         if (extra.HasType(RE::ExtraDataType::kWorn) || extra.HasType(RE::ExtraDataType::kWornLeft)) {
             out += " 장착중";
@@ -544,6 +588,10 @@ namespace
     // (같은 종류의 다른 아이템도 고유 ID를 가지므로 2차 시험에서 엉뚱한 아이템을 가리켰다). 그런 표시는 FindByKey로 찾는다.
     bool Matches(Mark mark, RE::ExtraDataList& extra)
     {
+        // 지켜보기 시험에서 붙인 이름이 있으면 그것으로도 가려낸다(자동 시험에서는 그런 이름이 붙지 않는다).
+        if (const char* name = WatchNameOf(mark); name && NameStartsWith(extra, name)) {
+            return true;
+        }
         switch (mark) {
         case Mark::kSwordUidTagA:
             return HasTag(extra, kTagA);
@@ -691,6 +739,113 @@ namespace
         Snapshot(label, RE::PlayerCharacter::GetSingleton(), "플레이어");
         Snapshot(label, Chest(), "상자");
         Track(label);
+    }
+
+    // ---------------------------------------------------------------- 지켜보기 시험의 판정
+    //
+    // 지켜보기 시험에서는 사용자가 실제 메뉴로 아이템을 옮긴다(상인, 동료, 시체, 상자, 제작). 플러그인은 결정 59의 방식
+    // 그대로 키를 따라가기만 하고, 그 키가 맞는지를 이 판정으로 남긴다.
+    // 판정의 물음: 키가 가리키는 자리(가진 쪽, 번호)에 묶음이 있는가, 그리고 그 묶음이 정말 그 표시의 아이템인가.
+    // 뒤쪽은 키와 따로 선 확인이다: 표시마다 붙여 둔 이름이나 꼬리표를 그 묶음에서 읽어 견준다. 이름도 꼬리표도 없는 표시
+    // (검/고유ID, 주괴/고유ID)는 자리에 묶음이 있는지까지만 알 수 있다.
+
+    // 그 표시를 내용(이름이나 꼬리표)으로 가려낼 수 있는가.
+    bool HasContentTruth(Mark mark)
+    {
+        return g_hasContent[static_cast<std::size_t>(mark)];
+    }
+
+    // 키가 가리키는 자리의 묶음. 가진 쪽은 플레이어나 상자뿐 아니라 어떤 참조든 될 수 있다(상인의 상자, 동료, 시체).
+    Found FindAtKey(Mark mark)
+    {
+        const auto& key = g_keys[static_cast<std::size_t>(mark)];
+        if (!key.valid || key.world) {
+            return {};
+        }
+        auto* owner = RE::TESForm::LookupByID<RE::TESObjectREFR>(key.owner);
+        auto* entry = FindEntry(owner, TestForm(FormOf(mark)));
+        if (entry && entry->extraLists) {
+            for (auto* extra : *entry->extraLists) {
+                const auto* unique = extra ? extra->GetByType<RE::ExtraUniqueID>() : nullptr;
+                if (unique && unique->baseID == key.owner && unique->uniqueID == key.uid) {
+                    return { owner, extra, "키의 자리" };
+                }
+            }
+        }
+        return { owner, nullptr, "" };
+    }
+
+    // 가진 쪽을 사람이 읽을 수 있게: 폼 ID와 베이스의 이름.
+    std::string DescribeOwner(RE::FormID id)
+    {
+        const auto* player = RE::PlayerCharacter::GetSingleton();
+        if (player && id == player->GetFormID()) {
+            return "플레이어";
+        }
+        auto*       ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(id);
+        const auto* base = ref ? ref->GetBaseObject() : nullptr;
+        const char* name = base ? base->GetName() : nullptr;
+        return std::format("{:08X}({}{})", id, !ref ? "찾을 수 없음" : name && *name ? name : "이름 없음",
+            id == g_chestId ? ", 시험이 놓은 상자" : id == g_corpseId ? ", 시험이 놓은 시체" : "");
+    }
+
+    void WatchVerdict(const std::string& reason)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        for (std::size_t i = 0; i < kMarkNames.size(); ++i) {
+            const auto  mark = static_cast<Mark>(i);
+            const auto& key = g_keys[i];
+            if (!key.valid) {
+                SKSE::log::info("[경로 판정:{}] {}: 키 없음", reason, kMarkNames[i]);
+                continue;
+            }
+            if (key.world) {
+                const auto state = StateOfRef(key.owner);
+                SKSE::log::info("[경로 판정:{}] {}: 바닥의 참조 {:08X} {}{} | 키 {}", reason, kMarkNames[i], key.owner, state.text,
+                    state.ref ? ", " + Describe(state.ref->extraList) : std::string(), DescribeKey(mark));
+                continue;
+            }
+            const auto found = FindAtKey(mark);
+            // 키가 플레이어가 아닌 곳을 가리키는데 플레이어 인벤토리에 내용으로 찾은 것이 있으면 키가 뒤처진 것이다.
+            const auto* inPlayer = HasContentTruth(mark) ? FindIn(mark, player, "플레이어").extra : nullptr;
+            const char* stale = inPlayer && inPlayer != found.extra ? " | 그런데 플레이어 인벤토리에 내용으로 찾은 그 표시가 따로 있음(키가 뒤처짐)" : "";
+            if (!found.owner) {
+                // 가진 쪽의 참조 자체를 찾지 못했다. 묶음이 없다는 것과는 다르다(키가 틀렸다고 말할 수 없다).
+                SKSE::log::info("[경로 판정:{}] {}: 확인하지 못함 - 키 {} 의 가진 쪽 참조를 찾을 수 없음{}", reason, kMarkNames[i], DescribeKey(mark), stale);
+                continue;
+            }
+            if (!found.extra) {
+                SKSE::log::info("[경로 판정:{}] {}: 끊김 - 키 {} 의 자리({})에 묶음이 없음{}", reason, kMarkNames[i], DescribeKey(mark),
+                    DescribeOwner(key.owner), stale);
+                continue;
+            }
+            const char* verdict = !HasContentTruth(mark)        ? "키의 자리에 묶음이 있음(내용으로 확인할 수 없는 표시)" :
+                                  Matches(mark, *found.extra) ? "맞음 - 키의 자리에 있는 묶음이 그 표시의 것" :
+                                                                "틀림 - 키의 자리에 있는 묶음이 그 표시의 것이 아님";
+            SKSE::log::info("[경로 판정:{}] {}: {} | {} 에 {} | 키 {}{}", reason, kMarkNames[i], verdict, DescribeOwner(key.owner),
+                Describe(*found.extra), DescribeKey(mark), stale);
+        }
+    }
+
+    // 판정을 다음 작업으로 맡긴다. 이벤트는 엔진이 아이템을 옮기는 도중에 오므로, 다 옮긴 뒤의 상태를 보려는 것이다.
+    // 이미 맡긴 것이 있으면 더 쌓지 않는다(한 번의 조작에 이벤트가 여럿 온다).
+    void QueueWatchVerdict(std::string reason)
+    {
+        if (g_watchVerdictQueued.exchange(true)) {
+            return;
+        }
+        const auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            g_watchVerdictQueued = false;
+            return;
+        }
+        tasks->AddTask([reason = std::move(reason)] {
+            g_watchVerdictQueued = false;
+            const auto lock = LockState("지켜보기 판정", std::chrono::seconds(5));
+            if (g_phase == Phase::kWatch) {
+                WatchVerdict(reason);
+            }
+        });
     }
 
     // ---------------------------------------------------------------- 단계
@@ -1777,12 +1932,82 @@ namespace
         return steps;
     }
 
-    // 지금 도는 단계 목록: 자동 단계, 또는 손 조작 뒤의 마무리 단계.
+    // 지켜보기 시험: 표시한 아이템에 눈에 보이는 이름을 붙인다. 메뉴에서 사용자가 골라낼 수 있어야 하고,
+    // 단련으로 꼬리표(단련 수치)가 바뀌어도 이름으로 가려낼 수 있어야 한다.
+    void StepWatchNames()
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        for (const auto mark : { Mark::kSwordUidTagA, Mark::kSwordUidTagB, Mark::kHelmetUid }) {
+            const auto  index = static_cast<std::size_t>(mark);
+            const char* name = WatchNameOf(mark);
+            const auto  found = Locate(mark);
+            if (!found.extra || found.owner != player) {
+                SKSE::log::error("이름 붙이기: 플레이어에게서 {} 을(를) 찾지 못함", kMarkNames[index]);
+                continue;
+            }
+            if (auto* text = found.extra->GetByType<RE::ExtraTextDisplayData>()) {
+                text->SetName(name);
+            } else {
+                found.extra->Add(new RE::ExtraTextDisplayData(name));
+            }
+            if (!NameStartsWith(*found.extra, name)) {
+                // 꼬리표가 있는 검은 꼬리표로 여전히 가려낼 수 있다. 투구는 이름뿐이라, 붙지 않았으면 내용으로 확인할 수 없는 표시로 둔다.
+                SKSE::log::error("이름 붙이기: {} 에 이름 '{}'이(가) 붙지 않음: {}", kMarkNames[index], name, Describe(*found.extra));
+            } else {
+                g_hasContent[index] = true;
+                SKSE::log::info("이름 붙이기: {} -> {}", kMarkNames[index], Describe(*found.extra));
+            }
+        }
+        // 단련에 쓸 재료. 표시한 주괴(주괴/고유ID)가 재료로 쓰이지 않도록 표시 없는 주괴를 넉넉히 넣는다.
+        player->AddObjectToContainer(TestForm(kIronIngot), nullptr, 6, nullptr);
+        Observe("W1 이름을 붙이고 단련 재료를 넣음");
+    }
+
+    // 지켜보기 시험: 시체 경로. 스키버를 하나 놓고 표시한 검('PoE5 B')을 그 인벤토리에 넣은 뒤 죽인다.
+    // 사용자는 그 시체를 뒤져 검을 꺼낸다. 살아 있는 액터에게 넘기는 것과, 죽은 뒤 꺼내는 것이 이 한 번에 들어 있다.
+    void StepWatchCorpse()
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* base = RE::TESForm::LookupByID<RE::TESBoundObject>(kSkeever);
+        auto  placed = base ? player->PlaceObjectAtMe(base, false) : nullptr;
+        auto* actor = placed ? placed->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            SKSE::log::error("[시체] 스키버를 놓지 못함. 시체 경로는 건너뛰게 됩니다.");
+            return;
+        }
+        g_corpseId = actor->GetFormID();
+        const auto found = Locate(Mark::kSwordUidTagB);
+        if (found.extra && found.owner == player) {
+            player->RemoveItem(TestForm(kIronSword), 1, RE::ITEM_REMOVE_REASON::kRemove, found.extra, actor);
+        } else {
+            SKSE::log::error("[시체] 플레이어에게서 검/고유ID+꼬리표B 를 찾지 못해 시체에 넣지 못함");
+        }
+        // 죽이는 데는 프로토타입 2에서 게임 안 동작을 본 Actor::DoDamage를 쓴다.
+        const bool damaged = actor->DoDamage(100000.0f, player, true);
+        SKSE::log::info("[시체] 스키버 {:08X}을(를) 놓고 'PoE5 B'를 넣은 뒤 죽임: DoDamage {}, 죽은 상태 {}", g_corpseId, damaged, actor->IsDead());
+        Observe("W2 스키버에게 'PoE5 B'를 넣고 죽임");
+    }
+
+    // 지켜보기 시험의 준비 단계. 표시는 자동 시험과 같은 방법으로 붙인다.
+    std::vector<Step> BuildWatchSteps()
+    {
+        return {
+            { "준비", StepSetup, 500, false },
+            { "표시 1/3: 내려놓기", StepMarkDrop, 1500, false },
+            { "표시 2/3: 꼬리표 붙여 줍기", StepMarkTagAndPickUp, 1000, false },
+            { "표시 3/3: 고유 ID 붙이기", StepMarkUnique, 500, false },
+            { "이름 붙이기와 단련 재료", StepWatchNames, 500, false },
+            { "시체 준비", StepWatchCorpse, 1500, false },
+        };
+    }
+
+    // 지금 도는 단계 목록: 자동 단계, 손 조작 뒤의 마무리 단계, 또는 지켜보기 시험의 준비 단계.
     const std::vector<Step>& Steps()
     {
         static const std::vector<Step> main = BuildSteps();
         static const std::vector<Step> extra = BuildExtraSteps();
-        return g_phase == Phase::kExtra ? extra : main;
+        static const std::vector<Step> watch = BuildWatchSteps();
+        return g_phase == Phase::kExtra ? extra : g_phase == Phase::kWatchSetup ? watch : main;
     }
 
     // 손 조작(버리고 줍기)이 기록됐다. 자동 단계가 끝나고 손 조작을 기다리던 중이었으면 마무리 단계를 시작한다.
@@ -1790,6 +2015,9 @@ namespace
     {
         if (g_phase != Phase::kAwaitManual) {
             Notify("[PoE Proto 5] 주운 것을 기록했습니다.");
+            if (g_phase == Phase::kWatch) {
+                QueueWatchVerdict("바닥에서 주운 것을 이음");  // 주울 때는 고유 ID 변경 이벤트가 오지 않아 판정이 따로 맡겨지지 않는다
+            }
             return;
         }
         g_phase = Phase::kExtra;
@@ -1874,6 +2102,17 @@ namespace
                 Notify("[PoE Proto 5] 모두 끝났습니다. 플레이하던 세이브를 불러오세요(지금 상태로 저장하지 마세요).");
                 return;
             }
+            if (g_phase == Phase::kWatchSetup) {
+                // 준비가 끝났다. 여기부터는 사용자가 직접 하고, 플러그인은 키를 따라가며 판정을 남긴다.
+                g_phase = Phase::kWatch;
+                SKSE::log::info("=== 준비 끝. 여기부터 지켜보기 (스레드 {})", Tid());
+                WatchVerdict("준비 직후");
+                Notify("[PoE Proto 5] 준비 끝. 'PoE5'로 시작하는 아이템으로 아래를 직접 해 주세요(할 수 있는 것만).");
+                Notify("[PoE Proto 5] 상인: 'PoE5 A' 팔았다 되사기 / 동료: 'PoE5 helmet' 줬다 받기");
+                Notify("[PoE Proto 5] 발밑 스키버 시체: 'PoE5 B' 꺼내기 / 숫돌: 'PoE5 name tag' 단련");
+                Notify("[PoE Proto 5] 다 했으면 F10을 누르세요. 저장하지 마세요.");
+                return;
+            }
             // 키가 살아 있는 동안에는 손으로 버리고 줍는 것도 기록된다. 인벤토리 메뉴와 조준해서 줍기가 어느 길을 타는지,
             // 그 길에서도 남긴 번호로 이어지는지를 보는 데 쓴다. 8차에서는 이 손 조작이 시험의 일부다.
             g_phase = Phase::kAwaitManual;
@@ -1884,7 +2123,8 @@ namespace
         }
         const auto& step = steps[g_step];
         ++g_step;
-        SKSE::log::info("=== {} {}/{}: {} (스레드 {})", g_phase == Phase::kExtra ? "마무리 단계" : "단계", g_step, steps.size(), step.name, Tid());
+        SKSE::log::info("=== {} {}/{}: {} (스레드 {})",
+            g_phase == Phase::kExtra ? "마무리 단계" : g_phase == Phase::kWatchSetup ? "지켜보기 준비" : "단계", g_step, steps.size(), step.name, Tid());
         g_nextAt = Clock::now() + std::chrono::milliseconds(step.waitMs);
         step.run();
     }
@@ -1920,13 +2160,25 @@ namespace
             Notify("[PoE Proto 5] 인벤토리에서 'PoE5 name tag' 검을 버린 뒤, 조준해서 다시 주워 주세요.");
             return;
         }
+        if (g_phase == Phase::kWatch) {
+            // 지켜보기를 끝낸다. 마지막 판정을 남긴다.
+            SKSE::log::info("=== 지켜보기 끝(사용자가 시작 키를 누름) (스레드 {})", Tid());
+            WatchVerdict("끝");
+            Observe("W9 지켜보기 끝");
+            g_phase = Phase::kDone;
+            Notify("[PoE Proto 5] 지켜보기 끝. 플레이하던 세이브를 불러오세요(지금 상태로 저장하지 마세요).");
+            return;
+        }
         const auto* player = RE::PlayerCharacter::GetSingleton();
         auto*       ui = RE::UI::GetSingleton();
         if (!player || !player->Is3DLoaded() || !ui || ui->GameIsPaused()) {
             Notify("[PoE Proto 5] 메뉴를 닫고 게임 안에서 눌러 주세요");
             return;
         }
-        for (const auto id : { kIronSword, kIronHelmet, kIronIngot, kEmptyChest }) {
+        for (const auto id : { kIronSword, kIronHelmet, kIronIngot, kEmptyChest, kSkeever }) {
+            if (id == kSkeever && !g_settings.watch) {
+                continue;  // 시체는 지켜보기 시험에서만 쓴다
+            }
             if (!TestForm(id)) {
                 SKSE::log::error("시험에 쓸 폼을 찾지 못함: {:08X}", id);
                 Notify("[PoE Proto 5] 시험에 쓸 폼을 찾지 못함(로그 확인)");
@@ -1948,16 +2200,26 @@ namespace
         const auto generation = g_pick.generation + 1;
         g_pick = Pickup{};
         g_pick.generation = generation;
-        g_phase = Phase::kMain;
+        g_phase = g_settings.watch ? Phase::kWatchSetup : Phase::kMain;
         g_inTestDrop = false;
         g_stampInEvent = {};
+        g_hasContent = {};
+        for (const auto mark : { Mark::kSwordUidTagA, Mark::kSwordUidTagB, Mark::kSwordName }) {
+            g_hasContent[static_cast<std::size_t>(mark)] = true;  // 꼬리표나 이름표를 처음부터 가진 셋
+        }
+        g_corpseId = 0;
         g_step = 0;
         g_waitingForLoad = false;
         g_pumpQueued = false;
         g_nextAt = Clock::now();
-        Notify("[PoE Proto 5] 시험을 시작합니다. 약 1분과 불러오기 세 번, 조작하지 말고 두세요. 끝나면 할 일을 알려 드립니다");
+        if (g_settings.watch) {
+            Notify("[PoE Proto 5] 지켜보기 시험을 준비합니다. 몇 초만 조작하지 말고 두세요. 끝나면 할 일을 알려 드립니다");
+        } else {
+            Notify("[PoE Proto 5] 시험을 시작합니다. 약 1분과 불러오기 세 번, 조작하지 말고 두세요. 끝나면 할 일을 알려 드립니다");
+        }
         LogCompanions();
-        SKSE::log::info("[환경] 줍기 함수에 끼어들기: {} / 시험을 시작한 스레드 {}", g_hookInstalled ? "켜짐" : "꺼짐", Tid());
+        SKSE::log::info("[환경] 시험: {} / 줍기 함수에 끼어들기: {} / 시험을 시작한 스레드 {}", g_settings.watch ? "지켜보기" : "자동",
+            g_hookInstalled ? "켜짐" : "꺼짐", Tid());
         g_running = true;
     }
 
@@ -2043,7 +2305,9 @@ namespace
                         // 시험 단계가 요청한 것에는 지금 이 이벤트 안에서 번호를 남기고, 손으로 버린 것에는 다음 작업에서 남긴다.
                         const bool manual = !g_inTestDrop && !g_running;
                         if (manual || g_stampInEvent[i]) {
-                            StampOnDropEvent(i, event->newBaseID, event->objectID, g_stampInEvent[i]);
+                            // 지켜보기 시험에서는 손으로 버린 것에도 이벤트 안에서 남긴다(결정 59의 남은 세부: 손으로 버리는
+                            // 경로에서 이벤트 안에 남겨도 되는가). 8차의 손 조작에서는 다음 작업에서 남겼다.
+                            StampOnDropEvent(i, event->newBaseID, event->objectID, g_stampInEvent[i] || g_phase == Phase::kWatch);
                         }
                         if (manual) {
                             SKSE::log::info("[손 조작] {} 을(를) 버림: 바닥의 참조 {:08X} (스레드 {})", kMarkNames[i], event->newBaseID, Tid());
@@ -2060,11 +2324,51 @@ namespace
             }
             SKSE::log::info("[이벤트] 고유ID 변경: {:08X}:{:04X} -> {:08X}:{:04X}, 폼 {:08X} (스레드 {}){}{}", event->oldBaseID, event->oldUniqueID,
                 event->newBaseID, event->newUniqueID, event->objectID, Tid(), followed.empty() ? "" : " | 따라감: ", followed);
+            if (g_phase == Phase::kWatch) {
+                // 표시의 것이든 아니든, 시험용 폼의 번호가 바뀌었으면 다 옮겨진 뒤의 상태로 판정을 남긴다.
+                QueueWatchVerdict(followed.empty() ? "시험용 폼의 고유 ID가 바뀜(따라간 표시 없음)" : "고유 ID 변경을 따라감: " + followed);
+            }
             return RE::BSEventNotifyControl::kContinue;
         }
 
     private:
         UniqueIdSink() = default;
+    };
+
+    // 지켜보기 시험에서 어느 메뉴에서 일어난 일인지를 로그에 남기고, 메뉴가 닫힐 때 판정을 남긴다.
+    // 제작(단련, 마법 부여)은 아이템을 옮기지 않아 이벤트가 오지 않을 수 있으므로, 메뉴가 닫힐 때의 판정이 그 경로를 잡는다.
+    class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+    {
+    public:
+        static MenuSink& Get()
+        {
+            static MenuSink instance;
+            return instance;
+        }
+
+        RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+        {
+            if (!event) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            const std::string_view name = event->menuName.c_str() ? event->menuName.c_str() : "";
+            if (name != RE::BarterMenu::MENU_NAME && name != RE::ContainerMenu::MENU_NAME && name != RE::CraftingMenu::MENU_NAME &&
+                name != RE::GiftMenu::MENU_NAME && name != RE::InventoryMenu::MENU_NAME) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            const StateLock lock(g_state, std::try_to_lock);
+            if (g_phase != Phase::kWatch) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            SKSE::log::info("[메뉴] {} {} (스레드 {})", name, event->opening ? "열림" : "닫힘", Tid());
+            if (!event->opening) {
+                QueueWatchVerdict(std::string(name) + " 닫힘");
+            }
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+    private:
+        MenuSink() = default;
     };
 
     class InputSink final : public RE::BSTEventSink<RE::InputEvent*>
@@ -2295,9 +2599,12 @@ namespace
         if (!g_running) {
             if (g_phase == Phase::kAwaitManual) {
                 SKSE::log::warn("손 조작(버리고 줍기)이 기록되기 전에 세이브가 불려 옴. 손 조작과 마무리 단계의 기록이 없음");
+            } else if (g_phase == Phase::kWatch) {
+                SKSE::log::info("=== 지켜보기 끝(세이브가 불려 옴. 시작 키로 끝내지 않아 마지막 판정은 없음)");
             }
             g_phase = Phase::kIdle;
         }
+        g_corpseId = 0;
         g_inTestDrop = false;
         g_stampInEvent = {};
         g_chest = RE::ObjectRefHandle();
@@ -2333,6 +2640,11 @@ namespace
             } else {
                 SKSE::log::error("이벤트 원본을 찾지 못함. 컨테이너와 고유 ID 이벤트를 받지 못합니다.");
             }
+            if (auto* ui = RE::UI::GetSingleton()) {
+                ui->AddEventSink<RE::MenuOpenCloseEvent>(&MenuSink::Get());
+            } else {
+                SKSE::log::error("UI를 찾지 못함. 메뉴가 열리고 닫히는 것을 받지 못합니다(지켜보기 시험의 메뉴 판정이 빠짐).");
+            }
             break;
         case SKSE::MessagingInterface::kPostLoadGame: {
             const auto lock = LockForCallback("[알림] 불러오기 끝");
@@ -2366,7 +2678,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     InitializeLogging();
 
     g_settings = LoadSettings();
-    SKSE::log::info("설정: StartKey=0x{:02X} SaveLoad={} HookPickUp={}", g_settings.startKey, g_settings.saveLoad, g_settings.hookPickUp);
+    SKSE::log::info("설정: StartKey=0x{:02X} SaveLoad={} HookPickUp={} Scenario={}", g_settings.startKey, g_settings.saveLoad,
+        g_settings.hookPickUp, g_settings.watch ? "watch" : "auto");
 
     const auto* messaging = SKSE::GetMessagingInterface();
     if (!messaging || !messaging->RegisterListener(OnMessage)) {
