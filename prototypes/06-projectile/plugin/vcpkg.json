@@ -1,0 +1,19 @@
+{
+  "name": "poe-proto-projectile",
+  "version-string": "0.1.0",
+  "builtin-baseline": "ee12231b20c95013c6638d845d04c91559a1d1ff",
+  "dependencies": [
+    {
+      "name": "directxtk",
+      "version>=": "2025-10-27"
+    },
+    {
+      "name": "rapidcsv",
+      "version>=": "8.90"
+    },
+    {
+      "name": "spdlog",
+      "version>=": "1.16.0"
+    }
+  ]
+}
