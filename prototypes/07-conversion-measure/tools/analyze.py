@@ -25,6 +25,9 @@ from pathlib import Path
 PLAYER = 0x14
 PAIR_WINDOW_US = 50_000       # 적중 이벤트와 피해 기록을 잇는 시각 차이(V4)
 SWING_WINDOW_US = 80_000      # 이 안에 여러 대상에 맞은 것은 한 번의 휘두름으로 센다
+ECHO_WINDOW_US = 1_000        # 다른 수단의 적중과 이 안에 같은 대상에 온 맨손 적중은 그 적중의 짝으로 본다
+UNARMED_FORM = 0x1F4          # 맨손(무기 종류 0). 2026-11-14의 기록에서 폭발·주문 적중마다 이 수단의 적중이 하나 더 왔음
+UNSEEN_LIMIT = 0.1            # V1: 피해 기록 없이 줄어든 체력이 최대 체력의 이 비율 이하면 다 본 것으로 친다
 STREAK_GAP_US = 2_000_000     # 타격이 이보다 길게 끊기면 다른 구간
 LOW_LEVEL = 10
 MIN_LOW_ENEMIES = 30
@@ -50,6 +53,7 @@ class Instance:
     t_first: int
     level: int = 0
     max_health: float = 0.0
+    base_health: float = 0.0
     first_health: float = 0.0
     flags: set = field(default_factory=set)
     name: str = "-"
@@ -91,6 +95,7 @@ class Hit:
     source: int
     projectile: int
     flags: int
+    target_ref: int = 0
     damages: list = field(default_factory=list)
 
     @property
@@ -125,6 +130,7 @@ class Data:
         self.session_span: dict[int, list[int]] = {}
         self.loads = 0
         self.bad_rows = 0
+        self.echo_hits = 0
         self.headers: list[str] = []
         self.hook_configs: list[str] = []
 
@@ -191,12 +197,10 @@ def load(paths: list[Path]) -> Data:
                             current[ref] = instance
                             data.instances.append(instance)
                         instance.last_dead = dead
-                        if not dead:
+                        if not dead or instance.max_health == 0.0:
                             instance.level = int(cols[5])
                             instance.max_health = fnum(cols[6])
-                        elif instance.max_health == 0.0:
-                            instance.level = int(cols[5])
-                            instance.max_health = fnum(cols[6])
+                            instance.base_health = fnum(cols[7])
                         instance.flags |= flags - {"D", "X", "?"}
                         instance.name, instance.race, instance.plugin = cols[12], cols[13], cols[11]
                         if "?" not in flags:  # 훑기가 적은 줄만 독립된 체력 읽기로 쓴다
@@ -215,7 +219,7 @@ def load(paths: list[Path]) -> Data:
                     elif kind == "H":
                         target_ref, cause_ref = int(cols[3], 16), int(cols[4], 16)
                         data.hits.append(Hit(session, t, resolve(target_ref), cause_ref, resolve(cause_ref), int(cols[5], 16), int(cols[6], 16),
-                                             int(cols[7])))
+                                             int(cols[7]), target_ref=target_ref))
                     elif kind == "K":
                         instance = resolve(int(cols[3], 16))
                         if instance:
@@ -228,7 +232,33 @@ def load(paths: list[Path]) -> Data:
                         data.forms[int(cols[2], 16)] = (cols[3], int(cols[4]), int(cols[5]), cols[6])
                 except (ValueError, IndexError):
                     data.bad_rows += 1
+    drop_echo_hits(data)
     return data
+
+
+def drop_echo_hits(data: Data) -> None:
+    """같은 가해자가 같은 대상에 다른 수단으로 맞힌 적중과 1ms 안에 온 맨손 적중을 뺀다.
+
+    2026-11-14의 기록에서 폭발과 주문의 적중마다 엔진이 맨손(000001F4) 적중을 하나 더 알렸다(짝 1049개, 거의 다 피해 0).
+    이것을 근접 타격으로 세면 타격률이 부풀었다(초당 4.0회. 짝을 빼면 1.6회).
+    """
+    others: dict[tuple, list[int]] = defaultdict(list)
+    for h in data.hits:
+        if h.source != UNARMED_FORM:
+            others[(h.session, h.target_ref, h.cause_ref)].append(h.t)
+    for times in others.values():
+        times.sort()
+    kept = []
+    for h in data.hits:
+        if h.source == UNARMED_FORM:
+            times = others.get((h.session, h.target_ref, h.cause_ref))
+            if times:
+                index = bisect.bisect_left(times, h.t - ECHO_WINDOW_US)
+                if index < len(times) and times[index] <= h.t + ECHO_WINDOW_US:
+                    data.echo_hits += 1
+                    continue
+        kept.append(h)
+    data.hits = kept
 
 
 # ---------------------------------------------------------------- 셈
@@ -330,8 +360,9 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
             previous_gap[id(d)] = previous.after - d.before
         if key:
             last_by_target[key] = d
+    unchanged = sum(1 for d in nonzero if abs(d.before - d.after) < 0.005)
     for d in nonzero:
-        a_ok = close(d.before - d.after, abs(d.arg))
+        a_ok = d.before - d.after >= 0.005 and close(d.before - d.after, abs(d.arg))
         gap = previous_gap.get(id(d))
         b_ok = gap is not None and close(gap, abs(d.arg))
         inside += a_ok
@@ -432,7 +463,32 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
         if seen_full:
             covered.append(sum(d.amount for d in i.damage_in if d.t <= i.death_t + 1_000_000) / i.max_health)
     v1_ok = sum(1 for c in covered if 0.9 <= c <= 1.6)
-    v1_pass = bool(covered) and v1_ok / len(covered) >= 0.9
+    # V1(체력의 흐름): 죽은 액터마다 훑기가 읽은 체력과 피해 기록을 시각 순으로 잇고, 피해 기록 없이 줄어든 체력을 더한다.
+    # 처음 기준(피해 합이 최대 체력의 90~160%)은 회복, 마지막 타격의 초과분, 버프로 올라간 최대 체력을 생각하지 않아
+    # 2026-11-14의 기록에서 놓친 피해가 없는데도 실패했다(README의 "결과").
+    unseen_shares: list[float] = []
+    for i in data.instances:
+        if i.death_t is None or i.ref == PLAYER or i.max_health <= 0 or not i.damage_in:
+            continue
+        cutoff = i.death_t + 1_000_000
+        events = [(t, 0, h, None) for t, h in i.readings if t <= cutoff and not math.isnan(h)]
+        events += [(d.t, 1, 0.0, d) for d in i.damage_in if d.t <= cutoff]
+        events.sort(key=lambda e: (e[0], e[1]))
+        level = None
+        unseen = 0.0
+        for _t, _order, health, d in events:
+            if d is None:
+                pre = post = health
+            else:
+                taken = d.amount if math.isnan(d.arg) else abs(d.arg)  # V2가 실패해 대신 쓰는 값이 아니라 받은 값 그대로
+                pre = d.before if use_inside else d.before + taken  # 깎이기 전 체력
+                post = d.after
+            if level is not None and pre < level - 0.05:
+                unseen += level - pre
+            level = post
+        unseen_shares.append(unseen / i.max_health)
+    flow_ok = sum(1 for u in unseen_shares if u <= UNSEEN_LIMIT)
+    v1_pass = bool(unseen_shares) and flow_ok / len(unseen_shares) >= 0.9
     # V3
     ratios: list[float] = []
     for i in data.instances:
@@ -466,10 +522,14 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
         return "표본 없음" if sample == 0 else "통과" if passed else "**실패**"
 
     out += table(["기준", "결과", "값"], [
-        ["V1 끼어든 함수가 체력 피해를 다 보는가", verdict(v1_pass, len(covered)),
+        ["V1 끼어든 함수가 체력 피해를 다 보는가", verdict(v1_pass, len(unseen_shares)),
+         f"죽은 액터 {len(unseen_shares)} 가운데 피해 기록 없이 줄어든 체력이 최대 체력의 {UNSEEN_LIMIT:.0%} 이하인 것 {share(flow_ok, len(unseen_shares))}, "
+         f"가장 큰 것 {fmt(max(unseen_shares) * 100 if unseen_shares else math.nan, 0)}%"],
+        ["(참고) V1의 처음 기준", "참고",
          f"온전한 체력에서부터 본 뒤 죽은 액터 {len(covered)} 가운데 피해 합이 최대 체력의 90~160%인 것 {share(v1_ok, len(covered))}, 중앙값 {fmt(pct(covered, 0.5) * 100, 0)}%"],
         ["V2 받은 값이 체력 변화와 같은가", verdict(v2_pass, len(nonzero)),
-         f"0이 아닌 기록 {len(nonzero)} 가운데 맞는 것 {share(either, len(nonzero))}. 호출 안에서 깎임 {share(inside, len(nonzero))}, 호출 전에 이미 깎임 {share(before_call, with_previous)}"],
+         f"0이 아닌 기록 {len(nonzero)} 가운데 맞는 것 {share(either, len(nonzero))}. 호출 안에서 깎임 {share(inside, len(nonzero))}, 호출 전에 이미 깎임 {share(before_call, with_previous)}, "
+         f"호출 앞뒤 체력이 같음 {share(unchanged, len(nonzero))}"],
         ["V3 주기적으로 읽은 체력과 맞는가", verdict(v3_pass, len(ratios)),
          f"체력이 5 넘게 줄어든 구간 {len(ratios)} 가운데 피해 합이 70~150%인 것 {share(v3_ok, len(ratios))}, 중앙값 {fmt(pct(ratios, 0.5) * 100, 0)}%"],
         ["V4 적중 이벤트와 피해 기록이 이어지는가", "기록만",
@@ -477,7 +537,7 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
          f"없는 것 가운데 같은 대상에 공격자가 다르게 적힌 피해 기록이 있는 것 {other_attacker}. "
          f"피해 기록에서 가장 가까운 적중 이벤트까지(ms, 양수는 피해가 뒤): 5% {fmt(pct(nearest_dt, 0.05))}, 중앙값 {fmt(pct(nearest_dt, 0.5))}, 95% {fmt(pct(nearest_dt, 0.95))}"],
     ])
-    damage_usable = v1_pass or (not covered and v3_pass)
+    damage_usable = v1_pass or (not unseen_shares and v3_pass)
     if not data.damages:
         out += ["피해 기록이 없습니다(HookDamage = false이거나 싸우지 않음). 아래의 피해 표는 비어 있습니다.", ""]
     elif not v2_pass:
@@ -490,13 +550,13 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
     # ------------------------------------------------------------ 적의 체력
     out += ["## 2. 적의 최대 체력 (K와 B의 자료)", "",
             "적: 동료·소환수·조종받는 액터가 아니고, 플레이어에게 적대로 적혔거나 플레이어의 피해를 받았거나 플레이어에게 피해를 준 액터. "
-            "같은 액터를 세이브를 불러와 다시 본 것은 한 번만 셉니다(폼, 틀이 된 기본 폼, 레벨, 최대 체력이 같으면 같은 액터). "
+            "같은 액터를 세이브를 불러와 다시 본 것은 한 번만 셉니다(폼, 틀이 된 기본 폼, 레벨, 기본 체력이 같으면 같은 액터). "
             "불러오기 없이 같은 값으로 다시 나타난 것은 폼 ID가 다시 쓰인 다른 액터로 보고 따로 셉니다.", ""]
-    # 같은 열쇠(폼, 틀, 레벨, 최대 체력)가 여러 구간(불러오기 사이, 기록 파일 사이)에 나오면 같은 액터를 다시 본 것으로 보고
+    # 같은 열쇠(폼, 틀, 레벨, 기본 체력. 최대 체력은 보정이 붙었다 떨어져 같은 액터라도 다름)가 여러 구간(불러오기 사이, 기록 파일 사이)에 나오면 같은 액터를 다시 본 것으로 보고
     # 가장 많이 나온 구간의 것만 센다. 한 구간 안에서 같은 열쇠가 둘이면 폼 ID가 다시 쓰인 다른 액터이므로 둘 다 센다.
     by_key: dict[tuple, dict[tuple, list[Instance]]] = defaultdict(lambda: defaultdict(list))
     for i in enemies:
-        by_key[(i.ref, i.root or i.base, i.level, round(i.max_health))][(i.session, i.segment)].append(i)
+        by_key[(i.ref, i.root or i.base, i.level, round(i.base_health if i.base_health > 0 else i.max_health))][(i.session, i.segment)].append(i)
     counted: list[Instance] = []
     for per_segment in by_key.values():
         counted += max(per_segment.values(), key=lambda group: (len(group), sum(id(i) in fought for i in group)))
@@ -541,6 +601,16 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
                 "유배자 레벨과 적 레벨이 같이 간다는 가정이 들어간 비교입니다(표본 10개 이상인 레벨대만).", ""]
         out += table(["적 레벨", "레벨 중앙값", "이 모드 목록의 체력", "r=50%일 때 우리 피해", "r=75%", "r=0%(PoE 그대로)"], rows)
 
+    boosts = Counter(round(i.max_health - i.base_health) for i in counted if i.base_health > 0)
+    boosted = sum(count for diff, count in boosts.items() if diff != 0)
+    if boosted:
+        out += [f"최대 체력이 기본 체력과 다른 적 {share(boosted, sum(boosts.values()))} (차이: "
+                + ", ".join(f"{diff:+d} {count}" for diff, count in boosts.most_common() if diff != 0)
+                + "). 체력 보정이 붙었다 떨어지는 것으로, 같은 액터라도 볼 때마다 다를 수 있습니다. 표는 마지막으로 본 최대 체력입니다."]
+        low_base = [i.base_health for i in counted if i.level <= LOW_LEVEL and i.base_health > 0]
+        if low_base:
+            out += [f"참고로 레벨 {LOW_LEVEL} 이하 적의 기본 체력 중앙값은 {fmt(pct(low_base, 0.5), 0)} (표본 {len(low_base)})."]
+        out += [""]
     names = Counter(f"{i.name} ({i.plugin})" for i in counted)
     out += ["가장 많이 본 적: " + (", ".join(f"{name} {count}" for name, count in names.most_common(12)) or "없음"), ""]
 
@@ -557,7 +627,8 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
         amounts = [h.amount for h in hits if h.amount > 0]
         rows.append([major, minor, power, len(hits), share(len(hits) - len(amounts), len(hits)), fmt(pct(amounts, 0.25)), fmt(pct(amounts, 0.5)),
                      fmt(pct(amounts, 0.75)), fmt(pct(unscaled(hits, False), 0.5))])
-    out += ["타격 한 번의 피해 = 적중 이벤트 하나에 이어진 피해 기록의 합(체력에서 실제로 깎인 값, 난이도 배율이 곱해진 뒤).", ""]
+    out += ["타격 한 번의 피해 = 적중 이벤트 하나에 이어진 피해 기록의 합(체력에서 실제로 깎인 값, 난이도 배율이 곱해진 뒤).",
+            f"다른 수단의 적중과 같은 순간(1ms 안)에 같은 대상에 온 맨손 적중 {data.echo_hits}개는 엔진이 그 적중을 한 번 더 알린 것으로 보고 모든 표에서 뺐습니다.", ""]
     out += table(["갈래", "수단", "종류", "적중", "피해 0인 적중", "25%", "중앙값", "75%", "배율로 나눈 값의 중앙값"], rows)
     out += ["마지막 칸은 타격마다 그때의 주는 배율로 나눈 값의 중앙값입니다(기대 곡선이 배율을 곱하기 전 기준이라는 잠정 항목에 견줄 값).", ""]
     player_damage = [d for d in data.damages if d.attacker_ref == PLAYER and d.target and id(d.target) in enemy_ids and d.amount > 0]
@@ -657,6 +728,7 @@ def hard_rows() -> list[str]:
     죽은 뒤 같은 폼 ID로 다시 나타난 액터, 세이브 불러오기, 도중에 바뀐 난이도 배율."""
     rows = ["# PoEProtoMeasure selftest-hard", "S\t0\tstart\tselftest",
             "F\t100\t00000F01\tWEAP\t1\t10\tsword",
+            "F\t100\t000001F4\tWEAP\t0\t0\t-",
             "A\t100\t00000014\t00000007\t00000007\t20\t300.0\t300.0\t300.0\t-\t00000001\tSkyrim.esm\t(player)\tNord"]
     t = 1_000_000
 
@@ -678,6 +750,7 @@ def hard_rows() -> list[str]:
                 if segment == 0 and hit == 0:  # 첫 구간: 이벤트 수신부가 먼저 본다(적대 여부 모름, 체력은 이미 깎인 뒤)
                     rows.append(actor(ref, "?", remaining, t))
                 rows.append(f"H\t{t}\t1\t{ref:08X}\t00000014\t00000F01\t00000000\t0")
+                rows.append(f"H\t{t + 300}\t1\t{ref:08X}\t00000014\t000001F4\t00000000\t0")  # 엔진이 한 번 더 알린 맨손 적중
                 rows.append(f"D\t{t + 200}\t1\t{ref:08X}\t00000014\t-10.000\t{remaining:.2f}\t{remaining:.2f}\t120.0")
                 if segment == 0 and hit == 0:
                     rows.append(actor(ref, "H", remaining, t + 1000))
@@ -692,6 +765,24 @@ def hard_rows() -> list[str]:
                 rows.append(actor(ref, "?", 120.0, t + 3_000_000))
                 rows.append(actor(ref, "H", 120.0, t + 3_500_000))
             t += 5_000_000
+    return rows
+
+
+def unseen_rows() -> list[str]:
+    """피해 기록 없이 체력이 줄어든 적 하나(끼어든 함수가 놓친 피해). V1이 실패해야 한다."""
+    rows = ["# PoEProtoMeasure selftest-unseen", "S\t0\tstart\tselftest",
+            "A\t100\tFF000300\tFF100300\t00003000\t5\t120.0\t120.0\t120.0\tH\t00000002\tTest.esp\tWolf\tWolf"]
+    t = 1_000_000
+    remaining = 120.0
+    for step in range(6):
+        t += 500_000
+        if step == 3:  # 기록 없이 30이 깎인 것을 훑기가 본다
+            remaining -= 30.0
+            rows.append(f"P\t{t}\tFF000300\t{remaining:.2f}\t120.0")
+            continue
+        remaining -= 20.0 if step < 5 else remaining
+        rows.append(f"D\t{t}\t1\tFF000300\t00000014\t-{20.0 if step < 5 else 10.0:.3f}\t{remaining:.2f}\t{remaining:.2f}\t120.0")
+    rows.append(f"K\t{t + 300}\t1\tFF000300\t00000014\t1")
     return rows
 
 
@@ -731,12 +822,19 @@ def selftest() -> int:
         report = "\n".join(analyze(load([path])))
         hard_path = Path(folder) / "measure-selftest-hard.tsv"
         hard_path.write_text("\n".join(hard_rows()) + "\n", encoding="utf-8")
-        hard = "\n".join(analyze(load([hard_path])))
+        hard_data = load([hard_path])
+        hard = "\n".join(analyze(hard_data))
+        unseen_path = Path(folder) / "measure-selftest-unseen.tsv"
+        unseen_path.write_text("\n".join(unseen_rows()) + "\n", encoding="utf-8")
+        unseen = "\n".join(analyze(load([unseen_path])))
     checks = {
         # 까다로운 기록: 적 넷을 두 구간에서 잡고, 첫 구간에서 둘이 같은 폼 ID로 다시 나타난다 -> 센 적 6, 그중 싸운 것 4, 죽은 적 8.
         "까다로운 기록의 V2(호출 전에 깎임)": "V2 받은 값이 체력 변화와 같은가 | 통과" in hard and "호출 전에 이미 깎임 100% (88/88)" in hard,
         "음수인 값": "받은 값의 부호: 음수 96" in hard,
-        "온전한 체력에서 본 것만 V1에": "죽은 액터 4 가운데" in hard,
+        "온전한 체력에서 본 것만 처음 기준에": "온전한 체력에서부터 본 뒤 죽은 액터 4 가운데" in hard,
+        "까다로운 기록의 V1(흐름)": "V1 끼어든 함수가 체력 피해를 다 보는가 | 통과 | 죽은 액터 8 가운데" in hard,
+        "맨손 짝을 뺌": hard_data.echo_hits == 96 and "맨손 적중 96개" in hard and "| 맨손 |" not in hard,
+        "놓친 피해를 V1이 잡음": "V1 끼어든 함수가 체력 피해를 다 보는가 | **실패**" in unseen and "가장 큰 것 25%" in unseen,
         "재사용과 불러오기": "| 16~20 | 6 | 4 |" in hard and "| 죽은 적 | 8 |" in hard,
         "타격마다의 배율": "| 10.0 | 10.0 | 10.0 | 15.0 |" in hard,
         "V1 통과": "V1 끼어든 함수가 체력 피해를 다 보는가 | 통과" in report,
