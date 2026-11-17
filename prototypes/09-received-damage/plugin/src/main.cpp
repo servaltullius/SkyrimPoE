@@ -35,6 +35,7 @@ namespace
     constexpr std::uint64_t kApplyHitId = 38586;
     constexpr std::uint64_t kModifyActorValueId = 35086;
     constexpr std::uint64_t kSetEffectivenessId = 34052;
+    constexpr std::uint64_t kExplosionDamageStepsId = 44016;
     constexpr std::size_t kModifyActorValueSlot = 0x20;
     constexpr REL::Version kVerifiedRuntime{ 1, 6, 1170, 0 };
     constexpr auto kTick = std::chrono::milliseconds(100);
@@ -89,8 +90,9 @@ namespace
     constexpr std::size_t kMagicCallCount = kMagicCalls.size();
     constexpr std::size_t kMagicSiteCount = kMagicVtableCount + kMagicCallCount;
     constexpr MagicCall kMagnitudeStepsCall{ "AddTarget::SetEffectiveness", 34547, 0x656 };
+    constexpr MagicCall kExplosionStepsCall{ "Explosion::DamageSteps", 44004, 0xC1 };
     // write_call<5> 하나마다 절대 점프 스텁 14바이트를 쓴다. vtable에는 트램펄린이 필요 없다.
-    constexpr std::size_t kTrampolineSize = (kHitSiteCount + kMagicCallCount + 1) * 14;
+    constexpr std::size_t kTrampolineSize = (kHitSiteCount + kMagicCallCount + 2) * 14;
     constexpr std::string_view MagicSiteName(std::size_t index)
     {
         return index < kMagicVtableCount ? kMagicVtables[index].name : kMagicCalls[index - kMagicVtableCount].name;
@@ -126,6 +128,7 @@ namespace
         bool logAll = false;
         bool readResistance = true;
         bool logMagnitudeSteps = true;
+        bool logExplosionSteps = true;
         bool hookMagic = true;
         bool hookHits = true;
         bool notify = true;
@@ -189,6 +192,13 @@ namespace
         float effectiveness = 0.0f;
         std::string resistance = "-";
         std::string power = "-";
+    };
+    struct ExplosionRead
+    {
+        std::int64_t t = 0;
+        unsigned long thread = 0;
+        RE::FormID targetId = 0;
+        float totalBefore = 0.0f;
     };
     struct LateRead
     {
@@ -342,6 +352,8 @@ namespace
                 ParseBool(key, value, settings.readResistance);
             } else if (key == "LogMagnitudeSteps") {
                 ParseBool(key, value, settings.logMagnitudeSteps);
+            } else if (key == "LogExplosionSteps") {
+                ParseBool(key, value, settings.logExplosionSteps);
             } else if (key == "HookMagic") {
                 ParseBool(key, value, settings.hookMagic);
             } else if (key == "HookHits") {
@@ -640,6 +652,65 @@ namespace
         static inline REL::Relocation<decltype(Thunk)> original;
     };
 
+    bool BeginExplosionSteps(RE::HitData* hit, ExplosionRead& p)
+    {
+        if (!hit) {
+            return false;
+        }
+        const auto target = hit->target.get();
+        if (!target || (!target->IsPlayerRef() && !g_settings.logAll)) {
+            return false;
+        }
+        p.t = Micros();
+        p.thread = Tid();
+        p.targetId = target->GetFormID();
+        p.totalBefore = hit->totalDamage;
+        return true;
+    }
+    void FinishExplosionSteps(RE::HitData* hit, const ExplosionRead& p)
+    {
+        const float totalAfter = hit->totalDamage;
+        const float physical = hit->physicalDamage;
+        const float percentBlocked = hit->percentBlocked;
+        const float sneak = hit->bonusHealthDamageMult;
+        const auto flags = hit->flags.underlying();
+        RE::FormID aggressorId = 0;
+        if (const auto aggressor = hit->aggressor.get()) {
+            aggressorId = aggressor->GetFormID();
+        }
+        const RE::FormID weaponId = hit->weapon ? hit->weapon->GetFormID() : 0;
+        RE::FormID sourceRefId = 0;
+        if (const auto source = hit->sourceRef.get()) {
+            sourceRefId = source->GetFormID();
+        }
+        // 결정 80의 시작 값. totalBefore가 0이면 비율을 알 수 없어 1로 계산하고 로그에는 '-'로 둔다.
+        const float ratio = p.totalBefore != 0.0f ? totalAfter / p.totalBefore : 1.0f;
+        const float predicted = physical * ratio * (1.0f - percentBlocked);
+        SKSE::log::info("EXP\t{}\t{}\t{:08X}\t{:08X}\t{:08X}\t{:08X}\t{:.6f}\t{:.6f}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:X}\t{:.6f}",
+            p.t, p.thread, aggressorId, p.targetId, weaponId, sourceRefId, p.totalBefore, totalAfter,
+            p.totalBefore != 0.0f ? std::format("{:.6f}", ratio) : "-", physical, percentBlocked, sneak, flags, predicted);
+    }
+    struct ExplosionStepsHook
+    {
+        static void Thunk(RE::HitData* hit)
+        {
+            ExplosionRead p;
+            bool began = false;
+            try {
+                began = BeginExplosionSteps(hit, p);
+            } catch (...) {
+            }
+            original(hit);  // 모드와 관계없이 받은 인자 그대로 정확히 한 번 부른다
+            if (began) {
+                try {
+                    FinishExplosionSteps(hit, p);
+                } catch (...) {
+                }
+            }
+        }
+        static inline REL::Relocation<decltype(Thunk)> original;
+    };
+
     std::uintptr_t CallTarget(std::uintptr_t site)
     {
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(site);
@@ -786,6 +857,16 @@ namespace
         SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kSetEffectivenessId);
         return {};
     }
+    std::string InstallExplosionSteps()
+    {
+        constexpr auto spec = kExplosionStepsCall;
+        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kExplosionDamageStepsId); !problem.empty()) {
+            return problem;
+        }
+        ExplosionStepsHook::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, ExplosionStepsHook::Thunk);
+        SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kExplosionDamageStepsId);
+        return {};
+    }
     template <std::size_t I>
     std::string InstallMagicVtable()
     {
@@ -822,7 +903,8 @@ namespace
     {
         const unsigned total = (g_settings.hookHits ? static_cast<unsigned>(kHitSiteCount) : 0U) +
                                (g_settings.hookMagic ? static_cast<unsigned>(kMagicSiteCount) : 0U) +
-                               (g_settings.logMagnitudeSteps ? 1U : 0U);
+                               (g_settings.logMagnitudeSteps ? 1U : 0U) +
+                               (g_settings.logExplosionSteps ? 1U : 0U);
         std::string problems;
         unsigned installed = 0;
         const auto record = [&](const std::string& problem) {
@@ -871,6 +953,11 @@ namespace
                 attempt([] { return InstallMagnitudeSteps(); });
             } else {
                 SKSE::log::info("마법 크기 계산 자리는 가로채지 않음(설정 LogMagnitudeSteps = false)");
+            }
+            if (g_settings.logExplosionSteps) {
+                attempt([] { return InstallExplosionSteps(); });
+            } else {
+                SKSE::log::info("폭발 피해 계산 자리는 가로채지 않음(설정 LogExplosionSteps = false)");
             }
         }
         g_installed = installed;
@@ -1033,9 +1120,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     }
     g_settings = LoadSettings();
     g_mode = static_cast<int>(g_settings.startMode);
-    SKSE::log::info("설정: ModeKey=0x{:02X} StartMode={} Value={:.6f} LogAll={} ReadResistance={} LogMagnitudeSteps={} HookMagic={} HookHits={} Notify={}",
+    SKSE::log::info("설정: ModeKey=0x{:02X} StartMode={} Value={:.6f} LogAll={} ReadResistance={} LogMagnitudeSteps={} LogExplosionSteps={} HookMagic={} HookHits={} Notify={}",
         g_settings.modeKey, ModeName(g_settings.startMode), g_settings.value, g_settings.logAll, g_settings.readResistance,
-        g_settings.logMagnitudeSteps, g_settings.hookMagic, g_settings.hookHits, g_settings.notify);
+        g_settings.logMagnitudeSteps, g_settings.logExplosionSteps, g_settings.hookMagic, g_settings.hookHits, g_settings.notify);
     SKSE::log::info("런타임 {}", skse->RuntimeVersion().string("."));
     const auto* messaging = SKSE::GetMessagingInterface();
     if (!messaging || !messaging->RegisterListener(OnMessage)) {

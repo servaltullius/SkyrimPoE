@@ -1,4 +1,4 @@
-"""PoE Proto 9 로그에서 README의 R1~R3 판정과 R4~R6 통계, 마법 자리별 통계를 계산한다.
+"""PoE Proto 9 로그에서 README의 R1~R3 판정과 R4~R7 통계, 마법 자리별 통계를 계산한다.
 
 사용: python analyze_received.py <PoEProtoReceived.log>
       python analyze_received.py --selftest
@@ -106,10 +106,29 @@ class MagnitudeStep:
 
 
 @dataclass
+class ExplosionStep:
+    t: int
+    thread: int
+    aggressor: int
+    target: int
+    weapon: int
+    source_ref: int
+    total_before: float
+    total_after: float
+    ratio: float | None
+    physical: float
+    percent_blocked: float
+    sneak: float
+    flags: int
+    predicted: float
+
+
+@dataclass
 class Log:
     magic: list = field(default_factory=list)
     hits: list = field(default_factory=list)
     amp: list = field(default_factory=list)
+    exp: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
     skipped: int = 0
     late_paired: int = 0
@@ -166,6 +185,20 @@ def parse_amp(c):
                          caster_one, target_one, predicted)
 
 
+def parse_exp(c):
+    if len(c) != 14:
+        raise ValueError("EXP 칸 수 오류")
+    t, thread = integer(c[0]), integer(c[1])
+    aggressor, target, weapon, source_ref = (integer(x, 16) for x in c[2:6])
+    before, after = (number(x) for x in c[6:8])
+    ratio = None if c[8] == "-" else number(c[8])
+    physical, blocked, sneak = (number(x) for x in c[9:12])
+    flags = integer(c[12], 16)
+    predicted = number(c[13])
+    return ExplosionStep(t, thread, aggressor, target, weapon, source_ref, before, after,
+                         ratio, physical, blocked, sneak, flags, predicted)
+
+
 def read_log(text):
     log = Log()
     late = []
@@ -185,6 +218,8 @@ def read_log(text):
                 (log.magic if kind == "MAG" else log.hits).append(sample)
             elif kind == "AMP":
                 log.amp.append(parse_amp(c))
+            elif kind == "EXP":
+                log.exp.append(parse_exp(c))
             elif kind == "LATE":
                 if len(c) != 4:
                     raise ValueError("LATE 칸 수 오류")
@@ -370,6 +405,43 @@ def magnitude_step_statistics(amp, magic):
     return stats
 
 
+@dataclass
+class ExplosionStatistics:
+    count: int
+    ratio_range: tuple | None
+    ratio_missing: int
+    physical_positive: float
+    predicted_range: tuple | None
+    matched: int = 0
+    compared: int = 0
+    unpaired: int = 0
+
+
+def explosion_step_statistics(exp, hits):
+    """같은 대상의 explosion HIT 중 EXP 뒤 1초 안의 시각순 첫 줄과 totalDamage를 비교한다."""
+    ratios = [s.ratio for s in exp if s.ratio is not None]
+    predicted = [s.predicted for s in exp]
+    result = ExplosionStatistics(len(exp), (min(ratios), max(ratios)) if ratios else None,
+                                 len(exp) - len(ratios), sum(s.physical > 0 for s in exp) / len(exp) if exp else 0.0,
+                                 (min(predicted), max(predicted)) if predicted else None)
+    by_target = defaultdict(list)
+    for sample in hits:
+        if sample.site == "explosion":
+            by_target[sample.target].append(sample)
+    for candidates in by_target.values():
+        candidates.sort(key=lambda s: s.t)
+    for sample in exp:
+        candidates = by_target.get(sample.target, [])
+        index = bisect_left(candidates, sample.t, key=lambda s: s.t)
+        if index == len(candidates) or candidates[index].t - sample.t > 1_000_000:
+            result.unpaired += 1
+        else:
+            result.compared += 1
+            if abs(candidates[index].before - sample.total_after) <= max(0.01, abs(sample.total_after) * 0.01):
+                result.matched += 1
+    return result
+
+
 def print_damage(label, verdict):
     ratio = f"{verdict.matched / verdict.total:.1%}" if verdict.total else "-"
     print(f"{label}: {verdict.answer} — {verdict.matched}/{verdict.total}줄 맞음({ratio}), 죽음으로 잘려 제외 {verdict.dead}줄")
@@ -378,7 +450,7 @@ def print_damage(label, verdict):
 
 
 def report(log):
-    print(f"읽은 줄: MAG {len(log.magic)}, HIT {len(log.hits)}, AMP {len(log.amp)}, 형식 오류로 건너뜀 {log.skipped}")
+    print(f"읽은 줄: MAG {len(log.magic)}, HIT {len(log.hits)}, EXP {len(log.exp)}, AMP {len(log.amp)}, 형식 오류로 건너뜀 {log.skipped}")
     print(f"LATE: 연결 {log.late_paired}, 짝 없음·중복 {log.late_unpaired}, 대상 소실로 체력 없음 {log.late_missing}")
     print(f"설정 Value={log.value:g}" + (" (설정 줄이 없어 기본값 사용)" if "Value" not in log.settings else ""))
     r1 = damage_verdict(log.magic, log.value)
@@ -433,6 +505,16 @@ def report(log):
                 text += f"~{spread[1]:.6f} (최소·최대)"
             print(f"    {label}: {text}")
         print(f"    예측 일치 {result.matched}/{result.compared}, 짝 없음 {result.unpaired}, 예측값 없음 {result.prediction_missing}")
+    print("R7 폭발 시작 값(판정 없음):")
+    if not log.exp:
+        print("  EXP 줄 없음")
+    else:
+        result = explosion_step_statistics(log.exp, log.hits)
+        ratio = "/".join(f"{v:.6f}" for v in result.ratio_range) if result.ratio_range else "-"
+        predicted = "/".join(f"{v:.6f}" for v in result.predicted_range)
+        print(f"  EXP {result.count}줄, ratio 최소·최대 {ratio}, ratio 없음 {result.ratio_missing}줄")
+        print(f"  physical>0 {result.physical_positive:.1%}, predicted 최소·최대 {predicted}")
+        print(f"  totalDamage 이어짐 {result.matched}/{result.compared}, 짝 없음 {result.unpaired}")
 
 
 def selftest():
@@ -470,6 +552,13 @@ def selftest():
 
     def log(*lines, value=0.5):
         return read_log("\n".join([prefix + f"설정: ModeKey=0x3C StartMode=observe Value={value:.6f} LogAll=false", *lines]))
+
+    def exp(t=1, **changes):
+        names = "t thread aggressor target weapon source_ref total_before total_after ratio physical blocked sneak flags predicted".split()
+        values = [t, 7, "00000001", "00000014", "00000002", "00000003", 20, 18, 0.9, 16, 0.25, 1, "100000", 10.8]
+        d = dict(zip(names, values))
+        d.update(changes)
+        return row("EXP", [d[name] for name in names])
 
     class Tests(unittest.TestCase):
         def test_r1_yes_no_empty(self):
@@ -711,6 +800,102 @@ def selftest():
             self.assertIn("효과 설정 00000003 × 주문 00000002 × 시전자 00000001: 2줄", text)
             self.assertIn("eff: 0.200000~0.500000 (최소·최대)", text)
             self.assertIn("예측 일치 2/2, 짝 없음 0", text)
+
+        def test_exp_parsing(self):
+            data = log(exp())
+            self.assertEqual((len(data.exp), data.skipped), (1, 0))
+            self.assertEqual(data.exp[0], ExplosionStep(1, 7, 1, PLAYER, 2, 3, 20, 18, 0.9, 16, 0.25, 1, 0x100000, 10.8))
+
+        def test_exp_missing_ratio_and_null_forms(self):
+            data = log(exp(total_before=0, total_after=0, ratio="-", aggressor="00000000", weapon="00000000",
+                           source_ref="00000000", physical=4, blocked=0.5, predicted=2))
+            self.assertEqual((len(data.exp), data.skipped), (1, 0))
+            sample = data.exp[0]
+            self.assertIsNone(sample.ratio)
+            self.assertEqual((sample.aggressor, sample.weapon, sample.source_ref, sample.predicted), (0, 0, 0, 2))
+
+        def test_exp_malformed_fields(self):
+            fields = exp().split("\t")[3:]
+            data = log(row("EXP", fields[:-1]), row("EXP", fields + [0]), exp(t=-1), exp(thread=-1),
+                       exp(aggressor="-"), exp(target="invalid"), exp(weapon="-1"), exp(source_ref="invalid"),
+                       exp(flags="invalid"), exp(total_after="-"), exp())
+            self.assertEqual((data.skipped, len(data.exp)), (10, 1))
+
+        def test_exp_nonfinite_fields(self):
+            for name in ("total_before", "total_after", "ratio", "physical", "blocked", "sneak", "predicted"):
+                for value in ("nan", "inf", "-inf"):
+                    with self.subTest(name=name, value=value):
+                        data = log(exp(**{name: value}), exp(t=2))
+                        self.assertEqual((data.skipped, len(data.exp)), (1, 1))
+
+        def test_r7_statistics(self):
+            data = log(exp(), exp(t=2, ratio=0.5, physical=0, predicted=2),
+                       exp(t=3, total_before=0, total_after=0, ratio="-", physical=-1, predicted=0))
+            result = explosion_step_statistics(data.exp, data.hits)
+            self.assertEqual((result.count, result.ratio_range, result.ratio_missing, result.physical_positive,
+                              result.predicted_range), (3, (0.5, 0.9), 1, 1 / 3, (0, 10.8)))
+            self.assertEqual((result.matched, result.compared, result.unpaired), (0, 0, 3))
+            empty = explosion_step_statistics([], data.hits)
+            self.assertEqual((empty.count, empty.ratio_range, empty.ratio_missing, empty.physical_positive,
+                              empty.predicted_range, empty.unpaired), (0, None, 0, 0, None, 0))
+
+        def test_exp_hit_pairing_time_window(self):
+            for offset, paired in ((-1, False), (0, True), (1, True), (999_999, True), (1_000_000, True), (1_000_001, False)):
+                with self.subTest(offset=offset):
+                    data = log(exp(t=10), hit(t=10 + offset, before=18))
+                    result = explosion_step_statistics(data.exp, data.hits)
+                    self.assertEqual((result.matched, result.compared, result.unpaired),
+                                     (1, 1, 0) if paired else (0, 0, 1))
+
+        def test_exp_hit_pairing_site_and_target(self):
+            for changes in ({"site": "beam"}, {"target": "00000099"}):
+                with self.subTest(changes=changes):
+                    data = log(exp(), hit(before=18, **changes))
+                    result = explosion_step_statistics(data.exp, data.hits)
+                    self.assertEqual((result.compared, result.unpaired), (0, 1))
+            # 스레드와 모드, 플레이어 여부는 짝짓기의 조건이 아니다.
+            data = log(exp(target="00000099"), hit(before=18, target="00000099", thread=99, mode="observe", modified=0))
+            result = explosion_step_statistics(data.exp, data.hits)
+            self.assertEqual((result.matched, result.compared, result.unpaired), (1, 1, 0))
+
+        def test_exp_hit_pairing_first_by_time(self):
+            # 로그 순서와 값의 일치 여부에 끌리지 않고 EXP 뒤 시각순 첫 explosion만 고른다.
+            data = log(hit(t=30, before=18), hit(t=9, before=18), exp(t=10),
+                       hit(t=11, site="beam", before=18), hit(t=12, target="00000099", before=18), hit(t=20, before=17))
+            result = explosion_step_statistics(data.exp, data.hits)
+            self.assertEqual((result.matched, result.compared, result.unpaired), (0, 1, 0))
+
+        def test_exp_continuity_counts(self):
+            data = log(exp(), hit(before=18), exp(t=2_000_001), hit(t=2_000_002, before=20), exp(t=4_000_001))
+            result = explosion_step_statistics(data.exp, data.hits)
+            self.assertEqual((result.count, result.matched, result.compared, result.unpaired), (3, 1, 2, 1))
+
+        def test_exp_continuity_tolerance(self):
+            for after, actual, matched in ((100, 100.9, 1), (100, 101.1, 0), (0, 0.009, 1), (0, 0.011, 0),
+                                           (-100, -100.9, 1), (-100, -101.1, 0), (18, -18, 0)):
+                with self.subTest(after=after, actual=actual):
+                    data = log(exp(total_after=after), hit(before=actual))
+                    result = explosion_step_statistics(data.exp, data.hits)
+                    self.assertEqual((result.matched, result.compared), (matched, 1))
+
+        def test_r7_report(self):
+            out = StringIO()
+            with redirect_stdout(out):
+                report(log())
+            self.assertIn("R7 폭발 시작 값(판정 없음):\n  EXP 줄 없음", out.getvalue())
+            out = StringIO()
+            with redirect_stdout(out):
+                report(log(exp(), exp(t=2_000_001, total_before=0, ratio="-", physical=0, predicted=0),
+                           exp(t=4_000_001, ratio=0.5, predicted=4), hit(before=18), hit(t=4_000_002, before=20)))
+            text = out.getvalue()
+            self.assertIn("EXP 3, AMP 0, 형식 오류로 건너뜀 0", text)
+            self.assertIn("EXP 3줄, ratio 최소·최대 0.500000/0.900000, ratio 없음 1줄", text)
+            self.assertIn("physical>0 66.7%, predicted 최소·최대 0.000000/10.800000", text)
+            self.assertIn("totalDamage 이어짐 1/2, 짝 없음 1", text)
+            out = StringIO()
+            with redirect_stdout(out):
+                report(log(exp(total_before=0, ratio="-")))
+            self.assertIn("ratio 최소·최대 -, ratio 없음 1줄", out.getvalue())
 
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Tests))
     if result.wasSuccessful():
