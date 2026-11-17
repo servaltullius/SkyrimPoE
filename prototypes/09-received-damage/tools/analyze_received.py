@@ -353,6 +353,21 @@ def resistance_verdict(samples):
     return verdict, groups, omitted
 
 
+def magnitude_resistance_verdict(amp):
+    total = 0
+    bad = []
+    for sample in amp:
+        if sample.resistance is None or sample.mag_before == 0:
+            continue
+        total += 1
+        before = abs(sample.mag_before)
+        # SetEffectiveness는 eff가 1이면 크기를 그대로 두고, 그 외에는 하한 1.0을 적용한다.
+        expected = before if sample.eff == 1 else max(before * sample.eff, 1.0)
+        if not math.isfinite(expected) or abs(abs(sample.mag_after) - expected) > max(0.01, expected * 0.01):
+            bad.append((sample, expected))
+    return Verdict(total, total - len(bad), 0.9, mismatches=bad)
+
+
 def hit_statistics(hits):
     groups = defaultdict(list)
     for sample in hits:
@@ -449,27 +464,33 @@ class ExplosionStatistics:
 
 
 def explosion_step_statistics(exp, hits):
-    """같은 대상의 explosion HIT 중 EXP 뒤 1초 안의 시각순 첫 줄과 totalDamage를 비교한다."""
+    """같은 스레드의 가장 최근 EXP와 그 뒤 1초 안에 오는 같은 대상의 explosion HIT를 비교한다.
+
+    44016 호출과 HitData 적용은 같은 스레드에서 차례로 일어난다. 같은 스레드에 다음 EXP가 먼저 오면
+    앞의 EXP는 짝 없음이다.
+    """
     ratios = [s.ratio for s in exp if s.ratio is not None]
     predicted = [s.predicted for s in exp]
     result = ExplosionStatistics(len(exp), (min(ratios), max(ratios)) if ratios else None,
                                  len(exp) - len(ratios), sum(s.physical > 0 for s in exp) / len(exp) if exp else 0.0,
                                  (min(predicted), max(predicted)) if predicted else None)
-    by_target = defaultdict(list)
-    for sample in hits:
-        if sample.site == "explosion":
-            by_target[sample.target].append(sample)
-    for candidates in by_target.values():
-        candidates.sort(key=lambda s: s.t)
-    for sample in exp:
-        candidates = by_target.get(sample.target, [])
-        index = bisect_left(candidates, sample.t, key=lambda s: s.t)
-        if index == len(candidates) or candidates[index].t - sample.t > 1_000_000:
-            result.unpaired += 1
-        else:
-            result.compared += 1
-            if abs(candidates[index].before - sample.total_after) <= max(0.01, abs(sample.total_after) * 0.01):
-                result.matched += 1
+    events = sorted([(s.t, 0, s) for s in exp] + [(h.t, 1, h) for h in hits if h.site == "explosion"],
+                    key=lambda event: (event[0], event[1]))
+    pending = {}
+    for _, kind, item in events:
+        if kind == 0:
+            pending[item.thread] = item
+            continue
+        step = pending.get(item.thread)
+        if step is None or item.target != step.target:
+            continue
+        del pending[item.thread]
+        if item.t - step.t > 1_000_000:
+            continue
+        result.compared += 1
+        if abs(item.before - step.total_after) <= max(0.01, abs(step.total_after) * 0.01):
+            result.matched += 1
+    result.unpaired = result.count - result.compared
     return result
 
 
@@ -541,6 +562,8 @@ def report(log):
     r2, groups, omitted = resistance_verdict(log.magic)
     ratio = f"{r2.matched / r2.total:.1%}" if r2.total else "-"
     print(f"R2 저항이 크기에 포함됨: {r2.answer} — {r2.matched}/{r2.total}효과 맞음({ratio}), 유효 {sum(map(len, groups.values()))}줄, 저항 '-' 제외 {omitted}줄")
+    if r2.total:
+        print("  이 판정은 플레이어의 받는 주문 크기 퍽이 있으면 어긋남. 아래 AMP 기준을 볼 것")
     print("  효과 설정×주문별 유효 줄 모두가 5% 이내일 때 맞은 효과로 셈. 기대가 0이면 실제도 0이어야 함.")
     for (effect, spell), bad in sorted(r2.mismatches.items()):
         print(f"  어긋난 효과 {effect:08X} × 주문 {spell:08X}: {len(bad)}/{len(groups[(effect, spell)])}줄")
@@ -548,6 +571,12 @@ def report(log):
             ratio = f"{abs(sample.magnitude) / sample.base_magnitude:.6f}" if sample.base_magnitude else "-"
             print(f"    시각 {sample.t}: |magnitude| {abs(sample.magnitude):.6f}, 기본×저항 {sample.base_magnitude * sample.resistance:.6f}"
                   f" (|magnitude|/기본 {ratio}, 저항 배율 {sample.resistance:.6f})")
+    r2_amp = magnitude_resistance_verdict(log.amp)
+    ratio = f"{r2_amp.matched / r2_amp.total:.1%}" if r2_amp.total else "-"
+    print(f"R2 AMP 기준(엔진 저항이 크기에 곱해짐): {r2_amp.answer} — {r2_amp.matched}/{r2_amp.total}줄 맞음({ratio})")
+    for sample, expected in r2_amp.mismatches[:3]:
+        print(f"  어긋남: 시각 {sample.t}, 효과 설정 {sample.effect:08X}, |magBefore| {abs(sample.mag_before):.6f}, "
+              f"eff {sample.eff:.6f}, 기대 {expected:.6f}, 실제 {abs(sample.mag_after):.6f}")
     for kind, samples in (("MAG", log.magic), ("HIT", log.hits)):
         verdict = damage_verdict(samples, log.value, scale=True)
         print_damage(f"R3 scale {kind}", verdict)
@@ -644,7 +673,8 @@ def selftest():
 
     def exp(t=1, **changes):
         names = "t thread aggressor target weapon source_ref total_before total_after ratio physical blocked sneak flags predicted".split()
-        values = [t, 7, "00000001", "00000014", "00000002", "00000003", 20, 18, 0.9, 16, 0.25, 1, "100000", 10.8]
+        # HIT 도우미와 같은 스레드(8)라 기본값끼리 짝지어진다.
+        values = [t, 8, "00000001", "00000014", "00000002", "00000003", 20, 18, 0.9, 16, 0.25, 1, "100000", 10.8]
         d = dict(zip(names, values))
         d.update(changes)
         return row("EXP", [d[name] for name in names])
@@ -712,6 +742,57 @@ def selftest():
             self.assertFalse(close_resistance(10.51, 10))
             verdict, groups, omitted = resistance_verdict(log(magic(), magic(t=2, resistance="-")).magic)
             self.assertEqual((verdict.answer, len(groups), omitted), (YES, 1, 1))
+
+        def test_r2_amp_effectiveness(self):
+            for before, eff, after, matched in ((-10, 0.5, -5.049, 1), (-10, 0.5, -5.051, 0),
+                                                 (0.5, 1, -0.509, 1), (0.5, 1, 1, 0),
+                                                 (0.5, 0.5, -1.009, 1), (0.5, 0.5, 1.011, 0)):
+                with self.subTest(before=before, eff=eff, after=after):
+                    data = log(amp(mag_before=before, eff=eff, mag_after=after))
+                    verdict = magnitude_resistance_verdict(data.amp)
+                    self.assertEqual((verdict.total, verdict.matched, verdict.answer), (1, matched, YES if matched else NO))
+
+        def test_r2_amp_excludes_missing_resistance_and_zero_magnitude(self):
+            excluded = [amp(resistance="-", power="-"), amp(t=2, mag_before=0)]
+            verdict = magnitude_resistance_verdict(log(*excluded).amp)
+            self.assertEqual((verdict.total, verdict.matched, verdict.answer), (0, 0, EMPTY))
+            data = log(*excluded, amp(t=3, resistance=0, power="-", eff=0, mag_after=-1))
+            verdict = magnitude_resistance_verdict(data.amp)
+            self.assertEqual((verdict.total, verdict.matched, verdict.answer), (1, 1, YES))
+
+        def test_r2_amp_threshold(self):
+            for matched, answer in ((9, YES), (8, NO)):
+                with self.subTest(matched=matched):
+                    data = log(*(amp(t=i, mag_after=-5 if i < matched else -8) for i in range(10)))
+                    verdict = magnitude_resistance_verdict(data.amp)
+                    self.assertEqual((verdict.total, verdict.matched, verdict.answer), (10, matched, answer))
+
+        def test_r2_amp_report(self):
+            guide = "  이 판정은 플레이어의 받는 주문 크기 퍽이 있으면 어긋남. 아래 AMP 기준을 볼 것"
+            label = "R2 AMP 기준(엔진 저항이 크기에 곱해짐): "
+            for data, has_guide, outcome in ((log(magic(), amp()), True, "그렇다 — 1/1줄 맞음(100.0%)"),
+                                             (log(magic(magnitude=-4)), True, "판정할 줄 없음 — 0/0줄 맞음(-)"),
+                                             (log(magic(resistance="-"), amp()), False, "그렇다 — 1/1줄 맞음(100.0%)"),
+                                             (log(), False, "판정할 줄 없음 — 0/0줄 맞음(-)")):
+                with self.subTest(has_guide=has_guide, outcome=outcome):
+                    out = StringIO()
+                    with redirect_stdout(out):
+                        report(data)
+                    lines = out.getvalue().splitlines()
+                    self.assertIn(label + outcome, lines)
+                    self.assertEqual(guide in lines, has_guide)
+                    if has_guide:
+                        mag_index = next(i for i, line in enumerate(lines) if line.startswith("R2 저항이 크기에 포함됨:"))
+                        self.assertEqual(lines[mag_index + 1], guide)
+            out = StringIO()
+            with redirect_stdout(out):
+                report(log(*(amp(t=i, mag_after=-8) for i in range(1, 5))))
+            lines = out.getvalue().splitlines()
+            self.assertIn(label + "아니다 — 0/4줄 맞음(0.0%)", lines)
+            self.assertEqual([line for line in lines if line.startswith("  어긋남:")], [
+                f"  어긋남: 시각 {i}, 효과 설정 00000003, |magBefore| 10.000000, eff 0.500000, 기대 5.000000, 실제 8.000000"
+                for i in range(1, 4)
+            ])
 
         def test_r3_yes_no_empty_for_magic_and_hit(self):
             for kind in ("MAG", "HIT"):
@@ -884,6 +965,14 @@ def selftest():
             result = magnitude_step_statistics(data.amp, data.magic)[(3, 2, None)]
             self.assertEqual((result.matched, result.compared, result.unpaired, result.prediction_missing), (0, 0, 0, 1))
 
+        def test_r6_target_perk_without_caster(self):
+            data = log(amp(caster="-", caster_from_one="-", target_from_one=0.9, predicted="-"),
+                       magic(t=2, caster="00000000"))
+            result = magnitude_step_statistics(data.amp, data.magic)[(3, 2, None)]
+            self.assertIsNone(result.ranges["casterFromOne"])
+            self.assertEqual(result.ranges["targetFromOne"], (0.9, 0.9))
+            self.assertEqual((result.compared, result.unpaired, result.prediction_missing), (0, 0, 1))
+
         def test_r6_report(self):
             out = StringIO()
             with redirect_stdout(out):
@@ -901,7 +990,7 @@ def selftest():
         def test_exp_parsing(self):
             data = log(exp())
             self.assertEqual((len(data.exp), data.skipped), (1, 0))
-            self.assertEqual(data.exp[0], ExplosionStep(1, 7, 1, PLAYER, 2, 3, 20, 18, 0.9, 16, 0.25, 1, 0x100000, 10.8))
+            self.assertEqual(data.exp[0], ExplosionStep(1, 8, 1, PLAYER, 2, 3, 20, 18, 0.9, 16, 0.25, 1, 0x100000, 10.8))
 
         def test_exp_missing_ratio_and_null_forms(self):
             data = log(exp(total_before=0, total_after=0, ratio="-", aggressor="00000000", weapon="00000000",
@@ -950,10 +1039,21 @@ def selftest():
                     data = log(exp(), hit(before=18, **changes))
                     result = explosion_step_statistics(data.exp, data.hits)
                     self.assertEqual((result.compared, result.unpaired), (0, 1))
-            # 스레드와 모드, 플레이어 여부는 짝짓기의 조건이 아니다.
-            data = log(exp(target="00000099"), hit(before=18, target="00000099", thread=99, mode="observe", modified=0))
+            # 같은 스레드라면 모드와 플레이어 여부는 짝짓기의 조건이 아니다.
+            data = log(exp(target="00000099"), hit(before=18, target="00000099", mode="observe", modified=0))
             result = explosion_step_statistics(data.exp, data.hits)
             self.assertEqual((result.matched, result.compared, result.unpaired), (1, 1, 0))
+
+        def test_exp_hit_pairing_different_thread(self):
+            data = log(exp(), hit(before=18, thread=99))
+            result = explosion_step_statistics(data.exp, data.hits)
+            self.assertEqual((result.matched, result.compared, result.unpaired), (0, 0, 1))
+
+        def test_exp_hit_pairing_same_thread_latest(self):
+            data = log(exp(t=1, thread=3, total_after=99), exp(t=2, total_after=50), exp(t=3),
+                       hit(t=4, before=18), hit(t=5, before=50), hit(t=6, thread=3, before=99))
+            result = explosion_step_statistics(data.exp, data.hits)
+            self.assertEqual((result.count, result.matched, result.compared, result.unpaired), (3, 2, 2, 1))
 
         def test_exp_hit_pairing_first_by_time(self):
             # 로그 순서와 값의 일치 여부에 끌리지 않고 EXP 뒤 시각순 첫 explosion만 고른다.

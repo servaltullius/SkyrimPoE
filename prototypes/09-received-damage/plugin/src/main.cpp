@@ -232,6 +232,7 @@ namespace
     std::once_flag g_installOnce;
     std::mutex g_installMutex;
     std::string g_installProblem;
+    std::string g_installOverlaps;
     std::mutex g_lateMutex;
     std::vector<LateRead> g_late;
 
@@ -623,28 +624,29 @@ namespace
     {
         const float magAfter = self->magnitude;
         const float durAfter = self->duration;
+        using EntryPoint = RE::BGSEntryPoint::ENTRY_POINT;
         std::string casterFromOne = "-";
-        std::string targetFromOne = "-";
         std::string predicted = "-";
-        // 엔진은 이 호출 뒤에 AdjustForPerks를 부른다. 실제 효과 대신 지역 변수에만 같은 인자로 적용한다.
         if (p.caster) {
-            using EntryPoint = RE::BGSEntryPoint::ENTRY_POINT;
             float casterValue = 1.0f;
             RE::BGSEntryPoint::HandleEntryPoint(EntryPoint::kModSpellMagnitude, p.caster.get(), p.spell, p.target, &casterValue);
-            float targetValue = 1.0f;
-            RE::BGSEntryPoint::HandleEntryPoint(EntryPoint::kModIncomingSpellMagnitude, p.target, p.spell, &targetValue);
+            casterFromOne = std::format("{:.6f}", casterValue);
+        }
+        float targetValue = 1.0f;
+        RE::BGSEntryPoint::HandleEntryPoint(EntryPoint::kModIncomingSpellMagnitude, p.target, p.spell, &targetValue);
+        // 엔진은 AddTargetData.caster 참조가 있을 때만 AdjustForPerks를 부른다.
+        // 시전자 액터가 없으면 참조가 비었는지 액터가 아닌 참조인지 가릴 수 없어 예측하지 않는다.
+        if (p.caster) {
             // Set·Add 연산도 재현하도록 1에서 구한 두 값을 곱하지 않고 엔진 순서대로 다시 적용한다.
             float magnitude = magAfter;
             RE::BGSEntryPoint::HandleEntryPoint(EntryPoint::kModSpellMagnitude, p.caster.get(), p.spell, p.target, &magnitude);
             RE::BGSEntryPoint::HandleEntryPoint(EntryPoint::kModIncomingSpellMagnitude, p.target, p.spell, &magnitude);
-            casterFromOne = std::format("{:.6f}", casterValue);
-            targetFromOne = std::format("{:.6f}", targetValue);
             predicted = std::format("{:.6f}", magnitude);
         }
         SKSE::log::info("AMP\t{}\t{}\t{:08X}\t{}\t{:08X}\t{}\t{}\t{:08X}\t{:.6f}\t{:.6f}\t{:.6f}\t{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{}\t{}\t{}",
             p.t, p.thread, p.targetId, p.casterId, p.spellId, p.spellType, p.castingType, p.effectId,
             p.baseMagnitude, p.magBefore, p.effectiveness, p.resistance, p.power, magAfter, p.durBefore, durAfter,
-            casterFromOne, targetFromOne, predicted);
+            casterFromOne, std::format("{:.6f}", targetValue), predicted);
     }
     struct MagnitudeStepsHook
     {
@@ -871,9 +873,22 @@ namespace
         return destination != 0 && IsExecutable(destination) && ModuleOf(destination) == self;
     }
 
-    // 자리가 기대한 함수를 부르는 E8 call인지 본다. 다른 모드가 먼저 가로챈 자리면 경고만 하고 겹쳐 설치해도 된다고 본다.
+    void RecordInstallOverlap(std::string_view label, std::string_view owner)
+    {
+        if (owner.empty()) {
+            return;
+        }
+        try {
+            const std::scoped_lock lock(g_installMutex);
+            g_installOverlaps += std::format("{}{}({})", g_installOverlaps.empty() ? "" : ", ", label, owner);
+        } catch (...) {
+        }
+    }
+
+    // 자리가 기대한 함수를 부르는 E8 call인지 본다. 다른 모드가 먼저 가로챈 자리면 파일 이름을 남기고 겹쳐 설치한다.
     // 설치해도 되면 빈 문자열을, 아니면 그 까닭을 돌려준다.
-    std::string CheckCallSite(std::string_view label, std::uint64_t id, std::ptrdiff_t offset, std::uint64_t expectedId)
+    std::string CheckCallSite(std::string_view label, std::uint64_t id, std::ptrdiff_t offset, std::uint64_t expectedId,
+        std::string& owner)
     {
         const auto site = REL::ID(id).address() + offset;
         const auto target = CallTarget(site);
@@ -884,7 +899,7 @@ namespace
             return std::format("{} 자리(ID {} +0x{:X})는 이미 이 플러그인이 가로챘음. 두 번 걸지 않음", label, id, offset);
         }
         if (target != REL::ID(expectedId).address()) {
-            const auto owner = ForeignHookOwner(target);
+            owner = ForeignHookOwner(target);
             if (owner.empty()) {
                 return std::format("{} 자리(ID {} +0x{:X})가 ID {}가 아닌 곳(0x{:X})을 부르고, 다른 모드의 가로채기로도 보이지 않음",
                     label, id, offset, expectedId, target);
@@ -899,10 +914,12 @@ namespace
     std::string Install()
     {
         constexpr auto spec = kHitSites[static_cast<std::size_t>(S)];
-        if (auto problem = CheckCallSite(spec.label, spec.id, spec.offset, kApplyHitId); !problem.empty()) {
+        std::string owner;
+        if (auto problem = CheckCallSite(spec.label, spec.id, spec.offset, kApplyHitId, owner); !problem.empty()) {
             return problem;
         }
         ApplyHitHook<S>::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, ApplyHitHook<S>::Thunk);
+        RecordInstallOverlap(spec.label, owner);
         if constexpr (S == Site::kMelee) {
             SKSE::log::info("{} ({}) 자리(ID {} +0x{:X})를 가로챔", spec.name, spec.label, spec.id, spec.offset);
         } else {
@@ -915,30 +932,36 @@ namespace
     {
         constexpr auto spec = kMagicCalls[I];
         constexpr auto index = kMagicVtableCount + I;
-        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kModifyActorValueId); !problem.empty()) {
+        std::string owner;
+        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kModifyActorValueId, owner); !problem.empty()) {
             return problem;
         }
         MagicHook<index>::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, MagicHook<index>::Thunk);
+        RecordInstallOverlap(spec.name, owner);
         SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kModifyActorValueId);
         return {};
     }
     std::string InstallMagnitudeSteps()
     {
         constexpr auto spec = kMagnitudeStepsCall;
-        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kSetEffectivenessId); !problem.empty()) {
+        std::string owner;
+        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kSetEffectivenessId, owner); !problem.empty()) {
             return problem;
         }
         MagnitudeStepsHook::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, MagnitudeStepsHook::Thunk);
+        RecordInstallOverlap(spec.name, owner);
         SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kSetEffectivenessId);
         return {};
     }
     std::string InstallExplosionSteps()
     {
         constexpr auto spec = kExplosionStepsCall;
-        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kExplosionDamageStepsId); !problem.empty()) {
+        std::string owner;
+        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kExplosionDamageStepsId, owner); !problem.empty()) {
             return problem;
         }
         ExplosionStepsHook::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, ExplosionStepsHook::Thunk);
+        RecordInstallOverlap(spec.name, owner);
         SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kExplosionDamageStepsId);
         return {};
     }
@@ -946,10 +969,12 @@ namespace
     std::string InstallHitSteps()
     {
         constexpr auto spec = kHitStepsCalls[I];
-        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kExplosionDamageStepsId); !problem.empty()) {
+        std::string owner;
+        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kExplosionDamageStepsId, owner); !problem.empty()) {
             return problem;
         }
         HitStepsHook<I>::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, HitStepsHook<I>::Thunk);
+        RecordInstallOverlap(spec.name, owner);
         SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kExplosionDamageStepsId);
         return {};
     }
@@ -962,8 +987,9 @@ namespace
         if (IsOwnCode(target)) {
             return std::format("{} vtable의 0x{:X} 슬롯은 이미 이 플러그인이 가로챘음. 두 번 걸지 않음", name, kModifyActorValueSlot);
         }
+        std::string owner;
         if (target != REL::ID(kModifyActorValueId).address()) {
-            const auto owner = ForeignHookOwner(target);
+            owner = ForeignHookOwner(target);
             if (owner.empty()) {
                 return std::format("{} vtable의 0x{:X} 슬롯이 ID {}가 아닌 곳(0x{:X})을 가리키고, 다른 모드의 가로채기로도 보이지 않음",
                     name, kModifyActorValueSlot, kModifyActorValueId, target);
@@ -971,6 +997,7 @@ namespace
             SKSE::log::warn("{} vtable은 이미 {}가 가로챘음. 그 위에 겹쳐 설치함", name, owner);
         }
         MagicHook<I>::original = table.write_vfunc(kModifyActorValueSlot, MagicHook<I>::Thunk);
+        RecordInstallOverlap(name, owner);
         SKSE::log::info("{} vtable의 0x{:X} 슬롯을 가로챔", name, kModifyActorValueSlot);
         return {};
     }
@@ -1107,15 +1134,21 @@ namespace
         }
         g_noticePending = false;
         std::string problem;
+        std::string overlaps;
         {
             const std::scoped_lock lock(g_installMutex);
             problem = g_installProblem;
+            overlaps = g_installOverlaps;
         }
         if (!problem.empty()) {
             ShowNotice(std::format("{} 설치 문제: {}. PoEProtoReceived.log를 보세요", kNoticePrefix, problem), true);
-            return;
         }
-        ShowNotice(std::format("{} {} 모드. {}", kNoticePrefix, ModeLabel(CurrentMode()), ModeKeyHint()), false);
+        if (!overlaps.empty()) {
+            ShowNotice(std::format("{} 다른 모드와 겹쳐 설치함: {}. 배율 모드는 그 모드가 바꾼 값 위에 다시 곱함", kNoticePrefix, overlaps), true);
+        }
+        if (problem.empty()) {
+            ShowNotice(std::format("{} {} 모드. {}", kNoticePrefix, ModeLabel(CurrentMode()), ModeKeyHint()), false);
+        }
     }
 
     void ReadLate(const std::vector<LateRead>& items)
