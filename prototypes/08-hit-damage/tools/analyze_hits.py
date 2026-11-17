@@ -41,8 +41,8 @@ class Hit:
     blocked: float
     resisted_physical: float
     resisted_typed: float
-    sneak: float
-    bonus_mult: float
+    field_6c: float     # HitData +0x6C. CommonLib의 이름은 sneakAttackBonus이나 은신 타격에서도 1.0이었음
+    sneak_mult: float   # HitData +0x70. 은신 배율(은신 타격 1.5, 그 밖 1.0). CommonLib의 이름은 bonusHealthDamageMult
     reflected: float
     stagger: float
     health_before: float
@@ -68,12 +68,14 @@ def wall_time(text: str) -> datetime:
 
 
 def load(path: Path):
+    """로그를 읽어 (HIT, 적중 이벤트, 사망, 대신 주기, 그 밖의 줄, 설정)을 돌려준다. 설정은 머리의 `설정: 키=값 …` 줄."""
     hits: list[Hit] = []
     events: list[tuple] = []
     deaths: list[tuple] = []
     late: dict[int, float] = {}
     own: list[tuple] = []
     notes: list[str] = []
+    settings: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         cols = line.split("\t")
         if len(cols) < 3:
@@ -98,12 +100,17 @@ def load(path: Path):
                 own.append(tuple(cols[3:]))
             else:
                 notes.append(line)
+                if kind.startswith("설정: "):
+                    for pair in kind[len("설정: "):].split():
+                        key, _, value = pair.partition("=")
+                        if value:
+                            settings[key] = value
         except (ValueError, IndexError) as error:
             notes.append(f"(읽지 못한 줄: {error}) {line[:120]}")
     for h in hits:
         if h.t in late and h.site == "melee":
             h.late = late[h.t]
-    return hits, events, deaths, own, notes
+    return hits, events, deaths, own, notes, settings
 
 
 def channel_hits(path: Path) -> list[tuple[datetime, int]]:
@@ -135,7 +142,7 @@ def main() -> int:
     ap.add_argument("log", type=Path)
     ap.add_argument("--skill", type=Path)
     a = ap.parse_args()
-    hits, events, deaths, own, notes = load(a.log)
+    hits, events, deaths, own, notes, settings = load(a.log)
     channel = channel_hits(a.skill) if a.skill else []
     by_target = defaultdict(list)
     for t, target in channel:
@@ -151,8 +158,14 @@ def main() -> int:
     print("자리·모드·바꿨는지·공격자:", dict(Counter((h.site, h.mode, h.modified, "플레이어" if h.aggressor == PLAYER else ("플레이어가 대상" if h.target == PLAYER else "그 밖")) for h in hits)))
 
     print("\n# Q1 바꾸기(set): 줄어든 체력 대 Value × 배율")
-    value = 10.0
-    set_hits = [h for h in hits if h.site == "melee" and h.modified and h.mode == "set"]
+    try:
+        value = float(settings["Value"])
+    except (KeyError, ValueError):
+        value = None
+        print("  로그 머리의 설정 줄에서 Value를 읽지 못해 Q1을 판정하지 않음")
+    set_hits = [h for h in hits if h.site == "melee" and h.modified and h.mode == "set"] if value is not None else []
+    if value is not None:
+        print(f"  Value = {value:g}(로그 머리의 설정 줄)")
     rows = []
     for h in set_hits:
         expected = value * h.mult
@@ -173,7 +186,7 @@ def main() -> int:
     print("\n# Q2 작업 큐")
     queue = [h for h in hits if h.site == "queue"]
     print(f"  큐가 다시 부른 기록 {len(queue)}")
-    for mode in ("observe", "set", "zero"):
+    for mode in sorted({h.mode for h in queue}):
         part = [h for h in queue if h.mode == mode]
         if part:
             print(f"   {mode}: {len(part)}, totalDamage {Counter(round(h.total_before, 2) for h in part).most_common(5)}, 줄어든 체력 {Counter(round(h.drop, 2) for h in part).most_common(5)}")
@@ -199,10 +212,9 @@ def main() -> int:
         groups[(flag_text(h.flags), h.cyclone)].append(h)
     for (flags, cyclone), part in sorted(groups.items(), key=lambda x: -len(x[1])):
         ratio = [h.total_before / h.physical for h in part if h.physical > 0]
-        drops = [h.drop / h.mult for h in part if h.drop > 0.001 and h.mult > 0]
         tb = [h.total_before / (d) for h, d in ((h, h.drop / h.mult) for h in part if h.drop > 0.001 and h.mult > 0) if d > 0]
         print(f"  {flags}{' (사이클론)' if cyclone else ''}: {len(part)}타, total 중앙값 {statistics.median(h.total_before for h in part):.2f}, physical 중앙값 {statistics.median(h.physical for h in part):.2f}, "
-              f"total/physical {statistics.median(ratio) if ratio else float('nan'):.3f}, 막힘 {Counter(round(h.blocked, 2) for h in part).most_common(2)}, 은신 {Counter(round(h.sneak, 2) for h in part).most_common(2)}, "
+              f"total/physical {statistics.median(ratio) if ratio else float('nan'):.3f}, 막힘 {Counter(round(h.blocked, 2) for h in part).most_common(2)}, 은신 배율(+0x70) {Counter(round(h.sneak_mult, 2) for h in part).most_common(2)}, "
               f"줄어든 체력/배율 대 total {statistics.median(tb) if tb else float('nan'):.3f}")
 
     print("\n# Q5 플레이어가 맞은 것, 투사체")

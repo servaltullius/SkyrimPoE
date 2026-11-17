@@ -60,7 +60,7 @@ class Instance:
     race: str = "-"
     plugin: str = "-"
     last_dead: bool = False
-    readings: list = field(default_factory=list)   # 훑기가 읽은 (시각, 체력)
+    readings: list = field(default_factory=list)   # 훑기가 읽은 (시각, 체력, 최대 체력)
     damage_in: list = field(default_factory=list)  # 이 액터가 받은 피해 기록
     death_t: int | None = None
     killer: int = 0
@@ -204,11 +204,11 @@ def load(paths: list[Path]) -> Data:
                         instance.flags |= flags - {"D", "X", "?"}
                         instance.name, instance.race, instance.plugin = cols[12], cols[13], cols[11]
                         if "?" not in flags:  # 훑기가 적은 줄만 독립된 체력 읽기로 쓴다
-                            instance.readings.append((t, fnum(cols[8])))
+                            instance.readings.append((t, fnum(cols[8]), fnum(cols[6])))
                     elif kind == "P":
                         instance = resolve(int(cols[2], 16))
                         if instance:
-                            instance.readings.append((t, fnum(cols[3])))
+                            instance.readings.append((t, fnum(cols[3]), fnum(cols[4])))
                     elif kind == "D":
                         target_ref, attacker_ref = int(cols[3], 16), int(cols[4], 16)
                         damage = Damage(session, t, resolve(target_ref), attacker_ref, resolve(attacker_ref), fnum(cols[5]), fnum(cols[6]),
@@ -471,12 +471,13 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
         if i.death_t is None or i.ref == PLAYER or i.max_health <= 0 or not i.damage_in:
             continue
         cutoff = i.death_t + 1_000_000
-        events = [(t, 0, h, None) for t, h in i.readings if t <= cutoff and not math.isnan(h)]
-        events += [(d.t, 1, 0.0, d) for d in i.damage_in if d.t <= cutoff]
+        events = [(t, 0, h, m, None) for t, h, m in i.readings if t <= cutoff and not math.isnan(h)]
+        events += [(d.t, 1, 0.0, d.max_health, d) for d in i.damage_in if d.t <= cutoff]
         events.sort(key=lambda e: (e[0], e[1]))
         level = None
+        level_max = math.nan
         unseen = 0.0
-        for _t, _order, health, d in events:
+        for _t, _order, health, max_now, d in events:
             if d is None:
                 pre = post = health
             else:
@@ -484,8 +485,12 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
                 pre = d.before if use_inside else d.before + taken  # 깎이기 전 체력
                 post = d.after
             if level is not None and pre < level - 0.05:
-                unseen += level - pre
+                # 최대 체력이 줄어(체력 보정이 떨어짐) 체력이 새 최대치로 깎인 몫은 놓친 피해가 아니다
+                clamped = max(0.0, level - max_now) if max_now < level_max - 0.05 else 0.0
+                unseen += max(0.0, (level - pre) - clamped)
             level = post
+            if not math.isnan(max_now):
+                level_max = max_now
         unseen_shares.append(unseen / i.max_health)
     flow_ok = sum(1 for u in unseen_shares if u <= UNSEEN_LIMIT)
     v1_pass = bool(unseen_shares) and flow_ok / len(unseen_shares) >= 0.9
@@ -498,8 +503,9 @@ def analyze(data: Data, pob_misc: Path = DEFAULT_POB_MISC) -> list[str]:
         prefix = [0.0]
         for d in i.damage_in:
             prefix.append(prefix[-1] + d.amount)
-        for (t1, h1), (t2, h2) in zip(i.readings, i.readings[1:]):
-            if h1 - h2 > 5 and t2 - t1 <= 3_000_000:
+        for (t1, h1, m1), (t2, h2, m2) in zip(i.readings, i.readings[1:]):
+            # 사이에 최대 체력이 줄었으면(체력 보정이 떨어짐) 체력 감소에 피해 아닌 몫이 섞이므로 견주지 않는다
+            if h1 - h2 > 5 and t2 - t1 <= 3_000_000 and not m2 < m1 - 0.05:
                 ratios.append((prefix[bisect.bisect_right(times, t2)] - prefix[bisect.bisect_right(times, t1)]) / (h1 - h2))
     v3_ok = sum(1 for r in ratios if 0.7 <= r <= 1.5)
     v3_pass = bool(ratios) and v3_ok / len(ratios) >= 0.8
@@ -786,6 +792,29 @@ def unseen_rows() -> list[str]:
     return rows
 
 
+def boost_rows() -> list[str]:
+    """최대 체력 보정(+100)이 싸움 중에 떨어져 체력이 새 최대치로 깎인 적 하나. 놓친 피해가 아니므로 V1이 통과해야 한다."""
+    rows = ["# PoEProtoMeasure selftest-boost", "S\t0\tstart\tselftest",
+            "A\t100\tFF000400\tFF100400\t00004000\t5\t220.0\t120.0\t220.0\tH\t00000002\tTest.esp\tGuard\tNord"]
+    t = 1_000_000
+    remaining = 220.0
+    max_health = 220.0
+    for step in range(12):
+        t += 500_000
+        if step == 2:  # 보정이 떨어짐: 최대 220 -> 120, 체력 180 -> 120
+            max_health = 120.0
+            remaining = min(remaining, max_health)
+            rows.append(f"P\t{t}\tFF000400\t{remaining:.2f}\t{max_health:.1f}")
+            continue
+        dealt = min(20.0, remaining)
+        remaining -= dealt
+        rows.append(f"D\t{t}\t1\tFF000400\t00000014\t-{dealt:.3f}\t{remaining:.2f}\t{remaining:.2f}\t{max_health:.1f}")
+        if remaining <= 0:
+            break
+    rows.append(f"K\t{t + 300}\t1\tFF000400\t00000014\t1")
+    return rows
+
+
 def selftest() -> int:
     """꾸민 기록 둘을 만들어 돌려 보고, 미리 아는 답과 견준다. 스크립트의 계산을 보는 것이고 게임의 동작과는 무관하다."""
     rows = ["# PoEProtoMeasure selftest", "S\t0\tstart\tselftest",
@@ -827,6 +856,9 @@ def selftest() -> int:
         unseen_path = Path(folder) / "measure-selftest-unseen.tsv"
         unseen_path.write_text("\n".join(unseen_rows()) + "\n", encoding="utf-8")
         unseen = "\n".join(analyze(load([unseen_path])))
+        boost_path = Path(folder) / "measure-selftest-boost.tsv"
+        boost_path.write_text("\n".join(boost_rows()) + "\n", encoding="utf-8")
+        boost = "\n".join(analyze(load([boost_path])))
     checks = {
         # 까다로운 기록: 적 넷을 두 구간에서 잡고, 첫 구간에서 둘이 같은 폼 ID로 다시 나타난다 -> 센 적 6, 그중 싸운 것 4, 죽은 적 8.
         "까다로운 기록의 V2(호출 전에 깎임)": "V2 받은 값이 체력 변화와 같은가 | 통과" in hard and "호출 전에 이미 깎임 100% (88/88)" in hard,
@@ -835,6 +867,7 @@ def selftest() -> int:
         "까다로운 기록의 V1(흐름)": "V1 끼어든 함수가 체력 피해를 다 보는가 | 통과 | 죽은 액터 8 가운데" in hard,
         "맨손 짝을 뺌": hard_data.echo_hits == 96 and "맨손 적중 96개" in hard and "| 맨손 |" not in hard,
         "놓친 피해를 V1이 잡음": "V1 끼어든 함수가 체력 피해를 다 보는가 | **실패**" in unseen and "가장 큰 것 25%" in unseen,
+        "보정이 떨어진 것은 놓친 피해가 아님": "V1 끼어든 함수가 체력 피해를 다 보는가 | 통과" in boost and "가장 큰 것 0%" in boost,
         "재사용과 불러오기": "| 16~20 | 6 | 4 |" in hard and "| 죽은 적 | 8 |" in hard,
         "타격마다의 배율": "| 10.0 | 10.0 | 10.0 | 15.0 |" in hard,
         "V1 통과": "V1 끼어든 함수가 체력 피해를 다 보는가 | 통과" in report,

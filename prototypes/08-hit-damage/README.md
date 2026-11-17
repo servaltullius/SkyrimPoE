@@ -69,7 +69,7 @@
 | 사이클론 타격을 `set`으로 바꾸기(5장 40번의 (2)) | **된다.** 사이클론의 DLL 타격 5번 모두 체력이 정확히 6.0(= 10 × 0.6) 줄었음. 바꾸기 전 값은 0~13.6(프로토타입 2가 공격 피해 배율을 0.5로 낮춘 값) |
 | `replace`(0으로 지우고 `DoDamage(10)`) | 85번 모두 사이클론 타격. 엔진 몫은 85번 모두 0, 적중 이벤트는 85번 모두 있음. 우리 몫은 68번이 정확히 6.0이고 나머지는 대상의 체력이 바닥(−30 등)이거나 이미 죽은 것 |
 | `replace`의 처치 귀속(Q3) | **플레이어.** 엔진 피해가 한 번도 들어가지 않고 우리 피해로만 죽은 적 셋(0001A679, 000D0FF4, FF003774)의 사망 이벤트에서 죽인 쪽이 모두 플레이어 |
-| 은신 공격(Q4) | 은신 공격의 배율은 `physicalDamage`에 이미 들어 있음(은신 타격 40.78 = 평소 타격 27.19 × 1.5, 표본 하나). `sneakAttackBonus` 칸은 은신 공격에서도 1.0이라 쓸 수 없고, 표시 0x800(은신)으로 알아야 함 |
+| 은신 공격(Q4) | 은신 공격의 배율은 `physicalDamage`에 이미 들어 있음(은신 타격 40.78 = 평소 타격 27.19 × 1.5, 표본 하나). `sneakAttackBonus`(+0x6C) 칸은 은신 공격에서도 1.0이라 쓸 수 없음. 은신 배율은 +0x70 칸(CommonLib의 이름은 `bonusHealthDamageMult`)에 1.5로 있었고 다른 타격에서는 모두 1.0(나중에 확인, 설계-현황 4.6과 결정 66). 은신 공격인지는 표시 0x800으로 알 수 있음 |
 | Q2 큐로 미뤄진 플레이어 타격 | 이번에도 없음. 판정하지 않음 |
 
 **F8 충돌**: 프로토타입 2의 INI에 `TestStaggerKey = 0x42`(F8)가 있어, 모드를 바꾸려고 F8을 누르면 프로토타입 2가 플레이어에게 세기 0~1의 경직을 2.5초마다 차례로 걸었음(21:53:55부터). 그래서 모드 키를 **F3(0x3D)**으로 옮기고 다시 배치함(2026-11-17 21:58). 배치된 프로토타입들이 쓰는 키(F4, F6, F7, F8, F10, F11)를 피했음.
@@ -97,7 +97,7 @@
 
 | 종류 | 칸 |
 | --- | --- |
-| `HIT` | 시각, 스레드, 자리, 모드, 바꿨는지(0/1), 공격자, 대상, 무기, 투사체 참조, 투사체 참조의 폼 종류, 표시(16진), 바꾸기 전 `totalDamage`, 바꾼 뒤 `totalDamage`, `physicalDamage`, `percentBlocked`, `resistedPhysicalDamage`, `resistedTypedDamage`, `sneakAttackBonus`, `bonusHealthDamageMult`, `reflectedDamage`, `stagger`, 호출 전 체력, 호출 뒤 체력, 최대 체력, 그때의 배율(대상이 플레이어면 받는 배율, 아니면 공격자가 누구든 주는 배율. 엔진의 `GetDifficultyMultiplier`(AE ID 26503)를 디컴파일로 읽은 규칙) |
+| `HIT` | 시각, 스레드, 자리, 모드, 바꿨는지(0/1), 공격자, 대상, 무기, 투사체 참조, 투사체 참조의 폼 종류, 표시(16진), 바꾸기 전 `totalDamage`, 바꾼 뒤 `totalDamage`, `physicalDamage`, `percentBlocked`, `resistedPhysicalDamage`, `resistedTypedDamage`, +0x6C 칸(CommonLibSSE-NG의 이름 `sneakAttackBonus`. 은신 타격에서도 1.0이었음), +0x70 칸(은신 배율. CommonLibSSE-NG의 이름 `bonusHealthDamageMult`), `reflectedDamage`, `stagger`, 호출 전 체력, 호출 뒤 체력, 최대 체력, 그때의 배율(대상이 플레이어면 받는 배율, 아니면 공격자가 누구든 주는 배율. 엔진의 `GetDifficultyMultiplier`(AE ID 26503)를 디컴파일로 읽은 규칙) |
 | `OWN` | 시각, 스레드, 대상, 준 값, 준 뒤 체력, 죽었는지 (`replace` 모드에서 따로 준 피해) |
 | `LATE` | 시각, 대상, 다시 읽은 체력, 그 앞 `HIT` 줄의 시각 |
 | `EVHIT` | 시각, 스레드, 대상, 가해자, 수단 폼, 투사체 폼, 표시 (플레이어가 대상이거나 가해자인 적중 이벤트) |
