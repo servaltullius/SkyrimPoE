@@ -11,6 +11,11 @@
   (PoB calcs.hitChance와 같이 정수 %로 반올림. 회피 상한 95%는 명중률 하한 5%와 같음)
 - 에너지 실드 원형의 통과 비율 = 1(물리 타격을 줄이지 않음. 에너지 실드는 풀로 따로 다룸)
 - m_e(L) = 세 원형 통과 비율의 평균
+원소·카오스(결정 74, 받는 마법용):
+- 원소마다 기대 저항 = min(75%, n × 그 레벨에 붙을 수 있는 단일 원소 저항 어픽스 최고 등급의 평균값). n은 조절값(기본 3).
+  등급은 PoB `ModExplicit.lua`의 FireResist1~8(요구 레벨과 값 범위). 막 감소(5막 -30%, 10막 -60%)는 플레이어가 메운다고 봄.
+- 기대 카오스 저항 = 막 감소 그대로(투자하지 않음): 5막 레벨 전 0%, 10막 레벨 전 -30%, 그 뒤 -60%. 막의 레벨은 조절값(대략값).
+- 통과 비율 = 1 − 저항(카오스는 음수 저항이면 1보다 큼).
 이 스크립트는 PoB의 데이터 파일만 읽는다(PoB를 실행하지 않음).
 """
 import argparse
@@ -20,6 +25,9 @@ import sys
 from pathlib import Path
 
 DEFAULT_POB = Path(r"G:\poe\PathOfBuilding-2.67.2")
+RESIST_CAP = 75.0           # PoB Misc.lua의 base_maximum_all_resistances_%
+ACT5_PENALTY = -30.0        # PoB ConfigOptions.lua의 resistancePenalty: Act 5 (-30%), Act 10 (-60%). 원소와 카오스에 모두(CalcSetup.lua)
+ACT10_PENALTY = -60.0
 SLOTS = ("body", "helmet", "gloves", "boots")
 TYPES = {"Armour": "Armour", "Evasion": "Evasion", "Energy Shield": "EnergyShield"}
 DAMAGE_MULT = 1.5
@@ -55,6 +63,30 @@ def read_bases(pob: Path) -> dict[tuple[str, str], list[tuple[int, float, str]]]
     return bases
 
 
+def read_resist_tiers(pob: Path) -> list[tuple[int, float]]:
+    """단일 원소 저항 어픽스의 (요구 레벨, 값 범위의 평균). 화염 저항의 등급(FireResist1~)을 쓴다(냉기·번개도 같은 값)."""
+    src = (pob / "Data" / "ModExplicit.lua").read_text(encoding="utf-8")
+    tiers = []
+    for m in re.finditer(r'\["FireResist\d+"\] = \{ type = "Suffix", affix = "[^"]*", "\+\((\d+)-(\d+)\)% to Fire Resistance", statOrder = \{ \d+ \}, level = (\d+),', src):
+        tiers.append((int(m.group(3)), (int(m.group(1)) + int(m.group(2))) / 2))
+    if not tiers:
+        raise SystemExit("PoB의 ModExplicit.lua에서 FireResist 등급을 찾지 못함")
+    return sorted(tiers)
+
+
+def expected_elemental(tiers: list[tuple[int, float]], level: int, affixes: float) -> float:
+    best = max(value for req, value in tiers if req <= level)
+    return min(RESIST_CAP, affixes * best)
+
+
+def expected_chaos(level: int, act5_level: int, act10_level: int) -> float:
+    if level >= act10_level:
+        return ACT10_PENALTY
+    if level >= act5_level:
+        return ACT5_PENALTY
+    return 0.0
+
+
 def best_sum(bases, kind: str, level: int) -> float:
     total = 0.0
     for slot in SLOTS:
@@ -86,6 +118,9 @@ def main() -> int:
     ap.add_argument("--pob", type=Path, default=DEFAULT_POB)
     ap.add_argument("--increase", type=float, nargs="+", default=[0.5, 1.0, 2.0], help="장비 기본값에 거는 증가 I(1.0 = +100%%)")
     ap.add_argument("--levels", type=int, nargs="+", default=[1, 5, 10, 14, 20, 30, 45, 60, 68, 75, 84, 90])
+    ap.add_argument("--resist-affixes", type=float, default=3.0, help="원소마다 기대하는 단일 저항 어픽스 수 n(결정 74, 기본 3)")
+    ap.add_argument("--act5-level", type=int, default=45, help="5막을 마치는 대략의 레벨(카오스 저항 감소가 붙는 때)")
+    ap.add_argument("--act10-level", type=int, default=67, help="10막을 마치는 대략의 레벨")
     a = ap.parse_args()
     misc = (a.pob / "Data" / "Misc.lua").read_text(encoding="utf-8")
     damage = read_table(misc, "monsterDamageTable")
@@ -95,7 +130,11 @@ def main() -> int:
     if outside:
         print(f"레벨은 1~{top}이어야 합니다(PoB의 몬스터 표 길이): {outside}", file=sys.stderr)
         return 1
+    if a.resist_affixes < 0 or not 1 <= a.act5_level <= a.act10_level:
+        print("--resist-affixes는 0 이상, --act5-level은 1 이상이고 --act10-level 이하여야 합니다", file=sys.stderr)
+        return 1
     bases = read_bases(a.pob)
+    tiers = read_resist_tiers(a.pob)
     print(f"PoB: {a.pob}")
     print("레벨 | 기대 타격 h_e | 명중 | 기본 방어도 | 기본 회피 | " + " | ".join(f"I={i:g}: 방어도 원형 / 회피 원형 / m_e" for i in a.increase))
     for level in a.levels:
@@ -109,6 +148,14 @@ def main() -> int:
             pe = hit_chance(evasion * (1 + inc), acc)
             cells.append(f"{pa:.2f} / {pe:.2f} / {(pa + pe + 1.0) / 3:.3f}")
         print(f"{level} | {h:.1f} | {acc:.0f} | {armour:.0f} | {evasion:.0f} | " + " | ".join(cells))
+    print()
+    print(f"원소·카오스(결정 74): 단일 저항 어픽스 {a.resist_affixes:g}개, 5막 레벨 {a.act5_level}, 10막 레벨 {a.act10_level}")
+    print("레벨 | 최고 등급 평균 | 기대 원소 저항 | 원소 통과 비율 | 기대 카오스 저항 | 카오스 통과 비율")
+    for level in a.levels:
+        best = max(value for req, value in tiers if req <= level)
+        res = expected_elemental(tiers, level, a.resist_affixes)
+        chaos = expected_chaos(level, a.act5_level, a.act10_level)
+        print(f"{level} | {best:.1f} | {res:.1f}% | {1 - res / 100:.3f} | {chaos:.0f}% | {1 - chaos / 100:.2f}")
     return 0
 
 
