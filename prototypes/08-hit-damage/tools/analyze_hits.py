@@ -2,7 +2,7 @@
 
   python tools\\analyze_hits.py <로그 파일> [--skill <같은 실행의 PoEProtoSkillInput.log>]
 
---skill을 주면 프로토타입 2의 채널링 구간(시작·끝 줄의 시각)으로 사이클론 중의 타격을 가른다.
+--skill을 주면 프로토타입 2가 사이클론 타격마다 남기는 `[타격] … / 채널링 중` 줄과 같은 대상·0.1초 안의 HIT 줄을 사이클론 타격으로 가른다.
 """
 import argparse
 import re
@@ -106,22 +106,21 @@ def load(path: Path):
     return hits, events, deaths, own, notes
 
 
-def channel_spans(path: Path) -> list[tuple[datetime, datetime]]:
-    """프로토타입 2 로그에서 채널링 시작과 끝의 시각을 짝지어 돌려준다."""
-    spans = []
-    start = None
-    stamp = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)\]")
+def channel_hits(path: Path) -> list[tuple[datetime, int]]:
+    """프로토타입 2 로그의 `[타격] 대상 '이름'(폼) 수단 … / 채널링 중` 줄에서 (시각, 대상 폼)을 돌려준다.
+
+    프로토타입 2는 사이클론의 DLL 타격마다 이 줄을 남긴다(채널링이 아닐 때는 `/ 채널링 아님`).
+    """
+    out = []
+    pattern = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)\].*\[타격\] 대상 '.*'\(([0-9A-Fa-f]{8})\).* / 채널링 중")
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        m = stamp.match(line)
-        if not m:
-            continue
-        t = wall_time(m.group(1))
-        if "채널링 시작" in line:
-            start = t
-        elif "채널링 끝" in line and start is not None:
-            spans.append((start, t))
-            start = None
-    return spans
+        m = pattern.match(line)
+        if m:
+            out.append((wall_time(m.group(1)), int(m.group(2), 16)))
+    return out
+
+
+CHANNEL_MATCH_SECONDS = 0.1  # 프로토타입 2의 [타격] 줄과 이 플러그인의 HIT 줄이 같은 타격이라고 볼 시각 차이
 
 
 def close(a: float, b: float) -> bool:
@@ -137,14 +136,18 @@ def main() -> int:
     ap.add_argument("--skill", type=Path)
     a = ap.parse_args()
     hits, events, deaths, own, notes = load(a.log)
-    spans = channel_spans(a.skill) if a.skill else []
+    channel = channel_hits(a.skill) if a.skill else []
+    by_target = defaultdict(list)
+    for t, target in channel:
+        by_target[target].append(t)
     for h in hits:
-        h.cyclone = any(s - (datetime.min - datetime.min) <= h.wall <= e for s, e in spans)
+        h.cyclone = h.aggressor == PLAYER and h.site == "melee" and any(
+            abs((t - h.wall).total_seconds()) <= CHANNEL_MATCH_SECONDS for t in by_target.get(h.target, ()))
 
     print("# 설치와 모드")
     for n in notes:
         print(" ", n[:200])
-    print(f"\nHIT {len(hits)}, 적중 이벤트 {len(events)}, 사망 {len(deaths)}, 대신 주기 {len(own)}, 채널링 구간 {len(spans)}")
+    print(f"\nHIT {len(hits)}, 적중 이벤트 {len(events)}, 사망 {len(deaths)}, 대신 주기 {len(own)}, 프로토타입 2의 채널링 중 타격 줄 {len(channel)}, 그와 짝지은 HIT {sum(h.cyclone for h in hits)}")
     print("자리·모드·바꿨는지·공격자:", dict(Counter((h.site, h.mode, h.modified, "플레이어" if h.aggressor == PLAYER else ("플레이어가 대상" if h.target == PLAYER else "그 밖")) for h in hits)))
 
     print("\n# Q1 바꾸기(set): 줄어든 체력 대 Value × 배율")

@@ -68,7 +68,8 @@ namespace
 
     struct Settings
     {
-        std::uint32_t modeKey = 0x42;  // 키보드 DirectInput 스캔 코드. 0x42 = F8, 0 = 쓰지 않음
+        // 키보드 DirectInput 스캔 코드. 0x3D = F3, 0 = 쓰지 않음. 처음에는 F8이었으나 프로토타입 2의 TestStaggerKey와 겹쳐 옮김(2026-11-17)
+        std::uint32_t modeKey = 0x3D;
         Mode          startMode = Mode::kObserve;
         float         value = 10.0f;  // set과 replace에서 쓸 값(난이도 배율 전)
         bool          scopeAll = false;  // false: 공격자가 플레이어인 타격만 바꾼다
@@ -261,12 +262,14 @@ namespace
         return settings;
     }
 
-    std::string ModeKeyName()
+    // 알림에 붙일 모드 키 안내. 모드 키를 쓰지 않으면(0) 바꾸는 법이 없다고 알린다.
+    std::string ModeKeyHint()
     {
         if (g_settings.modeKey == 0) {
-            return "모드 키 없음";
+            return "(모드 키 없음. INI의 StartMode로 고름)";
         }
-        return g_settings.modeKey == 0x42 ? std::string("F8") : std::format("스캔 코드 0x{:02X}", g_settings.modeKey);
+        const auto name = g_settings.modeKey == 0x3D ? std::string("F3") : std::format("스캔 코드 0x{:02X}", g_settings.modeKey);
+        return std::format("{} 키로 바꿈", name);
     }
 
     // 화면 알림. 메인 스레드(SKSE 작업)에서 부른다. 실패를 알리는 것은 Notify 설정과 상관없이 띄운다.
@@ -632,7 +635,7 @@ namespace
             ShowNotice(std::format("{} 설치하지 못함: {}. PoEProtoHitDamage.log를 보세요", kNoticePrefix, problem), true);
             return;
         }
-        ShowNotice(std::format("{} {} 모드. {}로 바꿈{}", kNoticePrefix, ModeLabel(CurrentMode()), ModeKeyName(),
+        ShowNotice(std::format("{} {} 모드. {}{}", kNoticePrefix, ModeLabel(CurrentMode()), ModeKeyHint(),
                        g_queueInstalled ? "" : " (작업 큐 쪽은 가로채지 않음)"),
             false);
     }
