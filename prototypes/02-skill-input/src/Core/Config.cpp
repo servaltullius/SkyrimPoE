@@ -189,6 +189,12 @@ namespace poe
                 } else {
                     Warn(warnings, lineNumber, rawKey, "true 또는 false가 아니어서 기본값 유지");
                 }
+            } else if (key == "yieldtofrenzy") {
+                if (const auto parsed = ParseBool(value)) {
+                    config.yieldToFrenzy = *parsed;
+                } else {
+                    Warn(warnings, lineNumber, rawKey, "true 또는 false가 아니어서 기본값 유지");
+                }
             } else if (key == "motion") {
                 const auto lower = Lower(value);
                 if (lower == "oar") {
@@ -426,6 +432,7 @@ namespace poe
             { "MinSeconds", FloatText(c.minSeconds) },
             { "MaxSeconds", FloatText(c.maxSeconds) },
             { "ChannelIgnoreStagger", FloatText(c.channelIgnoreStagger) },
+            { "YieldToFrenzy", BoolText(c.yieldToFrenzy) },
             { "SpinByDll", BoolText(c.spinByDll) },
             { "SpinClockwise", BoolText(c.spinClockwise) },
             { "HitsByDll", BoolText(c.hitsByDll) },

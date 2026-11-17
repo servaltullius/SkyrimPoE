@@ -21,6 +21,12 @@ namespace poe
         constexpr auto kInjectorStartEvent = "PoEProto_CycloneStart";  // 1A의 <Start event>
         constexpr auto kInjectorStopEvent = "PoEProto_CycloneStop";    // 1A의 <Transition event>
         constexpr auto kAttackStopEvent = "attackStop";
+
+        // 프렌지 중 양보(설계-현황 결정 63): 프렌지 모드(BerserkerFrenzy.esp)가 프렌지가 켜져 있는 동안 플레이어에게 두는 효과.
+        constexpr auto                      kFrenzyPlugin = "BerserkerFrenzy.esp"sv;
+        constexpr RE::FormID                kFrenzyEffectId = 0x800;
+        // 효과가 있는지 다시 보는 간격. 켜고 끄는 것은 사람이 하는 일이라 이 정도면 충분하다.
+        constexpr std::chrono::milliseconds kYieldCheckInterval{ 100 };
         constexpr auto kAnimationDriven = "bAnimationDriven";
 
         // Animation Injector는 동작을 시작하면서 bAnimationDriven을 켠다. 시작 요청 뒤 이만큼 지났을 때
@@ -545,7 +551,8 @@ namespace poe
             return false;
         }
         if (staggerStart) {
-            return OnStaggerStart(name);
+            // 프렌지 중에는 경직도 건드리지 않는다(양보가 채널링을 끝내기 전의 한두 프레임에 온 경직을 삼키지 않게).
+            return _yielding ? false : OnStaggerStart(name);
         }
 
         const bool       attackStart = IsAttackStartEvent(name);
@@ -553,7 +560,10 @@ namespace poe
         std::string_view outcome = "통과";
         bool             swallow = false;
 
-        if (_active || _pendingStart != Key::kNone) {
+        if (_yielding) {
+            // 프렌지 중에는 공격 이벤트를 막지도 바꾸지도 않는다. 돌고 있던 채널링은 Tick이 끝낸다.
+            outcome = "통과(프렌지 중 양보)";
+        } else if (_active || _pendingStart != Key::kNone) {
             // 채널링 중에는 누르고 있는 버튼 때문에 공격이 다시 시작되지 않게 한다.
             if (attackStart) {
                 swallow = true;
@@ -722,6 +732,27 @@ namespace poe
         _lastEventOutcome.clear();
     }
 
+    bool Channel::RefreshYield(RE::PlayerCharacter* player, Clock::time_point now)
+    {
+        if (!_config.yieldToFrenzy || !_frenzyEffect) {
+            _yielding = false;
+            return false;
+        }
+        if (now - _yieldCheckedAt < kYieldCheckInterval) {
+            return _yielding;
+        }
+        _yieldCheckedAt = now;
+        auto*      target = player->AsMagicTarget();
+        const bool on = target && target->HasMagicEffect(_frenzyEffect);
+        if (on != _yielding) {
+            _yielding = on;
+            FlushEventLog();
+            SKSE::log::info("[양보] 프렌지가 {}: {}", on ? "켜짐" : "꺼짐",
+                on ? "공격 이벤트를 그대로 두고 채널링을 시작하지 않음" : "평소 동작으로 돌아감");
+        }
+        return _yielding;
+    }
+
     void Channel::Tick()
     {
         const std::scoped_lock lock(_mutex);
@@ -741,6 +772,19 @@ namespace poe
         }
         if (_staggerTestStep >= 0 && now >= _staggerTestNextAt) {
             RunStaggerTestStep(player, now);
+        }
+
+        if (RefreshYield(player, now)) {
+            // 프렌지가 켜져 있다: 돌고 있던 채널링을 끝내고, 프렌지가 꺼질 때까지 새로 시작하지 않는다.
+            // 버튼을 누른 채 프렌지가 꺼져도 곧바로 돌지 않게, 끝낼 때 버튼을 한 번 떼야 하는 것으로 둔다.
+            if (_active) {
+                Stop(player, "프렌지가 켜져 양보", true);
+            }
+            RestoreSpinNode(player);
+            _pendingStart = Key::kNone;
+            // 프렌지 중에 누르고 있는 버튼은, 프렌지가 꺼져도 한 번 떼야 채널링을 시작한다(길게 누르기 방식에서도 곧바로 돌지 않게).
+            _needRelease = AnyChannelKeyDown();
+            return;
         }
 
         if (_active) {
@@ -1202,6 +1246,18 @@ namespace poe
         _triggerSpell = nullptr;
         _triggerExplosion = nullptr;
         _triggerReady = false;
+
+        // 프렌지 중 양보: 그 모드가 없으면 찾지 못하고, 그러면 양보할 일도 없다.
+        _frenzyEffect = nullptr;
+        _yielding = false;
+        _yieldCheckedAt = {};
+        if (auto* forms = RE::TESDataHandler::GetSingleton(); forms && _config.yieldToFrenzy) {
+            _frenzyEffect = forms->LookupForm<RE::EffectSetting>(kFrenzyEffectId, kFrenzyPlugin);
+        }
+        SKSE::log::info("프렌지 중 양보: {}", !_config.yieldToFrenzy ? "꺼져 있음(YieldToFrenzy = false)" :
+                                              _frenzyEffect ? "켜짐(프렌지 효과를 찾음)" :
+                                                              "프렌지 모드가 없어 쓰지 않음");
+
         if (_config.critChance <= 0.0f) {
             SKSE::log::info("치명타 시 발동: 꺼져 있음(CritChance = 0)");
             return;
@@ -1338,6 +1394,8 @@ namespace poe
         _channelKey = Key::kNone;
         _pendingStart = Key::kNone;
         _needRelease = false;
+        _yielding = false;      // 불러온 세이브의 상태로 다음 Tick이 다시 본다
+        _yieldCheckedAt = {};
         _right = {};
         _left = {};
         _extra = {};

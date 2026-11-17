@@ -251,7 +251,7 @@ int main()
         roundTrip(defaults, "기본 설정의 왕복");
         const auto custom = poe::ParseConfig(
             "Enabled = false\nMotion = injector\nTrigger = hold\nPowerAttackInput = any\nHoldSeconds = 0.45\n"
-            "MinSeconds = 0\nMaxSeconds = 120\nChannelIgnoreStagger = -1\nSpinByDll = false\nSpinClockwise = true\n"
+            "MinSeconds = 0\nMaxSeconds = 120\nChannelIgnoreStagger = -1\nYieldToFrenzy = false\nSpinByDll = false\nSpinClockwise = true\n"
             "HitsByDll = false\nHitNeutral = true\nHitsPerSecond = 4.5\nTurnsPerHit = 1\nHitRadius = 200\n"
             "HitDamageMult = 0.25\nCritChance = 0.15\nAddSkyrimCrit = false\nTriggerCooldown = 0\nTriggerMode = spell\n"
             "TriggerDamage = 125.5\nTriggerRadius = 0\nTriggerDifficultyTest = true\nTriggerExplosion =\n"
@@ -260,6 +260,12 @@ int main()
             warnings);
         Expect(warnings.empty(), "모든 키를 바꾼 설정에는 경고가 없음");
         Expect(custom.reloadKey == 0x41 && defaults.reloadKey == 0, "ReloadKey와 그 기본값");
+        Expect(defaults.yieldToFrenzy && !custom.yieldToFrenzy, "YieldToFrenzy와 그 기본값(켜짐)");
+        {
+            std::vector<std::string> yieldWarnings;
+            const auto badYield = poe::ParseConfig("YieldToFrenzy = maybe\n", yieldWarnings);
+            Expect(badYield.yieldToFrenzy && !yieldWarnings.empty(), "틀린 YieldToFrenzy는 기본값을 유지하고 경고를 남김");
+        }
         roundTrip(custom, "모든 키를 바꾼 설정의 왕복");
 
         const auto changes = poe::DescribeConfigChanges(defaults, custom);

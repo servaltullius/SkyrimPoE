@@ -52,6 +52,9 @@ namespace poe
         // 채널링 중에는 세기(staggerMagnitude)가 이 값 이하인 경직을 무시한다(설계-현황 결정 56).
         // 0.5 = 작은·중간 경직 무시, 1 = 모두 무시, 음수 = 무시하지 않음(어떤 경직에도 끊김)
         float         channelIgnoreStagger = 0.5f;
+        // 플레이어에게 프렌지 모드(BerserkerFrenzy.esp)의 프렌지 효과가 있는 동안에는 공격 이벤트를 막지도 바꾸지도 않고
+        // 새 채널링도 시작하지 않는다. 돌고 있던 채널링은 프렌지가 켜지면 끝낸다(설계-현황 결정 63).
+        bool          yieldToFrenzy = true;
         std::uint32_t cycleKey = 0x44;       // 키보드 DirectInput 스캔 코드. 0x44 = F10, 0 = 쓰지 않음
         std::uint32_t extraChannelKey = 0;   // 강공격 전용 키를 따로 쓰는 환경용. 키보드 스캔 코드, 0 = 없음
         // 시험용: 이 키를 누르면 플레이어에게 세기가 다른 경직을 차례로 건다. 키보드 스캔 코드, 0 = 쓰지 않음

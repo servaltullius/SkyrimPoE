@@ -124,6 +124,8 @@ namespace poe
         void RunStaggerTestStep(RE::PlayerCharacter* player, Clock::time_point now);
         void LogEvent(std::string_view name, std::string_view outcome);
         void FlushEventLog();
+        // 프렌지 모드의 프렌지가 켜져 있어 물러나야 하는가(YieldToFrenzy). 잠금을 쥔 채, 메인 스레드에서 부른다.
+        bool RefreshYield(RE::PlayerCharacter* player, Clock::time_point now);
 
         mutable std::recursive_mutex _mutex;
         Config                       _config;
@@ -142,6 +144,11 @@ namespace poe
         bool              _injectorChecked = false;  // 인젝터 동작이 실제로 시작됐는지 한 번 확인했는가
         bool              _needRelease = false;      // 조건 때문에 끝났으면 버튼을 한 번 떼야 다시 시작한다
         Key               _pendingStart = Key::kNone;
+
+        // 프렌지 중 양보(설계-현황 결정 63). 효과는 게임이 끝날 때까지 살아 있는 기본 폼이다.
+        RE::EffectSetting* _frenzyEffect = nullptr;  // BerserkerFrenzy.esp의 프렌지 효과. 그 모드가 없으면 nullptr
+        bool               _yielding = false;        // 지금 프렌지가 켜져 있어 물러나 있는가(Tick이 갱신한다)
+        Clock::time_point  _yieldCheckedAt{};
 
         // 회전과 주기 타격(OAR 방식에서 DLL이 맡을 때). 메인 스레드에서만 쓴다.
         Clock::time_point _lastTick{};
