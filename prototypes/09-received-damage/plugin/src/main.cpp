@@ -1,4 +1,4 @@
-// PoE Proto 9: 받는 마법 피해(35086에 이르는 vtable 15개와 직접 호출 8곳)와 근접 타격 밖의 여섯 엔진 자리를 시험한다.
+// PoE Proto 9: 받는 마법 피해(35086에 이르는 vtable 15개와 직접 호출 8곳)와 근접을 포함한 일곱 타격 자리를 시험한다.
 // README의 실행 전 판정 기준대로 기록한다. 자리는 AE 1.6.1170에서만 설치한다.
 // CommonLibSSE-NG v16.4.0을 쓰며 원래 함수는 어떤 모드에서든 정확히 한 번 부른다.
 
@@ -41,7 +41,7 @@ namespace
     constexpr auto kTick = std::chrono::milliseconds(100);
     constexpr auto kLateDelay = std::chrono::milliseconds(300);
     constexpr float kMaxValue = 100.0f;
-    constexpr std::size_t kHitSiteCount = 6;
+    constexpr std::size_t kHitSiteCount = 7;
 
     // 받는 마법은 모두 ValueModifierEffect::ModifyActorValue(ID 35086)를 지난다. 거기에 이르는 길은 두 가지다
     // (실행 파일에서 35086의 주소를 담은 곳과 35086으로 가는 E8/E9를 모두 찾음, 2026-11-18).
@@ -91,8 +91,12 @@ namespace
     constexpr std::size_t kMagicSiteCount = kMagicVtableCount + kMagicCallCount;
     constexpr MagicCall kMagnitudeStepsCall{ "AddTarget::SetEffectiveness", 34547, 0x656 };
     constexpr MagicCall kExplosionStepsCall{ "Explosion::DamageSteps", 44004, 0xC1 };
+    constexpr std::array kHitStepsCalls{
+        MagicCall{ "populate", 44001, 0x34E },
+        MagicCall{ "arrow", 44002, 0x10B },
+    };
     // write_call<5> 하나마다 절대 점프 스텁 14바이트를 쓴다. vtable에는 트램펄린이 필요 없다.
-    constexpr std::size_t kTrampolineSize = (kHitSiteCount + kMagicCallCount + 2) * 14;
+    constexpr std::size_t kTrampolineSize = (kHitSiteCount + kMagicCallCount + 2 + kHitStepsCalls.size()) * 14;
     constexpr std::string_view MagicSiteName(std::size_t index)
     {
         return index < kMagicVtableCount ? kMagicVtables[index].name : kMagicCalls[index - kMagicVtableCount].name;
@@ -101,7 +105,7 @@ namespace
     enum class Mode : int { kObserve, kScale, kCount };
     constexpr std::array<std::string_view, 2> kModeNames{ "observe", "scale" };
     constexpr std::array<std::string_view, 2> kModeLabels{ "관찰", "배율" };
-    enum class Site { kExplosion, kBeam, kNonActorArrow, kTrap, kCollision, kUnknown };
+    enum class Site { kExplosion, kBeam, kNonActorArrow, kTrap, kCollision, kUnknown, kMelee };
     struct HitSite
     {
         std::string_view name;
@@ -116,8 +120,9 @@ namespace
     constexpr HitSite kTrapSite{ "trap", "함정", 37509, 0x43 };
     constexpr HitSite kCollisionSite{ "collision", "물체 충돌", 38185, 0x21C };
     constexpr HitSite kUnknownSite{ "unknown", "정체를 모르는 호출", 49044, 0x191 };
+    constexpr HitSite kMeleeSite{ "melee", "근접 타격", 38627, 0x4A8 };
     constexpr std::array<HitSite, kHitSiteCount> kHitSites{
-        kExplosionSite, kBeamSite, kNonActorArrowSite, kTrapSite, kCollisionSite, kUnknownSite
+        kExplosionSite, kBeamSite, kNonActorArrowSite, kTrapSite, kCollisionSite, kUnknownSite, kMeleeSite
     };
 
     struct Settings
@@ -129,6 +134,7 @@ namespace
         bool readResistance = true;
         bool logMagnitudeSteps = true;
         bool logExplosionSteps = true;
+        bool logHitSteps = true;
         bool hookMagic = true;
         bool hookHits = true;
         bool notify = true;
@@ -194,6 +200,13 @@ namespace
         std::string power = "-";
     };
     struct ExplosionRead
+    {
+        std::int64_t t = 0;
+        unsigned long thread = 0;
+        RE::FormID targetId = 0;
+        float totalBefore = 0.0f;
+    };
+    struct HitStepRead
     {
         std::int64_t t = 0;
         unsigned long thread = 0;
@@ -354,6 +367,8 @@ namespace
                 ParseBool(key, value, settings.logMagnitudeSteps);
             } else if (key == "LogExplosionSteps") {
                 ParseBool(key, value, settings.logExplosionSteps);
+            } else if (key == "LogHitSteps") {
+                ParseBool(key, value, settings.logHitSteps);
             } else if (key == "HookMagic") {
                 ParseBool(key, value, settings.hookMagic);
             } else if (key == "HookHits") {
@@ -711,6 +726,62 @@ namespace
         static inline REL::Relocation<decltype(Thunk)> original;
     };
 
+    bool BeginHitSteps(RE::HitData* hit, HitStepRead& p)
+    {
+        if (!hit) {
+            return false;
+        }
+        const auto target = hit->target.get();
+        if (!target || (!target->IsPlayerRef() && !g_settings.logAll)) {
+            return false;
+        }
+        p.t = Micros();
+        p.thread = Tid();
+        p.targetId = target->GetFormID();
+        p.totalBefore = hit->totalDamage;
+        return true;
+    }
+    void FinishHitSteps(std::string_view site, RE::HitData* hit, const HitStepRead& p)
+    {
+        const float totalAfter = hit->totalDamage;
+        const float sneak = hit->bonusHealthDamageMult;
+        const auto flags = hit->flags.underlying();
+        RE::FormID aggressorId = 0;
+        if (const auto aggressor = hit->aggressor.get()) {
+            aggressorId = aggressor->GetFormID();
+        }
+        const RE::FormID weaponId = hit->weapon ? hit->weapon->GetFormID() : 0;
+        RE::FormID sourceRefId = 0;
+        if (const auto source = hit->sourceRef.get()) {
+            sourceRefId = source->GetFormID();
+        }
+        const auto ratio = p.totalBefore != 0.0f ? std::format("{:.6f}", totalAfter / p.totalBefore) : "-";
+        SKSE::log::info("STEP\t{}\t{}\t{}\t{:08X}\t{:08X}\t{:08X}\t{:08X}\t{:.6f}\t{:.6f}\t{}\t{:.6f}\t{:X}",
+            p.t, p.thread, site, aggressorId, p.targetId, weaponId, sourceRefId, p.totalBefore, totalAfter, ratio, sneak, flags);
+    }
+    // 44001과 44002의 44016 호출을 따로 가로챈다. original은 자리마다 독립이다.
+    template <std::size_t I>
+    struct HitStepsHook
+    {
+        static void Thunk(RE::HitData* hit)
+        {
+            HitStepRead p;
+            bool began = false;
+            try {
+                began = BeginHitSteps(hit, p);
+            } catch (...) {
+            }
+            original(hit);  // 모드와 관계없이 받은 인자 그대로 정확히 한 번 부른다
+            if (began) {
+                try {
+                    FinishHitSteps(kHitStepsCalls[I].name, hit, p);
+                } catch (...) {
+                }
+            }
+        }
+        static inline REL::Relocation<decltype(Thunk)> original;
+    };
+
     std::uintptr_t CallTarget(std::uintptr_t site)
     {
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(site);
@@ -832,7 +903,11 @@ namespace
             return problem;
         }
         ApplyHitHook<S>::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, ApplyHitHook<S>::Thunk);
-        SKSE::log::info("{} 자리(ID {} +0x{:X})를 가로챔", spec.label, spec.id, spec.offset);
+        if constexpr (S == Site::kMelee) {
+            SKSE::log::info("{} ({}) 자리(ID {} +0x{:X})를 가로챔", spec.name, spec.label, spec.id, spec.offset);
+        } else {
+            SKSE::log::info("{} 자리(ID {} +0x{:X})를 가로챔", spec.label, spec.id, spec.offset);
+        }
         return {};
     }
     template <std::size_t I>
@@ -864,6 +939,17 @@ namespace
             return problem;
         }
         ExplosionStepsHook::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, ExplosionStepsHook::Thunk);
+        SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kExplosionDamageStepsId);
+        return {};
+    }
+    template <std::size_t I>
+    std::string InstallHitSteps()
+    {
+        constexpr auto spec = kHitStepsCalls[I];
+        if (auto problem = CheckCallSite(spec.name, spec.id, spec.offset, kExplosionDamageStepsId); !problem.empty()) {
+            return problem;
+        }
+        HitStepsHook<I>::original = SKSE::GetTrampoline().write_call<5>(REL::ID(spec.id).address() + spec.offset, HitStepsHook<I>::Thunk);
         SKSE::log::info("{} 자리(ID {} +0x{:X}, ID {} 직접 호출)를 가로챔", spec.name, spec.id, spec.offset, kExplosionDamageStepsId);
         return {};
     }
@@ -904,7 +990,8 @@ namespace
         const unsigned total = (g_settings.hookHits ? static_cast<unsigned>(kHitSiteCount) : 0U) +
                                (g_settings.hookMagic ? static_cast<unsigned>(kMagicSiteCount) : 0U) +
                                (g_settings.logMagnitudeSteps ? 1U : 0U) +
-                               (g_settings.logExplosionSteps ? 1U : 0U);
+                               (g_settings.logExplosionSteps ? 1U : 0U) +
+                               (g_settings.logHitSteps ? static_cast<unsigned>(kHitStepsCalls.size()) : 0U);
         std::string problems;
         unsigned installed = 0;
         const auto record = [&](const std::string& problem) {
@@ -940,8 +1027,9 @@ namespace
                 attempt([] { return Install<Site::kTrap>(); });
                 attempt([] { return Install<Site::kCollision>(); });
                 attempt([] { return Install<Site::kUnknown>(); });
+                attempt([] { return Install<Site::kMelee>(); });
             } else {
-                SKSE::log::info("여섯 타격 자리는 가로채지 않음(설정 HookHits = false)");
+                SKSE::log::info("일곱 타격 자리는 가로채지 않음(설정 HookHits = false)");
             }
             if (g_settings.hookMagic) {
                 InstallMagicVtables(attempt, std::make_index_sequence<kMagicVtableCount>{});
@@ -958,6 +1046,12 @@ namespace
                 attempt([] { return InstallExplosionSteps(); });
             } else {
                 SKSE::log::info("폭발 피해 계산 자리는 가로채지 않음(설정 LogExplosionSteps = false)");
+            }
+            if (g_settings.logHitSteps) {
+                attempt([] { return InstallHitSteps<0>(); });
+                attempt([] { return InstallHitSteps<1>(); });
+            } else {
+                SKSE::log::info("근접·화살 피해 계산 자리는 가로채지 않음(설정 LogHitSteps = false)");
             }
         }
         g_installed = installed;
@@ -1120,9 +1214,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     }
     g_settings = LoadSettings();
     g_mode = static_cast<int>(g_settings.startMode);
-    SKSE::log::info("설정: ModeKey=0x{:02X} StartMode={} Value={:.6f} LogAll={} ReadResistance={} LogMagnitudeSteps={} LogExplosionSteps={} HookMagic={} HookHits={} Notify={}",
+    SKSE::log::info("설정: ModeKey=0x{:02X} StartMode={} Value={:.6f} LogAll={} ReadResistance={} LogMagnitudeSteps={} LogExplosionSteps={} LogHitSteps={} HookMagic={} HookHits={} Notify={}",
         g_settings.modeKey, ModeName(g_settings.startMode), g_settings.value, g_settings.logAll, g_settings.readResistance,
-        g_settings.logMagnitudeSteps, g_settings.logExplosionSteps, g_settings.hookMagic, g_settings.hookHits, g_settings.notify);
+        g_settings.logMagnitudeSteps, g_settings.logExplosionSteps, g_settings.logHitSteps, g_settings.hookMagic, g_settings.hookHits, g_settings.notify);
     SKSE::log::info("런타임 {}", skse->RuntimeVersion().string("."));
     const auto* messaging = SKSE::GetMessagingInterface();
     if (!messaging || !messaging->RegisterListener(OnMessage)) {

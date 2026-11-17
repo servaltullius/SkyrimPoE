@@ -1,4 +1,4 @@
-"""PoE Proto 9 로그에서 README의 R1~R3 판정과 R4~R7 통계, 마법 자리별 통계를 계산한다.
+"""PoE Proto 9 로그에서 README의 R1~R3 판정과 R4~R8 통계, 마법 자리별 통계를 계산한다.
 
 사용: python analyze_received.py <PoEProtoReceived.log>
       python analyze_received.py --selftest
@@ -19,7 +19,8 @@ import unittest
 PLAYER = 0x14
 YES, NO, EMPTY = "그렇다", "아니다", "판정할 줄 없음"
 MODES = {"observe", "scale"}
-HIT_SITES = ("explosion", "beam", "nonactor_arrow", "trap", "collision", "unknown")
+HIT_SITES = ("explosion", "beam", "nonactor_arrow", "trap", "collision", "unknown", "melee")
+STEP_HIT_SITES = {"populate": ("melee",), "arrow": ("melee", "beam", "nonactor_arrow")}
 
 
 def number(text):
@@ -124,11 +125,28 @@ class ExplosionStep:
 
 
 @dataclass
+class HitStep:
+    t: int
+    thread: int
+    site: str
+    aggressor: int
+    target: int
+    weapon: int
+    source_ref: int
+    total_before: float
+    total_after: float
+    ratio: float | None
+    sneak: float
+    flags: int
+
+
+@dataclass
 class Log:
     magic: list = field(default_factory=list)
     hits: list = field(default_factory=list)
     amp: list = field(default_factory=list)
     exp: list = field(default_factory=list)
+    step: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
     skipped: int = 0
     late_paired: int = 0
@@ -199,6 +217,17 @@ def parse_exp(c):
                          ratio, physical, blocked, sneak, flags, predicted)
 
 
+def parse_step(c):
+    if len(c) != 12 or c[2] not in STEP_HIT_SITES:
+        raise ValueError("STEP 칸 수 또는 자리 오류")
+    t, thread = integer(c[0]), integer(c[1])
+    aggressor, target, weapon, source_ref = (integer(x, 16) for x in c[3:7])
+    before, after = (number(x) for x in c[7:9])
+    ratio = None if c[9] == "-" else number(c[9])
+    sneak, flags = number(c[10]), integer(c[11], 16)
+    return HitStep(t, thread, c[2], aggressor, target, weapon, source_ref, before, after, ratio, sneak, flags)
+
+
 def read_log(text):
     log = Log()
     late = []
@@ -220,6 +249,8 @@ def read_log(text):
                 log.amp.append(parse_amp(c))
             elif kind == "EXP":
                 log.exp.append(parse_exp(c))
+            elif kind == "STEP":
+                log.step.append(parse_step(c))
             elif kind == "LATE":
                 if len(c) != 4:
                     raise ValueError("LATE 칸 수 오류")
@@ -442,6 +473,56 @@ def explosion_step_statistics(exp, hits):
     return result
 
 
+@dataclass
+class HitStepStatistics:
+    count: int
+    ratio_range: tuple | None
+    ratio_missing: int
+    matched: int = 0
+    compared: int = 0
+    unpaired: int = 0
+
+
+def hit_step_statistics(steps, hits):
+    """자리별로 STEP과 그 뒤에 같은 스레드에서 이어지는 HIT의 physicalDamage를 비교한다. 판정에는 쓰지 않는다.
+
+    44016 호출과 HitData 적용은 같은 스레드에서 차례로 일어나므로, HIT는 같은 스레드의 가장 최근 STEP과만
+    짝짓는다(2026-11-18 여섯 번째 실행: 다른 스레드에서 피해로 이어지지 않는 STEP이 세 번씩 찍혀 시각만으로는
+    엉뚱한 HIT와 짝지어졌음). 같은 스레드에 다음 STEP이 먼저 오면 앞의 STEP은 짝 없음이다.
+    """
+    stats = {}
+    for site in STEP_HIT_SITES:
+        part = [s for s in steps if s.site == site]
+        ratios = [s.ratio for s in part if s.ratio is not None]
+        stats[site] = HitStepStatistics(len(part), (min(ratios), max(ratios)) if ratios else None,
+                                        len(part) - len(ratios))
+    allowed = {hit_site for sites in STEP_HIT_SITES.values() for hit_site in sites}
+    events = sorted([(s.t, 0, s) for s in steps] + [(h.t, 1, h) for h in hits if h.site in allowed],
+                    key=lambda event: (event[0], event[1]))
+    pending = {}
+    for _, kind, item in events:
+        if kind == 0:
+            previous = pending.get(item.thread)
+            if previous is not None:
+                stats[previous.site].unpaired += 1
+            pending[item.thread] = item
+            continue
+        step = pending.get(item.thread)
+        if step is None or item.site not in STEP_HIT_SITES[step.site] or item.target != step.target:
+            continue
+        del pending[item.thread]
+        result = stats[step.site]
+        if item.t - step.t > 1_000_000:
+            result.unpaired += 1
+            continue
+        result.compared += 1
+        if abs(item.physical - step.total_after) <= max(0.01, abs(step.total_after) * 0.01):
+            result.matched += 1
+    for step in pending.values():
+        stats[step.site].unpaired += 1
+    return stats
+
+
 def print_damage(label, verdict):
     ratio = f"{verdict.matched / verdict.total:.1%}" if verdict.total else "-"
     print(f"{label}: {verdict.answer} — {verdict.matched}/{verdict.total}줄 맞음({ratio}), 죽음으로 잘려 제외 {verdict.dead}줄")
@@ -450,7 +531,7 @@ def print_damage(label, verdict):
 
 
 def report(log):
-    print(f"읽은 줄: MAG {len(log.magic)}, HIT {len(log.hits)}, EXP {len(log.exp)}, AMP {len(log.amp)}, 형식 오류로 건너뜀 {log.skipped}")
+    print(f"읽은 줄: STEP {len(log.step)}, MAG {len(log.magic)}, HIT {len(log.hits)}, EXP {len(log.exp)}, AMP {len(log.amp)}, 형식 오류로 건너뜀 {log.skipped}")
     print(f"LATE: 연결 {log.late_paired}, 짝 없음·중복 {log.late_unpaired}, 대상 소실로 체력 없음 {log.late_missing}")
     print(f"설정 Value={log.value:g}" + (" (설정 줄이 없어 기본값 사용)" if "Value" not in log.settings else ""))
     r1 = damage_verdict(log.magic, log.value)
@@ -515,6 +596,14 @@ def report(log):
         print(f"  EXP {result.count}줄, ratio 최소·최대 {ratio}, ratio 없음 {result.ratio_missing}줄")
         print(f"  physical>0 {result.physical_positive:.1%}, predicted 최소·최대 {predicted}")
         print(f"  totalDamage 이어짐 {result.matched}/{result.compared}, 짝 없음 {result.unpaired}")
+    print("R8 근접·화살의 physicalDamage(판정 없음):")
+    if not log.step:
+        print("  STEP 줄 없음")
+    else:
+        for site, result in hit_step_statistics(log.step, log.hits).items():
+            ratio = "/".join(f"{v:.6f}" for v in result.ratio_range) if result.ratio_range else "-"
+            print(f"  {site}: STEP {result.count}줄, ratio 최소·최대 {ratio}, ratio 없음 {result.ratio_missing}줄")
+            print(f"    physicalDamage = 44016 뒤 값 {result.matched}/{result.compared}, 짝 없음 {result.unpaired}")
 
 
 def selftest():
@@ -559,6 +648,14 @@ def selftest():
         d = dict(zip(names, values))
         d.update(changes)
         return row("EXP", [d[name] for name in names])
+
+    def step(t=1, **changes):
+        names = "t thread site aggressor target weapon source_ref total_before total_after ratio sneak flags".split()
+        # HIT 도우미와 같은 스레드(8)라 기본값끼리 짝지어진다.
+        values = [t, 8, "populate", "00000001", "00000014", "00000002", "00000003", 20, 18, 0.9, 1, "100008"]
+        d = dict(zip(names, values))
+        d.update(changes)
+        return row("STEP", [d[name] for name in names])
 
     class Tests(unittest.TestCase):
         def test_r1_yes_no_empty(self):
@@ -896,6 +993,146 @@ def selftest():
             with redirect_stdout(out):
                 report(log(exp(total_before=0, ratio="-")))
             self.assertIn("ratio 최소·최대 -, ratio 없음 1줄", out.getvalue())
+
+        def test_step_parsing(self):
+            for site in STEP_HIT_SITES:
+                with self.subTest(site=site):
+                    data = log(step(site=site))
+                    self.assertEqual((len(data.step), data.skipped), (1, 0))
+                    self.assertEqual(data.step[0], HitStep(1, 8, site, 1, PLAYER, 2, 3, 20, 18, 0.9, 1, 0x100008))
+
+        def test_step_missing_ratio_and_null_forms(self):
+            data = log(step(total_before=0, total_after=0, ratio="-", aggressor="00000000",
+                            weapon="00000000", source_ref="00000000"))
+            self.assertEqual((len(data.step), data.skipped), (1, 0))
+            sample = data.step[0]
+            self.assertIsNone(sample.ratio)
+            self.assertEqual((sample.aggressor, sample.weapon, sample.source_ref), (0, 0, 0))
+
+        def test_step_malformed_fields(self):
+            fields = step().split("\t")[3:]
+            data = log(row("STEP", fields[:-1]), row("STEP", fields + [0]), step(t=-1), step(thread=-1),
+                       step(site="melee"), step(site=""), step(site="Arrow"), step(aggressor="-"),
+                       step(target="invalid"), step(weapon="-1"), step(source_ref="invalid"),
+                       step(flags="invalid"), step(total_after="-"), step())
+            self.assertEqual((data.skipped, len(data.step)), (13, 1))
+
+        def test_step_nonfinite_fields(self):
+            for name in ("total_before", "total_after", "ratio", "sneak"):
+                for value in ("nan", "inf", "-inf"):
+                    with self.subTest(name=name, value=value):
+                        data = log(step(**{name: value}), step(t=2))
+                        self.assertEqual((data.skipped, len(data.step)), (1, 1))
+
+        def test_r8_statistics_by_site(self):
+            data = log(step(), step(t=2, ratio=0.5), step(t=3, total_before=0, ratio="-"),
+                       step(t=4, site="arrow", ratio=2), step(t=5, site="arrow", ratio=1))
+            stats = hit_step_statistics(data.step, data.hits)
+            self.assertEqual(stats["populate"], HitStepStatistics(3, (0.5, 0.9), 1, unpaired=3))
+            self.assertEqual(stats["arrow"], HitStepStatistics(2, (1, 2), 0, unpaired=2))
+            for result in hit_step_statistics([], data.hits).values():
+                self.assertEqual(result, HitStepStatistics(0, None, 0))
+            missing = hit_step_statistics(log(step(ratio="-")).step, [])["populate"]
+            self.assertEqual(missing, HitStepStatistics(1, None, 1, unpaired=1))
+
+        def test_step_hit_pairing_time_window(self):
+            for site in STEP_HIT_SITES:
+                for offset, paired in ((-1, False), (0, True), (1, True), (999_999, True), (1_000_000, True), (1_000_001, False)):
+                    with self.subTest(site=site, offset=offset):
+                        data = log(step(t=10, site=site), hit(t=10 + offset, site="melee", physical=18))
+                        result = hit_step_statistics(data.step, data.hits)[site]
+                        self.assertEqual((result.matched, result.compared, result.unpaired),
+                                         (1, 1, 0) if paired else (0, 0, 1))
+
+        def test_step_hit_pairing_site_and_target(self):
+            for site, allowed in STEP_HIT_SITES.items():
+                for hit_site in HIT_SITES:
+                    with self.subTest(site=site, hit_site=hit_site):
+                        data = log(step(site=site), hit(site=hit_site, physical=18))
+                        result = hit_step_statistics(data.step, data.hits)[site]
+                        self.assertEqual((result.matched, result.compared, result.unpaired),
+                                         (1, 1, 0) if hit_site in allowed else (0, 0, 1))
+                data = log(step(site=site), hit(site="melee", physical=18, target="00000099"))
+                result = hit_step_statistics(data.step, data.hits)[site]
+                self.assertEqual((result.compared, result.unpaired), (0, 1))
+                # 다른 액터도 LogAll로 기록된다. 모드는 조건이 아니지만 스레드는 같아야 짝이다.
+                data = log(step(site=site, target="00000099"),
+                           hit(site="melee", physical=18, target="00000099", mode="observe", modified=0))
+                result = hit_step_statistics(data.step, data.hits)[site]
+                self.assertEqual((result.matched, result.compared, result.unpaired), (1, 1, 0))
+                data = log(step(site=site), hit(site="melee", physical=18, thread=99))
+                result = hit_step_statistics(data.step, data.hits)[site]
+                self.assertEqual((result.compared, result.unpaired), (0, 1))
+
+        def test_step_hit_pairing_same_thread_latest(self):
+            # 다른 스레드의 STEP은 이 스레드의 HIT와 짝짓지 않고, 같은 스레드에서 뒤에 온 STEP이 앞의 것을 밀어낸다.
+            data = log(step(t=1, thread=3, total_after=99), step(t=2, total_after=50), step(t=3),
+                       hit(t=4, site="melee", physical=18))
+            result = hit_step_statistics(data.step, data.hits)["populate"]
+            self.assertEqual((result.count, result.matched, result.compared, result.unpaired), (3, 1, 1, 2))
+
+        def test_step_hit_pairing_first_by_time(self):
+            for site in STEP_HIT_SITES:
+                with self.subTest(site=site):
+                    data = log(hit(t=30, site="melee", physical=18), hit(t=9, site="melee", physical=18), step(t=10, site=site),
+                               hit(t=11, site="explosion", physical=18), hit(t=12, site="melee", target="00000099", physical=18),
+                               hit(t=20, site="melee", physical=17))
+                    result = hit_step_statistics(data.step, data.hits)[site]
+                    self.assertEqual((result.matched, result.compared, result.unpaired), (0, 1, 0))
+            # arrow는 허용된 세 HIT 자리 전체에서 시각순 첫 줄을 고른다.
+            data = log(step(site="arrow"), hit(t=4, site="melee", physical=18),
+                       hit(t=3, site="nonactor_arrow", physical=18), hit(t=2, site="beam", physical=17))
+            result = hit_step_statistics(data.step, data.hits)["arrow"]
+            self.assertEqual((result.matched, result.compared, result.unpaired), (0, 1, 0))
+
+        def test_step_physical_counts(self):
+            for site in STEP_HIT_SITES:
+                with self.subTest(site=site):
+                    data = log(step(site=site), hit(site="melee", physical=18, before=999),
+                               step(t=2_000_001, site=site), hit(t=2_000_002, site="melee", physical=20, before=18),
+                               step(t=4_000_001, site=site))
+                    result = hit_step_statistics(data.step, data.hits)[site]
+                    self.assertEqual((result.count, result.matched, result.compared, result.unpaired), (3, 1, 2, 1))
+
+        def test_step_physical_tolerance(self):
+            for after, actual, matched in ((100, 100.9, 1), (100, 101.1, 0), (0, 0.009, 1), (0, 0.011, 0),
+                                           (-100, -100.9, 1), (-100, -101.1, 0), (18, -18, 0)):
+                with self.subTest(after=after, actual=actual):
+                    data = log(step(total_after=after), hit(site="melee", physical=actual))
+                    result = hit_step_statistics(data.step, data.hits)["populate"]
+                    self.assertEqual((result.matched, result.compared), (matched, 1))
+
+        def test_r8_report(self):
+            out = StringIO()
+            with redirect_stdout(out):
+                report(log())
+            self.assertIn("R8 근접·화살의 physicalDamage(판정 없음):\n  STEP 줄 없음", out.getvalue())
+            out = StringIO()
+            with redirect_stdout(out):
+                report(log(step(), step(t=2_000_001, ratio="-"), step(t=4_000_001, ratio=0.5),
+                           step(t=6_000_001, site="arrow", ratio=2), hit(site="melee", physical=18),
+                           hit(t=4_000_002, site="melee", physical=20), hit(t=6_000_002, site="beam", physical=18)))
+            text = out.getvalue()
+            self.assertIn("읽은 줄: STEP 4, MAG 0, HIT 3", text)
+            self.assertIn("populate: STEP 3줄, ratio 최소·최대 0.500000/0.900000, ratio 없음 1줄", text)
+            self.assertIn("physicalDamage = 44016 뒤 값 1/2, 짝 없음 1", text)
+            self.assertIn("arrow: STEP 1줄, ratio 최소·최대 2.000000/2.000000, ratio 없음 0줄", text)
+            self.assertIn("physicalDamage = 44016 뒤 값 1/1, 짝 없음 0", text)
+            out = StringIO()
+            with redirect_stdout(out):
+                report(log(step(ratio="-")))
+            self.assertIn("populate: STEP 1줄, ratio 최소·최대 -, ratio 없음 1줄", out.getvalue())
+            self.assertIn("arrow: STEP 0줄, ratio 최소·최대 -, ratio 없음 0줄", out.getvalue())
+
+        def test_r4_melee_statistics_and_report(self):
+            data = log(hit(site="melee", before=18, physical=18))
+            self.assertEqual(hit_statistics(data.hits)["melee"], (1, 1.0, (1, 1, 1)))
+            for lines, count in (([], 0), ([hit(site="melee")], 1)):
+                out = StringIO()
+                with redirect_stdout(out):
+                    report(log(*lines))
+                r4 = out.getvalue().split("R4 자리별 HIT 통계(판정 없음):\n")[1].split("R5 ")[0]
+                self.assertIn(f"  melee: {count}줄, physicalDamage>0", r4)
 
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Tests))
     if result.wasSuccessful():
