@@ -40,6 +40,8 @@ namespace
     constexpr REL::Version kVerifiedRuntime{ 1, 6, 1170, 0 };
     constexpr auto kTick = std::chrono::milliseconds(100);
     constexpr auto kLateDelay = std::chrono::milliseconds(300);
+    // 겹쳐 설치 알림을 불러오기 알림보다 늦게 띄우는 시간. 여러 플러그인의 불러오기 알림이 같은 틱에 몰리는 것을 피함
+    constexpr auto kOverlapNoticeDelay = std::chrono::seconds(3);
     constexpr float kMaxValue = 100.0f;
     constexpr std::size_t kHitSiteCount = 7;
 
@@ -228,11 +230,13 @@ namespace
     std::atomic<unsigned> g_installed{ 0 };
     std::atomic<bool> g_noticePending{ false };
     std::atomic<bool> g_noticeQueued{ false };
+    // 겹쳐 설치 알림을 띄울 시각(Clock의 틱 수). 0이면 띄울 것이 없음
+    std::atomic<Clock::rep> g_overlapNoticeDue{ 0 };
     std::atomic<bool> g_tickerStarted{ false };
     std::once_flag g_installOnce;
     std::mutex g_installMutex;
     std::string g_installProblem;
-    std::string g_installOverlaps;
+    std::vector<std::string> g_installOverlaps;  // "자리 이름(모드 파일 이름)", 겹쳐 설치한 자리마다 하나
     std::mutex g_lateMutex;
     std::vector<LateRead> g_late;
 
@@ -880,7 +884,7 @@ namespace
         }
         try {
             const std::scoped_lock lock(g_installMutex);
-            g_installOverlaps += std::format("{}{}({})", g_installOverlaps.empty() ? "" : ", ", label, owner);
+            g_installOverlaps.push_back(std::format("{}({})", label, owner));
         } catch (...) {
         }
     }
@@ -1134,20 +1138,45 @@ namespace
         }
         g_noticePending = false;
         std::string problem;
-        std::string overlaps;
+        bool        hasOverlap = false;
         {
             const std::scoped_lock lock(g_installMutex);
             problem = g_installProblem;
-            overlaps = g_installOverlaps;
+            hasOverlap = !g_installOverlaps.empty();
         }
         if (!problem.empty()) {
             ShowNotice(std::format("{} 설치 문제: {}. PoEProtoReceived.log를 보세요", kNoticePrefix, problem), true);
+        } else {
+            ShowNotice(std::format("{} {} 모드. {}", kNoticePrefix, ModeLabel(CurrentMode()), ModeKeyHint()), false);
+        }
+        // 겹쳐 설치 알림은 이 알림들보다 늦게, 자리마다 짧게 띄운다(DeliverOverlapNotice). 모든 자리를 한 줄에 묶은
+        // 긴 알림을 모드 안내 앞에 같은 틱에 보냈을 때, 모드 안내 둘(이 플러그인과 프로토타입 8)은 화면에 보였지만
+        // 그 알림은 보이지 않았다(2026-11-18, 로그에는 보냄으로 남음). 길이 탓인지 같은 틱에 몰린 탓인지는 가리지
+        // 못했으므로 둘 다 피한다.
+        if (hasOverlap) {
+            g_overlapNoticeDue = (Clock::now() + kOverlapNoticeDelay).time_since_epoch().count();
+        }
+    }
+
+    void DeliverOverlapNotice()
+    {
+        auto*       ui = RE::UI::GetSingleton();
+        const auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || !player->Is3DLoaded() || (ui && ui->GameIsPaused())) {
+            // 메뉴가 열려 있으면 화면에 보이지 않으니 닫힌 뒤로 미룬다
+            g_overlapNoticeDue = (Clock::now() + kOverlapNoticeDelay).time_since_epoch().count();
+            return;
+        }
+        std::vector<std::string> overlaps;
+        {
+            const std::scoped_lock lock(g_installMutex);
+            overlaps = g_installOverlaps;
+        }
+        for (const auto& overlap : overlaps) {
+            ShowNotice(std::format("{} 겹쳐 설치: {}", kNoticePrefix, overlap), true);
         }
         if (!overlaps.empty()) {
-            ShowNotice(std::format("{} 다른 모드와 겹쳐 설치함: {}. 배율 모드는 그 모드가 바꾼 값 위에 다시 곱함", kNoticePrefix, overlaps), true);
-        }
-        if (problem.empty()) {
-            ShowNotice(std::format("{} {} 모드. {}", kNoticePrefix, ModeLabel(CurrentMode()), ModeKeyHint()), false);
+            SKSE::log::info("겹쳐 설치한 자리는 바로 다음 가로채기 하나만 보고 적음. 배율 모드는 그 모드들이 바꾼 값 위에 다시 곱함");
         }
     }
 
@@ -1178,6 +1207,16 @@ namespace
                     g_noticeQueued = false;
                     try {
                         DeliverLoadNotice();
+                    } catch (...) {
+                    }
+                });
+            }
+            auto overlapDue = g_overlapNoticeDue.load();
+            if (overlapDue != 0 && Clock::now().time_since_epoch().count() >= overlapDue &&
+                g_overlapNoticeDue.compare_exchange_strong(overlapDue, 0)) {
+                tasks->AddTask([] {
+                    try {
+                        DeliverOverlapNotice();
                     } catch (...) {
                     }
                 });
