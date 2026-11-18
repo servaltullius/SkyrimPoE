@@ -32,5 +32,5 @@
 ## 환경
 
 - MO2 인스턴스 `G:\TAKEALOOK` (게임 경로 `G:\TAKEALOOK\Stock Game`, AE 1.6.1170). houseCARL이 이 인스턴스를 읽습니다.
-- 기준 PoB 데이터(PoE 3.29) `G:\poe\PathOfBuilding-2.67.2\`. 예전 3.27 한글판은 `G:\poe\POE1 한글 POB (2025.10.31)\`에 참고용으로 있습니다.
+- 기준 PoB 데이터(PoE 3.30, 결정 104) `G:\poe\PathOfBuilding-2.68.1\`. 예전 기준(3.29)은 `G:\poe\PathOfBuilding-2.67.2\`, PoE2용 0.23.1은 `G:\poe\PathOfBuilding-PoE2-0.23.1\`. 예전 3.27 한글판은 `G:\poe\POE1 한글 POB (2025.10.31)\`에 참고용으로 있습니다.
 - 그 밖의 경로와 관련 프로젝트는 `docs/설계-현황.md` 6장에 있습니다.

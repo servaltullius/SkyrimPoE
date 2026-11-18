@@ -35,7 +35,7 @@ MIN_STREAKS = 20
 LEVEL_BINS = [(1, 5), (6, 10), (11, 15), (16, 20), (21, 30), (31, 40), (41, 50), (51, 75), (76, 9999)]
 MELEE_WEAPON_TYPES = {0, 1, 2, 3, 4, 5, 6}
 WEAPON_TYPE_NAMES = {0: "맨손", 1: "한손검", 2: "단검", 3: "한손도끼", 4: "한손둔기", 5: "양손검", 6: "양손도끼·둔기", 7: "활", 8: "지팡이", 9: "석궁"}
-DEFAULT_POB_MISC = Path(r"G:\poe\PathOfBuilding-2.67.2\Data\Misc.lua")  # 이 프로젝트의 기준 PoB(설계-현황 6장). --pob로 바꾼다
+DEFAULT_POB_MISC = Path(r"G:\poe\PathOfBuilding-2.68.1\Data\Misc.lua")  # 이 프로젝트의 기준 PoB(설계-현황 6장). --pob로 바꾼다
 # PoB를 찾지 못했을 때 쓰는 값(설계-현황 5장의 표, PoB 3.29의 monsterLifeTable에서 옮긴 것). 사이는 로그 보간한다.
 LIFE_FALLBACK = {1: 22, 10: 78, 20: 207, 30: 467, 40: 972, 50: 1927, 60: 3698, 68: 6127, 75: 9436, 84: 16265, 90: 23250}
 

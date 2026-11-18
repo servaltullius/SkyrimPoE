@@ -24,7 +24,7 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_POB = Path(r"G:\poe\PathOfBuilding-2.67.2")
+DEFAULT_POB = Path(r"G:\poe\PathOfBuilding-2.68.1")
 RESIST_CAP = 75.0           # PoB Misc.lua의 base_maximum_all_resistances_%
 ACT5_PENALTY = -30.0        # PoB ConfigOptions.lua의 resistancePenalty: Act 5 (-30%), Act 10 (-60%). 원소와 카오스에 모두(CalcSetup.lua)
 ACT10_PENALTY = -60.0

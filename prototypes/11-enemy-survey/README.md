@@ -82,7 +82,7 @@ python prototypes/11-enemy-survey/tools/analyze_survey.py "경로\survey-YYYYMMD
 python prototypes/11-enemy-survey/tools/analyze_survey.py --selftest
 ```
 
-파일이나 폴더를 줄 수 있다. 생략하면 문서의 `SKSE\PoEProtoSurvey`를 읽는다. 여러 파일은 실행마다 표를 만든다. `--combine`을 주면 여러 실행의 단계를 요청 레벨별로 하나씩 모아(같은 레벨이면 ok 방문이 많은 쪽, 같으면 나중 것) 한 표로 낸다. 도중에 끊긴 실행을 나눠 잰 때 쓴다. 화면과 `out/report.md`에 적는다. PoB 표의 기본 경로는 프로토타입 7과 같은 `G:\poe\PathOfBuilding-2.67.2\Data\Misc.lua`다. `--pob`로 바꿀 수 있고 읽지 못하면 프로토타입 7의 대체 표를 쓴다.
+파일이나 폴더를 줄 수 있다. 생략하면 문서의 `SKSE\PoEProtoSurvey`를 읽는다. 여러 파일은 실행마다 표를 만든다. `--combine`을 주면 여러 실행의 단계를 요청 레벨별로 하나씩 모아(같은 레벨이면 ok 방문이 많은 쪽, 같으면 나중 것) 한 표로 낸다. 도중에 끊긴 실행을 나눠 잰 때 쓴다. 화면과 `out/report.md`에 적는다. PoB 표의 기본 경로는 프로토타입 7과 같은 `G:\poe\PathOfBuilding-2.68.1\Data\Misc.lua`다. `--pob`로 바꿀 수 있고 읽지 못하면 프로토타입 7의 대체 표를 쓴다.
 
 방어구 열이 있는 기록이면 "방어구 비율" 표를 더한다. 단계마다 적의 `totalDamage ÷ physicalDamage` 분포(`physicalDamage`나 `totalDamage`가 0 이하인 적은 비율 없음으로 뺌), 0.995보다 작은 적의 비율, 방어도 중앙값, 그리고 방어구를 넣은 체력(`최대 체력 ÷ 비율`)의 중앙값을 낸다. 방어구를 넣은 체력은 엔진 타격으로 주는 공격 스킬(결정 65·66)이 그 적을 잡는 데 드는 피해다. 기록의 비율을 게임 설정의 식 `1 − min(fMaxArmorRating, 방어도 × fArmorScalingFactor) ÷ 100`과 대조한 수도 낸다. 설정값은 이 모드 목록의 값(ParagonPerks.esp: 0.15, 75)이 기본이고 `--armor-scale`, `--armor-max`로 바꾼다.
 
