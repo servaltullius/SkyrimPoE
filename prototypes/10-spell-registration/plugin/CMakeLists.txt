@@ -36,6 +36,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
     SOURCES
         src/main.cpp
         src/AutoTest.cpp
+        src/ProjectileObservation.cpp
 )
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 # CommonLib이 <Windows.h>를 끌어오므로 min/max 매크로를 막는다.

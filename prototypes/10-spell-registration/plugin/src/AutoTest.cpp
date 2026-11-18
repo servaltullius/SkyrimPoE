@@ -3,6 +3,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <format>
 #include <span>
 
 namespace AutoTest
@@ -234,6 +235,15 @@ namespace AutoTest
         case AfterSwap: return "after-swap";
         default: return {};
         }
+    }
+
+    std::string FormatAttempt(std::string_view label, std::string_view slot, std::string_view hand,
+        float before, float minimum, float released, float after, const std::array<std::uint64_t, 3>& castCounts,
+        double cooldown, std::uint64_t authorizedLaunches, std::uint64_t unauthorizedLaunches)
+    {
+        return std::format("{}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\t{}\t{}\t{:.3f}\t{}\t{}",
+            label, slot, hand, before, minimum, released, after, castCounts[0], castCounts[1], castCounts[2],
+            cooldown, authorizedLaunches, unauthorizedLaunches);
     }
 
     bool Plan::SkipCurrent() const

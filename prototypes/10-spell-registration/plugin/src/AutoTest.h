@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -53,6 +54,10 @@ namespace AutoTest
     };
 
     std::string_view HandAttemptLabel(Action action);
+
+    std::string FormatAttempt(std::string_view label, std::string_view slot, std::string_view hand,
+        float before, float minimum, float released, float after, const std::array<std::uint64_t, 3>& castCounts,
+        double cooldown, std::uint64_t authorizedLaunches, std::uint64_t unauthorizedLaunches);
 
     class Plan
     {

@@ -4,6 +4,7 @@
 #include <SKSE/SKSE.h>
 
 #include "AutoTest.h"
+#include "ProjectileObservation.h"
 
 #include <array>
 #include <atomic>
@@ -92,6 +93,8 @@ namespace
         std::chrono::time_point<Clock, Seconds> until{};
         Clock::time_point nextNotice{};
         std::array<std::atomic<std::uint64_t>, std::tuple_size_v<CastCounts>> calls{};
+        std::atomic<std::uint64_t> authorizedLaunches{ 0 };
+        std::atomic<std::uint64_t> unauthorizedLaunches{ 0 };
     };
 
     Settings g_settings;
@@ -367,6 +370,25 @@ namespace
 
     // ---------------------------------------------------------------- 시전 가로채기
 
+    // inHandFire: 손·목소리 발사 애니메이션 처리기가 부른 MagicCaster::Fire 안.
+    // inFire: Fire가 CheckCast(우리 관문)를 통과하고 부른 FindTargets 안.
+    // inImmediate: 쿨다운을 통과한 CastSpellImmediate 안(비용을 빼지 않는 길이라 허가하지 않고 기록만).
+    thread_local unsigned inHandFire = 0;
+    thread_local unsigned inFire = 0;
+    thread_local unsigned inImmediate = 0;
+
+    class CastDepth
+    {
+    public:
+        explicit CastDepth(unsigned& depth) noexcept : depth_(depth) { ++depth_; }
+        ~CastDepth() { --depth_; }
+        CastDepth(const CastDepth&) = delete;
+        CastDepth& operator=(const CastDepth&) = delete;
+
+    private:
+        unsigned& depth_;
+    };
+
     struct CastContext
     {
         const RE::PlayerCharacter* player = nullptr;
@@ -380,18 +402,24 @@ namespace
         }
     }
 
+    Slot* FindSlot(const RE::MagicItem* spell)
+    {
+        for (auto& slot : g_slots) {
+            if (spell && spell == slot.spell) {
+                return &slot;
+            }
+        }
+        return nullptr;
+    }
+
     CastContext ReadContext(RE::MagicCaster* caster, const RE::MagicItem* spell)
     {
         const auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || caster->GetCasterAsActor() != player) {
             return {};
         }
-        for (auto& slot : g_slots) {
-            if (spell && spell == slot.spell) {
-                return { player, &slot };
-            }
-        }
-        return { g_settings.logAllPlayerSpells ? player : nullptr, nullptr };
+        auto* slot = FindSlot(spell);
+        return { slot || g_settings.logAllPlayerSpells ? player : nullptr, slot };
     }
 
     float Magicka(const RE::PlayerCharacter* player)
@@ -528,7 +556,10 @@ namespace
             if (blocked) {
                 TryRun("CastSpellImmediate 알림", [&] { NotifyCooldown(context.slot, cooldown); });
             } else {
-                original(caster, spell, noHitEffectArt, target, effectiveness, hostileEffectivenessOnly, magnitudeOverride, blameActor);
+                {
+                    const CastDepth scope(inImmediate);
+                    original(caster, spell, noHitEffectArt, target, effectiveness, hostileEffectivenessOnly, magnitudeOverride, blameActor);
+                }
                 if (context.slot) {
                     TryRun("CastSpellImmediate 쿨다운 시작", [&] {
                         StartCooldown(context.slot);
@@ -552,6 +583,131 @@ namespace
     static_assert(std::is_same_v<decltype(&CheckCastHook::Thunk), decltype(ThunkType(&RE::MagicCaster::CheckCast))>);
     static_assert(std::is_same_v<decltype(&SpellCastHook::Thunk), decltype(ThunkType(&RE::MagicCaster::SpellCast))>);
     static_assert(std::is_same_v<decltype(&CastSpellImmediateHook::Thunk), decltype(ThunkType(&RE::MagicCaster::CastSpellImmediate))>);
+
+    // ---------------------------------------------------------------- 투사체 관찰
+
+    struct CallSite
+    {
+        std::uint64_t id;
+        std::ptrdiff_t offset;
+
+        std::string Label() const { return std::format("{}+{:X}", id, offset); }
+    };
+
+    constexpr CallSite kFireSite{ 34407, 0xE4 };
+    // 손·목소리 발사 애니메이션 처리기가 MagicCaster::Fire(34407)를 부르는 자리(왼손 42816, 오른손 42817, 목소리 42818).
+    constexpr std::array kHandFireSites{
+        CallSite{ 42816, 0x26 },
+        CallSite{ 42817, 0x29 },
+        CallSite{ 42818, 0x5B },
+    };
+    constexpr std::array kLaunchSites{
+        CallSite{ 13723, 0x532 },
+        CallSite{ 13728, 0x188 },
+        CallSite{ 18102, 0xE60 },
+        CallSite{ 34452, 0x354 },
+        CallSite{ 36419, 0x1FC },
+    };
+    constexpr auto kCallSiteCount = 1 + kHandFireSites.size() + kLaunchSites.size();
+    constexpr auto kProjectileTrampolineSize = 14 * kCallSiteCount;  // write_call<5>의 thunk당 중계 코드
+
+    std::mutex g_projectileMutex;
+    ProjectileObservation::Registry g_launches;
+
+    // Fire의 세 번째 인자는 발사 소리 등을 내는지 여부. 처리기들은 (caster, nullptr, true)로 부르고 반환값을 bool로 읽는다.
+    template <std::size_t Index>
+    struct HandFireHook
+    {
+        static bool Thunk(RE::MagicCaster* caster, RE::TESBoundObject* source, bool playRelease)
+        {
+            const CastDepth scope(inHandFire);
+            return original(caster, source, playRelease);
+        }
+        static inline REL::Relocation<decltype(Thunk)> original;
+    };
+
+    struct FireFindTargetsHook
+    {
+        static bool Thunk(RE::MagicCaster* caster, float effectiveness, std::uint32_t& targetCount,
+            RE::TESBoundObject* source, bool loadCast, bool adjustOnlyHostileEffectiveness)
+        {
+            const CastDepth scope(inFire);
+            return original(caster, effectiveness, targetCount, source, loadCast, adjustOnlyHostileEffectiveness);
+        }
+        static inline REL::Relocation<decltype(Thunk)> original;
+    };
+    static_assert(std::is_same_v<decltype(&FireFindTargetsHook::Thunk), decltype(ThunkType(&RE::MagicCaster::FindTargets))>);
+
+    void ObserveLaunch(CallSite site, const RE::Projectile::LaunchData& data, const RE::ProjectileHandle* result)
+    {
+        auto* slot = FindSlot(data.spell);
+        const bool player = data.shooter && data.shooter == RE::PlayerCharacter::GetSingleton();
+        if (!slot && !(g_settings.logAllPlayerSpells && player)) {
+            return;
+        }
+        // 허가는 사람이 차지해 매지카를 낸 손 시전(과 비용 없는 파워)만: 발사 처리기에서 시작한 Fire가
+        // 관문 CheckCast를 통과한 뒤의 FindTargets 안. CastSpellImmediate와 다른 Fire 호출자는 비용을 빼지 않을 수 있어 허가하지 않는다.
+        const bool authorized = inHandFire > 0 && inFire > 0;
+        const auto projectile = result && *result ? result->get() : RE::NiPointer<RE::Projectile>{};
+        if (projectile && (slot || authorized)) {
+            const ProjectileObservation::Key key{ result->native_handle(), projectile->GetFormID() };
+            const std::scoped_lock lock(g_projectileMutex);
+            g_launches.Insert(key, authorized, Clock::now());
+        }
+        SKSE::log::info("LAUNCH\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3f}\t{}",
+            Micros(), Tid(), site.Label(), slot ? slot->spec->name : "-"sv, FormId(data.spell), FormId(data.shooter),
+            player, std::to_underlying(data.castingSource), inFire, inImmediate, authorized,
+            FormId(projectile.get()), FormId(data.projectileBase), data.power, inHandFire);
+        if (slot) {
+            auto& count = authorized ? slot->authorizedLaunches : slot->unauthorizedLaunches;
+            count.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    template <std::size_t Index>
+    struct LaunchHook
+    {
+        static RE::ProjectileHandle* Thunk(RE::ProjectileHandle* result, RE::Projectile::LaunchData& data) noexcept
+        {
+            auto* launched = original(result, data);
+            TryRun("Projectile::Launch 기록", [&] { ObserveLaunch(kLaunchSites[Index], data, launched); });
+            return launched;
+        }
+        static inline REL::Relocation<decltype(Thunk)> original;
+    };
+    static_assert(std::is_same_v<decltype(&LaunchHook<0>::Thunk), decltype(&RE::Projectile::Launch)>);
+
+    struct MissileImpactHook
+    {
+        static constexpr std::size_t index = 0xBD;
+
+        static RE::Projectile::ImpactData* Thunk(RE::MissileProjectile* self, RE::TESObjectREFR* hit,
+            const RE::NiPoint3& location, const RE::NiPoint3& velocity, RE::hkpCollidable* collidable,
+            std::int32_t arg6, std::uint32_t arg7)
+        {
+            auto* result = original(self, hit, location, velocity, collidable, arg6, arg7);
+            TryRun("MissileProjectile::AddImpact 기록", [&] {
+                const auto& data = self->GetProjectileRuntimeData();
+                const auto* slot = FindSlot(data.spell);
+                if (!slot) {
+                    return;
+                }
+                std::optional<ProjectileObservation::Match> match;
+                if (const auto handle = self->GetHandle()) {
+                    const ProjectileObservation::Key key{ handle.native_handle(), self->GetFormID() };
+                    const std::scoped_lock lock(g_projectileMutex);
+                    match = g_launches.Find(key, Clock::now());
+                }
+                const auto verdict = !match ? "unknown"sv : match->authorized ? "authorized"sv : "unauthorized"sv;
+                SKSE::log::info("PHIT\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", Micros(), Tid(),
+                    FormId(self), slot->spec->name, verdict, match ? std::format("{:.3f}", match->elapsed.count()) : "-",
+                    FormId(hit), std::to_underlying(data.castingSource));
+            });
+            return result;
+        }
+        static inline REL::Relocation<decltype(Thunk)> original;
+    };
+    static_assert(std::is_same_v<decltype(&MissileImpactHook::Thunk), decltype(ThunkType(&RE::MissileProjectile::AddImpact))>);
 
     HMODULE ModuleOf(std::uintptr_t address)
     {
@@ -596,11 +752,115 @@ namespace
         return true;
     }
 
+    bool ReadMemory(std::uintptr_t address, void* out, std::size_t size)
+    {
+        return ::ReadProcessMemory(::GetCurrentProcess(), reinterpret_cast<const void*>(address), out, size, nullptr) != 0;
+    }
+
+    // 다른 DLL의 직접 점프나 SKSE 트램펄린의 RIP 상대 간접 분기를 진단한다.
+    std::uintptr_t ReadJumpOrIndirectTarget(std::uintptr_t address)
+    {
+        std::array<std::uint8_t, 6> bytes{};
+        if (!ReadMemory(address, bytes.data(), bytes.size())) {
+            return 0;
+        }
+        if (bytes[0] == 0xE9) {
+            return ProjectileObservation::RelativeTarget(address + 5, bytes.data() + 1);
+        }
+        if (bytes[0] != 0xFF || (bytes[1] != 0x15 && bytes[1] != 0x25)) {
+            return 0;
+        }
+        const auto pointer = ProjectileObservation::RelativeTarget(address + bytes.size(), bytes.data() + 2);
+        std::uintptr_t target = 0;
+        return ReadMemory(pointer, &target, sizeof(target)) ? target : 0;
+    }
+
+    std::string CallTargetModule(std::uintptr_t target)
+    {
+        if (!target) {
+            return "미확인";
+        }
+        auto module = ModuleOf(target);
+        if (!module || module == ::GetModuleHandleW(nullptr)) {
+            if (const auto relayTarget = ReadJumpOrIndirectTarget(target)) {
+                if (const auto relayModule = ModuleOf(relayTarget)) {
+                    module = relayModule;
+                }
+            }
+        }
+        return module ? FileNameOf(module) : "미확인";
+    }
+
+    template <class Hook>
+    bool InstallCall(CallSite site, std::uintptr_t expected)
+    {
+        const auto label = site.Label();
+        const REL::Relocation<std::uintptr_t> call{ REL::ID(site.id), site.offset };
+        const auto address = call.address();
+        ProjectileObservation::CallBytes bytes{};
+        if (!ReadMemory(address, bytes.data(), bytes.size())) {
+            SKSE::log::warn("호출 자리 {} 설치 건너뜀, 바이트 읽기 실패 (주소 0x{:X})", label, address);
+            return false;
+        }
+        const auto target = ProjectileObservation::DirectCallTarget(address, bytes);
+        if (target != expected) {
+            const auto actual = target ? *target : ReadJumpOrIndirectTarget(address);
+            SKSE::log::warn("호출 자리 {} 설치 건너뜀, opcode 0x{:02X}, 대상 0x{:X} (모듈 {}), 기대 E8 대상 0x{:X}",
+                label, bytes.front(), actual, CallTargetModule(actual), expected);
+            return false;
+        }
+
+        Hook::original = expected;
+        SKSE::GetTrampoline().write_call<5>(address, &Hook::Thunk);
+        // 여기부터는 자리가 이미 바뀌었으므로 확인에 실패해도 설치한 것으로 센다(로그와 실제가 어긋나지 않게).
+        if (!ReadMemory(address, bytes.data(), bytes.size())) {
+            SKSE::log::error("호출 자리 {}를 가로챘으나 확인하지 못함, 바이트 다시 읽기 실패", label);
+            return true;
+        }
+        const auto relay = ProjectileObservation::DirectCallTarget(address, bytes);
+        if (!relay || ReadJumpOrIndirectTarget(*relay) != reinterpret_cast<std::uintptr_t>(&Hook::Thunk)) {
+            SKSE::log::error("호출 자리 {}를 가로챘으나 새 호출 대상이 우리 함수가 아님(다른 DLL이 다시 바꿨을 수 있음)", label);
+            return true;
+        }
+        SKSE::log::info("호출 자리 {}를 가로챔 (원래 대상 0x{:X})", label, expected);
+        return true;
+    }
+
+    void InstallProjectileCalls(std::size_t& installed)
+    {
+        const auto runtime = REL::Module::get().version();
+        if (runtime != SKSE::RUNTIME_SSE_1_6_1170) {
+            SKSE::log::warn("호출 자리 설치 건너뜀, 확인된 런타임은 1.6.1170.0 (현재 {})", runtime.string("."));
+            return;
+        }
+        if (SKSE::GetTrampoline().capacity() < kProjectileTrampolineSize) {
+            SKSE::log::error("호출 자리 설치 건너뜀, 트램펄린 할당 실패");
+            return;
+        }
+        TryRun("Fire → FindTargets 설치", [&] {
+            installed += InstallCall<FireFindTargetsHook>(kFireSite, REL::ID(34410).address());
+        });
+        const auto fire = REL::ID(34407).address();
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+            (TryRun("발사 처리기 → Fire 설치", [&] {
+                installed += InstallCall<HandFireHook<I>>(kHandFireSites[I], fire);
+            }), ...);
+        }(std::make_index_sequence<kHandFireSites.size()>{});
+        const auto launch = REL::ID(44108).address();
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+            (TryRun("Projectile::Launch 설치", [&] {
+                installed += InstallCall<LaunchHook<I>>(kLaunchSites[I], launch);
+            }), ...);
+        }(std::make_index_sequence<kLaunchSites.size()>{});
+    }
+
     void InstallHooks()
     {
         auto* data = RE::TESDataHandler::GetSingleton();
         std::size_t found = 0;
         std::size_t installed = 0;
+        std::size_t callsInstalled = 0;
+        bool impactInstalled = false;
         if (data) {
             for (std::size_t i = 0; i < kSlotSpecs.size(); ++i) {
                 auto& slot = g_slots[i];
@@ -618,12 +878,19 @@ namespace
             TryRun("CastSpellImmediate 설치", [&] { installed += InstallHook<CastSpellImmediateHook>(table, "CastSpellImmediate"); });
             TryRun("SpellCast 설치", [&] { installed += InstallHook<SpellCastHook>(table, "SpellCast"); });
             TryRun("CheckCast 설치", [&] { installed += InstallHook<CheckCastHook>(table, "CheckCast"); });
+            TryRun("투사체 호출 자리 설치", [&] { InstallProjectileCalls(callsInstalled); });
+            TryRun("MissileProjectile::AddImpact 설치", [&] {
+                const REL::Relocation<std::uintptr_t> missileTable{ RE::VTABLE_MissileProjectile[0] };
+                impactInstalled = InstallHook<MissileImpactHook>(missileTable, "MissileProjectile::AddImpact");
+            });
         } else {
             SKSE::log::error("{}의 대리 레코드를 모두 찾지 못해 가로채기를 설치하지 않음", kEspName);
         }
         g_hooksReady = installed == 3;
         SKSE::log::info("설치 결과: 성공 {}/3 (가로챈 vtable 슬롯)", installed);
         SKSE::log::info("설치 결과: 성공 {}/{} (대리 SPEL·MGEF 레코드)", found, 2 * kSlotSpecs.size());
+        SKSE::log::info("설치 결과: 성공 {}/{} (호출 자리)", callsInstalled, kCallSiteCount);
+        SKSE::log::info("설치 결과: 성공 {}/1 (미사일 적중 vtable 슬롯)", static_cast<unsigned>(impactInstalled));
     }
 
     // ---------------------------------------------------------------- 배정과 상태
@@ -840,7 +1107,7 @@ namespace
         bool waitCooldown = false;
         bool restoreMagicka = false;
         bool chargingCheckpoint = false;
-        double consoleWait = 1;
+        double consoleWait = 1.0;
     };
 
     struct Attempt
@@ -848,6 +1115,8 @@ namespace
         enum class State { Idle, Held, Released };
         State state = State::Idle;
         CastCounts startCounts{};
+        std::uint64_t startAuthorizedLaunches = 0;
+        std::uint64_t startUnauthorizedLaunches = 0;
         Clock::time_point pressedAt{};
         double hold = 0;
         float before = 0;
@@ -1189,6 +1458,8 @@ namespace
                 RestoreMagicka(player);
             }
             attempt.startCounts = ReadCounts(slot);
+            attempt.startAuthorizedLaunches = slot.authorizedLaunches.load(std::memory_order_relaxed);
+            attempt.startUnauthorizedLaunches = slot.unauthorizedLaunches.load(std::memory_order_relaxed);
             attempt.minimum = attempt.before = Magicka(&player);
             if (spec.hand == AutoHand::Console) {
                 if (!AutoConsole(player, slot)) {
@@ -1230,9 +1501,11 @@ namespace
             for (std::size_t i = 0; i < delta.size(); ++i) {
                 delta[i] = endCounts[i] - attempt.startCounts[i];
             }
-            AutoLog("ATTEMPT", "{}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\t{}\t{}\t{:.3f}",
+            const auto authorized = slot.authorizedLaunches.load(std::memory_order_relaxed) - attempt.startAuthorizedLaunches;
+            const auto unauthorized = slot.unauthorizedLaunches.load(std::memory_order_relaxed) - attempt.startUnauthorizedLaunches;
+            AutoLog("ATTEMPT", "{}", AutoTest::FormatAttempt(
                 spec.label, slot.spec->name, hand, attempt.before, attempt.minimum, attempt.released, Magicka(&player),
-                delta[0], delta[1], delta[2], attempt.cooldownAtRelease);
+                delta, attempt.cooldownAtRelease, authorized, unauthorized));
             if (spec.label == "cd-first") {
                 g_auto.plan.ObserveFirstHandAttempt(delta[0]);
                 if (delta[0] == 0) {
@@ -1350,7 +1623,7 @@ namespace
         case Dual: return AutoAttempt(player, { AutoTest::HandAttemptLabel(action), 1, AutoHand::Both, true, true });
         case Single: return AutoAttempt(player, { AutoTest::HandAttemptLabel(action), 1, AutoHand::Right, true, true });
         case Console1: return AutoAttempt(player, { "console-slot1", 0, AutoHand::Console, true });
-        case Console2a: return AutoAttempt(player, { "console-slot2-a", 1, AutoHand::Console, true, false, false, 0.3 });
+        case Console2a: return AutoAttempt(player, { "console-slot2-a", 1, AutoHand::Console, true });
         case Console2b: return AutoAttempt(player, { "console-slot2-b", 1, AutoHand::Console });
         case HudA: AutoCheckpoint("hud-A", config.checkpoint); AutoWait(config.checkpoint); break;
         case Swap: return EnsureAutoPreset(1);
@@ -1732,9 +2005,11 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     if (!InitializeLogging()) {
         return false;
     }
-    SKSE::Init(skse, { .log = false });
+    const auto runtime = skse->RuntimeVersion();
+    SKSE::Init(skse, { .log = false, .trampoline = runtime == SKSE::RUNTIME_SSE_1_6_1170,
+        .trampolineSize = kProjectileTrampolineSize });
     g_settings = LoadSettings();
-    SKSE::log::info("런타임 {}", skse->RuntimeVersion().string("."));
+    SKSE::log::info("런타임 {}", runtime.string("."));
     const auto& config = g_settings.autoTest;
     SKSE::log::info("설정 StartPreset={} PresetKey=0x{:02X} StateKey=0x{:02X} LogAllPlayerSpells={} CooldownReason={} Notify={}"
         " [AutoTest] StartKey=0x{:02X} MainMenuDelaySeconds={} StartDelaySeconds={} CheckpointSeconds={} MenuHoldSeconds={}"
