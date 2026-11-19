@@ -7,7 +7,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(POE_BUILD_ROOT "" CACHE PATH "빌드 산출물을 둘 폴더(프리셋에서 지정)")
 set(POE_PACKAGE_DIR "${POE_BUILD_ROOT}/package" CACHE PATH "모드 폴더 모양으로 묶은 산출물")
-set(POE_COMMONLIB_DIR "" CACHE PATH "CommonLibSSE-NG(alandtse, v9) 체크아웃 폴더(프리셋에서 지정)")
+set(POE_COMMONLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../external/CommonLibSSE-NG" CACHE PATH "저장소의 CommonLibSSE-NG v16.4.0 서브모듈")
+if(NOT POE_COMMONLIB_DIR)
+    set(POE_COMMONLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../external/CommonLibSSE-NG")
+endif()
 
 if(NOT POE_BUILD_ROOT)
     message(FATAL_ERROR "POE_BUILD_ROOT가 비어 있습니다. CMakePresets.json의 프리셋으로 구성하세요.")
@@ -36,7 +39,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/main.cpp
 )
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
-# CommonLib v9가 <Windows.h>를 끌어오므로 min/max 매크로를 막는다.
+# Windows 헤더의 min/max 매크로를 막는다.
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX)
 target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
 target_include_directories(${PROJECT_NAME} PRIVATE src)
@@ -53,4 +56,5 @@ add_custom_target(package_mod
         "${CMAKE_SOURCE_DIR}/dist/SKSE/Plugins/PoEProtoItems.ini"
         "${POE_PACKAGE_DIR}/SKSE/Plugins/PoEProtoItems.ini"
     DEPENDS PoEProtoItems
+    VERBATIM
 )

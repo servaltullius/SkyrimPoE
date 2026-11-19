@@ -5,7 +5,9 @@ rem 사용: build.bat            빌드, 묶기만
 rem       build.bat deploy "MO2의 mods 폴더"
 rem                            묶은 것을 그 폴더의 "[PoE Proto] 5 Item Identity"에 복사(게임이 꺼져 있을 때만)
 setlocal
+set "VCPKG_ROOT_OVERRIDE=%VCPKG_ROOT%"
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
+if defined VCPKG_ROOT_OVERRIDE set "VCPKG_ROOT=%VCPKG_ROOT_OVERRIDE%"
 if "%VCPKG_ROOT%"=="" set "VCPKG_ROOT=%USERPROFILE%\vcpkg"
 if not exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" (
     echo vcpkg를 찾지 못했습니다: %VCPKG_ROOT%
@@ -13,11 +15,16 @@ if not exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" (
 )
 cd /d "%~dp0"
 set "BUILD_ROOT=G:\skyrim-build\PoEProtoItems"
+set "BUILD_PRESET=vs2022-release"
+if defined POE_ITEMS_BUILD_ROOT (
+    set "BUILD_ROOT=%POE_ITEMS_BUILD_ROOT%"
+    set "BUILD_PRESET=vs2022-release-local"
+)
 set "MOD_NAME=[PoE Proto] 5 Item Identity"
 
-cmake --preset vs2022-release || exit /b 1
-cmake --build --preset vs2022-release || exit /b 1
-cmake --build --preset vs2022-release --target package_mod || exit /b 1
+cmake --preset %BUILD_PRESET% || exit /b 1
+cmake --build --preset %BUILD_PRESET% || exit /b 1
+cmake --build --preset %BUILD_PRESET% --target package_mod || exit /b 1
 echo Package: %BUILD_ROOT%\package
 
 if /i not "%~1"=="deploy" exit /b 0

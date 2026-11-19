@@ -19,10 +19,19 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "POE_BUILD_ROOT": "G:/skyrim-build/PoEProtoSkillInput",
-        "POE_COMMONLIB_DIR": "G:/skyrim project/스카이림 락픽 모드/external/CommonLibSSE-NG",
+        "POE_COMMONLIB_DIR": "${sourceDir}/../../external/CommonLibSSE-NG",
         "VCPKG_INSTALLED_DIR": "G:/skyrim-build/PoEProtoSkillInput/vcpkg_installed/msvc-$env{VCToolsVersion}",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
         "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "vs2022-release-local",
+      "inherits": "vs2022-release",
+      "binaryDir": "$env{POE_SKILL_INPUT_BUILD_ROOT}/build/release-msvc-$env{VCToolsVersion}",
+      "cacheVariables": {
+        "POE_BUILD_ROOT": "$env{POE_SKILL_INPUT_BUILD_ROOT}",
+        "VCPKG_INSTALLED_DIR": "$env{POE_SKILL_INPUT_BUILD_ROOT}/vcpkg_installed/msvc-$env{VCToolsVersion}"
       }
     }
   ],
@@ -30,6 +39,10 @@
     {
       "name": "vs2022-release",
       "configurePreset": "vs2022-release"
+    },
+    {
+      "name": "vs2022-release-local",
+      "configurePreset": "vs2022-release-local"
     }
   ]
 }

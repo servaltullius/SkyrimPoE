@@ -9,7 +9,7 @@ include(CTest)
 
 set(POE_BUILD_ROOT "" CACHE PATH "빌드 산출물을 둘 폴더(프리셋에서 지정)")
 set(POE_PACKAGE_DIR "${POE_BUILD_ROOT}/package" CACHE PATH "모드 폴더 모양으로 묶은 산출물")
-set(POE_COMMONLIB_DIR "" CACHE PATH "CommonLibSSE-NG(alandtse, v9) 체크아웃 폴더(프리셋에서 지정)")
+set(POE_COMMONLIB_DIR "" CACHE PATH "CommonLibSSE-NG v16.4.0 서브모듈 폴더(프리셋에서 지정)")
 
 if(NOT POE_BUILD_ROOT)
     message(FATAL_ERROR "POE_BUILD_ROOT가 비어 있습니다. CMakePresets.json의 프리셋으로 구성하세요.")
@@ -53,7 +53,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     src/Runtime/Hooks.cpp
 )
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
-# CommonLib v9가 <Windows.h>를 끌어오므로 min/max 매크로를 막는다.
+# CommonLib이 <Windows.h>를 끌어오므로 min/max 매크로를 막는다.
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX)
 target_link_libraries(${PROJECT_NAME} PRIVATE poe_proto_core)
 target_include_directories(${PROJECT_NAME} PRIVATE src)
@@ -67,6 +67,7 @@ add_custom_target(package_mod
         "${CMAKE_SOURCE_DIR}/dist/SKSE/Plugins/PoEProtoSkillInput.ini"
         "${POE_PACKAGE_DIR}/SKSE/Plugins/PoEProtoSkillInput.ini"
     DEPENDS PoEProtoSkillInput
+    VERBATIM
 )
 
 if(BUILD_TESTING)

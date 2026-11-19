@@ -36,6 +36,9 @@ namespace
     using Clock = std::chrono::steady_clock;
 
     constexpr auto kConfigPath = "Data/SKSE/Plugins/PoEProtoItems.ini";
+    constexpr auto kAutotestMarker = "PoEProtoItems.autotest";
+    constexpr auto kAutotestMenuDelay = std::chrono::seconds(2);
+    constexpr auto kAutotestQuitDelay = std::chrono::seconds(3);
     // 시험에 쓰는 폼(Skyrim.esm, houseCARL로 대조): 무기, 방어구, 잡화 하나씩과 빈 상자.
     constexpr RE::FormID kIronSword = 0x00012EB7;    // IronSword
     constexpr RE::FormID kIronHelmet = 0x00012E4D;   // ArmorIronHelmet
@@ -80,6 +83,26 @@ namespace
         bool          saveLoad = true;  // 저장하고 불러오는 단계까지 돌린다
         bool          hookPickUp = true;  // 플레이어의 줍기 함수에 끼어들어, 주운 참조와 그때 생긴 묶음을 직접 본다
         bool          watch = false;      // 참이면 자동 단계 대신 "지켜보기" 시험을 돌린다(Scenario = watch)
+        std::chrono::seconds autotestStartDelay{ 5 };
+        bool          autotestQuitWhenDone = true;
+    };
+
+    struct AutotestRequest
+    {
+        std::string save;
+        bool watch = false;
+    };
+
+    enum class AutotestPhase : std::uint8_t
+    {
+        kInactive,
+        kAwaitMenu,
+        kLoadRequested,
+        kLoading,
+        kLoadSucceeded,
+        kStartDelay,
+        kRunning,
+        kQuitDelay,
     };
 
     // 시험 아이템 하나를 가리키는 이름표와, 그것을 인벤토리에서 다시 찾는 방법.
@@ -201,6 +224,10 @@ namespace
     std::atomic<bool>       g_waitingForLoad{ false };
     std::atomic<bool>       g_pumpQueued{ false };
     std::atomic<Clock::rep> g_loadDeadline{ 0 };
+    AutotestRequest         g_autotestRequest;  // kDataLoaded에서 한 번 채우고 이후에는 읽기만 한다
+    std::atomic<AutotestPhase> g_autotestPhase{ AutotestPhase::kInactive };
+    std::atomic<Clock::rep> g_autotestDeadline{ 0 };
+    Clock::time_point       g_autotestAt{};  // g_state를 잡은 작업 안에서만 읽고 쓴다
     // 시험이 어디까지 왔는가. 자동 단계 → 손 조작을 기다림 → 마무리 단계 → 끝.
     enum class Phase : std::uint8_t
     {
@@ -226,6 +253,23 @@ namespace
     std::uint32_t           g_roundTripSaveBase = 0;
     std::size_t             g_step = 0;
     Clock::time_point       g_nextAt{};
+    // 저장 단계. 2026-11-19 v16.4.0 실행에서 27단계 저장 요청 뒤 엔진이 저장을 시작하지 않은 일이 두 번 있었다(SKSE 로그에 그 저장이
+    // 없음). 사용자는 그동안 경비가 말을 걸었다고 했다(원인 추정). 그래서 저장 단계는 SKSE의 저장 알림(kSaveGame)에 실린 세이브 이름이
+    // 요청한 이름과 같을 때만 저장된 것으로 보고, 그 전까지 2초마다 다시 요청한다(거절된 요청은 아무것도 남기지 않는다).
+    // 열린 메뉴와 전투 여부는 기록만 한다(저장 여부의 판단에는 쓰지 않는다). 아래 다섯은 g_state를 잡고 만진다.
+    std::string             g_pendingSave;
+    Clock::time_point       g_saveDeadline{};
+    Clock::time_point       g_saveRetryAt{};
+    int                     g_saveAttempts = 0;
+    std::string             g_saveBlockedBy;  // 마지막으로 남긴 열린 메뉴·전투(같은 내용을 되풀이해 남기지 않게)
+    // 저장 알림(다른 스레드)과 나누는 것. 이름은 g_names로 지킨다.
+    std::mutex              g_names;
+    std::string             g_saveWanted;     // 저장 알림이 견줄 이름(g_pendingSave의 사본)
+    std::string             g_loadWanted;     // 시험이 요청한 불러오기의 이름
+    std::atomic<bool>       g_saveMatched{ false };
+    std::atomic<bool>       g_saveCallbackSeen{ false };  // 기록용. 판단에는 이름을 쓴다
+    std::atomic<bool>       g_foreignLoad{ false };       // 시험이 기다리는 동안 다른 세이브가 불려 옴
+    constexpr auto          kSaveTimeout = std::chrono::seconds(120);
     RE::ObjectRefHandle     g_chest;
     RE::FormID              g_chestId = 0;
     RE::FormID              g_corpseId = 0;                 // 지켜보기 시험에서 놓은 시체
@@ -382,11 +426,97 @@ namespace
                 } else {
                     SKSE::log::warn("설정: Scenario '{}'는 auto 또는 watch가 아니어서 기본값(auto) 유지", value);
                 }
+            } else if (key == "AutotestStartDelaySeconds") {
+                int seconds = 0;
+                const auto result = std::from_chars(value.data(), value.data() + value.size(), seconds);
+                if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && seconds >= 0) {
+                    settings.autotestStartDelay = std::chrono::seconds(seconds);
+                } else {
+                    SKSE::log::warn("설정: AutotestStartDelaySeconds '{}'는 0 이상의 정수가 아니어서 기본값 유지", value);
+                }
+            } else if (key == "AutotestQuitWhenDone") {
+                if (value == "true" || value == "1") {
+                    settings.autotestQuitWhenDone = true;
+                } else if (value == "false" || value == "0") {
+                    settings.autotestQuitWhenDone = false;
+                } else {
+                    SKSE::log::warn("설정: AutotestQuitWhenDone '{}'는 true 또는 false가 아니어서 기본값 유지", value);
+                }
             } else {
                 SKSE::log::warn("설정: 알 수 없는 키 '{}'", key);
             }
         }
         return settings;
+    }
+
+    std::string_view SaveStem(std::string_view filename)
+    {
+        constexpr std::string_view kExtension = ".ess";
+        if (filename.size() >= kExtension.size() &&
+            _strnicmp(filename.data() + filename.size() - kExtension.size(), kExtension.data(), kExtension.size()) == 0) {
+            filename.remove_suffix(kExtension.size());
+        }
+        return filename;
+    }
+
+    void ReadAutotestMarker()
+    {
+        const auto directory = SKSE::log::log_directory();
+        if (!directory) {
+            return;
+        }
+        const auto marker = *directory / kAutotestMarker;
+        std::error_code error;
+        const bool exists = std::filesystem::exists(marker, error);
+        if (error) {
+            SKSE::log::error("[자동 시작] 표지 파일을 확인하지 못함: {}", error.message());
+            return;
+        }
+        if (!exists) {
+            return;
+        }
+        if (!std::filesystem::is_regular_file(marker, error)) {
+            SKSE::log::error("[자동 시작] 표지 경로에서 파일을 읽을 수 없음");
+            return;
+        }
+        std::string nameLine;
+        std::string scenarioLine;
+        std::ifstream input(marker, std::ios::binary);
+        const bool read = static_cast<bool>(std::getline(input, nameLine));
+        if (read) {
+            std::getline(input, scenarioLine);
+        }
+        const bool readError = input.bad();
+        input.close();
+        if (!std::filesystem::remove(marker, error)) {
+            SKSE::log::error("[자동 시작] 표지 파일을 지우지 못함: {}", error ? error.message() : "파일이 사라짐");
+            return;
+        }
+        std::string_view name = nameLine;
+        if (name.starts_with("\xEF\xBB\xBF")) {
+            name.remove_prefix(3);
+        }
+        name = SaveStem(Trim(name));
+        if (!read || readError || name.empty() || name == "." || name == ".." ||
+            name.find_first_of("/\\:*?\"<>|") != name.npos ||
+            std::ranges::any_of(name, [](unsigned char ch) { return ch < 32 || ch == 127; })) {
+            SKSE::log::error("[자동 시작] 표지 첫 줄에 세이브 이름이 필요함");
+            return;
+        }
+        const auto scenario = Trim(scenarioLine);
+        if (!scenario.empty() && scenario != "auto" && scenario != "watch") {
+            SKSE::log::error("[자동 시작] 표지 둘째 줄은 auto 또는 watch여야 함");
+            return;
+        }
+        if (!SKSE::GetTaskInterface()) {
+            SKSE::log::error("[자동 시작] SKSE 작업 인터페이스를 찾지 못함");
+            return;
+        }
+        g_autotestRequest = { std::string(name), scenario.empty() ? g_settings.watch : scenario == "watch" };
+        g_autotestDeadline = (Clock::now() + kLoadTimeout).time_since_epoch().count();
+        g_autotestPhase = AutotestPhase::kAwaitMenu;
+        SKSE::log::info("[자동 시작] 표지를 읽음: 세이브 '{}' / 시험 {} / 시작 대기 {}초 / 완료 시 종료 {}",
+            name, g_autotestRequest.watch ? "watch" : "auto", g_settings.autotestStartDelay.count(), g_settings.autotestQuitWhenDone);
     }
 
     void Notify(const char* message)
@@ -478,7 +608,7 @@ namespace
     }
 
     // owner가 가진 object의 개수: 베이스 컨테이너에 든 수에 인벤토리 변경분을 더한다.
-    // 엔진의 InventoryChanges::GetItemCount는 쓰지 않는다. 지금 쓰는 CommonLibSSE-NG 9.0.2에는 그 함수의 AE 주소 번호가 틀려 있어
+    // 엔진의 InventoryChanges::GetItemCount는 쓰지 않는다. 이전 CommonLibSSE-NG 9.0.2에는 그 함수의 AE 주소 번호가 틀려 있어
     // (16047, 맞는 번호는 12.1.0 기준 16108) 엉뚱한 함수가 불리고, 인벤토리 변경 데이터의 앞부분을 덮어쓴다(첫 시험의 크래시).
     int TotalCount(RE::TESObjectREFR* owner, RE::TESBoundObject* object)
     {
@@ -1895,18 +2025,97 @@ namespace
         }
     }
 
-    void RequestSave(const char* name)
+    bool RequestSave(const char* name)
     {
-        if (auto* manager = RE::BGSSaveLoadManager::GetSingleton()) {
-            manager->Save(name);
-            SKSE::log::info("저장을 요청함: {}", name);
+        auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+        if (!manager) {
+            SKSE::log::error("저장 관리자를 찾지 못해 저장을 요청하지 못함: {}", name);
+            return false;
         }
+        manager->Save(name);
+        SKSE::log::info("저장을 요청함: {}", name);
+        return true;
+    }
+
+    bool SameSaveName(std::string_view a, std::string_view b)
+    {
+        return a.size() == b.size() && _strnicmp(a.data(), b.data(), a.size()) == 0;
+    }
+
+    // SKSE 알림의 데이터(세이브 경로 또는 이름)에서 확장자 없는 파일 이름만 꺼낸다.
+    std::string SaveNameFromMessage(const SKSE::MessagingInterface::Message& message)
+    {
+        if (!message.data || message.dataLen == 0) {
+            return {};
+        }
+        std::string_view path(static_cast<const char*>(message.data), message.dataLen);
+        while (!path.empty() && path.back() == '\0') {
+            path.remove_suffix(1);
+        }
+        const auto separator = path.find_last_of("/\\");
+        return std::string(SaveStem(separator == path.npos ? path : path.substr(separator + 1)));
+    }
+
+    // 저장 단계의 시작. 실제 저장은 PumpSave가 막는 상태가 풀린 뒤에 한다.
+    void BeginSave(const char* name)
+    {
+        const auto now = Clock::now();
+        g_pendingSave = name;
+        {
+            const std::scoped_lock names(g_names);
+            g_saveWanted = name;
+        }
+        g_saveMatched = false;
+        g_saveCallbackSeen = false;
+        g_saveDeadline = now + kSaveTimeout;
+        g_saveRetryAt = now;
+        g_saveAttempts = 0;
+        g_saveBlockedBy.clear();
+        SKSE::log::info("저장 단계: {} (저장 알림의 세이브 이름으로 확인하고, 확인될 때까지 2초마다 다시 요청)", name);
+    }
+
+    void EndSaveWait()
+    {
+        g_pendingSave.clear();
+        const std::scoped_lock names(g_names);
+        g_saveWanted.clear();
+    }
+
+    // 저장이 거절됐을 때 원인을 짐작하는 데 쓰는 기록. 대화·거래·컨테이너 같은 메뉴가 열렸는지와 전투 중인지를 본다.
+    // 메뉴 표를 훑거나 메뉴 객체를 읽지 않고 이름으로만 묻는다(작업 스레드에서 도므로). 저장 여부의 판단에는 쓰지 않는다.
+    std::string SaveBlockers()
+    {
+        std::string joined;
+        const auto add = [&joined](std::string_view what) {
+            if (!joined.empty()) {
+                joined += ", ";
+            }
+            joined += what;
+        };
+        if (auto* ui = RE::UI::GetSingleton()) {
+            for (const std::string_view menu : { RE::DialogueMenu::MENU_NAME, RE::BarterMenu::MENU_NAME, RE::ContainerMenu::MENU_NAME,
+                     RE::GiftMenu::MENU_NAME, RE::LockpickingMenu::MENU_NAME, RE::CraftingMenu::MENU_NAME, RE::TrainingMenu::MENU_NAME,
+                     RE::BookMenu::MENU_NAME, RE::InventoryMenu::MENU_NAME, RE::MagicMenu::MENU_NAME }) {
+                if (ui->IsMenuOpen(menu)) {
+                    add(menu);
+                }
+            }
+        }
+        if (auto* player = RE::PlayerCharacter::GetSingleton(); player && player->IsInCombat()) {
+            add("전투 중");
+        }
+        return joined;
     }
 
     void RequestLoad(const char* name)
     {
         if (auto* manager = RE::BGSSaveLoadManager::GetSingleton()) {
             g_loadDeadline = (Clock::now() + kLoadTimeout).time_since_epoch().count();
+            {
+                const std::scoped_lock names(g_names);
+                g_loadWanted = name;
+            }
+            g_foreignLoad = false;
             g_waitingForLoad = true;
             g_cosaveLoaded = false;
             g_loadedMarks.clear();
@@ -1935,7 +2144,7 @@ namespace
     std::vector<Step> BuildSteps()
     {
         std::vector<Step> steps{
-            { "기준 세이브 저장", [] { RequestSave(kBaselineSave); }, 6000, true },
+            { "기준 세이브 저장", [] { BeginSave(kBaselineSave); }, 6000, true },
             { "준비", StepSetup, 500, false },
             { "표시 1/3: 내려놓기", StepMarkDrop, 1500, false },
             { "표시 2/3: 꼬리표 붙여 줍기", StepMarkTagAndPickUp, 1000, false },
@@ -1958,7 +2167,7 @@ namespace
             Step{ "판매", StepSell, 700, false },
             Step{ "되찾기", StepBuyBack, 700, false },
             Step{ "검(이름)을 바닥에 둠", StepLeaveNameSword, 1500, true },
-            Step{ "표시한 세이브 저장", [] { RequestSave(kMarkedSave); }, 6000, true },
+            Step{ "표시한 세이브 저장", [] { BeginSave(kMarkedSave); }, 6000, true },
             Step{ "표시한 세이브 불러오기", [] { RequestLoad(kMarkedSave); }, 3000, true },
             Step{ "불러온 뒤 관찰(표시한 세이브)",
                 [] {
@@ -2088,7 +2297,7 @@ namespace
         }
         LogCorpse("DoDamage 1.5초 뒤");
         if (!actor->IsDead()) {
-            // (이 CommonLibSSE-NG 9.0.2에서는 이 가상 함수(06)의 이름이 ModActorValue다. 피해 쪽 수정치에 음수를 더한다.)
+            // 피해 쪽 수정치에 음수를 더한다.
             actor->AsActorValueOwner()->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, -100000.0f);
             SKSE::log::info("[시체] 아직 살아 있어 체력 수치를 직접 깎음");
             LogCorpse("체력을 깎은 직후");
@@ -2146,7 +2355,7 @@ namespace
     {
         return {
             { "저장 직전의 판정", StepWatchBeforeSave, 500, false },
-            { "저장", [] { RequestSave(kWatchSave); }, 6000, false },
+            { "저장", [] { BeginSave(kWatchSave); }, 6000, false },
             { "불러오기", StepWatchLoad, 3000, false },
             { "불러온 뒤의 판정", [] { AfterLoadReport("시험이 요청한 불러오기"); }, 500, false },
         };
@@ -2189,6 +2398,7 @@ namespace
         }
         g_phase = Phase::kExtra;
         g_step = 0;
+        EndSaveWait();
         g_waitingForLoad = false;
         g_nextAt = Clock::now() + std::chrono::milliseconds(1500);
         SKSE::log::info("=== 손 조작이 기록됨. 마무리 단계를 시작함 (스레드 {})", Tid());
@@ -2196,7 +2406,122 @@ namespace
         g_running = true;
     }
 
+    void StartScenario(bool watch);
     void Pump();
+
+    void CancelAutotest(AutotestPhase phase, std::string_view reason)
+    {
+        if (phase != AutotestPhase::kInactive && g_autotestPhase.compare_exchange_strong(phase, AutotestPhase::kInactive)) {
+            SKSE::log::warn("[자동 시작] {} (세이브 '{}')", reason, g_autotestRequest.save);
+        }
+    }
+
+    void ScheduleAutotestQuit()
+    {
+        auto expected = AutotestPhase::kRunning;
+        if (g_autotestPhase != expected) {
+            return;
+        }
+        g_autotestDeadline = (Clock::now() + kAutotestQuitDelay).time_since_epoch().count();
+        if (g_autotestPhase.compare_exchange_strong(expected,
+                g_settings.autotestQuitWhenDone ? AutotestPhase::kQuitDelay : AutotestPhase::kInactive) &&
+            g_settings.autotestQuitWhenDone) {
+            SKSE::log::info("[자동 시작] 시험 완료. {}초 뒤 게임 종료", kAutotestQuitDelay.count());
+        }
+    }
+
+    bool AutotestNeedsPump(AutotestPhase phase)
+    {
+        switch (phase) {
+        case AutotestPhase::kInactive:
+        case AutotestPhase::kRunning:
+            return false;
+        case AutotestPhase::kLoadRequested:
+        case AutotestPhase::kLoading:
+            return Clock::now().time_since_epoch().count() >= g_autotestDeadline;
+        default:
+            return true;
+        }
+    }
+
+    // 기존 시험 단계와 같이 SKSE에 맡긴 작업으로 진행한다. 불러오기 직전과 직후의 알림은 상태만 넘긴다.
+    void PumpAutotest(AutotestPhase phase)
+    {
+        const auto now = Clock::now();
+        const bool timedOut = now.time_since_epoch().count() >= g_autotestDeadline;
+        if (phase == AutotestPhase::kLoadRequested || phase == AutotestPhase::kLoading) {
+            if (timedOut) {
+                CancelAutotest(phase, phase == AutotestPhase::kLoadRequested ?
+                    "세이브를 찾지 못했거나 제한 시간 안에 불러오기가 시작되지 않음" :
+                    "제한 시간 안에 불러오기 완료 알림이 오지 않음");
+            }
+            return;
+        }
+        auto* ui = RE::UI::GetSingleton();
+        if (!ui) {
+            CancelAutotest(phase, "UI를 찾지 못함");
+            return;
+        }
+        const bool mainMenu = ui->IsMenuOpen(RE::MainMenu::MENU_NAME);
+        const bool loading = ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+        switch (phase) {
+        case AutotestPhase::kAwaitMenu:
+            if (timedOut) {
+                CancelAutotest(phase, "제한 시간 안에 메인 메뉴가 준비되지 않음");
+            } else if (!mainMenu || loading) {
+                g_autotestAt = {};
+            } else if (g_autotestAt == Clock::time_point{}) {
+                g_autotestAt = now + kAutotestMenuDelay;
+            } else if (now >= g_autotestAt) {
+                auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                if (!manager) {
+                    CancelAutotest(phase, "저장·불러오기 관리자를 찾지 못함");
+                } else {
+                    g_autotestDeadline = (now + kLoadTimeout).time_since_epoch().count();
+                    if (g_autotestPhase.compare_exchange_strong(phase, AutotestPhase::kLoadRequested)) {
+                        SKSE::log::info("[자동 시작] 불러오기 요청: {}", g_autotestRequest.save);
+                        manager->Load(g_autotestRequest.save.c_str());
+                    }
+                }
+            }
+            break;
+        case AutotestPhase::kLoadSucceeded:
+            if (!mainMenu && !loading) {
+                g_autotestAt = now + g_settings.autotestStartDelay;
+                g_autotestPhase.compare_exchange_strong(phase, AutotestPhase::kStartDelay);
+            } else if (timedOut) {
+                CancelAutotest(phase, "불러온 뒤 메인 메뉴 또는 로딩 화면이 닫히지 않음");
+            }
+            break;
+        case AutotestPhase::kStartDelay:
+            if (mainMenu || loading) {
+                CancelAutotest(phase, "시험을 시작하기 전에 메인 메뉴 또는 로딩 화면이 열림");
+            } else if (now >= g_autotestAt) {
+                if (g_phase != Phase::kIdle) {
+                    CancelAutotest(phase, "이미 시험이 진행됐거나 지켜보기 기록이 든 세이브임");
+                } else if (g_autotestPhase.compare_exchange_strong(phase, AutotestPhase::kRunning)) {
+                    StartScenario(g_autotestRequest.watch);
+                    if (!g_running) {
+                        CancelAutotest(AutotestPhase::kRunning, "시험 시작 조건을 충족하지 못함");
+                    }
+                }
+            }
+            break;
+        case AutotestPhase::kQuitDelay:
+            if (mainMenu || loading) {
+                CancelAutotest(phase, "시험 완료 뒤 메인 메뉴 또는 로딩 화면이 열려 종료를 취소함");
+            } else if (timedOut && g_autotestPhase.compare_exchange_strong(phase, AutotestPhase::kInactive)) {
+                if (auto* main = RE::Main::GetSingleton()) {
+                    main->GetRuntimeData().quitGame = true;
+                } else {
+                    SKSE::log::error("[자동 시작] 게임을 종료하지 못함: Main을 찾지 못함");
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
 
     // SKSE에 Pump를 한 번 돌리도록 맡긴다. 이미 맡긴 것이 있으면 더 쌓지 않는다.
     // 맡긴 작업이 도는 스레드는 하나로 정해져 있지 않다(6차 시험). 상태는 g_state로 지킨다.
@@ -2225,6 +2550,66 @@ namespace
     // (단계 시각이 18번 모두 밀리초까지 예정과 같았다) 그동안 게임이 멈춰 불러오기가 3분 동안 시작되지 못했다. SKSE가 맡겨진 작업이
     // 없어질 때까지 한자리에서 돌리는 것으로 보인다(관찰에서 나온 추론이고 SKSE 소스로 대조하지는 않았다).
     // 불러오기를 기다리는 동안에는 제한 시간이 지날 때까지 아무것도 맡기지 않는다. 대기는 kPostLoadGame 알림이 푼다.
+    void StopForSave(const char* why)
+    {
+        SKSE::log::error("저장이 되지 않아 시험을 멈춤: {} ({}; 요청 {}회, 마지막으로 기록한 열린 메뉴·전투: {})", g_pendingSave, why, g_saveAttempts,
+            g_saveBlockedBy.empty() ? "없음" : g_saveBlockedBy);
+        EndSaveWait();
+        g_running = false;
+        if (g_phase == Phase::kWatchRoundTrip) {
+            // 지켜보기의 저장 왕복을 끝내지 못했다. 키는 그대로 두고 저장 왕복 전의 지켜보기로 돌아가, 시작 키로 다시 해 볼 수 있게 한다
+            // (StepWatchLoad의 실패 처리와 같다).
+            g_phase = Phase::kWatch;
+            g_watchStage = 0;
+            Notify(std::format("[PoE Proto 5] 저장이 되지 않았습니다(로그 확인). {}을 다시 누르면 다시 해 봅니다.", StartKeyName()));
+            return;
+        }
+        Notify("[PoE Proto 5] 저장이 되지 않아 시험을 멈춤(로그 확인)");
+        CancelAutotest(AutotestPhase::kRunning, "시험 도중 저장이 되지 않음");
+    }
+
+    // g_state를 잡은 Pump 안에서. 저장 단계가 진행 중이면 true(이번에는 다음 단계로 가지 않음).
+    // 저장됐는지는 저장 알림(kSaveGame)의 세이브 이름으로만 본다. 그 알림이 Save()가 돌아오기 전에 오든 늦게 오든, 단계 시작 뒤에
+    // 같은 이름이 한 번이라도 오면 저장된 것이다. 오지 않으면 2초마다 다시 요청하고, 제한 시간이 지나면 멈춘다.
+    bool PumpSave()
+    {
+        if (g_pendingSave.empty()) {
+            return false;
+        }
+        const auto now = Clock::now();
+        if (g_saveMatched) {
+            SKSE::log::info("저장 확인: {} (요청 {}회, 저장 알림의 이름이 같음, 코세이브 저장 콜백 {})", g_pendingSave, g_saveAttempts,
+                g_saveCallbackSeen ? "옴" : "안 옴");
+            EndSaveWait();
+            // 세이브 파일을 다 쓸 시간을 두고 다음 단계(대개 불러오기)로 간다. 파일이 다 쓰였는지를 확인하는 것은 아니다.
+            g_nextAt = (std::max)(g_nextAt, now + std::chrono::seconds(3));
+            return true;
+        }
+        if (now >= g_saveDeadline) {
+            StopForSave("제한 시간 안에 그 이름의 저장 알림이 오지 않음");
+            return true;
+        }
+        if (now < g_saveRetryAt) {
+            return true;
+        }
+        if (g_saveAttempts > 0) {
+            const auto blockers = SaveBlockers();
+            SKSE::log::warn("저장 알림이 오지 않음: {} (요청 {}회째 뒤). 열린 메뉴·전투: {}. 다시 요청함", g_pendingSave, g_saveAttempts,
+                blockers.empty() ? "없음" : blockers);
+            if (!blockers.empty() && blockers != g_saveBlockedBy) {
+                Notify("[PoE Proto 5] 저장이 되지 않아 다시 시도합니다. 대화나 메뉴가 열려 있으면 닫아 주세요(" + blockers + ")");
+            }
+            g_saveBlockedBy = blockers;
+        }
+        ++g_saveAttempts;
+        if (!RequestSave(g_pendingSave.c_str())) {
+            StopForSave("저장 관리자를 찾지 못함");
+            return true;
+        }
+        g_saveRetryAt = now + std::chrono::seconds(2);
+        return true;
+    }
+
     void TickerMain()
     {
         for (;;) {
@@ -2245,6 +2630,10 @@ namespace
                     });
                 }
             }
+            if (AutotestNeedsPump(g_autotestPhase.load())) {
+                QueuePump();
+                continue;
+            }
             if (!g_running) {
                 continue;
             }
@@ -2258,6 +2647,10 @@ namespace
     // SKSE의 작업으로, g_state를 잡은 채로. 기다릴 시간이 지났으면 다음 단계를 돌린다.
     void Pump()
     {
+        if (const auto phase = g_autotestPhase.load(); AutotestNeedsPump(phase)) {
+            PumpAutotest(phase);
+            return;
+        }
         if (!g_running) {
             return;
         }
@@ -2291,7 +2684,13 @@ namespace
                         Notify("[PoE Proto 5] 지켜보기를 이어 갈 수 없습니다. 플레이하던 세이브를 불러오세요.");
                     }
                 }
+                if (g_phase != Phase::kWatch) {
+                    CancelAutotest(AutotestPhase::kRunning, "시험 도중 불러오기가 끝나지 않음");
+                }
             }
+            return;
+        }
+        if (PumpSave()) {
             return;
         }
         if (Clock::now() < g_nextAt) {
@@ -2307,6 +2706,7 @@ namespace
                 g_phase = Phase::kDone;
                 SKSE::log::info("=== 마무리 단계 끝 (스레드 {})", Tid());
                 Notify("[PoE Proto 5] 모두 끝났습니다. 플레이하던 세이브를 불러오세요(지금 상태로 저장하지 마세요).");
+                ScheduleAutotestQuit();
                 return;
             }
             if (g_phase == Phase::kWatchSetup) {
@@ -2371,7 +2771,7 @@ namespace
         }
     }
 
-    void StartScenario()
+    void StartScenario(bool watch)
     {
         if (g_running) {
             Notify("[PoE Proto 5] 이미 시험이 도는 중");
@@ -2391,6 +2791,7 @@ namespace
             g_phase = Phase::kWatchRoundTrip;
             g_roundTripSaveBase = g_watchSaveCount;
             g_step = 0;
+        EndSaveWait();
             g_waitingForLoad = false;
             g_pumpQueued = false;
             g_nextAt = Clock::now();
@@ -2407,6 +2808,7 @@ namespace
             Observe("W9 지켜보기 끝");
             g_phase = Phase::kDone;
             Notify("[PoE Proto 5] 지켜보기 끝. 플레이하던 세이브를 불러오세요(지금 상태로 저장하지 마세요).");
+            ScheduleAutotestQuit();
             return;
         }
         if (g_phase == Phase::kDone) {
@@ -2425,7 +2827,7 @@ namespace
             return;
         }
         for (const auto id : { kIronSword, kIronHelmet, kIronIngot, kEmptyChest, kSkeever }) {
-            if (id == kSkeever && !g_settings.watch) {
+            if (id == kSkeever && !watch) {
                 continue;  // 시체는 지켜보기 시험에서만 쓴다
             }
             if (!TestForm(id)) {
@@ -2449,7 +2851,7 @@ namespace
         const auto generation = g_pick.generation + 1;
         g_pick = Pickup{};
         g_pick.generation = generation;
-        g_phase = g_settings.watch ? Phase::kWatchSetup : Phase::kMain;
+        g_phase = watch ? Phase::kWatchSetup : Phase::kMain;
         g_inTestDrop = false;
         g_stampInEvent = {};
         g_hasContent = {};
@@ -2461,16 +2863,17 @@ namespace
         g_watchColdLoad = false;
         g_afterLoadVerdictAt = 0;
         g_step = 0;
+        EndSaveWait();
         g_waitingForLoad = false;
         g_pumpQueued = false;
         g_nextAt = Clock::now();
-        if (g_settings.watch) {
+        if (watch) {
             Notify("[PoE Proto 5] 지켜보기 시험을 준비합니다. 몇 초만 조작하지 말고 두세요. 끝나면 할 일을 알려 드립니다");
         } else {
             Notify("[PoE Proto 5] 시험을 시작합니다. 약 1분과 불러오기 세 번, 조작하지 말고 두세요. 끝나면 할 일을 알려 드립니다");
         }
         LogCompanions();
-        SKSE::log::info("[환경] 시험: {} / 줍기 함수에 끼어들기: {} / 시험을 시작한 스레드 {}", g_settings.watch ? "지켜보기" : "자동",
+        SKSE::log::info("[환경] 시험: {} / 줍기 함수에 끼어들기: {} / 시험을 시작한 스레드 {}", watch ? "지켜보기" : "자동",
             g_hookInstalled ? "켜짐" : "꺼짐", Tid());
         g_running = true;
     }
@@ -2649,7 +3052,11 @@ namespace
                     if (const auto* tasks = SKSE::GetTaskInterface()) {
                         tasks->AddTask([] {
                             const auto lock = LockState("시험 시작", std::chrono::seconds(2));
-                            StartScenario();
+                            StartScenario(g_settings.watch);
+                            const auto phase = g_autotestPhase.load();
+                            if (g_running && phase != AutotestPhase::kRunning && phase != AutotestPhase::kQuitDelay) {
+                                CancelAutotest(phase, "시작 키로 시험을 먼저 시작함");
+                            }
                         });
                     }
                 }
@@ -2857,6 +3264,7 @@ namespace
 
     void OnSave(SKSE::SerializationInterface* intfc)
     {
+        g_saveCallbackSeen = true;  // 기록용(저장 확인은 저장 알림의 이름으로 함)
         const auto lock = LockForCallback("[코세이브] 저장");
         if (g_phase == Phase::kWatch || g_phase == Phase::kWatchRoundTrip) {
             // 지켜보기 중의 저장은 시험이 요청한 것이든 게임의 자동 저장이든 키를 적는다. 그 세이브를 부르면 지켜보기가 이어진다.
@@ -2970,6 +3378,7 @@ namespace
         }
         g_watchColdLoad = false;
         g_afterLoadVerdictAt = 0;
+        EndSaveWait();
         g_corpseId = 0;
         g_inTestDrop = false;
         g_stampInEvent = {};
@@ -2998,8 +3407,6 @@ namespace
         case SKSE::MessagingInterface::kDataLoaded:
             SKSE::log::info("[환경] 데이터 로드 알림을 받은 스레드 {}", Tid());
             InstallPickUpHook();
-            // 프로세스가 끝날 때까지 도는 스레드. 시험이 돌지 않을 때는 자기만 한다.
-            std::thread(TickerMain).detach();
             if (auto* events = RE::ScriptEventSourceHolder::GetSingleton()) {
                 events->AddEventSink<RE::TESContainerChangedEvent>(&ContainerSink::Get());
                 events->AddEventSink<RE::TESUniqueIDChangeEvent>(&UniqueIdSink::Get());
@@ -3011,14 +3418,77 @@ namespace
             } else {
                 SKSE::log::error("UI를 찾지 못함. 메뉴가 열리고 닫히는 것을 받지 못합니다(지켜보기 시험의 메뉴 판정이 빠짐).");
             }
+            ReadAutotestMarker();
+            // 프로세스가 끝날 때까지 도는 스레드. 시험을 준비하거나 진행할 일이 생길 때 작업을 맡긴다.
+            std::thread(TickerMain).detach();
             break;
+        case SKSE::MessagingInterface::kSaveGame: {
+            const auto name = SaveNameFromMessage(*message);
+            bool wanted = false;
+            {
+                const std::scoped_lock names(g_names);
+                wanted = !g_saveWanted.empty() && SameSaveName(name, g_saveWanted);
+            }
+            if (wanted) {
+                g_saveMatched = true;
+            }
+            SKSE::log::info("[알림] 저장(kSaveGame): '{}'{} (스레드 {})", name, wanted ? " - 저장 단계가 기다리던 이름" : "", Tid());
+            break;
+        }
+        case SKSE::MessagingInterface::kPreLoadGame: {
+            if (g_running && g_waitingForLoad) {
+                const auto name = SaveNameFromMessage(*message);
+                std::string wantedName;
+                {
+                    const std::scoped_lock names(g_names);
+                    wantedName = g_loadWanted;
+                }
+                if (!SameSaveName(name, wantedName)) {
+                    g_foreignLoad = true;
+                    SKSE::log::warn("[알림] 시험이 '{}'을(를) 기다리는 동안 다른 세이브 '{}'의 불러오기가 시작됨", wantedName, name);
+                }
+            }
+            auto phase = g_autotestPhase.load();
+            if (phase == AutotestPhase::kLoadRequested && message->data) {
+                // SKSE는 이 알림의 데이터에 세이브 경로를 보낸다. 우리가 요청한 파일의 알림인지 확인한다.
+                const std::string_view path(static_cast<const char*>(message->data), message->dataLen);
+                const auto separator = path.find_last_of("/\\");
+                const auto filename = SaveStem(separator == path.npos ? path : path.substr(separator + 1));
+                const auto& requested = g_autotestRequest.save;
+                if (filename.size() == requested.size() && _strnicmp(filename.data(), requested.c_str(), filename.size()) == 0) {
+                    g_autotestPhase.compare_exchange_strong(phase, AutotestPhase::kLoading);
+                    break;
+                }
+            }
+            if (phase != AutotestPhase::kRunning || !g_waitingForLoad) {
+                CancelAutotest(phase, "다른 불러오기가 시작되어 표지로 시작한 시험을 취소함");
+            }
+            break;
+        }
         case SKSE::MessagingInterface::kPostLoadGame: {
             const auto lock = LockForCallback("[알림] 불러오기 끝");
             SKSE::log::info("[알림] 불러오기 끝(kPostLoadGame), 성공 {} (스레드 {})", message->data != nullptr, Tid());
+            if (message->data) {
+                auto expected = AutotestPhase::kLoading;
+                if (g_autotestPhase.compare_exchange_strong(expected, AutotestPhase::kLoadSucceeded)) {
+                    g_pumpQueued = false;
+                    SKSE::log::info("[자동 시작] 불러오기 완료: {}", g_autotestRequest.save);
+                }
+            } else {
+                CancelAutotest(AutotestPhase::kLoading, "세이브 불러오기가 실패함");
+            }
             if (g_running && g_waitingForLoad && message->data == nullptr) {
                 // 실패했다는 알림이다. 불러오지 않은 상태를 불러온 것으로 보고 견주면 안 되므로 대기를 풀지 않는다.
                 // 이 모드팩에서는 실패 알림 뒤에 곧 성공 알림이 오는 경우가 있었다. 끝내 오지 않으면 제한 시간이 시험을 멈춘다.
                 SKSE::log::warn("불러오기가 실패했다는 알림. 성공 알림을 계속 기다림");
+            } else if (g_running && g_waitingForLoad && g_foreignLoad) {
+                // 시험이 요청한 세이브가 아닌 것이 불려 왔다. 남은 단계를 그 세이브에서 돌리면 엉뚱한 결과와 저장이 남으므로 멈춘다.
+                g_running = false;
+                g_waitingForLoad = false;
+                g_foreignLoad = false;
+                SKSE::log::error("시험이 요청하지 않은 세이브가 불려 와 시험을 멈춤({}단계)", g_step);
+                Notify("[PoE Proto 5] 다른 세이브가 불려 와 시험을 멈춤(로그 확인)");
+                CancelAutotest(AutotestPhase::kRunning, "시험 도중 다른 세이브가 불려 옴");
             } else if (g_running && g_waitingForLoad) {
                 // 대기를 풀고, 화면이 자리를 잡을 시간을 조금 둔다. 불러오기 전에 맡겨 둔 작업이 버려졌을 수 있으니 표시도 지운다.
                 g_nextAt = Clock::now() + std::chrono::milliseconds(2500);
@@ -3034,6 +3504,7 @@ namespace
         }
         case SKSE::MessagingInterface::kNewGame:
             SKSE::log::info("[알림] 새 게임(kNewGame)");
+            CancelAutotest(g_autotestPhase.load(), "새 게임이 시작되어 표지로 시작한 시험을 취소함");
             break;
         default:
             break;
