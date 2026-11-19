@@ -3,9 +3,11 @@
 #include "runtime/GemInventory.h"
 #include "runtime/PrismaUIApi.h"
 #include "runtime/SaveLoad.h"
+#include "runtime/SimpleImeBridge.h"
 
 #include "core/GemTransaction.h"
 #include "core/KillTracker.h"
+#include "core/PassiveTree.h"
 
 #include <bitset>
 #include <fstream>
@@ -27,13 +29,19 @@ namespace SkyrimPoE::Runtime
         constexpr auto kJsOnPanelOpen = "poeOnPanelOpen";
         constexpr auto kJsOnPanelClose = "poeOnPanelClose";
         constexpr auto kJsToast = "poeToast";
+        constexpr auto kJsImeText = "poeImeText";
+        constexpr auto kJsImeKey = "poeImeKey";
+        constexpr auto kJsBlurSearch = "poeBlurSearch";
         constexpr std::uint32_t kEscapeScanCode = 0x01;
         constexpr auto kViewRetryCooldown = std::chrono::seconds(5);
+        constexpr std::uint8_t kTabSkills = 0;
+        constexpr std::uint8_t kTabTree = 1;
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
         Core::EnergyShieldPool* g_esPool = nullptr;
         const Core::DataPack* g_dataPack = nullptr;
+        const Core::PassiveTreeData* g_treeData = nullptr;
         const Core::Config* g_config = nullptr;
         bool g_installed = false;
 
@@ -43,8 +51,10 @@ namespace SkyrimPoE::Runtime
         Clock::time_point g_lastCreateAttempt{};
         bool g_hasTriedCreate = false;
 
-        // 주 갱신/메인 스레드에서만 읽고 쓰는 패널·포커스 상태
+        // 주 갱신/메인 스레드에서만 읽고 쓰는 패널·포커스·탭 상태
         std::atomic_bool g_panelOpen{ false };
+        std::atomic<std::uint8_t> g_activeTab{ kTabSkills };
+        std::atomic_bool g_searchFocused{ false };
         bool g_acquiredFocus = false;
         std::atomic_bool g_hudShown{ false };
         bool g_inputHooked = false;
@@ -62,7 +72,7 @@ namespace SkyrimPoE::Runtime
             std::uint32_t exileLevel = 0;
             std::uint64_t exileXp = 0;
             std::uint64_t exileReqXp = 0;
-            std::uint32_t unallocatedPts = 0;
+            std::int32_t unallocatedPts = -1;
         };
         CachedHud g_lastHud;
 
@@ -174,8 +184,10 @@ namespace SkyrimPoE::Runtime
             if (ui->GameIsPaused()) {
                 return true;
             }
+            // 검수 C1: 자체 SimpleImeBridge가 연 AllowTextInput 1건은 차단 메뉴로 오인하지 않는다.
+            const auto allowedSelfEntries = SimpleImeBridge::TextEntryActive() ? 1 : 0;
             if (const auto* controls = RE::ControlMap::GetSingleton();
-                controls && controls->GetRuntimeData().textEntryCount > 0) {
+                controls && controls->GetRuntimeData().textEntryCount > allowedSelfEntries) {
                 return true;
             }
             static constexpr std::array<std::string_view, 22> kBlockingMenus = {
@@ -217,7 +229,41 @@ namespace SkyrimPoE::Runtime
                 menuName == RE::CursorMenu::MENU_NAME ||
                 menuName == RE::FaderMenu::MENU_NAME ||
                 menuName == RE::MistMenu::MENU_NAME ||
+                menuName == SimpleImeBridge::kMenuName ||
+                menuName == SimpleImeBridge::kSimpleImeMenuName ||
                 menuName.find("Prisma") != std::string_view::npos;
+        }
+
+        void OnImeText(const char* utf8Text)
+        {
+            if (!utf8Text || !g_queue || !g_panelOpen.load(std::memory_order_acquire)) {
+                return;
+            }
+            std::string txt(utf8Text);
+            g_queue->Enqueue([txt = std::move(txt)]() {
+                if (!ViewUsable() || !g_domReady.load(std::memory_order_acquire) ||
+                    !g_panelOpen.load(std::memory_order_acquire)) {
+                    return;
+                }
+                const std::string payload = json{ { "text", txt } }.dump();
+                g_api->InteropCall(g_view, kJsImeText, payload.c_str());
+            });
+        }
+
+        void OnImeKey(const char* keyName)
+        {
+            if (!keyName || !g_queue || !g_panelOpen.load(std::memory_order_acquire)) {
+                return;
+            }
+            std::string key(keyName);
+            g_queue->Enqueue([key = std::move(key)]() {
+                if (!ViewUsable() || !g_domReady.load(std::memory_order_acquire) ||
+                    !g_panelOpen.load(std::memory_order_acquire)) {
+                    return;
+                }
+                const std::string payload = json{ { "key", key } }.dump();
+                g_api->InteropCall(g_view, kJsImeKey, payload.c_str());
+            });
         }
 
         class PlayerGemAdapter final : public Core::IGemInventoryAdapter
@@ -308,12 +354,55 @@ namespace SkyrimPoE::Runtime
             const auto inv = GemInventory::ListPlayerGems(player);
             const auto es = g_esPool ? g_esPool->Snapshot() : Core::EnergyShieldState{};
 
+            const bool treeLoaded = g_treeData && g_treeData->IsLoaded();
+            const std::int32_t availNormal = treeLoaded
+                ? Core::PassiveTree::ComputeAvailableNormalPoints(*g_treeData, state.tree, state.exileLevel, *g_config)
+                : static_cast<std::int32_t>(state.unallocatedPassivePoints);
+            const std::int32_t spentNormal = treeLoaded
+                ? Core::PassiveTree::ComputeSpentNormalPoints(*g_treeData, state.tree)
+                : 0;
+            const std::int32_t grantedPts = treeLoaded
+                ? Core::PassiveTree::ComputeGrantedPassivePoints(*g_treeData, state.tree)
+                : 0;
+            const std::int32_t earnedAsc = Core::PassiveTree::ComputeEarnedAscendancyPoints(state.tree, *g_config);
+            const std::int32_t spentAsc = treeLoaded
+                ? Core::PassiveTree::ComputeSpentAscendancyPoints(*g_treeData, state.tree)
+                : 0;
+            const std::int32_t availAsc = earnedAsc - spentAsc;
+
             json root;
+            root["activeTab"] = (g_activeTab.load(std::memory_order_acquire) == kTabTree) ? "tree" : "skills";
+            root["simpleImeAvailable"] = SimpleImeBridge::Available();
+            root["freePassiveRefund"] = g_config->freePassiveRefund;
             root["exileLevel"] = state.exileLevel;
             root["exileXp"] = state.exileXp;
             root["exileReqXp"] = Core::KillTracker::RequiredXpForNextExileLevel(state.exileLevel, *g_config);
-            root["unallocatedPoints"] = state.unallocatedPassivePoints;
-            root["className"] = DisplayClassName(state.className);
+            root["unallocatedPoints"] = availNormal;
+            root["className"] = state.tree.classSelected
+                ? DisplayClassName(state.className)
+                : std::string("미선택");
+
+            json treeJ;
+            treeJ["loaded"] = treeLoaded;
+            treeJ["classSelected"] = state.tree.classSelected;
+            treeJ["classId"] = state.tree.classId;
+            treeJ["ascendancyId"] = state.tree.ascendancyId;
+            treeJ["allocatedNodes"] = state.tree.allocatedNodes;
+            json mSel = json::object();
+            for (const auto& [mNode, mEff] : state.tree.masterySelections) {
+                mSel[std::to_string(mNode)] = mEff;
+            }
+            treeJ["masterySelections"] = std::move(mSel);
+            treeJ["availableNormalPoints"] = availNormal;
+            treeJ["spentNormalPoints"] = spentNormal;
+            treeJ["grantedPassivePoints"] = grantedPts;
+            treeJ["earnedAscendancyPoints"] = earnedAsc;
+            treeJ["spentAscendancyPoints"] = spentAsc;
+            treeJ["availableAscendancyPoints"] = availAsc;
+            treeJ["bossKillCount"] = state.tree.bossKillCount;
+            treeJ["dragonKillCount"] = state.tree.dragonKillCount;
+            treeJ["ascendancyMilestonesBitmask"] = state.tree.ascendancyMilestonesBitmask;
+            root["tree"] = std::move(treeJ);
 
             if (snap) {
                 json st;
@@ -331,8 +420,21 @@ namespace SkyrimPoE::Runtime
                 st["coldResist"] = std::round(snap->coldResist);
                 st["lightningResist"] = std::round(snap->lightningResist);
                 st["chaosResist"] = std::round(snap->chaosResist);
+                st["maxFireResist"] = std::round(snap->maxFireResist);
+                st["maxColdResist"] = std::round(snap->maxColdResist);
+                st["maxLightningResist"] = std::round(snap->maxLightningResist);
+                st["maxChaosResist"] = std::round(snap->maxChaosResist);
                 st["physDR"] = std::round(snap->physDamageReduction);
                 st["elemDR"] = std::round(snap->elementalDamageReduction);
+                st["attackBlock"] = std::round(snap->attackBlockChance);
+                st["spellBlock"] = std::round(snap->spellBlockChance);
+                st["spellSuppression"] = std::round(snap->spellSuppressionChance);
+                st["spellDodge"] = std::round(snap->spellDodgeChance);
+                st["momRatio"] = std::round(snap->momRatio * 100.0);
+                st["bloodMagic"] = snap->bloodMagic;
+                st["chaosInoculation"] = snap->chaosInoculation;
+                st["resoluteTechnique"] = snap->resoluteTechnique;
+                st["unwaveringStance"] = snap->unwaveringStance;
                 root["stats"] = std::move(st);
             }
 
@@ -437,7 +539,19 @@ namespace SkyrimPoE::Runtime
             return open && event.GetEventType() == RE::INPUT_EVENT_TYPE::kChar;
         }
 
-        void OpenPanelOnMainThread();
+        void OpenPanelOnMainThread(std::uint8_t targetTab);
+
+        void SwitchTabOnMainThread(std::uint8_t targetTab)
+        {
+            const std::uint8_t prev = g_activeTab.exchange(targetTab, std::memory_order_acq_rel);
+            if (targetTab != kTabTree) {
+                SimpleImeBridge::SetTextEntry(false);
+                g_searchFocused.store(false, std::memory_order_release);
+            }
+            if (prev != targetTab || g_panelOpen.load(std::memory_order_acquire)) {
+                PushPanelStateToJs();
+            }
+        }
 
         void HandleKeyboardEvents(RE::InputEvent* events)
         {
@@ -445,20 +559,59 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             const std::uint32_t panelKey = g_config->panelKey;
+            const std::uint32_t treeKey = g_config->treePanelKey;
             const bool open = g_panelOpen.load(std::memory_order_acquire);
+            const bool imeActive = open && SimpleImeBridge::TextEntryActive();
+            const bool searchFocused = open && g_searchFocused.load(std::memory_order_acquire);
 
             for (auto* ev = events; ev; ev = ev->next) {
                 const auto* btn = ev->AsButtonEvent();
-                if (!btn || btn->GetDevice() != RE::INPUT_DEVICE::kKeyboard || !btn->IsDown()) {
+                if (!btn || btn->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
                     continue;
                 }
                 const auto code = btn->GetIDCode();
+
+                // 검수 M4: SimpleIME 편집 키는 IsDown만이 아니라 홀드 반복·뗌(Up)까지 모두 전달해야 함
+                if (imeActive) {
+                    SimpleImeBridge::OnGameKey(code, btn->IsPressed(), btn->HeldDuration());
+                }
+
+                if (!btn->IsDown()) {
+                    continue;
+                }
+
+                // 검수 M4: 검색칸 포커스 중에는 K/P 탭 전환·닫기 차단, Escape는 검색칸 포커스 해제만 수행
+                if (searchFocused) {
+                    if (code == kEscapeScanCode && !imeActive) {
+                        g_queue->Enqueue([]() {
+                            g_searchFocused.store(false, std::memory_order_release);
+                            SimpleImeBridge::SetTextEntry(false);
+                            if (ViewUsable() && g_domReady.load(std::memory_order_acquire)) {
+                                g_api->InteropCall(g_view, kJsBlurSearch, "");
+                            }
+                        });
+                    }
+                    continue;
+                }
+
                 if (code == panelKey) {
                     g_queue->Enqueue([]() {
-                        if (g_panelOpen.load(std::memory_order_acquire)) {
+                        if (!g_panelOpen.load(std::memory_order_acquire)) {
+                            OpenPanelOnMainThread(kTabSkills);
+                        } else if (g_activeTab.load(std::memory_order_acquire) == kTabSkills) {
                             UiBridge::ClosePanelOnMainThread();
                         } else {
-                            OpenPanelOnMainThread();
+                            SwitchTabOnMainThread(kTabSkills);
+                        }
+                    });
+                } else if (code == treeKey) {
+                    g_queue->Enqueue([]() {
+                        if (!g_panelOpen.load(std::memory_order_acquire)) {
+                            OpenPanelOnMainThread(kTabTree);
+                        } else if (g_activeTab.load(std::memory_order_acquire) == kTabTree) {
+                            UiBridge::ClosePanelOnMainThread();
+                        } else {
+                            SwitchTabOnMainThread(kTabTree);
                         }
                     });
                 } else if (open && code == kEscapeScanCode) {
@@ -627,12 +780,26 @@ namespace SkyrimPoE::Runtime
                 }
 
                 const std::string op = cmd.contains("op") && cmd["op"].is_string() ? cmd["op"].get<std::string>() : "";
+                // 검수 C1/M4: close, refresh, treeSearchFocus, switchTab은 reqId·사망 검사보다 먼저 처리해 포커스 해제 누락을 차단한다.
                 if (op == "close") {
                     UiBridge::ClosePanelOnMainThread();
                     return;
                 }
                 if (op == "refresh") {
                     PushPanelStateToJs();
+                    return;
+                }
+                if (op == "treeSearchFocus") {
+                    const bool focused = cmd.contains("focused") && cmd["focused"].is_boolean() && cmd["focused"].get<bool>();
+                    const bool active = focused && g_panelOpen.load(std::memory_order_acquire) &&
+                        (g_activeTab.load(std::memory_order_acquire) == kTabTree);
+                    g_searchFocused.store(active, std::memory_order_release);
+                    SimpleImeBridge::SetTextEntry(active);
+                    return;
+                }
+                if (op == "switchTab") {
+                    const std::string tab = cmd.contains("tab") && cmd["tab"].is_string() ? cmd["tab"].get<std::string>() : "skills";
+                    SwitchTabOnMainThread(tab == "tree" ? kTabTree : kTabSkills);
                     return;
                 }
 
@@ -651,7 +818,89 @@ namespace SkyrimPoE::Runtime
 
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 if (!player || !player->Is3DLoaded() || player->IsDead()) {
-                    PushToastToJs(false, "지금은 젬을 변경할 수 없습니다.");
+                    PushToastToJs(false, "지금은 변경할 수 없습니다.");
+                    return;
+                }
+
+                // 3단계 패시브 트리 변경 명령 분기
+                if (op.starts_with("tree")) {
+                    if (!g_treeData || !g_treeData->IsLoaded()) {
+                        PushToastToJs(false, "패시브 트리 데이터가 로드되지 않았습니다.");
+                        return;
+                    }
+                    Core::PassiveTreeOpResult treeRes;
+                    SaveLoad::RunSerializedTransaction([&]() {
+                        SaveLoad::UpdateState([&](PersistentState& st) {
+                            if (op == "treeSelectClass") {
+                                std::int64_t clsVal = -1;
+                                if (!ReadBoundedInt(cmd, "classId", 0, Core::kClassCount - 1, clsVal)) {
+                                    treeRes = { false, "잘못된 클래스 번호입니다.", 0 };
+                                    return;
+                                }
+                                treeRes = Core::PassiveTree::SelectClass(*g_treeData, st.tree, static_cast<std::uint8_t>(clsVal));
+                                if (treeRes.ok) {
+                                    if (const auto* cls = g_treeData->FindClass(st.tree.classId)) {
+                                        st.className = cls->name;
+                                    }
+                                }
+                            } else if (op == "treeSelectAscendancy") {
+                                const std::string ascId = cmd.contains("ascendancyId") && cmd["ascendancyId"].is_string()
+                                    ? cmd["ascendancyId"].get<std::string>() : "";
+                                treeRes = Core::PassiveTree::SelectAscendancy(*g_treeData, st.tree, ascId, *g_config);
+                            } else if (op == "treeClearAscendancy") {
+                                treeRes = Core::PassiveTree::ClearAscendancy(*g_treeData, st.tree);
+                            } else if (op == "treeAllocatePath") {
+                                std::vector<std::uint32_t> nodes;
+                                if (cmd.contains("nodes") && cmd["nodes"].is_array() && cmd["nodes"].size() <= 256) {
+                                    for (const auto& nv : cmd["nodes"]) {
+                                        if (nv.is_number_unsigned()) {
+                                            nodes.push_back(nv.get<std::uint32_t>());
+                                        }
+                                    }
+                                }
+                                treeRes = Core::PassiveTree::AllocatePath(*g_treeData, st.tree, nodes, st.exileLevel, *g_config);
+                            } else if (op == "treeRefundNode") {
+                                std::int64_t nidVal = 0;
+                                if (!ReadBoundedInt(cmd, "nodeId", 1, 0xFFFFFFFFLL, nidVal)) {
+                                    treeRes = { false, "잘못된 노드 번호입니다.", 0 };
+                                    return;
+                                }
+                                treeRes = Core::PassiveTree::RefundNode(
+                                    *g_treeData, st.tree, static_cast<std::uint32_t>(nidVal), st.exileLevel, *g_config);
+                            } else if (op == "treeRefundAll") {
+                                const bool ascOnly = cmd.contains("ascendancyOnly") && cmd["ascendancyOnly"].is_boolean() &&
+                                    cmd["ascendancyOnly"].get<bool>();
+                                treeRes = Core::PassiveTree::RefundAll(*g_treeData, st.tree, ascOnly, st.exileLevel, *g_config);
+                            } else if (op == "treeSelectMastery") {
+                                std::int64_t mNodeVal = 0;
+                                std::int64_t effVal = 0;
+                                if (!ReadBoundedInt(cmd, "masteryNodeId", 1, 0xFFFFFFFFLL, mNodeVal) ||
+                                    !ReadBoundedInt(cmd, "effectId", 1, 0xFFFFFFFFLL, effVal)) {
+                                    treeRes = { false, "잘못된 마스터리 요청입니다.", 0 };
+                                    return;
+                                }
+                                treeRes = Core::PassiveTree::SelectMastery(
+                                    *g_treeData, st.tree,
+                                    static_cast<std::uint32_t>(mNodeVal),
+                                    static_cast<std::uint32_t>(effVal),
+                                    st.exileLevel, *g_config);
+                            } else {
+                                treeRes = { false, "지원하지 않는 패시브 트리 명령입니다.", 0 };
+                            }
+                            if (treeRes.ok) {
+                                const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
+                                    *g_treeData, st.tree, st.exileLevel, *g_config);
+                                st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
+                            }
+                        });
+                    });
+
+                    if (treeRes.ok) {
+                        SaveLoad::SyncStateToStatEngine();
+                        (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                    }
+                    PushToastToJs(treeRes.ok, treeRes.message);
+                    PushPanelStateToJs();
                     return;
                 }
 
@@ -718,7 +967,10 @@ namespace SkyrimPoE::Runtime
                     }
 
                     if (txRes.ok) {
-                        SaveLoad::SetState(st);
+                        SaveLoad::UpdateState([&](PersistentState& cur) {
+                            cur.slots = st.slots;
+                            cur.nextGemInstanceId = st.nextGemInstanceId;
+                        });
                     }
                 });
 
@@ -780,9 +1032,10 @@ namespace SkyrimPoE::Runtime
             SKSE::log::info("UiBridge: created single Prisma UI view (view={}, order={}).", g_view, g_api->GetOrder(g_view));
         }
 
-        void OpenPanelOnMainThread()
+        void OpenPanelOnMainThread(std::uint8_t targetTab)
         {
             if (g_panelOpen.load(std::memory_order_acquire)) {
+                SwitchTabOnMainThread(targetTab);
                 return;
             }
             if (!IsInGameplay() || IsOtherBlockingMenuOpen()) {
@@ -790,7 +1043,7 @@ namespace SkyrimPoE::Runtime
             }
             EnsureViewCreated(true);
             if (!ViewUsable() || !g_domReady.load(std::memory_order_acquire)) {
-                RE::SendHUDMessage::ShowHUDMessage("[SkyrimPoE] 스킬 화면을 불러오는 중입니다. 잠시 후 다시 눌러 주세요.");
+                RE::SendHUDMessage::ShowHUDMessage("[SkyrimPoE] UI 화면을 불러오는 중입니다. 잠시 후 다시 눌러 주세요.");
                 return;
             }
 
@@ -818,8 +1071,11 @@ namespace SkyrimPoE::Runtime
             }
 
             g_acquiredFocus = true;
+            g_activeTab.store(targetTab, std::memory_order_release);
+            g_searchFocused.store(false, std::memory_order_release);
             g_panelOpen.store(true, std::memory_order_release);
-            g_api->InteropCall(g_view, kJsOnPanelOpen, "");
+            const std::string openArg = json{ { "tab", targetTab == kTabTree ? "tree" : "skills" } }.dump();
+            g_api->InteropCall(g_view, kJsOnPanelOpen, openArg.c_str());
             PushPanelStateToJs();
         }
     }
@@ -829,6 +1085,7 @@ namespace SkyrimPoE::Runtime
         Core::StatEngine* statEngine,
         Core::EnergyShieldPool* esPool,
         const Core::DataPack* dataPack,
+        const Core::PassiveTreeData* treeData,
         const Core::Config* config)
     {
         if (g_installed) {
@@ -838,9 +1095,16 @@ namespace SkyrimPoE::Runtime
         g_statEngine = statEngine;
         g_esPool = esPool;
         g_dataPack = dataPack;
+        g_treeData = treeData;
         g_config = config;
 
         LoadLangNames();
+        if (g_config) {
+            SimpleImeBridge::Initialize(
+                SimpleImeBridge::ParseMode(g_config->simpleImeMode),
+                OnImeText,
+                OnImeKey);
+        }
         EnsureViewCreated(true);
 
         if (auto* input = RE::BSInputDeviceManager::GetSingleton()) {
@@ -850,20 +1114,23 @@ namespace SkyrimPoE::Runtime
             ui->AddEventSink<RE::MenuOpenCloseEvent>(&OtherMenuCloseSink::Get());
         }
 
-        // 코세이브 OnRevert 콜백에서는 원자 플래그만 세워 메인 스레드에서 안전하게 정리한다.
+        // 코세이브 OnRevert 콜백에서는 원자 플래그만 세워 메인 스레드에서 안전하게 정리한다(결정 119).
         SaveLoad::AddRevertCallback([]() {
             g_needCloseOnMain.store(true, std::memory_order_release);
             g_needResetOnMain.store(true, std::memory_order_release);
         });
 
         g_installed = true;
-        SKSE::log::info("UiBridge: initialized (prismaLoaded={}, langGems={}).",
-            g_api != nullptr, g_gemDisplayNames.size());
+        SKSE::log::info("UiBridge: initialized (prismaLoaded={}, langGems={}, simpleIme={}).",
+            g_api != nullptr, g_gemDisplayNames.size(), SimpleImeBridge::Available());
         return true;
     }
 
     void UiBridge::ClosePanelOnMainThread()
     {
+        // 검수 C1: g_panelOpen 확인 전에 반드시 SimpleImeBridge 텍스트 입력과 검색 포커스를 동기 해제한다.
+        SimpleImeBridge::SetTextEntry(false);
+        g_searchFocused.store(false, std::memory_order_release);
         g_needCloseOnMain.store(false, std::memory_order_release);
         if (!g_panelOpen.exchange(false, std::memory_order_acq_rel)) {
             return;
@@ -886,13 +1153,17 @@ namespace SkyrimPoE::Runtime
         }
 
         if (g_needResetOnMain.exchange(false, std::memory_order_acq_rel)) {
+            SimpleImeBridge::SetTextEntry(false);
+            g_searchFocused.store(false, std::memory_order_release);
             g_lastHud = CachedHud{};
             g_lastProcessedReqId.store(0, std::memory_order_release);
             g_hiddenKeys.reset();
         }
 
-        // 창 전환(Alt+Tab 등 gameActive == false) 시 키 추적 테이블을 비우고 패널을 닫는다(결정 120).
+        // 창 전환(Alt+Tab 등 gameActive == false) 시 키 추적 테이블·텍스트 입력을 비우고 패널을 닫는다(결정 120).
         if (main && !main->gameActive) {
+            SimpleImeBridge::SetTextEntry(false);
+            g_searchFocused.store(false, std::memory_order_release);
             g_hiddenKeys.reset();
             if (g_panelOpen.load(std::memory_order_acquire)) {
                 ClosePanelOnMainThread();
@@ -903,6 +1174,8 @@ namespace SkyrimPoE::Runtime
         const bool inGameplay = IsInGameplay();
 
         if (!inGameplay) {
+            SimpleImeBridge::SetTextEntry(false);
+            g_searchFocused.store(false, std::memory_order_release);
             g_hiddenKeys.reset();
             ClosePanelOnMainThread();
         } else if (g_needCloseOnMain.exchange(false, std::memory_order_acq_rel)) {
@@ -942,6 +1215,9 @@ namespace SkyrimPoE::Runtime
         const int esCur = static_cast<int>(std::llround(es.current));
         const int esMax = static_cast<int>(std::llround(es.max));
         const auto reqXp = Core::KillTracker::RequiredXpForNextExileLevel(state.exileLevel, *g_config);
+        const std::int32_t availPts = (g_treeData && g_treeData->IsLoaded())
+            ? std::max<std::int32_t>(0, Core::PassiveTree::ComputeAvailableNormalPoints(*g_treeData, state.tree, state.exileLevel, *g_config))
+            : static_cast<std::int32_t>(state.unallocatedPassivePoints);
 
         if (!g_lastHud.valid ||
             g_lastHud.esCurrent != esCur ||
@@ -949,14 +1225,14 @@ namespace SkyrimPoE::Runtime
             g_lastHud.exileLevel != state.exileLevel ||
             g_lastHud.exileXp != state.exileXp ||
             g_lastHud.exileReqXp != reqXp ||
-            g_lastHud.unallocatedPts != state.unallocatedPassivePoints) {
+            g_lastHud.unallocatedPts != availPts) {
             g_lastHud.valid = true;
             g_lastHud.esCurrent = esCur;
             g_lastHud.esMax = esMax;
             g_lastHud.exileLevel = state.exileLevel;
             g_lastHud.exileXp = state.exileXp;
             g_lastHud.exileReqXp = reqXp;
-            g_lastHud.unallocatedPts = state.unallocatedPassivePoints;
+            g_lastHud.unallocatedPts = availPts;
 
             json hud{
                 { "esCurrent", esCur },
@@ -964,7 +1240,7 @@ namespace SkyrimPoE::Runtime
                 { "exileLevel", state.exileLevel },
                 { "exileXp", state.exileXp },
                 { "exileReqXp", reqXp },
-                { "unallocatedPoints", state.unallocatedPassivePoints }
+                { "unallocatedPoints", availPts }
             };
             const std::string payload = hud.dump();
             g_api->InteropCall(g_view, kJsUpdateHud, payload.c_str());
@@ -986,9 +1262,19 @@ namespace SkyrimPoE::Runtime
         return g_hudShown.load(std::memory_order_acquire);
     }
 
-    bool UiBridge::TryOpenPanelOnMainThread()
+    bool UiBridge::IsSearchFocused() noexcept
     {
-        OpenPanelOnMainThread();
+        return g_searchFocused.load(std::memory_order_acquire);
+    }
+
+    std::string_view UiBridge::ActiveTab() noexcept
+    {
+        return (g_activeTab.load(std::memory_order_acquire) == kTabTree) ? "tree" : "skills";
+    }
+
+    bool UiBridge::TryOpenPanelOnMainThread(std::string_view initialTab)
+    {
+        OpenPanelOnMainThread(initialTab == "tree" ? kTabTree : kTabSkills);
         return IsPanelOpen();
     }
 

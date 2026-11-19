@@ -2,6 +2,7 @@
 
 #include "core/CommandQueue.h"
 #include "core/DataPack.h"
+#include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
 
@@ -23,6 +24,7 @@ namespace SkyrimPoE::Runtime
         double appliedHealthDelta = 0.0;   // kPermanent 체력 보정 누적치(세이브 왕복 드리프트 방지)
         double appliedMagickaDelta = 0.0;  // kPermanent 매지카 보정 누적치(세이브 왕복 드리프트 방지)
         std::array<Core::SkillSlot, Core::kSkillSlotCount> slots{};
+        Core::PassiveTreeState tree{};
 
         PersistentState()
         {
@@ -40,13 +42,16 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kCosaveId = 'SPOE';
         static constexpr std::uint32_t kRecordCore = 'CORE';
         static constexpr std::uint32_t kRecordGemKeys = 'GKEY';
+        static constexpr std::uint32_t kRecordTree = 'TREE';
         static constexpr std::uint32_t kCoreVersion = 2;
         static constexpr std::uint32_t kGemKeysVersion = 1;
+        static constexpr std::uint32_t kTreeVersion = 1;
 
         static bool Install(
             Core::CommandQueue* queue,
             Core::StatEngine* statEngine,
             const Core::DataPack* dataPack,
+            const Core::PassiveTreeData* treeData,
             const Core::Config* config);
 
         // kNewGame / kPostLoadGame 시 호출: 주 갱신 스레드에 초기화·Variable09 정리·스탯 빌드를 예약한다.

@@ -36,6 +36,7 @@ namespace SkyrimPoE::Runtime
             bool hasSkyrimResist = false;
             float skyrimResistMult = 1.0f;
             bool hasHitRoll = false;
+            bool spellDodged = false;
             bool spellBlocked = false;
             bool spellSuppressed = false;
             double suppressPreventPct = 50.0;
@@ -51,9 +52,46 @@ namespace SkyrimPoE::Runtime
         std::uint64_t g_lastSyncedSnapVersion = 0;
         double g_lastObservedPermHealth = -1.0;
         double g_lastObservedPermMagicka = -1.0;
+        bool g_lastLowLife = false;
+        bool g_lastEoActive = false;
+        double g_eoRemainingSec = 0.0;
+        std::atomic_bool g_eoTriggered{ false };
+
+        // 3단계 Mind Over Matter: 피해 훅(임의 스레드 가능)에서 흡수한 매지카를 원자 누적해 주 갱신 스레드에서 일괄 차감(결정 119)
+        std::atomic<double> g_pendingMomDrain{ 0.0 };
 
         // 진단·자동 시험용: 플레이어->동료 실제 체력 피해 누적 횟수
         std::atomic<std::uint64_t> g_playerToTeammateHits{ 0 };
+
+        double ApplyMindOverMatterIfActive(
+            double rawAfterEs,
+            double diffMult,
+            const Core::StatSnapshot& snap,
+            RE::PlayerCharacter* player) noexcept
+        {
+            if (rawAfterEs <= 0.0 || snap.momRatio <= 0.0 || snap.bloodMagic || snap.poeMaxMana <= 0.0 || !player) {
+                return rawAfterEs;
+            }
+            auto* avOwner = player->AsActorValueOwner();
+            if (!avOwner) {
+                return rawAfterEs;
+            }
+            const double curMagicka = static_cast<double>(avOwner->GetActorValue(RE::ActorValue::kMagicka));
+            // 검수 Minor #5: 동시 멀티스레드 타격에서 매지카 초과 예약 방지를 위해 단일 CAS 루프로 흡수량을 원자 예약
+            double curPending = g_pendingMomDrain.load(std::memory_order_acquire);
+            for (;;) {
+                const double availMagicka = std::max(0.0, curMagicka - curPending);
+                const auto res = Core::AbsorbWithMindOverMatter(rawAfterEs, diffMult, snap.momRatio, availMagicka);
+                if (res.absorbedMagicka <= 0.0) {
+                    return res.remainingRawDamage;
+                }
+                const double nextPending = curPending + res.absorbedMagicka;
+                if (g_pendingMomDrain.compare_exchange_weak(
+                        curPending, nextPending, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                    return res.remainingRawDamage;
+                }
+            }
+        }
 
         [[nodiscard]] double RollUnit()
         {
@@ -187,14 +225,15 @@ namespace SkyrimPoE::Runtime
                 const double postDefense = Core::ConvertDefensePhysicalHit(
                     preBlock, snap->exileLevel, *snap, *g_dataPack, *g_config);
 
-                // 4) 난이도 배율 보정 에너지 실드 선차감(검수 C2 해법)
+                // 4) 난이도 배율 보정 에너지 실드 선차감(검수 C2 해법) + Mind Over Matter(ES 이후 잔여분 매지카 흡수)
+                const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
+                double remainingRaw = postDefense;
                 if (g_esPool) {
-                    const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
                     const auto absorb = g_esPool->AbsorbDamage(postDefense, diffMult, false);
-                    hit->totalDamage = static_cast<float>(absorb.remainingRawDamage);
-                } else {
-                    hit->totalDamage = static_cast<float>(postDefense);
+                    remainingRaw = absorb.remainingRawDamage;
                 }
+                remainingRaw = ApplyMindOverMatterIfActive(remainingRaw, diffMult, *snap, player);
+                hit->totalDamage = static_cast<float>(std::max(0.0, remainingRaw));
             }
         }
 
@@ -388,6 +427,13 @@ namespace SkyrimPoE::Runtime
                 return value;
             }
 
+            // 3단계 Chaos Inoculation: 카오스 피해(독·질병)는 저항·ES 계산 전에 즉시 0 단락(ES 재충전 타이머 미초기화)
+            const auto mapping = ClassifyMagicDamage(baseEffect);
+            const bool isChaos = (mapping.type == Core::DamageType::Chaos);
+            if (isChaos && snap->chaosImmune) {
+                return 0.0f;
+            }
+
             // 1) AddTarget::SetEffectiveness에서 기록한 스카이림 저항 배율 r 복원(동일성 키 일치 시에만 신뢰, 결정 71·78)
             float skyrimRes = 1.0f;
             bool hasCachedRes = false;
@@ -419,18 +465,20 @@ namespace SkyrimPoE::Runtime
                 preResistD /= static_cast<double>(skyrimRes);
             }
 
-            // 2) 타격 vs 지속 피해 분류 및 주문 막기·주문 억제(결정 82, 87)
+            // 2) 타격 vs 지속 피해 분류 및 주문 회피(Acrobatics)·주문 막기·주문 억제(결정 82, 87)
             const bool isConcentration =
                 (self->spell->GetCastingType() == RE::MagicSystem::CastingType::kConcentration);
             const bool isHit = (self->effect->effectItem.duration == 0) || isConcentration;
 
             if (isHit) {
                 if (isConcentration) {
+                    const double dodgePass = 1.0 - std::clamp(snap->spellDodgeChance, 0.0, 75.0) / 100.0;
                     const double blockPass = 1.0 - std::clamp(snap->spellBlockChance, 0.0, 75.0) / 100.0;
                     const double supChance = std::clamp(snap->spellSuppressionChance, 0.0, 100.0) / 100.0;
                     const double supPrevent = std::clamp(snap->spellSuppressionPrevent, 0.0, 100.0) / 100.0;
-                    preResistD *= blockPass * (1.0 - supChance * supPrevent);
+                    preResistD *= dodgePass * blockPass * (1.0 - supChance * supPrevent);
                 } else {
+                    bool dodged = false;
                     bool blocked = false;
                     bool suppressed = false;
                     double preventPct = snap->spellSuppressionPrevent;
@@ -449,15 +497,25 @@ namespace SkyrimPoE::Runtime
                         }
                         if (!entry.hasHitRoll) {
                             entry.hasHitRoll = true;
-                            entry.spellBlocked = (snap->spellBlockChance > 0.0 && RollUnit() * 100.0 < snap->spellBlockChance);
-                            entry.spellSuppressed = (!entry.spellBlocked && snap->spellSuppressionChance > 0.0 &&
+                            entry.spellDodged = (snap->spellDodgeChance > 0.0 && RollUnit() * 100.0 < snap->spellDodgeChance);
+                            entry.spellBlocked = (!entry.spellDodged && snap->spellBlockChance > 0.0 &&
+                                                  RollUnit() * 100.0 < snap->spellBlockChance);
+                            entry.spellSuppressed = (!entry.spellDodged && !entry.spellBlocked &&
+                                                     snap->spellSuppressionChance > 0.0 &&
                                                      RollUnit() * 100.0 < snap->spellSuppressionChance);
                             entry.suppressPreventPct = snap->spellSuppressionPrevent;
                             firstRoll = true;
                         }
+                        dodged = entry.spellDodged;
                         blocked = entry.spellBlocked;
                         suppressed = entry.spellSuppressed;
                         preventPct = entry.suppressPreventPct;
+                    }
+                    if (dodged) {
+                        if (firstRoll) {
+                            PostHudNotice("주문 회피");
+                        }
+                        return 0.0f;
                     }
                     if (blocked) {
                         if (firstRoll) {
@@ -472,12 +530,11 @@ namespace SkyrimPoE::Runtime
             }
 
             // 3) PoE 저항 + PoE 3.30 인내 원소 피해 감소 + 기대 저항 되돌림(결정 71, 74, 142)
-            const auto mapping = ClassifyMagicDamage(baseEffect);
             double postDefense = 0.0;
             if (mapping.useAverageElemental) {
                 Core::StatSnapshot avgSnap = *snap;
-                const double avgElem = (snap->fireResist + snap->coldResist + snap->lightningResist) / 3.0;
-                avgSnap.fireResist = avgElem;
+                avgSnap.fireResist = (snap->fireResist + snap->coldResist + snap->lightningResist) / 3.0;
+                avgSnap.maxFireResist = (snap->maxFireResist + snap->maxColdResist + snap->maxLightningResist) / 3.0;
                 postDefense = Core::ConvertDefenseResistDamage(
                     preResistD, Core::DamageType::Fire, snap->exileLevel, avgSnap, *g_dataPack, *g_config);
             } else {
@@ -485,14 +542,14 @@ namespace SkyrimPoE::Runtime
                     preResistD, mapping.type, snap->exileLevel, *snap, *g_dataPack, *g_config);
             }
 
-            // 4) 난이도 배율 보정 에너지 실드 선차감(카오스는 ES 우회)
-            const bool isChaos = (mapping.type == Core::DamageType::Chaos);
+            // 4) 난이도 배율 보정 에너지 실드 선차감(카오스는 ES 우회) + Mind Over Matter(카오스·DoT 포함 적용)
+            const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
             double finalRaw = postDefense;
             if (g_esPool) {
-                const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
                 const auto absorb = g_esPool->AbsorbDamage(postDefense, diffMult, isChaos);
                 finalRaw = absorb.remainingRawDamage;
             }
+            finalRaw = ApplyMindOverMatterIfActive(finalRaw, diffMult, *snap, player);
             return -static_cast<float>(std::max(0.0, finalRaw));
         }
 
@@ -723,6 +780,11 @@ namespace SkyrimPoE::Runtime
             g_lastSyncedSnapVersion = 0;
             g_lastObservedPermHealth = -1.0;
             g_lastObservedPermMagicka = -1.0;
+            g_lastLowLife = false;
+            g_lastEoActive = false;
+            g_eoRemainingSec = 0.0;
+            g_eoTriggered.store(false, std::memory_order_release);
+            g_pendingMomDrain.store(0.0, std::memory_order_release);
         });
 
         g_installed = true;
@@ -758,8 +820,37 @@ namespace SkyrimPoE::Runtime
             return;
         }
 
+        // 3단계 Mind Over Matter: 피해 훅에서 누적한 매지카 흡수분을 주 갱신 스레드에서 안전하게 일괄 차감(결정 119)
+        const double pendingMom = g_pendingMomDrain.exchange(0.0, std::memory_order_acq_rel);
+        if (std::isfinite(pendingMom) && pendingMom > 0.0) {
+            const float curMag = avOwner->GetActorValue(RE::ActorValue::kMagicka);
+            const float drain = static_cast<float>(std::min(pendingMom, std::max(0.0, static_cast<double>(curMag))));
+            if (drain > 0.0f) {
+                avOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka, -drain);
+            }
+        }
+
         const double currentPermHealth = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kHealth));
         const double currentPermMagicka = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kMagicka));
+
+        // 3단계 Pain Attunement (Low Life <= 50%, CI 제외) 및 Elemental Overload (최근 8초 치명타) 감시:
+        // 상태가 실제로 변할 때만 Layer2Input을 갱신해 유휴 프레임 재빌드 비용 0 유지.
+        const double curHealth = static_cast<double>(avOwner->GetActorValue(RE::ActorValue::kHealth));
+        const bool nowLowLife = !snap->chaosInoculation && currentPermHealth > 0.0 && (curHealth <= currentPermHealth * 0.50);
+        if (g_eoTriggered.exchange(false, std::memory_order_acq_rel)) {
+            g_eoRemainingSec = 8.0;
+        } else if (g_eoRemainingSec > 0.0 && std::isfinite(deltaSec) && deltaSec > 0.0) {
+            g_eoRemainingSec = std::max(0.0, g_eoRemainingSec - deltaSec);
+        }
+        const bool nowEoActive = (g_eoRemainingSec > 0.0);
+        if (nowLowLife != g_lastLowLife || nowEoActive != g_lastEoActive) {
+            g_lastLowLife = nowLowLife;
+            g_lastEoActive = nowEoActive;
+            g_statEngine->UpdateLayer2([nowLowLife, nowEoActive](Core::Layer2Input& l2) {
+                l2.lowLife = nowLowLife;
+                l2.elementalOverloadActive = nowEoActive;
+            });
+        }
 
         // 스탯 스냅샷 변경뿐 아니라 스카이림 레벨업·장비 강화로 영구 체력/매지카가 바뀐 경우도 즉시 재동기화한다(결정 70, 125).
         const bool snapChanged = (snap->version != g_lastSyncedSnapVersion);
@@ -771,23 +862,29 @@ namespace SkyrimPoE::Runtime
             return;
         }
 
+        if (snapChanged && g_esPool) {
+            g_esPool->Configure(
+                g_dataPack->Constants().esRechargeDelay * snap->esRechargeDelayMult,
+                g_dataPack->Constants().esRechargeRate * snap->esRechargeRateMult);
+        }
+
         const auto stateCopy = SaveLoad::GetStateCopy();
         double appliedHealth = stateCopy.appliedHealthDelta;
         double appliedMagicka = stateCopy.appliedMagickaDelta;
         bool deltasChanged = false;
 
-        // 결정 67, 70: 기대 생명력 대비 배수로 최대 체력 보정
+        // 결정 67, 70: 기대 생명력 대비 배수로 최대 체력 보정(CI는 안전 하한 적용)
         const double baseSkyrimHealth = std::max(1.0, currentPermHealth - appliedHealth);
         const double targetHealth = Core::ComputeSkyrimMaxHealth(
-            baseSkyrimHealth, snap->poeMaxLife, snap->exileLevel, *g_dataPack, *g_config);
+            baseSkyrimHealth, snap->poeMaxLife, snap->exileLevel, *g_dataPack, *g_config, snap->chaosInoculation);
         const double desiredHealthDelta = targetHealth - baseSkyrimHealth;
         if (std::abs(desiredHealthDelta - appliedHealth) > 0.25) {
             const float diff = static_cast<float>(desiredHealthDelta - appliedHealth);
             // 음수 보정(예: 패시브 미배분 레벨업)이 저체력 플레이어를 즉사시키지 않도록 최소 체력 1.0 보장
             if (diff < 0.0f) {
-                const float curHealth = avOwner->GetActorValue(RE::ActorValue::kHealth);
-                if (curHealth > 0.0f && (curHealth + diff) < 1.0f) {
-                    const float compensate = std::min(-diff, 1.0f - (curHealth + diff));
+                const float curHealthBeforeDiff = avOwner->GetActorValue(RE::ActorValue::kHealth);
+                if (curHealthBeforeDiff > 0.0f && (curHealthBeforeDiff + diff) < 1.0f) {
+                    const float compensate = std::min(-diff, 1.0f - (curHealthBeforeDiff + diff));
                     if (compensate > 0.0f) {
                         avOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, compensate);
                     }
@@ -827,6 +924,11 @@ namespace SkyrimPoE::Runtime
         g_lastSyncedSnapVersion = snap->version;
         g_lastObservedPermHealth = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kHealth));
         g_lastObservedPermMagicka = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kMagicka));
+    }
+
+    void CombatHooks::NotifyPlayerElementalCrit() noexcept
+    {
+        g_eoTriggered.store(true, std::memory_order_release);
     }
 
     double CombatHooks::GetBaseSkyrimMaxMagicka(RE::PlayerCharacter* player) noexcept

@@ -268,9 +268,11 @@ POE_TEST("StatEngine: duplicate support dedup, socket cap, multi-CoC rejection, 
     POE_CHECK_NEAR(snap->fireResist, 40.0, 1e-9);
 
     // 중복 MeleePhys: lv10 단일 배율만 적용되고 lv1과 이중 곱연산되지 않아야 함, 소켓 4번째 ConcentratedEffect는 무시
+    // 3단계: Scion 기본 힘 20 -> PoE 규칙(힘 5당 +1% 근접 물리 피해 = +4% increased) 반영
     const auto* cycLv = pack.FindGem("Cyclone")->GetLevel(1);
     const auto* mp10 = pack.FindGem("SupportMeleePhysicalDamage")->GetLevel(10);
-    const double expectedPhys = 20.0 * cycLv->baseMultiplier *
+    const double strMeleeIncMult = 1.0 + static_cast<double>(snap->str / 5) / 100.0;
+    const double expectedPhys = 20.0 * cycLv->baseMultiplier * strMeleeIncMult *
         (1.0 + mp10->GetStat("support_melee_physical_damage_+%_final", 0.0) / 100.0);
     POE_CHECK_NEAR(snap->slotStats[0].baseHitDamage.byType[static_cast<std::size_t>(DamageType::Physical)].Average(),
         expectedPhys, 1e-6);

@@ -3,17 +3,22 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 
+#include "core/PassiveStatParser.h"
+#include "core/PassiveTree.h"
+
 namespace SkyrimPoE::Runtime
 {
     namespace
     {
         constexpr std::uint32_t kMaxStringLen = 256;
         constexpr std::uint32_t kMaxListLen = 1024;
+        constexpr std::uint32_t kMaxTreeNodes = 4096;
         constexpr std::uint32_t kMaxGemDepth = 4;
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
         const Core::DataPack* g_dataPack = nullptr;
+        const Core::PassiveTreeData* g_treeData = nullptr;
         const Core::Config* g_config = nullptr;
         bool g_installed = false;
 
@@ -139,7 +144,16 @@ namespace SkyrimPoE::Runtime
         {
             Core::Layer1Input l1;
             l1.exileLevel = std::clamp<std::uint32_t>(state.exileLevel, 1, Core::kMaxExileLevel);
-            l1.className = state.className.empty() ? "Scion" : state.className;
+            if (state.tree.classSelected && g_treeData && g_treeData->IsLoaded()) {
+                if (const auto* cls = g_treeData->FindClass(state.tree.classId)) {
+                    l1.className = cls->name;
+                } else {
+                    l1.className = state.className.empty() ? "Scion" : state.className;
+                }
+                l1.passives = Core::PassiveStatParser::AggregateTree(*g_treeData, state.tree);
+            } else {
+                l1.className = state.className.empty() ? "Scion" : state.className;
+            }
             l1.slots = state.slots;
             return l1;
         }
@@ -248,8 +262,43 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            SKSE::log::info("SaveLoad: saved CORE (exileLevel={}, class={}) and {} tracked gem keys.",
-                state.exileLevel, state.className, trackedCount);
+            // 3단계: 패시브 트리·전직·보스 이정표 영구 상태('TREE' v1)
+            if (!intfc->OpenRecord(SaveLoad::kRecordTree, SaveLoad::kTreeVersion)) {
+                SKSE::log::error("SaveLoad: failed to open TREE record for writing.");
+                return;
+            }
+            const auto& tr = state.tree;
+            const std::uint8_t clsSelByte = tr.classSelected ? 1 : 0;
+            ok = intfc->WriteRecordData(&clsSelByte, sizeof(clsSelByte));
+            ok = ok && intfc->WriteRecordData(&tr.classId, sizeof(tr.classId));
+            ok = ok && WriteString(intfc, tr.ascendancyId);
+
+            const auto nodeCount = static_cast<std::uint32_t>(std::min<std::size_t>(tr.allocatedNodes.size(), kMaxTreeNodes));
+            ok = ok && intfc->WriteRecordData(&nodeCount, sizeof(nodeCount));
+            for (std::uint32_t i = 0; i < nodeCount && ok; ++i) {
+                ok = ok && intfc->WriteRecordData(&tr.allocatedNodes[i], sizeof(std::uint32_t));
+            }
+
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> sortedMasteries(
+                tr.masterySelections.begin(), tr.masterySelections.end());
+            std::sort(sortedMasteries.begin(), sortedMasteries.end());
+            const auto masteryCount = static_cast<std::uint32_t>(std::min<std::size_t>(sortedMasteries.size(), kMaxListLen));
+            ok = ok && intfc->WriteRecordData(&masteryCount, sizeof(masteryCount));
+            for (std::uint32_t i = 0; i < masteryCount && ok; ++i) {
+                ok = ok && intfc->WriteRecordData(&sortedMasteries[i].first, sizeof(std::uint32_t));
+                ok = ok && intfc->WriteRecordData(&sortedMasteries[i].second, sizeof(std::uint32_t));
+            }
+
+            ok = ok && intfc->WriteRecordData(&tr.bossKillCount, sizeof(tr.bossKillCount));
+            ok = ok && intfc->WriteRecordData(&tr.dragonKillCount, sizeof(tr.dragonKillCount));
+            ok = ok && intfc->WriteRecordData(&tr.ascendancyMilestonesBitmask, sizeof(tr.ascendancyMilestonesBitmask));
+            if (!ok) {
+                SKSE::log::error("SaveLoad: error while writing TREE record.");
+                return;
+            }
+
+            SKSE::log::info("SaveLoad: saved CORE (exileLevel={}, class={}), {} tracked gem keys, and TREE (selected={}, nodes={}, masteries={}).",
+                state.exileLevel, state.className, trackedCount, tr.classSelected, nodeCount, masteryCount);
         }
 
         // SKSE 코세이브 콜백: 불러오기(순수 메모리 복원만 수행, 엔진 조작은 주 갱신으로 이연)
@@ -261,6 +310,8 @@ namespace SkyrimPoE::Runtime
 
             PersistentState loadedState;
             bool hasCore = false;
+            Core::PassiveTreeState loadedTree;
+            bool hasTree = false;
             std::vector<TrackedGemEntry> loadedGems;
 
             std::uint32_t type = 0;
@@ -360,8 +411,72 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse GKEY record (truncated or corrupt).");
                     }
+                } else if (type == SaveLoad::kRecordTree) {
+                    if (version != SaveLoad::kTreeVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported TREE record version {} (expected {}).", version, SaveLoad::kTreeVersion);
+                        continue;
+                    }
+                    Core::PassiveTreeState tmpTree;
+                    std::uint8_t clsSelByte = 0;
+                    std::uint32_t nodeCount = 0;
+                    std::uint32_t masteryCount = 0;
+                    bool ok = true;
+                    ok = ok && ReadExactPod(intfc, clsSelByte);
+                    ok = ok && ReadExactPod(intfc, tmpTree.classId);
+                    ok = ok && ReadString(intfc, tmpTree.ascendancyId);
+                    ok = ok && ReadExactPod(intfc, nodeCount);
+                    if (ok && nodeCount <= kMaxTreeNodes) {
+                        tmpTree.allocatedNodes.resize(nodeCount);
+                        for (std::uint32_t i = 0; i < nodeCount && ok; ++i) {
+                            ok = ok && ReadExactPod(intfc, tmpTree.allocatedNodes[i]);
+                        }
+                    } else {
+                        ok = false;
+                    }
+                    ok = ok && ReadExactPod(intfc, masteryCount);
+                    if (ok && masteryCount <= kMaxListLen) {
+                        for (std::uint32_t i = 0; i < masteryCount && ok; ++i) {
+                            std::uint32_t mNode = 0;
+                            std::uint32_t mEff = 0;
+                            ok = ok && ReadExactPod(intfc, mNode);
+                            ok = ok && ReadExactPod(intfc, mEff);
+                            if (ok) {
+                                tmpTree.masterySelections[mNode] = mEff;
+                            }
+                        }
+                    } else {
+                        ok = false;
+                    }
+                    ok = ok && ReadExactPod(intfc, tmpTree.bossKillCount);
+                    ok = ok && ReadExactPod(intfc, tmpTree.dragonKillCount);
+                    ok = ok && ReadExactPod(intfc, tmpTree.ascendancyMilestonesBitmask);
+                    if (ok) {
+                        tmpTree.classSelected = (clsSelByte != 0);
+                        tmpTree.ascendancyMilestonesBitmask &= 0x7u;
+                        loadedTree = std::move(tmpTree);
+                        hasTree = true;
+                    } else {
+                        SKSE::log::error("SaveLoad: failed to parse TREE record (truncated or corrupt); falling back to empty tree.");
+                    }
                 } else {
                     SKSE::log::warn("SaveLoad: ignoring unknown record type 0x{:08X}.", type);
+                }
+            }
+
+            if (hasTree) {
+                if (g_treeData && g_treeData->IsLoaded()) {
+                    Core::PassiveTree::SanitizeLoadedState(*g_treeData, loadedTree);
+                }
+                loadedState.tree = std::move(loadedTree);
+                if (loadedState.tree.classSelected && g_treeData && g_treeData->IsLoaded()) {
+                    if (const auto* cls = g_treeData->FindClass(loadedState.tree.classId)) {
+                        loadedState.className = cls->name;
+                    }
+                }
+                if (g_treeData && g_treeData->IsLoaded() && g_config) {
+                    const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
+                        *g_treeData, loadedState.tree, loadedState.exileLevel, *g_config);
+                    loadedState.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
                 }
             }
 
@@ -377,7 +492,7 @@ namespace SkyrimPoE::Runtime
             for (const auto& entry : loadedGems) {
                 CollectMaxInstanceId(entry.gem, maxInstanceId);
             }
-            if (hasCore) {
+            if (hasCore || hasTree) {
                 if (loadedState.nextGemInstanceId <= maxInstanceId) {
                     loadedState.nextGemInstanceId = maxInstanceId + 1;
                 }
@@ -392,8 +507,8 @@ namespace SkyrimPoE::Runtime
             GemInventory::RestoreFromSave(std::move(loadedGems));
             SaveLoad::SyncStateToStatEngine();
 
-            SKSE::log::info("SaveLoad: OnLoad restored CORE(present={}) and {} tracked gem keys (engine sync deferred to MainUpdate).",
-                hasCore, GemInventory::CountTracked());
+            SKSE::log::info("SaveLoad: OnLoad restored CORE(present={}), TREE(present={}, nodes={}) and {} tracked gem keys (engine sync deferred to MainUpdate).",
+                hasCore, hasTree, loadedState.tree.allocatedNodes.size(), GemInventory::CountTracked());
         }
     }
 
@@ -401,6 +516,7 @@ namespace SkyrimPoE::Runtime
         Core::CommandQueue* queue,
         Core::StatEngine* statEngine,
         const Core::DataPack* dataPack,
+        const Core::PassiveTreeData* treeData,
         const Core::Config* config)
     {
         if (g_installed) {
@@ -409,6 +525,7 @@ namespace SkyrimPoE::Runtime
         g_queue = queue;
         g_statEngine = statEngine;
         g_dataPack = dataPack;
+        g_treeData = treeData;
         g_config = config;
 
         const auto* serialization = SKSE::GetSerializationInterface();

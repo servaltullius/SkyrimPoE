@@ -22,6 +22,8 @@ namespace SkyrimPoE::Core
         double effectiveCritChancePct = 0.0;
         double critMultiplierPct = 150.0;
         double skyrimMagickaCost = 0.0;
+        double skyrimHealthCost = 0.0;  // Blood Magic 시 생명력 비용(1 HP 자살 방지 가드 통과 완료)
+        bool usesHealthCost = false;
         double skyrimHitDamage = 0.0;   // 평균 기대값(참고·비롤 폴백용)
         double areaMult = 1.0;
         double cooldownAppliedSec = 0.15;
@@ -52,7 +54,9 @@ namespace SkyrimPoE::Core
             double currentSkyrimMagicka,
             double baseSkyrimMaxMagicka,
             const DataPack& pack,
-            const Config& config);
+            const Config& config,
+            double currentSkyrimHealth = 100.0,
+            double skyrimMaxHealth = 100.0);
 
         // 발동 주문의 min~max 피해 롤 + 주문 치명타 판정/배율 적용 후 스카이림 피해로 환산한다.
         [[nodiscard]] static double RollTriggeredSpellSkyrimDamage(

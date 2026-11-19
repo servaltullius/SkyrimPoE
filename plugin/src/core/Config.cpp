@@ -212,6 +212,30 @@ namespace SkyrimPoE::Core
                 } else {
                     warnInvalid();
                 }
+            } else if (section == "PassiveTree") {
+                std::uint32_t u = 0;
+                std::int32_t i = 0;
+                if (key == "TreePanelKey") {
+                    if (ParseUint(val, u) && u <= 0xFF) c.treePanelKey = u; else warnInvalid();
+                } else if (key == "FreePassiveRefund") {
+                    if (!ParseBool(val, c.freePassiveRefund)) warnInvalid();
+                } else if (key == "SimpleImeMode") {
+                    if (val == "auto" || val == "on" || val == "off") {
+                        c.simpleImeMode = std::string(val);
+                    } else {
+                        warnInvalid();
+                    }
+                } else if (key == "BonusPassivePoints") {
+                    if (ParseInt(val, i) && i >= 0 && i <= 200) c.bonusPassivePoints = i; else warnInvalid();
+                } else if (key == "BonusAscendancyPoints") {
+                    if (ParseInt(val, i) && i >= 0 && i <= static_cast<std::int32_t>(kMaxAscendancyPoints)) {
+                        c.bonusAscendancyPoints = i;
+                    } else {
+                        warnInvalid();
+                    }
+                } else {
+                    warnInvalid();
+                }
             }
         }
 

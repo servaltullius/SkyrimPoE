@@ -11,6 +11,7 @@ set(POE_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../data" CACHE PATH "데이터 팩
 set(POE_ESP_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../esp/SkyrimPoE.esp" CACHE FILEPATH "SkyrimPoE.esp 경로")
 set(POE_UI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ui" CACHE PATH "Prisma UI 화면 폴더")
 set(POE_OAR_PACKAGER "${CMAKE_CURRENT_SOURCE_DIR}/../tools/package_oar.py" CACHE FILEPATH "사이클론 OAR 패키징 스크립트")
+set(POE_TREE_COMPILER "${CMAKE_CURRENT_SOURCE_DIR}/../tools/compiler/compile_tree.py" CACHE FILEPATH "패시브 트리 컴파일러/래퍼 스크립트")
 
 if(NOT POE_BUILD_ROOT)
     message(FATAL_ERROR "POE_BUILD_ROOT가 비어 있습니다. CMakePresets.json의 프리셋으로 구성하세요.")
@@ -36,6 +37,9 @@ add_library(skyrimpoe_core STATIC
     src/core/SkillSystem.cpp
     src/core/KillTracker.cpp
     src/core/GemTransaction.cpp
+    src/core/PassiveTreeData.cpp
+    src/core/PassiveTree.cpp
+    src/core/PassiveStatParser.cpp
 )
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
@@ -67,6 +71,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/runtime/CombatHooks.cpp
         src/runtime/CycloneRuntime.cpp
         src/runtime/DeathListener.cpp
+        src/runtime/SimpleImeBridge.cpp
         src/runtime/UiBridge.cpp
         src/runtime/AutoTest.cpp
 )
@@ -87,6 +92,8 @@ add_executable(skyrimpoe_tests
     tests/test_cyclone_coc.cpp
     tests/test_kill_tracker.cpp
     tests/test_gem_transaction.cpp
+    tests/test_passive_tree.cpp
+    tests/test_passive_stats.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE
@@ -115,6 +122,12 @@ add_custom_target(package_mod
         "${POE_DATA_DIR}/packs/core_3_30.json"
         "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/core_3_30.json"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_DATA_DIR}/packs/tree_3_30.json"
+        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json"
+    COMMAND "${Python3_EXECUTABLE}" "${POE_TREE_COMPILER}"
+        --wrap-only-from "${POE_DATA_DIR}/packs/tree_3_30.json"
+        --js-out "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/tree-data.js"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${POE_DATA_DIR}/lang/ko-KR.json"
         "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/lang/ko-KR.json"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -129,6 +142,9 @@ add_custom_target(package_mod
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${POE_UI_DIR}/app.js"
         "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/app.js"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_UI_DIR}/tree.js"
+        "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/tree.js"
     COMMAND "${Python3_EXECUTABLE}" "${POE_OAR_PACKAGER}" --package-dir "${POE_PACKAGE_DIR}"
     DEPENDS SkyrimPoE
     VERBATIM

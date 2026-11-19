@@ -18,6 +18,8 @@ namespace SkyrimPoE::Core
             const DataPack& pack,
             const Layer1Input& l1,
             const Layer2Input& l2,
+            const StatSnapshot& snap,
+            double strMeleePhysIncPct,
             double extraManaMultPct,
             double extraMoreSpellDmgPct,
             bool isTriggered,
@@ -40,16 +42,24 @@ namespace SkyrimPoE::Core
                 return out;
             }
 
+            const auto& p = l1.passives;
+            const std::uint8_t clampedFrenzy = std::min(l2.frenzyCharges, snap.maxFrenzyCharges);
+            const std::uint8_t clampedPower = std::min(l2.powerCharges, snap.maxPowerCharges);
+
             double manaMult = 1.0 + extraManaMultPct / 100.0;
             double morePhysMult = 1.0;
             double moreAreaDmgMult = 1.0;
             double moreSpellDmgMult = 1.0 + extraMoreSpellDmgPct / 100.0;
-            double moreAllDmgMult = 1.0 + (l2.frenzyCharges * kFrenzySpeedAndMore) / 100.0;
+            // Pain Attunement: 저체력(CI 제외) 시 주문 피해 30% 증폭
+            if (!snap.chaosInoculation && p.painAttunement && l2.lowLife) {
+                moreSpellDmgMult *= 1.30;
+            }
+            double moreAllDmgMult = 1.0 + (clampedFrenzy * kFrenzySpeedAndMore) / 100.0;
             double moreAtkSpeedMult = 1.0;
-            double incAreaPct = 0.0;
+            double incAreaPct = p.incAreaOfEffectPct;
             double moreAreaMult = 1.0;
             double addBaseCritPct = 0.0;
-            double incCritPct = l1.incCritChancePct + l2.powerCharges * kPowerCritInc;
+            double incCritPct = l1.incCritChancePct + p.incGlobalCritChancePct + clampedPower * kPowerCritInc;
             bool noElemental = false;
             bool noChaos = false;
 
@@ -133,37 +143,72 @@ namespace SkyrimPoE::Core
 
             const bool isArea = def->skillTypes.contains("Area") || extraSkillTypes.contains("Area");
             const double areaDmgFactor = isArea ? moreAreaDmgMult : 1.0;
+            const double areaIncPct = isArea ? p.incAreaDamagePct : 0.0;
+
+            double totalCostEffPct = p.costEfficiencyPct;
+            const double eoElemMoreMult = (p.elementalOverload && l2.elementalOverloadActive) ? 1.40 : 1.0;
 
             if (def->kind == GemKind::AttackChannel) {
-                // 사이클론: 기본 무기 물리 피해 × baseMultiplier × 물리/범위/전체 증폭
-                const double scale = lv->baseMultiplier * morePhysMult * areaDmgFactor * moreAllDmgMult;
+                // 사이클론: 기본 무기 물리 피해 × baseMultiplier × (1 + inc%/100) × 물리/범위/전체 증폭
+                // (p.incElementalAttackDamagePct는 4단계 장비/오라 추가 원소 공격 피해 확장용으로 파싱·예약됨)
+                const double totalIncPct = p.incGlobalDamagePct + p.incPhysicalDamagePct +
+                    p.incPhysicalAttackDamagePct + p.incMeleeDamagePct +
+                    p.incMeleePhysicalDamagePct + p.incAttackDamagePct + areaIncPct + strMeleePhysIncPct;
+                const double incMult = std::max(0.0, 1.0 + totalIncPct / 100.0);
+                const double scale = lv->baseMultiplier * incMult * morePhysMult * areaDmgFactor * moreAllDmgMult;
                 out.baseHitDamage.byType[static_cast<std::size_t>(DamageType::Physical)] = DamageRange{
                     l1.baseWeaponPhysicalMin * scale,
                     l1.baseWeaponPhysicalMax * scale
                 };
                 // 결정 50, 98: 무기 레코드 속도 × (1 + attackSpeedMultiplier/100 = 3.0) × PoE 공속 배율
                 const double skillSpeedBase = 1.0 + lv->attackSpeedMultiplier / 100.0;
-                const double incSpeed = 1.0 + (l1.incAttackSpeedPct + l2.frenzyCharges * kFrenzySpeedAndMore) / 100.0;
+                const double incSpeed = std::max(0.1,
+                    1.0 + (l1.incAttackSpeedPct + p.incAttackSpeedPct + p.incMeleeAttackSpeedPct +
+                           clampedFrenzy * kFrenzySpeedAndMore) / 100.0);
                 out.attackSpeedMult = std::max(0.1, skillSpeedBase * incSpeed * moreAtkSpeedMult);
-                out.baseCritChancePct = l1.baseWeaponCritChancePct + addBaseCritPct;
+                incCritPct += p.incAttackCritChancePct + p.incMeleeCritChancePct;
+                // Resolute Technique: PoE 3.30 원작 규칙(공격·주문 모두 치명타 불가)
+                out.baseCritChancePct = snap.resoluteTechnique ? 0.0 : (l1.baseWeaponCritChancePct + addBaseCritPct);
+                out.critMultiplierPct = p.elementalOverload
+                    ? 100.0
+                    : std::max(100.0, l1.critMultiplierPct + p.globalCritMultiplierPct + p.meleeCritMultiplierPct);
+                totalCostEffPct += p.attackCostEfficiencyPct;
             } else if (def->kind == GemKind::Spell) {
+                const double ironWillBonus = p.ironWill ? strMeleePhysIncPct : 0.0;
+                const double commonSpellInc = p.incGlobalDamagePct + p.incSpellDamagePct + areaIncPct + ironWillBonus;
                 const double spellScale = moreSpellDmgMult * areaDmgFactor * moreAllDmgMult;
-                auto applySpellType = [&](DamageType dt, const char* minKey, const char* maxKey, double typeMult) {
+                auto applySpellType = [&](DamageType dt, const char* minKey, const char* maxKey, double typeMore, double typeInc) {
                     const double mn = lv->GetStat(minKey, 0.0);
                     const double mx = lv->GetStat(maxKey, 0.0);
                     if (mn > 0.0 || mx > 0.0) {
+                        const double incMult = std::max(0.0, 1.0 + (commonSpellInc + typeInc) / 100.0);
+                        const double factor = spellScale * typeMore * incMult;
                         out.baseHitDamage.byType[static_cast<std::size_t>(dt)] = DamageRange{
-                            mn * spellScale * typeMult,
-                            mx * spellScale * typeMult
+                            mn * factor,
+                            mx * factor
                         };
                     }
                 };
-                applySpellType(DamageType::Physical, "spell_minimum_base_physical_damage", "spell_maximum_base_physical_damage", morePhysMult);
-                applySpellType(DamageType::Fire, "spell_minimum_base_fire_damage", "spell_maximum_base_fire_damage", 1.0);
-                applySpellType(DamageType::Cold, "spell_minimum_base_cold_damage", "spell_maximum_base_cold_damage", 1.0);
-                applySpellType(DamageType::Lightning, "spell_minimum_base_lightning_damage", "spell_maximum_base_lightning_damage", 1.0);
-                applySpellType(DamageType::Chaos, "spell_minimum_base_chaos_damage", "spell_maximum_base_chaos_damage", 1.0);
-                out.baseCritChancePct = lv->critChance + addBaseCritPct;
+                applySpellType(DamageType::Physical, "spell_minimum_base_physical_damage", "spell_maximum_base_physical_damage",
+                    morePhysMult, p.incPhysicalDamagePct);
+                applySpellType(DamageType::Fire, "spell_minimum_base_fire_damage", "spell_maximum_base_fire_damage",
+                    eoElemMoreMult, p.incElementalDamagePct + p.incFireDamagePct);
+                applySpellType(DamageType::Cold, "spell_minimum_base_cold_damage", "spell_maximum_base_cold_damage",
+                    eoElemMoreMult, p.incElementalDamagePct + p.incColdDamagePct);
+                applySpellType(DamageType::Lightning, "spell_minimum_base_lightning_damage", "spell_maximum_base_lightning_damage",
+                    eoElemMoreMult, p.incElementalDamagePct + p.incLightningDamagePct);
+                applySpellType(DamageType::Chaos, "spell_minimum_base_chaos_damage", "spell_maximum_base_chaos_damage",
+                    1.0, p.incChaosDamagePct);
+                out.castSpeedMult = std::max(0.1,
+                    1.0 + (p.incCastSpeedPct + clampedFrenzy * kFrenzySpeedAndMore) / 100.0);
+                incCritPct += p.incSpellCritChancePct;
+                out.baseCritChancePct = snap.resoluteTechnique ? 0.0 : (lv->critChance + addBaseCritPct);
+                out.critMultiplierPct = p.elementalOverload
+                    ? 100.0
+                    : std::max(100.0, l1.critMultiplierPct + p.globalCritMultiplierPct + p.spellCritMultiplierPct);
+                totalCostEffPct += p.spellCostEfficiencyPct;
+            } else {
+                out.critMultiplierPct = l1.critMultiplierPct;
             }
 
             if (noElemental) {
@@ -178,10 +223,11 @@ namespace SkyrimPoE::Core
             out.dealNoElemental = noElemental;
             out.dealNoChaos = noChaos;
             out.critChanceIncPct = incCritPct;
-            out.critMultiplierPct = l1.critMultiplierPct;
             const double totalAreaFactor = std::max(0.05, (1.0 + incAreaPct / 100.0) * moreAreaMult);
             out.areaMult = std::sqrt(totalAreaFactor);
-            out.poeManaCost = std::max(0.0, lv->manaCost * manaMult);
+            const double reducedCostFactor = std::clamp(1.0 - p.reducedManaCostPct / 100.0, 0.0, 10.0);
+            const double costEffDiv = std::max(0.1, 1.0 + totalCostEffPct / 100.0);
+            out.poeManaCost = std::max(0.0, lv->manaCost * manaMult * reducedCostFactor / costEffDiv);
             out.cooldownSec = std::max(lv->cooldown, triggerMinCooldown);
             return out;
         }
@@ -206,6 +252,18 @@ namespace SkyrimPoE::Core
         {
             std::scoped_lock lock(inputMutex_);
             layer2_ = input;
+        }
+        dirty_.store(true, std::memory_order_release);
+    }
+
+    void StatEngine::UpdateLayer2(const std::function<void(Layer2Input&)>& mutator)
+    {
+        if (!mutator) {
+            return;
+        }
+        {
+            std::scoped_lock lock(inputMutex_);
+            mutator(layer2_);
         }
         dirty_.store(true, std::memory_order_release);
     }
@@ -255,47 +313,117 @@ namespace SkyrimPoE::Core
         snap.version = nextVersion;
         snap.exileLevel = std::clamp<std::uint32_t>(l1.exileLevel, 1, kMaxExileLevel);
 
+        const auto& p = l1.passives;
         const auto* cls = pack.FindClass(l1.className);
-        snap.str = cls ? cls->baseStr : 20;
-        snap.dex = cls ? cls->baseDex : 20;
-        snap.intel = cls ? cls->baseInt : 20;
+        const double baseStr = cls ? static_cast<double>(cls->baseStr) : 20.0;
+        const double baseDex = cls ? static_cast<double>(cls->baseDex) : 20.0;
+        const double baseInt = cls ? static_cast<double>(cls->baseInt) : 20.0;
+
+        // 1패스: 클래스 기본 + 패시브 고정/증가 능력치 수렴
+        const double finalStr = std::max(0.0, (baseStr + p.flatStr) * std::max(0.0, 1.0 + p.incStrPct / 100.0));
+        const double finalDex = std::max(0.0, (baseDex + p.flatDex) * std::max(0.0, 1.0 + p.incDexPct / 100.0));
+        const double finalInt = std::max(0.0, (baseInt + p.flatInt) * std::max(0.0, 1.0 + p.incIntPct / 100.0));
+        snap.str = static_cast<std::uint32_t>(std::floor(finalStr + 1e-6));
+        snap.dex = static_cast<std::uint32_t>(std::floor(finalDex + 1e-6));
+        snap.intel = static_cast<std::uint32_t>(std::floor(finalInt + 1e-6));
+
+        // 충전 상한
+        snap.maxEnduranceCharges = static_cast<std::uint8_t>(std::clamp<std::int32_t>(3 + p.maxEnduranceBonus, 0, 15));
+        snap.maxFrenzyCharges = static_cast<std::uint8_t>(std::clamp<std::int32_t>(3 + p.maxFrenzyBonus, 0, 15));
+        snap.maxPowerCharges = static_cast<std::uint8_t>(std::clamp<std::int32_t>(3 + p.maxPowerBonus, 0, 15));
+
+        // 키스톤 플래그
+        snap.bloodMagic = l1.bloodMagic || p.bloodMagic;
+        snap.chaosInoculation = p.chaosInoculation;
+        snap.chaosImmune = p.chaosInoculation;
+        snap.resoluteTechnique = p.resoluteTechnique;
+        snap.unwaveringStance = p.unwaveringStance;
+
+        // 2패스: 확정된 능력치의 내재 보너스 반영
+        // PoE1: 힘 2당 생명력 +1, 힘 5당 근접 물리 피해 +1%; 민첩 1당 회피 +0.2%(Iron Reflexes 시 0); 지능 2당 마나 +1, 지능 5당 ES +1%
+        const double strLife = static_cast<double>(snap.str / 2);
+        const double strMeleePhysInc = static_cast<double>(snap.str / 5);
+        const double dexEvasionInc = p.ironReflexes ? 0.0 : (static_cast<double>(snap.dex) * 0.2);
+        const double intMana = static_cast<double>(snap.intel / 2);
+        const double intEsInc = static_cast<double>(snap.intel / 5);
 
         const auto& c = pack.Constants();
-        // PoE: 힘 2당 생명력 +1 (결정 84: 기대 생명력에는 넣지 않고 실제 빌드에는 반영), 지능 2당 마나 +1
-        const double strLife = static_cast<double>(snap.str / 2);
-        const double intMana = static_cast<double>(snap.intel / 2);
-
-        const double baseLife = c.lifeBase + c.lifePerLevel * static_cast<double>(snap.exileLevel) + strLife + l1.flatLife;
-        snap.poeMaxLife = std::max(1.0, baseLife * (1.0 + l1.incLifePct / 100.0));
-
-        if (l1.bloodMagic) {
-            snap.poeMaxMana = 0.0;
+        if (snap.chaosInoculation) {
+            snap.poeMaxLife = 1.0;
         } else {
-            const double baseMana = c.manaBase + c.manaPerLevel * static_cast<double>(snap.exileLevel) + intMana + l1.flatMana;
-            snap.poeMaxMana = std::max(0.0, baseMana * (1.0 + l1.incManaPct / 100.0));
+            const double baseLife = c.lifeBase + c.lifePerLevel * static_cast<double>(snap.exileLevel) +
+                strLife + l1.flatLife + p.flatLife;
+            const double totalIncLife = l1.incLifePct + p.incLifePct;
+            const double moreLife = std::max(0.0, p.moreLifeMult);
+            snap.poeMaxLife = std::max(1.0, baseLife * std::max(0.0, 1.0 + totalIncLife / 100.0) * moreLife);
         }
 
-        const double intEsInc = static_cast<double>(snap.intel / 5);  // PoE: 지능 5당 에너지 실드 +1%
-        snap.poeMaxEnergyShield = std::max(0.0, l1.flatEnergyShield * (1.0 + (l1.incEnergyShieldPct + intEsInc) / 100.0));
+        if (snap.bloodMagic) {
+            snap.poeMaxMana = 0.0;
+        } else {
+            const double baseMana = c.manaBase + c.manaPerLevel * static_cast<double>(snap.exileLevel) +
+                intMana + l1.flatMana + p.flatMana;
+            const double totalIncMana = l1.incManaPct + p.incManaPct;
+            snap.poeMaxMana = std::max(0.0, baseMana * std::max(0.0, 1.0 + totalIncMana / 100.0));
+        }
 
-        snap.armour = std::max(0.0, l1.armour);
-        snap.evasion = std::max(0.0, l1.evasion);
+        const double totalFlatEs = l1.flatEnergyShield + p.flatEnergyShield;
+        const double totalIncEs = l1.incEnergyShieldPct + p.incEnergyShieldPct + intEsInc;
+        snap.poeMaxEnergyShield = std::max(0.0, totalFlatEs * std::max(0.0, 1.0 + totalIncEs / 100.0));
+        snap.esRechargeRateMult = std::max(0.1, 1.0 + p.incEsRechargeRatePct / 100.0);
+        snap.esRechargeDelayMult = 1.0 / std::max(0.1, 1.0 + p.fasterEsRechargeStartPct / 100.0);
 
-        const double endDR = l2.enduranceCharges * kEndurancePhysAndElemDR;
+        // 방어·회피 + Iron Reflexes / Unwavering Stance
+        // PoE1 Iron Reflexes 규칙: 전환된 회피는 방어도 증가·회피 증가를 모두 받되 하이브리드(% Armour and Evasion)는 1회만 합산, 민첩 회피 보너스는 미적용.
+        const double totalArmourIncPct = p.incArmourPct + p.incArmourAndEvasionPct;
+        const double rawArmour = std::max(0.0, (l1.armour + p.flatArmour) * std::max(0.0, 1.0 + totalArmourIncPct / 100.0));
+        if (p.ironReflexes) {
+            const double convIncPct = p.incArmourPct + p.incEvasionPct + p.incArmourAndEvasionPct;
+            const double convertedEvasion = std::max(0.0, (l1.evasion + p.flatEvasion) * std::max(0.0, 1.0 + convIncPct / 100.0));
+            snap.armour = rawArmour + convertedEvasion;
+            snap.evasion = 0.0;
+        } else {
+            const double totalEvasionIncPct = p.incEvasionPct + p.incArmourAndEvasionPct + dexEvasionInc;
+            const double rawEvasion = std::max(0.0, (l1.evasion + p.flatEvasion) * std::max(0.0, 1.0 + totalEvasionIncPct / 100.0));
+            snap.armour = rawArmour;
+            snap.evasion = p.cannotEvade ? 0.0 : rawEvasion;
+        }
+
+        // 동적 원소별 최대 저항 상한 (기본 75%, PoE 하드캡 90%, 검수 M1)
+        snap.maxFireResist = std::clamp(c.resistCap + p.maxFireResistBonus, 0.0, 90.0);
+        snap.maxColdResist = std::clamp(c.resistCap + p.maxColdResistBonus, 0.0, 90.0);
+        snap.maxLightningResist = std::clamp(c.resistCap + p.maxLightningResistBonus, 0.0, 90.0);
+        snap.maxChaosResist = std::clamp(c.resistCap + p.maxChaosResistBonus, 0.0, 90.0);
+
+        const std::uint8_t clampedEnd = std::min(l2.enduranceCharges, snap.maxEnduranceCharges);
+        const double endDR = clampedEnd * kEndurancePhysAndElemDR;
         const double actPenalty = (snap.exileLevel >= config.act10Level) ? -60.0
                                 : (snap.exileLevel >= config.act5Level)  ? -30.0
                                                                          : 0.0;
-        snap.fireResist = std::min(c.resistCap, l1.fireResist + actPenalty);
-        snap.coldResist = std::min(c.resistCap, l1.coldResist + actPenalty);
-        snap.lightningResist = std::min(c.resistCap, l1.lightningResist + actPenalty);
-        snap.chaosResist = std::min(c.resistCap, l1.chaosResist + actPenalty);
+        snap.fireResist = std::min(snap.maxFireResist, l1.fireResist + p.fireResist + actPenalty);
+        snap.coldResist = std::min(snap.maxColdResist, l1.coldResist + p.coldResist + actPenalty);
+        snap.lightningResist = std::min(snap.maxLightningResist, l1.lightningResist + p.lightningResist + actPenalty);
+        snap.chaosResist = snap.chaosImmune ? 100.0 : std::min(snap.maxChaosResist, l1.chaosResist + p.chaosResist + actPenalty);
 
-        snap.physDamageReduction = std::clamp(l1.physDamageReduction + endDR, 0.0, 90.0);
+        snap.physDamageReduction = std::clamp(l1.physDamageReduction + p.physDamageReduction + endDR, 0.0, 90.0);
         snap.elementalDamageReduction = std::clamp(l1.elementalDamageReduction + endDR, 0.0, 90.0);
-        snap.attackBlockChance = std::clamp(l1.attackBlockChance, 0.0, 75.0);
-        snap.spellBlockChance = std::clamp(l1.spellBlockChance, 0.0, 75.0);
-        snap.spellSuppressionChance = std::clamp(l1.spellSuppressionChance, 0.0, 100.0);
-        snap.spellSuppressionPrevent = std::clamp(l1.spellSuppressionPrevent, 0.0, 100.0);
+        snap.attackBlockChance = std::clamp(l1.attackBlockChance + p.attackBlockChance, 0.0, 75.0);
+        snap.spellBlockChance = std::clamp(l1.spellBlockChance + p.spellBlockChance, 0.0, 75.0);
+
+        const double rawSupp = std::max(0.0, l1.spellSuppressionChance + p.spellSuppressionChance);
+        if (p.acrobatics) {
+            snap.spellDodgeChance = std::clamp(rawSupp * 0.5, 0.0, 75.0);
+            snap.spellSuppressionChance = 0.0;
+        } else {
+            snap.spellDodgeChance = 0.0;
+            snap.spellSuppressionChance = std::clamp(rawSupp, 0.0, 100.0);
+        }
+        snap.spellSuppressionPrevent = std::clamp(l1.spellSuppressionPrevent + p.spellSuppressionPrevent, 0.0, 100.0);
+
+        // Mind Over Matter: Blood Magic/마나 0 빌드에서는 비활성(검수 C4)
+        snap.momRatio = (!snap.bloodMagic && snap.poeMaxMana > 0.0)
+            ? std::clamp(p.mindOverMatterRatio, 0.0, 1.0)
+            : 0.0;
 
         // 발동 젬이 어떤 공격 칸에 연결되어 있는지 먼저 수집(결정 131: 공격 1칸당 발동 젬 최대 1개)
         std::array<double, kSkillSlotCount> attackExtraManaMult{};
@@ -355,6 +483,8 @@ namespace SkyrimPoE::Core
                         pack,
                         l1,
                         l2,
+                        snap,
+                        strMeleePhysInc,
                         spellManaMult,
                         spellMoreDmg,
                         true,
@@ -368,6 +498,8 @@ namespace SkyrimPoE::Core
                     pack,
                     l1,
                     l2,
+                    snap,
+                    strMeleePhysInc,
                     attackExtraManaMult[i],
                     0.0,
                     false,

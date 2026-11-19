@@ -182,33 +182,40 @@ namespace SkyrimPoE::Core
         }
         const auto lv = ClampLevel(exileLevel);
         double resist = 0.0;
+        double cap = pack.Constants().resistCap;
         double meL = 1.0;
         double me1 = 1.0;
         switch (damageType) {
             case DamageType::Fire:
                 resist = snapshot.fireResist;
+                cap = std::clamp(snapshot.maxFireResist, 0.0, 90.0);
                 meL = ExpectedElementalPass(lv, pack, config);
                 me1 = ExpectedElementalPass(1, pack, config);
                 break;
             case DamageType::Cold:
                 resist = snapshot.coldResist;
+                cap = std::clamp(snapshot.maxColdResist, 0.0, 90.0);
                 meL = ExpectedElementalPass(lv, pack, config);
                 me1 = ExpectedElementalPass(1, pack, config);
                 break;
             case DamageType::Lightning:
                 resist = snapshot.lightningResist;
+                cap = std::clamp(snapshot.maxLightningResist, 0.0, 90.0);
                 meL = ExpectedElementalPass(lv, pack, config);
                 me1 = ExpectedElementalPass(1, pack, config);
                 break;
             case DamageType::Chaos:
+                if (snapshot.chaosImmune) {
+                    return 0.0;
+                }
                 resist = snapshot.chaosResist;
+                cap = std::clamp(snapshot.maxChaosResist, 0.0, 90.0);
                 meL = ExpectedChaosPass(lv, pack, config);
                 me1 = ExpectedChaosPass(1, pack, config);
                 break;
             default:
                 return skyrimPreResistD;
         }
-        const double cap = pack.Constants().resistCap;
         double pass = std::max(0.0, 1.0 - std::min(cap, resist) / 100.0);
         // PoE 3.30 인내 충전: 원소 피해 감소(저항 상한과 별도로 곱연산, 카오스 제외)
         if (damageType != DamageType::Chaos && snapshot.elementalDamageReduction > 0.0) {
@@ -226,12 +233,31 @@ namespace SkyrimPoE::Core
         double poeMaxLife,
         std::uint32_t exileLevel,
         const DataPack& pack,
-        const Config& config) noexcept
+        const Config& config,
+        bool chaosInoculation) noexcept
     {
         const double base = SafePositive(baseSkyrimMaxHealth, 100.0);
+        if (chaosInoculation) {
+            // 3단계 검수 C6: 스카이림 낙하·환경·물리 즉사 사고를 피하기 위한 CI 최소 안전 체력 하한
+            return std::max(1.0, std::min(25.0, base * 0.15));
+        }
         const double expLife = SafePositive(ExpectedLife(exileLevel, pack, config), 50.0);
         const double life = SafePositive(poeMaxLife, expLife);
         return std::max(1.0, base * (life / expLife));
+    }
+
+    double ComputeBloodMagicLifeCost(
+        double skyrimMaxHealth,
+        double poeMaxLife,
+        double poeSkillCost) noexcept
+    {
+        if (!std::isfinite(poeSkillCost) || poeSkillCost <= 0.0) {
+            return 0.0;
+        }
+        const double maxHp = SafePositive(skyrimMaxHealth, 100.0);
+        const double life = SafePositive(poeMaxLife, 1.0);
+        const double out = poeSkillCost * (maxHp / life);
+        return (std::isfinite(out) && out > 0.0) ? out : 0.0;
     }
 
     double ComputeSkyrimMaxEnergyShield(
@@ -298,6 +324,31 @@ namespace SkyrimPoE::Core
         const double absorbed = std::min(es, effectiveDmg);
         res.newEnergyShield = es - absorbed;
         res.absorbedEffectiveDamage = absorbed;
+        res.remainingRawDamage = std::max(0.0, (effectiveDmg - absorbed) / diff);
+        return res;
+    }
+
+    MindOverMatterAbsorbResult AbsorbWithMindOverMatter(
+        double rawDamageAfterEs,
+        double difficultyToPcMult,
+        double momRatio,
+        double availableMagicka) noexcept
+    {
+        MindOverMatterAbsorbResult res;
+        if (!std::isfinite(rawDamageAfterEs) || rawDamageAfterEs <= 0.0) {
+            res.remainingRawDamage = 0.0;
+            return res;
+        }
+        const double ratio = std::isfinite(momRatio) ? std::clamp(momRatio, 0.0, 1.0) : 0.0;
+        const double avail = (std::isfinite(availableMagicka) && availableMagicka > 0.0) ? availableMagicka : 0.0;
+        if (ratio <= 0.0 || avail <= 0.0) {
+            res.remainingRawDamage = rawDamageAfterEs;
+            return res;
+        }
+        const double diff = SafePositive(difficultyToPcMult, 1.0);
+        const double effectiveDmg = rawDamageAfterEs * diff;
+        const double absorbed = std::min(avail, effectiveDmg * ratio);
+        res.absorbedMagicka = absorbed;
         res.remainingRawDamage = std::max(0.0, (effectiveDmg - absorbed) / diff);
         return res;
     }

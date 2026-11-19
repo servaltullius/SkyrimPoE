@@ -20,7 +20,7 @@
         <span class="hud-lv-badge">유배자 Lv.<span id="hud-level">1</span></span>
         <span id="hud-xp-text">0 / 1000</span>
         <span id="hud-pts-badge" class="hud-pts-badge hidden">+0P</span>
-        <span class="hud-hint">[K] 스킬</span>
+        <span class="hud-hint">[K] 스킬 · [P] 패시브</span>
       </div>
       <div class="hud-track">
         <div id="hud-xp-fill" class="hud-fill hud-fill-xp" style="width: 0%"></div>
@@ -28,20 +28,25 @@
     </div>
   </div>
 
-  <!-- K 키로 여는 최소 스킬 화면 (포커스 획득 시에만 표시) -->
+  <!-- 단일 Prisma UI 뷰 패널 (상단 탭: 스킬 및 젬 ↔ 패시브 트리, 결정 155) -->
   <div id="panel-backdrop" class="panel-backdrop hidden">
     <div class="panel-shell">
       <header class="panel-header">
         <div class="panel-title-group">
-          <h1 class="panel-title">SKYRIM POE — 스킬 및 젬</h1>
-          <span id="panel-header-meta" class="panel-meta">유배자 Lv.1 · 사이온</span>
+          <h1 class="panel-title">SKYRIM POE</h1>
+          <nav class="panel-tabs" aria-label="메인 탭">
+            <button id="tab-btn-skills" class="tab-btn active" type="button">스킬 및 젬 [K]</button>
+            <button id="tab-btn-tree" class="tab-btn" type="button">패시브 트리 [P]</button>
+          </nav>
+          <span id="panel-header-meta" class="panel-meta">유배자 Lv.1 · 미선택</span>
         </div>
-        <button id="btn-close" class="btn-close" type="button">닫기 [Esc / K]</button>
+        <button id="btn-close" class="btn-close" type="button">닫기 [Esc]</button>
       </header>
 
       <div id="panel-toast" class="panel-toast hidden"></div>
 
-      <div class="panel-body">
+      <!-- 탭 1: 스킬 및 젬 -->
+      <div id="tab-panel-skills" class="panel-body">
         <section class="panel-col panel-col-slots">
           <div class="section-head">
             <h2>스킬 칸 (9칸)</h2>
@@ -67,9 +72,95 @@
           </div>
         </section>
       </div>
+
+      <!-- 탭 2: 패시브 스킬 트리 (Canvas 2D + 타일 캐시 + HTML 오버레이) -->
+      <div id="tab-panel-tree" class="tree-layout hidden">
+        <div class="tree-toolbar">
+          <div class="tree-points-group">
+            <span class="tree-pill tree-pill-normal">패시브 <strong id="tree-pts-normal">0</strong></span>
+            <span class="tree-pill tree-pill-asc">전직 <strong id="tree-pts-asc">0 / 0</strong></span>
+            <span id="tree-class-pill" class="tree-pill tree-pill-class">클래스 미선택</span>
+          </div>
+
+          <div class="tree-asc-controls">
+            <select id="tree-asc-select" class="link-select" title="전직 선택">
+              <option value="">전직 선택...</option>
+            </select>
+            <button id="btn-tree-focus-asc" class="btn" type="button" title="전직 트리 위치로 이동">전직 보기</button>
+            <button id="btn-tree-clear-asc" class="btn" type="button" title="전직 해제">전직 해제</button>
+          </div>
+
+          <div class="tree-search-box">
+            <input id="tree-search-input" class="tree-search-input" type="text" placeholder="노드·스탯 검색 (한글/영문)..." autocomplete="off" />
+            <span id="tree-search-count" class="tree-search-count"></span>
+            <button id="btn-tree-search-next" class="btn" type="button" title="다음 검색 결과로 이동">다음</button>
+            <button id="btn-tree-search-clear" class="btn" type="button" title="검색 지우기">✕</button>
+          </div>
+
+          <div class="tree-actions-group">
+            <button id="btn-tree-center" class="btn" type="button">시작점</button>
+            <button id="btn-tree-change-class" class="btn" type="button">클래스 변경</button>
+            <button id="btn-tree-refund-asc" class="btn btn-danger" type="button">전직 회수</button>
+            <button id="btn-tree-refund-all" class="btn btn-danger" type="button">전체 회수</button>
+          </div>
+        </div>
+
+        <div class="tree-workspace">
+          <div id="tree-canvas-wrap" class="tree-canvas-wrap">
+            <canvas id="tree-canvas"></canvas>
+            <div id="tree-tooltip" class="tree-tooltip hidden"></div>
+            <div class="tree-canvas-help">좌클릭: 최단 경로 할당 · 우클릭: 회수 · 드래그: 이동 · 휠: 확대/축소</div>
+
+            <!-- 클래스 선택 모달 -->
+            <div id="tree-class-modal" class="tree-modal hidden">
+              <div class="tree-modal-card tree-class-modal-card">
+                <div class="tree-modal-head">
+                  <h2>시작 클래스 선택</h2>
+                  <button id="btn-class-modal-close" class="btn" type="button">닫기</button>
+                </div>
+                <p class="tree-modal-sub">7개 클래스 중 하나를 선택하세요. 할당 노드가 0개일 때 언제든 변경할 수 있습니다.</p>
+                <div id="tree-class-grid" class="tree-class-grid"></div>
+              </div>
+            </div>
+
+            <!-- 마스터리 효과 선택 모달 -->
+            <div id="tree-mastery-modal" class="tree-modal hidden">
+              <div class="tree-modal-card tree-mastery-modal-card">
+                <div class="tree-modal-head">
+                  <h2 id="tree-mastery-title">마스터리 선택</h2>
+                  <button id="btn-mastery-modal-close" class="btn" type="button">닫기</button>
+                </div>
+                <p class="tree-modal-sub">1 패시브 포인트를 소비합니다. 동일한 마스터리 효과는 트리 전체에서 1번만 선택할 수 있습니다.</p>
+                <div id="tree-mastery-list" class="tree-mastery-list"></div>
+                <div class="tree-modal-foot">
+                  <button id="btn-mastery-refund" class="btn btn-danger hidden" type="button">이 마스터리 회수</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <aside class="tree-sidebar">
+            <div class="side-block tree-side-block">
+              <div class="section-head">
+                <h2>능력치 요약</h2>
+              </div>
+              <div id="tree-stats-grid" class="stats-grid tree-stats-grid"></div>
+            </div>
+            <div class="side-block tree-side-block-compact">
+              <div class="section-head">
+                <h2>키스톤 &amp; 전직 이정표</h2>
+              </div>
+              <div id="tree-keystones-box" class="tree-keystones-box"></div>
+              <div id="tree-milestones-box" class="tree-milestones-box"></div>
+            </div>
+          </aside>
+        </div>
+      </div>
     </div>
   </div>
 
+  <script src="tree-data.js"></script>
   <script src="app.js"></script>
+  <script src="tree.js"></script>
 </body>
 </html>

@@ -22,6 +22,12 @@ namespace SkyrimPoE::Core
         double remainingRawDamage = 0.0;  // 엔진(난이도 배율 적용 전)에 넘길 잔여 피해
     };
 
+    struct MindOverMatterAbsorbResult
+    {
+        double absorbedMagicka = 0.0;     // 주 갱신 스레드에서 kMagicka에서 차감할 양
+        double remainingRawDamage = 0.0;  // 엔진(난이도 배율 적용 전)에 넘길 잔여 피해
+    };
+
     // 결정 62, 64, 92, 93, 142, 143: 주는 피해(타격당) 환산
     [[nodiscard]] double ExpectedHitDamage(
         std::uint32_t exileLevel,
@@ -91,7 +97,13 @@ namespace SkyrimPoE::Core
         double poeMaxLife,
         std::uint32_t exileLevel,
         const DataPack& pack,
-        const Config& config) noexcept;
+        const Config& config,
+        bool chaosInoculation = false) noexcept;
+
+    [[nodiscard]] double ComputeBloodMagicLifeCost(
+        double skyrimMaxHealth,
+        double poeMaxLife,
+        double poeSkillCost) noexcept;
 
     [[nodiscard]] double ComputeSkyrimMaxEnergyShield(
         double baseSkyrimMaxHealth,
@@ -115,4 +127,11 @@ namespace SkyrimPoE::Core
         double difficultyToPcMult,
         bool isChaos,
         double currentEnergyShield) noexcept;
+
+    // 3단계 Mind Over Matter: ES 이후 잔여 피해에 대해 난이도 배율을 보정해 매지카에서 선차감한다.
+    [[nodiscard]] MindOverMatterAbsorbResult AbsorbWithMindOverMatter(
+        double rawDamageAfterEs,
+        double difficultyToPcMult,
+        double momRatio,
+        double availableMagicka) noexcept;
 }

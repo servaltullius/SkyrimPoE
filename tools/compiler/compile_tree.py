@@ -1,0 +1,847 @@
+#!/usr/bin/env python3
+"""Compile PoB 2.68.1 TreeData/3_30/tree.lua into data/packs/tree_3_30.json.
+
+Implements Stage 3 S3-M1 (Decisions 6, 8, 10, 27, 104, 151-155):
+- Filters to 7 base classes + 19 base ascendancies (matched by internal id: e.g. Raider -> Warden).
+- Excludes root, ungrouped, isProxy (Putrid Seed), isBloodline (147), isBlighted (30),
+  non-base ascendancies, and unreachable non-mastery orphan nodes (e.g. 7 Forbidden Flame/Flesh notables).
+- Separates visualEdges from rule adjacency; keeps classStart neighbors in classes[*].startNeighbors
+  (reading both `out` and `in` so Scion's 6 `in`-only neighbors are preserved, while blocking
+  cross-class traversal through other classes' start nodes).
+- Preserves isMultipleChoice (7 hubs), isMultipleChoiceOption (20 options), choiceParentId,
+  grantedPassivePoints (18 Ascendant nodes), and grantsClassStart (6 Path of the ... nodes).
+- Splits multiline `\n` stat strings on both nodes and masteryEffects.
+- Normalizes masteryEffects into a top-level table (unique effectId -> stats/statsKo).
+- Merges Korean display names and stat descriptions from Korean PoB CSVs when available.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import re
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+# ---- Constants ----
+KIND_NORMAL = 0
+KIND_NOTABLE = 1
+KIND_KEYSTONE = 2
+KIND_MASTERY = 3
+KIND_SOCKET = 4
+KIND_CLASS_START = 5
+KIND_ASCEND_START = 6
+
+ANGLES_16 = [0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 300, 315, 330]
+ANGLES_40 = [
+    0, 10, 20, 30, 40, 45, 50, 60, 70, 80, 90, 100, 110, 120, 130, 135, 140, 150, 160, 170,
+    180, 190, 200, 210, 220, 225, 230, 240, 250, 260, 270, 280, 290, 300, 310, 315, 320, 330, 340, 350,
+]
+
+BASE_ASCENDANCY_IDS = (
+    "Ascendant",
+    "Juggernaut", "Berserker", "Chieftain",
+    "Raider", "Deadeye", "Pathfinder",
+    "Occultist", "Elementalist", "Necromancer",
+    "Slayer", "Gladiator", "Champion",
+    "Inquisitor", "Hierophant", "Guardian",
+    "Assassin", "Trickster", "Saboteur",
+)
+BASE_ASCENDANCY_SET = frozenset(BASE_ASCENDANCY_IDS)
+
+CLASS_KO_NAMES = {
+    "Scion": "사이온",
+    "Marauder": "머라우더",
+    "Ranger": "레인저",
+    "Witch": "위치",
+    "Duelist": "듀얼리스트",
+    "Templar": "템플러",
+    "Shadow": "섀도우",
+}
+
+ASCENDANCY_KO_NAMES = {
+    "Ascendant": "어센던트",
+    "Juggernaut": "저거넛",
+    "Berserker": "버서커",
+    "Chieftain": "치프틴",
+    "Raider": "워든",
+    "Deadeye": "데드아이",
+    "Pathfinder": "패스파인더",
+    "Occultist": "오컬티스트",
+    "Elementalist": "엘리멘탈리스트",
+    "Necromancer": "네크로맨서",
+    "Slayer": "슬레이어",
+    "Gladiator": "글래디에이터",
+    "Champion": "챔피언",
+    "Inquisitor": "인퀴지터",
+    "Hierophant": "하이로펀트",
+    "Guardian": "가디언",
+    "Assassin": "어쌔신",
+    "Trickster": "트릭스터",
+    "Saboteur": "사보추어",
+}
+
+PATH_START_RE = re.compile(r"Can Allocate Passives from the (\w+)'s starting point", re.IGNORECASE)
+
+DEFERRED_KEYWORDS = (
+    "flask", "totem", "minion", "zombie", "spectre", "golem", "skeleton", "raging spirit",
+    "trap", "mine", "brand", "warcry", "warcries", "banner", "offering", "link skill",
+    "tincture", "graft", "animate", "phantasm", "herald", "aura", "reservation",
+    "curse", "hex", "mark", "bleed", "bleeding", "poison", "ignite", "impale", "corrupted blood",
+    "leech", "ward", "fortif", "rage", "impaling",
+)
+
+SUPPORTED_HINT_KEYWORDS = (
+    "strength", "dexterity", "intelligence", "all attributes",
+    "maximum life", "maximum mana", "maximum energy shield",
+    "energy shield recharge", "armour", "evasion", "global defences",
+    "fire resistance", "cold resistance", "lightning resistance", "chaos resistance",
+    "elemental resistance", "physical damage reduction",
+    "chance to block", "suppress spell damage", "suppressed spell damage",
+    "physical damage", "melee damage", "attack damage", "weapon damage",
+    "elemental damage", "fire damage", "cold damage", "lightning damage",
+    "spell damage", "area damage", "increased damage",
+    "attack speed", "cast speed", "critical strike", "area of effect",
+    "mana cost", "cost efficiency", "endurance charge", "frenzy charge", "power charge",
+    "removes all mana", "chaos damage", "never deal critical", "converts all evasion",
+    "cannot evade", "cannot be stunned", "taken from mana before life",
+    "pain attunement", "iron will", "can allocate passives from",
+    "grants 1 passive skill point", "grants 2 passive skill points",
+)
+
+
+# ---- Lua table parser ----
+class LuaTableParser:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.pos = 0
+        self.length = len(text)
+
+    def parse(self) -> Any:
+        self._skip()
+        if self.text.startswith("return", self.pos):
+            after = self.pos + len("return")
+            if after >= self.length or not (self.text[after].isalnum() or self.text[after] == "_"):
+                self.pos = after
+        val = self._value()
+        self._skip()
+        if self.pos != self.length:
+            raise ValueError(f"Trailing unparsed Lua data at pos {self.pos}")
+        return val
+
+    def _skip(self) -> None:
+        text, n = self.text, self.length
+        while self.pos < n:
+            c = text[self.pos]
+            if c in " \t\r\n":
+                self.pos += 1
+            elif text.startswith("--", self.pos):
+                end = text.find("\n", self.pos)
+                self.pos = n if end < 0 else end + 1
+            else:
+                return
+
+    def _value(self) -> Any:
+        self._skip()
+        if self.pos >= self.length:
+            raise ValueError("Unexpected EOF while parsing Lua value")
+        c = self.text[self.pos]
+        if c == "{":
+            return self._table()
+        if c in ('"', "'"):
+            return self._string(c)
+        if self.text.startswith("true", self.pos) and self._word_boundary(4):
+            self.pos += 4
+            return True
+        if self.text.startswith("false", self.pos) and self._word_boundary(5):
+            self.pos += 5
+            return False
+        if self.text.startswith("nil", self.pos) and self._word_boundary(3):
+            self.pos += 3
+            return None
+        return self._number()
+
+    def _word_boundary(self, length: int) -> bool:
+        nxt = self.pos + length
+        if nxt >= self.length:
+            return True
+        ch = self.text[nxt]
+        return not (ch.isalnum() or ch == "_")
+
+    def _string(self, quote: str) -> str:
+        text = self.text
+        self.pos += 1
+        parts: list[str] = []
+        while True:
+            if self.pos >= self.length:
+                raise ValueError("Unterminated Lua string")
+            c = text[self.pos]
+            if c == quote:
+                self.pos += 1
+                return "".join(parts)
+            if c == "\\":
+                self.pos += 1
+                if self.pos >= self.length:
+                    raise ValueError("Unterminated escape sequence in Lua string")
+                e = text[self.pos]
+                if e.isdigit():
+                    digits = ""
+                    while len(digits) < 3 and self.pos < self.length and text[self.pos].isdigit():
+                        digits += text[self.pos]
+                        self.pos += 1
+                    parts.append(chr(int(digits)))
+                    continue
+                parts.append({"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'"}.get(e, e))
+                self.pos += 1
+            else:
+                end = self.pos
+                while end < self.length and text[end] != quote and text[end] != "\\":
+                    end += 1
+                parts.append(text[self.pos:end])
+                self.pos = end
+
+    def _number(self) -> int | float:
+        text = self.text
+        start = self.pos
+        while self.pos < self.length and (text[self.pos].isalnum() or text[self.pos] in "+-."):
+            self.pos += 1
+        token = text[start:self.pos]
+        if not token:
+            raise ValueError(f"Unreadable token at {start}: {text[start:start + 20]!r}")
+        try:
+            return int(token)
+        except ValueError:
+            return float(token)
+
+    def _table(self) -> Any:
+        text = self.text
+        self.pos += 1
+        keyed: dict[Any, Any] = {}
+        positional: list[Any] = []
+        while True:
+            self._skip()
+            if self.pos >= self.length:
+                raise ValueError("Unterminated Lua table")
+            c = text[self.pos]
+            if c == "}":
+                self.pos += 1
+                break
+            if c == "[":
+                self.pos += 1
+                key = self._value()
+                self._skip()
+                if text[self.pos] != "]":
+                    raise ValueError(f"Expected ']' at pos {self.pos}")
+                self.pos += 1
+                self._skip()
+                if text[self.pos] != "=":
+                    raise ValueError(f"Expected '=' at pos {self.pos}")
+                self.pos += 1
+                keyed[key] = self._value()
+            elif c.isalpha() or c == "_":
+                end = self.pos
+                while end < self.length and (text[end].isalnum() or text[end] == "_"):
+                    end += 1
+                name = text[self.pos:end]
+                look = end
+                while look < self.length and text[look] in " \t\r\n":
+                    look += 1
+                if look < self.length and text[look] == "=" and name not in ("true", "false", "nil"):
+                    self.pos = look + 1
+                    keyed[name] = self._value()
+                else:
+                    positional.append(self._value())
+            else:
+                positional.append(self._value())
+            self._skip()
+            if self.pos < self.length and text[self.pos] in ",;":
+                self.pos += 1
+        if keyed and positional:
+            for idx, val in enumerate(positional, start=1):
+                keyed.setdefault(idx, val)
+            return keyed
+        return keyed if keyed else positional
+
+
+def as_list(val: Any) -> list[Any]:
+    if val is None:
+        return []
+    if isinstance(val, dict):
+        return [val[k] for k in sorted(val, key=lambda x: (not isinstance(x, int), x))]
+    return list(val)
+
+
+def orbit_angles(count: int) -> list[float]:
+    if count == 16:
+        degrees = ANGLES_16
+    elif count == 40:
+        degrees = ANGLES_40
+    else:
+        degrees = [360.0 * i / count for i in range(count + 1)]
+    return [math.radians(d) for d in degrees]
+
+
+def split_stat_lines(raw_stats: list[Any]) -> list[str]:
+    out: list[str] = []
+    for entry in raw_stats:
+        if not isinstance(entry, str):
+            continue
+        for part in entry.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            cleaned = part.strip()
+            if cleaned:
+                out.append(cleaned)
+    return out
+
+
+def load_korean_maps(ko_dir: Path | None) -> tuple[dict[str, str], dict[str, str]]:
+    """Load Korean node-name and stat-description dictionaries using strict csv.reader."""
+    dn_map: dict[str, str] = {}
+    sd_map: dict[str, str] = {}
+    if not ko_dir or not ko_dir.is_dir():
+        return dn_map, sd_map
+
+    def read_csv_into(path: Path, target: dict[str, str]) -> None:
+        if not path.is_file():
+            return
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            for row in csv.reader(f):
+                if len(row) < 2:
+                    continue
+                en = row[0].strip()
+                ko = row[1].strip()
+                if en and ko and en not in target:
+                    target[en] = ko
+
+    read_csv_into(ko_dir / "tree_dn.csv", dn_map)
+    read_csv_into(ko_dir / "tree_sd.csv", sd_map)
+    read_csv_into(ko_dir / "passiveTree.csv", sd_map)
+    read_csv_into(ko_dir / "3.26_용병리그_번역추가.csv", sd_map)
+    read_csv_into(ko_dir / "statDescriptions.csv", sd_map)
+
+    # Also split any " / "-joined entries into individual line fallbacks when lengths match
+    extras: dict[str, str] = {}
+    for en, ko in sd_map.items():
+        if " / " in en and " / " in ko:
+            en_parts = [p.strip() for p in en.split(" / ")]
+            ko_parts = [p.strip() for p in ko.split(" / ")]
+            if len(en_parts) == len(ko_parts):
+                for ep, kp in zip(en_parts, ko_parts):
+                    if ep and kp and ep not in sd_map and ep not in extras:
+                        extras[ep] = kp
+    sd_map.update(extras)
+    return dn_map, sd_map
+
+
+def translate_stats(en_lines: list[str], sd_map: dict[str, str]) -> list[str]:
+    if not en_lines:
+        return []
+    # Check joined " / " key first if multi-line
+    if len(en_lines) > 1:
+        joined = " / ".join(en_lines)
+        if joined in sd_map:
+            ko_parts = [p.strip() for p in sd_map[joined].split(" / ")]
+            if len(ko_parts) == len(en_lines):
+                return ko_parts
+    out: list[str] = []
+    for line in en_lines:
+        if line in sd_map:
+            out.append(sd_map[line])
+        else:
+            out.append(line)
+    return out
+
+
+def classify_icon_category(kind: int, name: str, stats: list[str], asc_name: str) -> str:
+    if kind == KIND_KEYSTONE:
+        return "keystone"
+    if kind == KIND_MASTERY:
+        return "mastery"
+    if kind == KIND_SOCKET:
+        return "socket"
+    if kind == KIND_CLASS_START:
+        return "class_start"
+    if kind == KIND_ASCEND_START or asc_name:
+        return "ascendancy"
+    blob = (name + " " + " ".join(stats)).lower()
+    if "maximum life" in blob or "life regeneration" in blob:
+        return "life"
+    if "energy shield" in blob:
+        return "es"
+    if "maximum mana" in blob or "mana regeneration" in blob or "mana cost" in blob:
+        return "mana"
+    if "fire resistance" in blob or "cold resistance" in blob or "lightning resistance" in blob or "elemental resistance" in blob or "chaos resistance" in blob:
+        return "resist"
+    if "block" in blob or "suppress" in blob:
+        return "block"
+    if "armour" in blob:
+        return "armour"
+    if "evasion" in blob:
+        return "evasion"
+    if "critical" in blob:
+        return "crit"
+    if "attack speed" in blob or "cast speed" in blob:
+        return "speed"
+    if "area of effect" in blob or "area damage" in blob:
+        return "area"
+    if "endurance charge" in blob or "frenzy charge" in blob or "power charge" in blob:
+        return "charge"
+    if "spell damage" in blob or "elemental damage" in blob or "cold damage" in blob or "lightning damage" in blob or "fire damage" in blob:
+        return "spell"
+    if "melee" in blob or "physical damage" in blob or "sword" in blob or "axe" in blob or "mace" in blob or "attack damage" in blob:
+        return "melee"
+    if "to strength" in blob:
+        return "str"
+    if "to dexterity" in blob:
+        return "dex"
+    if "to intelligence" in blob:
+        return "int"
+    return "generic"
+
+
+def is_node_deferred(kind: int, stats: list[str], is_mc: bool) -> bool:
+    if kind == KIND_SOCKET:
+        return True
+    if kind in (KIND_CLASS_START, KIND_ASCEND_START, KIND_MASTERY) or is_mc:
+        return False
+    if not stats:
+        return False
+    any_supported_hint = False
+    any_deferred_hint = False
+    for line in stats:
+        low = line.lower()
+        line_deferred = any(k in low for k in DEFERRED_KEYWORDS)
+        if line_deferred:
+            any_deferred_hint = True
+        elif any(k in low for k in SUPPORTED_HINT_KEYWORDS):
+            any_supported_hint = True
+    return any_deferred_hint and not any_supported_hint
+
+
+def node_kind(node: dict[str, Any]) -> int:
+    if node.get("classStartIndex") is not None:
+        return KIND_CLASS_START
+    if node.get("isAscendancyStart"):
+        return KIND_ASCEND_START
+    if node.get("isMastery"):
+        return KIND_MASTERY
+    if node.get("isJewelSocket"):
+        return KIND_SOCKET
+    if node.get("isKeystone"):
+        return KIND_KEYSTONE
+    if node.get("isNotable"):
+        return KIND_NOTABLE
+    return KIND_NORMAL
+
+
+def compile_tree(pob_dir: Path, ko_dir: Path | None, version: str = "3_30") -> dict[str, Any]:
+    tree_path = pob_dir / "TreeData" / version / "tree.lua"
+    if not tree_path.is_file():
+        raise FileNotFoundError(f"PoB tree.lua not found: {tree_path}")
+
+    raw_tree = LuaTableParser(tree_path.read_text(encoding="utf-8")).parse()
+    dn_map, sd_map = load_korean_maps(ko_dir)
+
+    constants = raw_tree["constants"]
+    radii = as_list(constants["orbitRadii"])
+    angles = [orbit_angles(int(c)) for c in as_list(constants["skillsPerOrbit"])]
+    groups = raw_tree["groups"]
+    raw_nodes = raw_tree["nodes"]
+
+    # 1. Extract 7 base classes and 19 base ascendancies (matched strictly by ascendancy.id)
+    class_name_to_id: dict[str, int] = {}
+    classes_out: list[dict[str, Any]] = []
+    asc_display_name: dict[str, str] = {}
+    asc_class_id: dict[str, int] = {}
+    for cid, cls in enumerate(as_list(raw_tree["classes"])):
+        cname = str(cls["name"])
+        class_name_to_id[cname.lower()] = cid
+        asc_list = []
+        for a in as_list(cls.get("ascendancies")):
+            aid = str(a.get("id") or a.get("name") or "")
+            aname = str(a.get("name") or aid)
+            if aid not in BASE_ASCENDANCY_SET:
+                continue
+            asc_display_name[aid] = aname
+            asc_class_id[aid] = cid
+            asc_list.append({
+                "id": aid,
+                "name": aname,
+                "nameKo": ASCENDANCY_KO_NAMES.get(aid, aname),
+                "startNodeId": 0,
+            })
+        classes_out.append({
+            "id": cid,
+            "name": cname,
+            "nameKo": CLASS_KO_NAMES.get(cname, cname),
+            "baseStr": int(cls.get("base_str", 20)),
+            "baseDex": int(cls.get("base_dex", 20)),
+            "baseInt": int(cls.get("base_int", 20)),
+            "startNodeId": 0,
+            "startNeighbors": [],
+            "ascendancies": asc_list,
+        })
+
+    # 2. First filter pass: placed, non-proxy, non-bloodline, non-blighted, main or 19 base ascendancies
+    cand_nodes: dict[int, dict[str, Any]] = {}
+    for k, n in raw_nodes.items():
+        if not isinstance(n, dict) or k == "root":
+            continue
+        if "group" not in n or n.get("isProxy") or n.get("isBloodline") or n.get("isBlighted"):
+            continue
+        asc = str(n.get("ascendancyName") or "")
+        if asc and asc not in BASE_ASCENDANCY_SET:
+            continue
+        nid = int(k)
+        cand_nodes[nid] = n
+
+    # 3. Build raw symmetric adjacency (from BOTH `out` AND `in`, matching ascendancyName, excluding mastery)
+    raw_adj: dict[int, set[int]] = {nid: set() for nid in cand_nodes}
+    for nid, n in cand_nodes.items():
+        if n.get("isMastery"):
+            continue
+        asc_a = str(n.get("ascendancyName") or "")
+        nbrs = as_list(n.get("out")) + as_list(n.get("in"))
+        for raw_m in nbrs:
+            try:
+                mid = int(raw_m)
+            except (TypeError, ValueError):
+                continue
+            if mid == nid or mid not in cand_nodes:
+                continue
+            m = cand_nodes[mid]
+            if m.get("isMastery"):
+                continue
+            asc_b = str(m.get("ascendancyName") or "")
+            if asc_a != asc_b:
+                continue
+            raw_adj[nid].add(mid)
+            raw_adj[mid].add(nid)
+
+    # 4. Identify classStart nodes, classStartNeighbors, and 19 ascendancyStart nodes
+    class_start_ids: set[int] = set()
+    asc_start_ids: dict[str, int] = {}
+    for nid, n in cand_nodes.items():
+        if n.get("classStartIndex") is not None:
+            cid = int(n["classStartIndex"])
+            if 0 <= cid < len(classes_out):
+                classes_out[cid]["startNodeId"] = nid
+                class_start_ids.add(nid)
+        if n.get("isAscendancyStart"):
+            asc = str(n.get("ascendancyName") or "")
+            if asc in BASE_ASCENDANCY_SET:
+                asc_start_ids[asc] = nid
+
+    for cls in classes_out:
+        sid = cls["startNodeId"]
+        if sid:
+            cls["startNeighbors"] = sorted(
+                mid for mid in raw_adj.get(sid, set())
+                if mid not in class_start_ids and not cand_nodes[mid].get("ascendancyName")
+            )
+        for asc in cls["ascendancies"]:
+            asc["startNodeId"] = asc_start_ids.get(asc["id"], 0)
+
+    # 5. Reachability BFS: exclude classStart nodes as intermediate vertices!
+    reachable: set[int] = set(class_start_ids)
+    q: deque[int] = deque()
+    for cls in classes_out:
+        for nb in cls["startNeighbors"]:
+            if nb not in reachable:
+                reachable.add(nb)
+                q.append(nb)
+    for sid in asc_start_ids.values():
+        if sid and sid not in reachable:
+            reachable.add(sid)
+            q.append(sid)
+
+    while q:
+        cur = q.popleft()
+        for nxt in raw_adj.get(cur, set()):
+            if nxt in class_start_ids or nxt in reachable:
+                continue
+            reachable.add(nxt)
+            q.append(nxt)
+
+    # Keep all reachable nodes + mastery nodes whose group has >= 1 reachable main-tree notable
+    group_notables: dict[int, list[int]] = {}
+    for nid in reachable:
+        n = cand_nodes[nid]
+        if n.get("isNotable") and not n.get("ascendancyName"):
+            g = int(n["group"])
+            group_notables.setdefault(g, []).append(nid)
+    for g in group_notables:
+        group_notables[g].sort()
+
+    kept_ids: list[int] = []
+    for nid in sorted(cand_nodes):
+        n = cand_nodes[nid]
+        if n.get("isMastery"):
+            g = int(n["group"])
+            if g in group_notables and group_notables[g]:
+                kept_ids.append(nid)
+        elif nid in reachable:
+            kept_ids.append(nid)
+
+    kept_set = set(kept_ids)
+    id_to_idx = {nid: idx for idx, nid in enumerate(kept_ids)}
+
+    # 6. Normalize masteryEffects + assemble nodes
+    mastery_effects_table: dict[str, dict[str, Any]] = {}
+    nodes_out: list[dict[str, Any]] = []
+    min_x = float("inf")
+    max_x = float("-inf")
+    min_y = float("inf")
+    max_y = float("-inf")
+    ko_name_hits = 0
+    stat_lines_total = 0
+    stat_lines_ko = 0
+
+    for nid in kept_ids:
+        n = cand_nodes[nid]
+        g_id = int(n["group"])
+        g_obj = groups[g_id]
+        orbit = int(n.get("orbit", 0))
+        orbit_idx = int(n.get("orbitIndex", 0))
+        r = float(radii[orbit]) if orbit < len(radii) else 0.0
+        orb_angles = angles[orbit] if orbit < len(angles) else [0.0]
+        ang = orb_angles[orbit_idx] if orbit_idx < len(orb_angles) else 0.0
+        x = round(float(g_obj["x"]) + r * math.sin(ang), 2)
+        y = round(float(g_obj["y"]) - r * math.cos(ang), 2)
+        min_x = min(min_x, x)
+        max_x = max(max_x, x)
+        min_y = min(min_y, y)
+        max_y = max(max_y, y)
+
+        kind = node_kind(n)
+        asc_id = str(n.get("ascendancyName") or "")
+        en_name = str(n.get("name") or "")
+        if kind == KIND_CLASS_START:
+            cid = int(n["classStartIndex"])
+            en_name = classes_out[cid]["name"]
+            ko_name = classes_out[cid]["nameKo"]
+        elif kind == KIND_ASCEND_START and asc_id in ASCENDANCY_KO_NAMES:
+            en_name = asc_display_name.get(asc_id, en_name)
+            ko_name = ASCENDANCY_KO_NAMES[asc_id]
+        else:
+            ko_name = dn_map.get(en_name, en_name)
+            if en_name in dn_map:
+                ko_name_hits += 1
+
+        en_stats = split_stat_lines(as_list(n.get("stats")))
+        ko_stats = translate_stats(en_stats, sd_map)
+        stat_lines_total += len(en_stats)
+        stat_lines_ko += sum(1 for e, k in zip(en_stats, ko_stats) if e != k)
+
+        is_mc = bool(n.get("isMultipleChoice", False))
+        is_mco = bool(n.get("isMultipleChoiceOption", False))
+        choice_parent = 0
+        if is_mco:
+            for nb in sorted(raw_adj.get(nid, set())):
+                if nb in kept_set and cand_nodes[nb].get("isMultipleChoice"):
+                    choice_parent = nb
+                    break
+
+        grants_class_start = -1
+        for line in en_stats:
+            m = PATH_START_RE.search(line)
+            if m:
+                cname_low = m.group(1).lower()
+                if cname_low in class_name_to_id:
+                    grants_class_start = class_name_to_id[cname_low]
+                    break
+
+        granted_pts = int(n.get("grantedPassivePoints", 0) or 0)
+
+        effect_ids: list[int] = []
+        if kind == KIND_MASTERY:
+            for eff in as_list(n.get("masteryEffects")):
+                if not isinstance(eff, dict) or "effect" not in eff:
+                    continue
+                eid = int(eff["effect"])
+                effect_ids.append(eid)
+                ekey = str(eid)
+                if ekey not in mastery_effects_table:
+                    e_stats = split_stat_lines(as_list(eff.get("stats")))
+                    e_ko = translate_stats(e_stats, sd_map)
+                    mastery_effects_table[ekey] = {
+                        "id": eid,
+                        "stats": e_stats,
+                        "statsKo": e_ko,
+                    }
+
+        # Rule adjacency excludes classStart and mastery nodes
+        rule_nbrs: list[int] = []
+        if kind not in (KIND_CLASS_START, KIND_MASTERY):
+            rule_nbrs = sorted(
+                mid for mid in raw_adj.get(nid, set())
+                if mid in kept_set and mid not in class_start_ids and not cand_nodes[mid].get("isMastery")
+            )
+
+        icon_cat = classify_icon_category(kind, en_name, en_stats, asc_id)
+        deferred = is_node_deferred(kind, en_stats, is_mc)
+
+        node_entry: dict[str, Any] = {
+            "id": nid,
+            "k": kind,
+            "g": g_id,
+            "o": orbit,
+            "x": x,
+            "y": y,
+            "name": en_name,
+            "nameKo": ko_name,
+            "cat": icon_cat,
+            "adj": rule_nbrs,
+        }
+        if en_stats:
+            node_entry["stats"] = en_stats
+            node_entry["statsKo"] = ko_stats
+        if asc_id:
+            node_entry["asc"] = asc_id
+        if is_mc:
+            node_entry["mc"] = True
+        if is_mco:
+            node_entry["mco"] = True
+            node_entry["mcParent"] = choice_parent
+        if granted_pts > 0:
+            node_entry["grantPts"] = granted_pts
+        if grants_class_start >= 0:
+            node_entry["grantStart"] = grants_class_start
+        if effect_ids:
+            node_entry["effects"] = effect_ids
+        if deferred:
+            node_entry["deferred"] = True
+
+        nodes_out.append(node_entry)
+
+    # 7. Build visual edges (includes classStart spokes for rendering; deduped unordered pairs)
+    # Also compute arc metadata for same-group, same-orbit edges
+    visual_edges: list[list[Any]] = []
+    seen_pairs: set[tuple[int, int]] = set()
+    for nid in kept_ids:
+        n = cand_nodes[nid]
+        if n.get("isMastery"):
+            continue
+        asc_a = str(n.get("ascendancyName") or "")
+        for mid in sorted(raw_adj.get(nid, set())):
+            if mid not in kept_set:
+                continue
+            pair = (nid, mid) if nid < mid else (mid, nid)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            m = cand_nodes[mid]
+            if m.get("isMastery"):
+                continue
+            ia = id_to_idx[pair[0]]
+            ib = id_to_idx[pair[1]]
+            na = cand_nodes[pair[0]]
+            nb = cand_nodes[pair[1]]
+            is_arc = (
+                int(na["group"]) == int(nb["group"])
+                and int(na.get("orbit", 0)) == int(nb.get("orbit", 0))
+                and int(na.get("orbit", 0)) > 0
+                and na.get("classStartIndex") is None
+                and nb.get("classStartIndex") is None
+            )
+            if is_arc:
+                g_id = int(na["group"])
+                orb = int(na["orbit"])
+                g_obj = groups[g_id]
+                r = float(radii[orb])
+                orb_ang = angles[orb]
+                a1 = orb_ang[int(na["orbitIndex"])]
+                a2 = orb_ang[int(nb["orbitIndex"])]
+                # Canvas arc uses angle from +X axis (PoE orbit 0 is -Y = -pi/2)
+                c1 = a1 - math.pi / 2.0
+                c2 = a2 - math.pi / 2.0
+                diff = (c2 - c1) % (2.0 * math.pi)
+                if diff > math.pi:
+                    c1, c2 = c2, c1
+                    diff = 2.0 * math.pi - diff
+                visual_edges.append([
+                    ia, ib, 1 if asc_a else 0,
+                    round(float(g_obj["x"]), 2),
+                    round(float(g_obj["y"]), 2),
+                    round(r, 2),
+                    round(c1, 5),
+                    round(c1 + diff, 5),
+                ])
+            else:
+                visual_edges.append([ia, ib, 1 if asc_a else 0])
+
+    # 8. Group notable mapping (JSON string keys for portability)
+    mastery_groups_out = {str(g): nids for g, nids in sorted(group_notables.items())}
+
+    out = {
+        "schemaVersion": 1,
+        "poeVersion": version,
+        "bounds": {
+            "minX": round(min_x, 2),
+            "maxX": round(max_x, 2),
+            "minY": round(min_y, 2),
+            "maxY": round(max_y, 2),
+        },
+        "classes": classes_out,
+        "masteryGroups": mastery_groups_out,
+        "masteryEffects": dict(sorted(mastery_effects_table.items(), key=lambda kv: int(kv[0]))),
+        "nodes": nodes_out,
+        "visualEdges": visual_edges,
+        "meta": {
+            "nodeCount": len(nodes_out),
+            "visualEdgeCount": len(visual_edges),
+            "masteryEffectCount": len(mastery_effects_table),
+            "koNameHits": ko_name_hits,
+            "statLinesTotal": stat_lines_total,
+            "statLinesKo": stat_lines_ko,
+        },
+    }
+    return out
+
+
+def write_tree_js_wrapper(json_path: Path, js_path: Path) -> None:
+    """Wrap compiled tree_3_30.json as `window.POE_TREE = ...;` for Prisma UI."""
+    raw = json_path.read_text(encoding="utf-8")
+    raw = raw.replace("</", "<\\/").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    js_path.parent.mkdir(parents=True, exist_ok=True)
+    js_path.write_text("window.POE_TREE = " + raw + ";\n", encoding="utf-8")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Compile PoB 3.30 passive tree to SkyrimPoE JSON/JS.")
+    parser.add_argument("--pob-dir", type=Path, default=Path(r"G:\poe\PathOfBuilding-2.68.1"))
+    parser.add_argument("--ko-dir", type=Path, default=Path(r"G:\poe\POE1 한글 POB (2025.10.31)\Data\Translate\ko-KR"))
+    parser.add_argument("--version", default="3_30")
+    parser.add_argument("--out", type=Path, default=Path("data/packs/tree_3_30.json"))
+    parser.add_argument("--wrap-only-from", type=Path, default=None,
+                        help="Skip PoB compilation and only wrap an existing tree JSON into --js-out.")
+    parser.add_argument("--js-out", type=Path, default=None,
+                        help="Optional path to write window.POE_TREE = ... JS file.")
+    args = parser.parse_args()
+
+    if args.wrap_only_from is not None:
+        if args.js_out is None:
+            raise SystemExit("--wrap-only-from requires --js-out")
+        write_tree_js_wrapper(args.wrap_only_from, args.js_out)
+        print(f"Wrapped {args.wrap_only_from} -> {args.js_out}")
+        return
+
+    data = compile_tree(args.pob_dir, args.ko_dir, args.version)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    args.out.write_text(payload, encoding="utf-8")
+    if args.js_out is not None:
+        write_tree_js_wrapper(args.out, args.js_out)
+
+    meta = data["meta"]
+    ko_pct = (100.0 * meta["statLinesKo"] / meta["statLinesTotal"]) if meta["statLinesTotal"] else 0.0
+    print(
+        f"Compiled {args.out}: nodes={meta['nodeCount']}, visualEdges={meta['visualEdgeCount']}, "
+        f"masteryEffects={meta['masteryEffectCount']}, koStats={meta['statLinesKo']}/{meta['statLinesTotal']} ({ko_pct:.1f}%)"
+    )
+
+
+if __name__ == "__main__":
+    main()

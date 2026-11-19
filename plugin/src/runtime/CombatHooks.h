@@ -48,8 +48,11 @@ namespace SkyrimPoE::Runtime
             const Core::DataPack* dataPack,
             const Core::Config* config);
 
-        // 주 갱신 스레드 프레임 콜백에서 호출: 최대 체력·매지카·ES 동기화 및 ES 재충전.
+        // 주 갱신 스레드 프레임 콜백에서 호출: 최대 체력·매지카·ES 동기화, MoM 매지카 차감, Low Life/EO 감시 및 ES 재충전.
         static void TickPlayerPools(double deltaSec, bool gamePaused);
+
+        // 3단계 Elemental Overload: 원소/스킬 치명타 발생 시 8초 원소 피해 증폭 타이머 갱신
+        static void NotifyPlayerElementalCrit() noexcept;
 
         // 현재 플레이어의 바닐라(모드 보정 제외) 최대 매지카 추정치(비용 환산용)
         [[nodiscard]] static double GetBaseSkyrimMaxMagicka(RE::PlayerCharacter* player) noexcept;

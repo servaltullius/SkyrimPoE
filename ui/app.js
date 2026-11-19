@@ -12,21 +12,54 @@
   const panelBackdrop = document.getElementById("panel-backdrop");
   const panelHeaderMeta = document.getElementById("panel-header-meta");
   const panelToast = document.getElementById("panel-toast");
+  const tabBtnSkills = document.getElementById("tab-btn-skills");
+  const tabBtnTree = document.getElementById("tab-btn-tree");
+  const tabPanelSkills = document.getElementById("tab-panel-skills");
+  const tabPanelTree = document.getElementById("tab-panel-tree");
   const targetIndicator = document.getElementById("target-indicator");
   const slotsList = document.getElementById("slots-list");
   const inventoryList = document.getElementById("inventory-list");
   const statsGrid = document.getElementById("stats-grid");
   const btnClose = document.getElementById("btn-close");
 
-  let nextReqId = 1;
+  // 검수 M4: app.js와 tree.js가 단일 공용 reqId 카운터를 공유해 탭 간 요청 번호 충돌을 방지한다.
+  let sharedReqId = 1;
+  window.poeNextReqId = () => sharedReqId++;
+  window.poeSendCommand = (payload) => {
+    if (typeof window.poeCommand === "function") {
+      window.poeCommand(JSON.stringify(payload));
+    }
+  };
+
+  let activeTab = "skills";
   let lastPanelData = null;
   let selectedTarget = null; // { mode: "equip"|"socket", slot: number, spellIdx: number, label: string }
 
   function sendCommand(payload) {
-    if (typeof window.poeCommand === "function") {
-      window.poeCommand(JSON.stringify(payload));
+    window.poeSendCommand(payload);
+  }
+
+  function applyActiveTab(tab) {
+    activeTab = tab === "tree" ? "tree" : "skills";
+    const isTree = activeTab === "tree";
+    tabBtnSkills.classList.toggle("active", !isTree);
+    tabBtnTree.classList.toggle("active", isTree);
+    tabPanelSkills.classList.toggle("hidden", isTree);
+    tabPanelTree.classList.toggle("hidden", !isTree);
+    if (window.poeTreeModule && typeof window.poeTreeModule.setActive === "function") {
+      window.poeTreeModule.setActive(isTree && !panelBackdrop.classList.contains("hidden"));
     }
   }
+
+  tabBtnSkills.onclick = () => {
+    applyActiveTab("skills");
+    sendCommand({ op: "switchTab", tab: "skills" });
+  };
+
+  tabBtnTree.onclick = () => {
+    applyActiveTab("tree");
+    sendCommand({ op: "switchTab", tab: "tree" });
+  };
 
   function kindBadge(kind) {
     switch (kind) {
@@ -54,7 +87,6 @@
       return;
     }
     if (selectedTarget.mode === "equip") {
-      // 빈 칸에 이미 스킬이 장착됐으면 선택을 해제해 실수로 덮어쓰지 않게 한다.
       if (slot.occupied) {
         selectedTarget = null;
       }
@@ -150,7 +182,7 @@
       btnUnequip.onclick = () => {
         selectedTarget = null;
         updateTargetIndicator();
-        sendCommand({ op: "unequip", reqId: nextReqId++, slot: slot.slotIndex });
+        sendCommand({ op: "unequip", reqId: window.poeNextReqId(), slot: slot.slotIndex });
       };
       actions.appendChild(btnUnequip);
       top.appendChild(actions);
@@ -162,7 +194,6 @@
           `평균 PoE 피해 ${c.avgDamage} · 치명타 ${c.critPct}% · 마나 ${c.manaCost} · 반경 ×${c.areaMult}`));
       }
 
-      // 발동 젬(CoC): 연결 공격 칸 선택기
       if (gem.kind === "trigger") {
         const linkRow = el("div", "link-row");
         linkRow.appendChild(el("span", "", "연결 공격 칸:"));
@@ -180,13 +211,12 @@
         }
         sel.value = String(slot.linkedAttackSlot);
         sel.onchange = () => {
-          sendCommand({ op: "link", reqId: nextReqId++, slot: slot.slotIndex, attackSlot: parseInt(sel.value, 10) });
+          sendCommand({ op: "link", reqId: window.poeNextReqId(), slot: slot.slotIndex, attackSlot: parseInt(sel.value, 10) });
         };
         linkRow.appendChild(sel);
         card.appendChild(linkRow);
       }
 
-      // 소켓 목록
       const children = gem.socketedGems || [];
       if (children.length > 0) {
         const box = el("div", "sockets-box");
@@ -225,7 +255,7 @@
                 selectedTarget = null;
                 updateTargetIndicator();
               }
-              sendCommand({ op: "unsocket", reqId: nextReqId++, slot: slot.slotIndex, spellIdx: -1, socketIdx: idx });
+              sendCommand({ op: "unsocket", reqId: window.poeNextReqId(), slot: slot.slotIndex, spellIdx: -1, socketIdx: idx });
             };
             spAct.appendChild(btnRemSp);
             spTop.appendChild(spAct);
@@ -253,7 +283,7 @@
                     selectedTarget = null;
                     updateTargetIndicator();
                   }
-                  sendCommand({ op: "unsocket", reqId: nextReqId++, slot: slot.slotIndex, spellIdx: idx, socketIdx: sIdx });
+                  sendCommand({ op: "unsocket", reqId: window.poeNextReqId(), slot: slot.slotIndex, spellIdx: idx, socketIdx: sIdx });
                 };
                 sAct.appendChild(btnRemSup);
                 sRow.appendChild(sAct);
@@ -275,7 +305,7 @@
                 selectedTarget = null;
                 updateTargetIndicator();
               }
-              sendCommand({ op: "unsocket", reqId: nextReqId++, slot: slot.slotIndex, spellIdx: -1, socketIdx: idx });
+              sendCommand({ op: "unsocket", reqId: window.poeNextReqId(), slot: slot.slotIndex, spellIdx: -1, socketIdx: idx });
             };
             rAct.appendChild(btnRem);
             row.appendChild(rAct);
@@ -323,7 +353,7 @@
         if (selectedTarget.mode === "equip") {
           sendCommand({
             op: "equip",
-            reqId: nextReqId++,
+            reqId: window.poeNextReqId(),
             slot: selectedTarget.slot,
             gemId: item.gemId,
             ownerFormId: item.ownerFormId || 0,
@@ -332,7 +362,7 @@
         } else {
           sendCommand({
             op: "socket",
-            reqId: nextReqId++,
+            reqId: window.poeNextReqId(),
             slot: selectedTarget.slot,
             spellIdx: selectedTarget.spellIdx,
             gemId: item.gemId,
@@ -357,8 +387,8 @@
       ["에너지 실드", `${s.esCurrent} / ${s.esMax}`],
       ["방어도 / 회피", `${s.armour} / ${s.evasion}`],
       ["물리 / 원소 피해 감소", `${s.physDR}% / ${s.elemDR}%`],
-      ["화염 / 냉기 저항", `${s.fireResist}% / ${s.coldResist}%`],
-      ["번개 / 카오스 저항", `${s.lightningResist}% / ${s.chaosResist}%`]
+      ["화염 / 냉기 저항", `${s.fireResist}% (${s.maxFireResist ?? 75}%) / ${s.coldResist}% (${s.maxColdResist ?? 75}%)`],
+      ["번개 / 카오스 저항", `${s.lightningResist}% (${s.maxLightningResist ?? 75}%) / ${s.chaosResist}% (${s.maxChaosResist ?? 75}%)`]
     ];
     for (const [k, v] of rows) {
       const row = el("div", "stat-row");
@@ -372,6 +402,7 @@
     panelToast.textContent = message || "";
     panelToast.className = `panel-toast ${ok ? "ok" : "err"}`;
   }
+  window.poeShowToast = showToast;
 
   btnClose.onclick = () => sendCommand({ op: "close" });
 
@@ -410,20 +441,38 @@
     try {
       const data = JSON.parse(jsonStr);
       lastPanelData = data;
+      if (data.activeTab) {
+        applyActiveTab(data.activeTab);
+      }
       revalidateSelectedTarget(data);
+      const ptsDisp = Number(data.unallocatedPoints ?? 0);
       panelHeaderMeta.textContent =
-        `유배자 Lv.${data.exileLevel} · ${data.className} · XP ${data.exileXp}/${data.exileReqXp} · 미배분 포인트 ${data.unallocatedPoints}`;
+        `유배자 Lv.${data.exileLevel} · ${data.className} · XP ${data.exileXp}/${data.exileReqXp} · 미배분 포인트 ${ptsDisp}`;
       updateTargetIndicator();
       renderSlots(data);
       renderInventory(data);
       renderStats(data);
+      if (window.poeTreeModule && typeof window.poeTreeModule.updateState === "function") {
+        window.poeTreeModule.updateState(data);
+      }
     } catch (_) {
     }
   };
 
-  window.poeOnPanelOpen = () => {
+  window.poeOnPanelOpen = (jsonStr) => {
     panelToast.classList.add("hidden");
     panelBackdrop.classList.remove("hidden");
+    let tab = activeTab;
+    if (jsonStr) {
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed && parsed.tab) {
+          tab = parsed.tab;
+        }
+      } catch (_) {
+      }
+    }
+    applyActiveTab(tab);
     if (lastPanelData) {
       renderSlots(lastPanelData);
     }
@@ -434,6 +483,13 @@
     lastPanelData = null;
     updateTargetIndicator();
     panelBackdrop.classList.add("hidden");
+    if (window.poeTreeModule) {
+      if (typeof window.poeTreeModule.onPanelClose === "function") {
+        window.poeTreeModule.onPanelClose();
+      } else if (typeof window.poeTreeModule.setActive === "function") {
+        window.poeTreeModule.setActive(false);
+      }
+    }
   };
 
   window.poeToast = (jsonStr) => {
@@ -441,6 +497,32 @@
       const t = JSON.parse(jsonStr);
       showToast(Boolean(t.ok), t.message || "");
     } catch (_) {
+    }
+  };
+
+  window.poeImeText = (jsonStr) => {
+    try {
+      const msg = JSON.parse(jsonStr);
+      if (window.poeTreeModule && typeof window.poeTreeModule.onImeText === "function") {
+        window.poeTreeModule.onImeText(msg.text || "");
+      }
+    } catch (_) {
+    }
+  };
+
+  window.poeImeKey = (jsonStr) => {
+    try {
+      const msg = JSON.parse(jsonStr);
+      if (window.poeTreeModule && typeof window.poeTreeModule.onImeKey === "function") {
+        window.poeTreeModule.onImeKey(msg.key || "");
+      }
+    } catch (_) {
+    }
+  };
+
+  window.poeBlurSearch = () => {
+    if (window.poeTreeModule && typeof window.poeTreeModule.blurSearch === "function") {
+      window.poeTreeModule.blurSearch();
     }
   };
 })();

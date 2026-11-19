@@ -5,6 +5,7 @@
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
 #include "core/KillTracker.h"
+#include "core/PassiveTreeData.h"
 #include "core/SkillSystem.h"
 #include "core/StatEngine.h"
 #include "runtime/Addresses.h"
@@ -28,9 +29,11 @@ namespace
 
     constexpr auto kConfigPath = "Data/SKSE/Plugins/SkyrimPoE.ini";
     constexpr auto kDataPackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/core_3_30.json";
+    constexpr auto kTreePackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json";
 
     Core::Config g_config;
     Core::DataPack g_dataPack;
+    Core::PassiveTreeData g_treeData;
     Core::CommandQueue g_commandQueue;
     Core::StatEngine g_statEngine;
     Core::EnergyShieldPool g_energyShield;
@@ -120,6 +123,16 @@ namespace
             g_dataPack.Constants().lifeBase,
             g_dataPack.Constants().manaBase);
 
+        // 2b. 3단계 패시브 트리 데이터 로드
+        std::string treeError;
+        if (g_treeData.LoadFromFile(kTreePackPath, &treeError)) {
+            SKSE::log::info("PassiveTreeData loaded: classes={}, nodes={}, masteryEffects={}.",
+                g_treeData.Classes().size(), g_treeData.NodeCount(), g_treeData.MasteryEffectCount());
+        } else {
+            SKSE::log::error("PassiveTreeData load failed ('{}'): {}. Passive tree UI disabled.",
+                kTreePackPath, treeError);
+        }
+
         // 3. ESP 폼 검증
         VerifyEspForms();
 
@@ -137,9 +150,9 @@ namespace
         (void)Runtime::CycloneRuntime::Install(
             &g_commandQueue, &g_statEngine, &g_skillSystem, &g_dataPack, &g_config);
         (void)Runtime::UiBridge::Install(
-            &g_commandQueue, &g_statEngine, &g_energyShield, &g_dataPack, &g_config);
+            &g_commandQueue, &g_statEngine, &g_energyShield, &g_dataPack, &g_treeData, &g_config);
         Runtime::AutoTest::Install(
-            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_config);
+            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_treeData, &g_config);
 
         // 주 갱신 스레드 프레임 콜백 등록: 플레이어 풀/ES 재충전 + 사이클론·CoC 틱 + HUD/UI 감시 + (마커 존재 시) 자동 시험
         Runtime::MainUpdateHook::AddFrameCallback([](RE::Main* main, double dt) {
@@ -152,7 +165,7 @@ namespace
         });
 
         Runtime::SaveLoad::SyncStateToStatEngine();
-        SKSE::log::info("SkyrimPoE Stage 2 (M1-M9) runtime initialization complete.");
+        SKSE::log::info("SkyrimPoE Stage 3 runtime initialization complete.");
     }
 
     void OnSkseMessage(SKSE::MessagingInterface::Message* msg)
@@ -225,7 +238,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
         }
 
         // SKSE 직렬화 콜백은 SKSEPluginLoad 단계에서 등록한다.
-        (void)Runtime::SaveLoad::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_config);
+        (void)Runtime::SaveLoad::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_treeData, &g_config);
     } catch (const std::exception& e) {
         SKSE::log::error("SkyrimPoE startup exception: {}", e.what());
     } catch (...) {

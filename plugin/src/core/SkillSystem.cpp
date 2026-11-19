@@ -34,7 +34,9 @@ namespace SkyrimPoE::Core
         double currentSkyrimMagicka,
         double baseSkyrimMaxMagicka,
         const DataPack& pack,
-        const Config& config)
+        const Config& config,
+        double currentSkyrimHealth,
+        double skyrimMaxHealth)
     {
         // 결정 103: 발동 깊이 1 제한(발동으로 나간 주문은 추가 발동을 일으키지 않는다)
         if (triggerDepth_ > 0 || attackSlotIndex >= kSkillSlotCount) {
@@ -82,19 +84,28 @@ namespace SkyrimPoE::Core
                 continue;
             }
 
-            // 매지카 환산 비용 확인(결정 125, 144)
-            const auto manaScale = ComputeMagickaScaling(
-                baseSkyrimMaxMagicka,
-                snapshot.poeMaxMana,
-                stats.poeManaCost,
-                snapshot.exileLevel,
-                pack,
-                config);
-            const double cost = manaScale.skyrimSkillCost;
-
-            // 결정 126, 127: 매지카가 부족하면 발동 폐기, 순환 차례 유지, 쿨다운 미소모!
-            if (currentSkyrimMagicka + 1e-6 < cost) {
-                return std::nullopt;
+            // 비용 확인: Blood Magic이면 생명력 비용 + 1 HP 자살 방지 가드, 아니면 매지카 비용(결정 125, 144)
+            double magickaCost = 0.0;
+            double healthCost = 0.0;
+            const bool usesHealth = snapshot.bloodMagic;
+            if (usesHealth) {
+                healthCost = ComputeBloodMagicLifeCost(skyrimMaxHealth, snapshot.poeMaxLife, stats.poeManaCost);
+                if ((currentSkyrimHealth - healthCost) < (1.0 - 1e-6)) {
+                    return std::nullopt;
+                }
+            } else {
+                const auto manaScale = ComputeMagickaScaling(
+                    baseSkyrimMaxMagicka,
+                    snapshot.poeMaxMana,
+                    stats.poeManaCost,
+                    snapshot.exileLevel,
+                    pack,
+                    config);
+                magickaCost = manaScale.skyrimSkillCost;
+                // 결정 126, 127: 매지카가 부족하면 발동 폐기, 순환 차례 유지, 쿨다운 미소모!
+                if (currentSkyrimMagicka + 1e-6 < magickaCost) {
+                    return std::nullopt;
+                }
             }
 
             // 통과: 개별 쿨다운 즉시 시작(max(0.15, 주문 자체 쿨다운)), 순환 차례 전진
@@ -112,7 +123,9 @@ namespace SkyrimPoE::Core
             cast.poeBaseHitDamage = stats.baseHitDamage;
             cast.effectiveCritChancePct = stats.EffectiveCritChancePct();
             cast.critMultiplierPct = stats.critMultiplierPct;
-            cast.skyrimMagickaCost = cost;
+            cast.skyrimMagickaCost = magickaCost;
+            cast.skyrimHealthCost = healthCost;
+            cast.usesHealthCost = usesHealth;
             cast.skyrimHitDamage = skyrimDmg;
             cast.areaMult = stats.areaMult;
             cast.cooldownAppliedSec = appliedCd;

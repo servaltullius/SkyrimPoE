@@ -5,8 +5,13 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 #include "runtime/SaveLoad.h"
+#include "runtime/SimpleImeBridge.h"
 #include "runtime/SkillExecution.h"
 #include "runtime/UiBridge.h"
+
+#include "core/DamageConversion.h"
+#include "core/PassiveTree.h"
+#include "core/SkillSystem.h"
 
 #include <nlohmann/json.hpp>
 
@@ -55,7 +60,7 @@ namespace SkyrimPoE::Runtime
             std::string tempSave = "SkyrimPoE_autotest";
             bool quitWhenDone = true;
             bool consumeMarker = true;
-            double globalTimeoutSec = 180.0;
+            double globalTimeoutSec = 240.0;
         };
 
         enum class Phase : std::uint8_t
@@ -86,6 +91,15 @@ namespace SkyrimPoE::Runtime
             ScenarioC_NonHostileSpawnWait,
             ScenarioC_NonHostileFinishWait,
             ScenarioC_NonHostileXpWait,
+            ScenarioD_BaselineWait,
+            ScenarioD_AllocateAndPoolWait,
+            ScenarioD_KeystoneCiVerify,
+            ScenarioD_SearchFocusWait,
+            ScenarioD_TabCloseWait,
+            ScenarioD_SavePump,
+            ScenarioD_SaveWaitBeforeLoad,
+            ScenarioD_AwaitReload,
+            ScenarioD_ReloadSettle,
             QuitDelay,
             Done
         };
@@ -95,6 +109,7 @@ namespace SkyrimPoE::Runtime
         Core::EnergyShieldPool* g_esPool = nullptr;
         Core::KillTracker* g_killTracker = nullptr;
         const Core::DataPack* g_dataPack = nullptr;
+        const Core::PassiveTreeData* g_treeData = nullptr;
         const Core::Config* g_config = nullptr;
 
         std::atomic_bool g_enabled{ false };
@@ -259,6 +274,11 @@ namespace SkyrimPoE::Runtime
             }
             UiBridge::ClosePanelOnMainThread();
             RevertTempEnergyShield();
+            // 검수 Major #4: 비정상 종료/타임아웃 시에도 임시 키스톤(CI/BM 등) 주입이 남지 않도록 원상태로 복원
+            SaveLoad::SyncStateToStatEngine();
+            if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            }
             {
                 std::scoped_lock lock(g_msgMutex);
                 g_expectedSaveStem.clear();
@@ -708,6 +728,105 @@ namespace SkyrimPoE::Runtime
             g_foxFormId = npc ? npc->GetFormID() : 0;
             EnterPhase(Phase::ScenarioC_NonHostileSpawnWait);
         }
+
+        // 시나리오 D(3단계 패시브 트리) 관측 상태
+        std::uint32_t g_treeStrBefore = 0;
+        double g_treePoeLifeBefore = 0.0;
+        double g_treePermHealthBefore = 0.0;
+        bool g_d6OpenedOnTree = false;
+        bool g_d6SurvivedSearchFocus = false;
+        bool g_d6ImeVerified = false;
+        bool g_d6SwitchedToSkills = false;
+        std::vector<std::uint32_t> g_d7ExpectedNodes;
+        std::unordered_map<std::uint32_t, std::uint32_t> g_d7ExpectedMasteries;
+
+        void BeginScenarioD_AscendancyAndSave()
+        {
+            // D8: 1차 보스 이정표(전직 +2점) 부여 -> Juggernaut 선택 + 전직 노드 2개(32115, 44297) 할당·스탯 반영 확인
+            const auto snapBeforeAsc = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const double armourBeforeAsc = snapBeforeAsc ? snapBeforeAsc->armour : 0.0;
+            const double atkSpdBeforeAsc = snapBeforeAsc ? snapBeforeAsc->slotStats[0].attackSpeedMult : 0.0;
+
+            SaveLoad::UpdateState([](PersistentState& st) {
+                st.tree.dragonKillCount = std::max<std::uint32_t>(st.tree.dragonKillCount, 1u);
+                st.tree.ascendancyMilestonesBitmask |= 0x1u;
+            });
+            SendUiCmd(json{ { "op", "treeSelectAscendancy" }, { "ascendancyId", "Juggernaut" } });
+            SendUiCmd(json{ { "op", "treeAllocatePath" }, { "nodes", json::array({ 32115, 44297 }) } });
+
+            const auto stAsc = SaveLoad::GetStateCopy();
+            const auto snapAfterAsc = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const auto spentAsc = g_treeData ? Core::PassiveTree::ComputeSpentAscendancyPoints(*g_treeData, stAsc.tree) : 0;
+            const auto earnedAsc = g_config ? Core::PassiveTree::ComputeEarnedAscendancyPoints(stAsc.tree, *g_config) : 2;
+            const auto availAsc = (g_treeData && g_config)
+                ? Core::PassiveTree::ComputeAvailableAscendancyPoints(*g_treeData, stAsc.tree, *g_config)
+                : -1;
+            const bool ascStatUp = snapAfterAsc &&
+                (snapAfterAsc->armour > armourBeforeAsc + 0.5) &&
+                (snapAfterAsc->slotStats[0].attackSpeedMult > atkSpdBeforeAsc + 0.01);
+            const bool d8Ok = (stAsc.tree.ascendancyId == "Juggernaut") &&
+                (spentAsc == 2) && (availAsc == (earnedAsc - 2)) && ascStatUp;
+            Check("D8_AscendancyMilestoneAndAssign", d8Ok,
+                std::format("asc='{}', spentAsc={}, availAsc={}/{}, armour {:.1f}->{:.1f}, atkSpd {:.3f}->{:.3f}",
+                    stAsc.tree.ascendancyId, spentAsc, availAsc, earnedAsc, armourBeforeAsc,
+                    snapAfterAsc ? snapAfterAsc->armour : 0.0,
+                    atkSpdBeforeAsc,
+                    snapAfterAsc ? snapAfterAsc->slotStats[0].attackSpeedMult : 0.0));
+
+            // D7 준비: 현재 트리 상태를 기록한 뒤 임시 세이브 저장 -> 재로드 왕복 검증
+            g_d7ExpectedNodes = stAsc.tree.allocatedNodes;
+            g_d7ExpectedMasteries = stAsc.tree.masterySelections;
+            g_saveAttempts = 0;
+            g_nextSaveRetryAt = Clock::now();
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = g_cfg.tempSave;
+                g_saveMatched = false;
+            }
+            EnterPhase(Phase::ScenarioD_SavePump);
+        }
+
+        void BeginScenarioD()
+        {
+            // D1: 트리 데이터 로드 검증
+            std::size_t ascTotal = 0;
+            if (g_treeData && g_treeData->IsLoaded()) {
+                for (const auto& c : g_treeData->Classes()) {
+                    ascTotal += c.ascendancies.size();
+                }
+            }
+            const bool d1Ok = g_treeData && g_treeData->IsLoaded() &&
+                g_treeData->Classes().size() == 7 &&
+                ascTotal == 19 &&
+                g_treeData->NodeCount() > 2300 &&
+                g_treeData->MasteryEffectCount() == 353;
+            Check("D1_TreeDataLoaded", d1Ok,
+                std::format("loaded={}, classes={}, ascendancies={}, nodes={}, masteries={}",
+                    g_treeData && g_treeData->IsLoaded(),
+                    g_treeData ? g_treeData->Classes().size() : 0,
+                    ascTotal,
+                    g_treeData ? g_treeData->NodeCount() : 0,
+                    g_treeData ? g_treeData->MasteryEffectCount() : 0));
+
+            if (!d1Ok || !g_statEngine || !g_dataPack || !g_config) {
+                FinishAndScheduleQuit("Scenario D aborted because PassiveTreeData was not loaded.");
+                return;
+            }
+
+            // 시나리오 D 전용: 유배자 레벨 50(49 포인트)으로 설정하고 트리 초기화 후 기준 풀 동기화를 기다린다.
+            SaveLoad::UpdateState([](PersistentState& st) {
+                st.exileLevel = 50;
+                st.tree = Core::PassiveTreeState{};
+                st.className = "Scion";
+                st.unallocatedPassivePoints = 49;
+            });
+            SaveLoad::SyncStateToStatEngine();
+            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                RestorePlayerVitals(player, true, true);
+            }
+            EnterPhase(Phase::ScenarioD_BaselineWait);
+        }
     }
 
     void AutoTest::Install(
@@ -716,6 +835,7 @@ namespace SkyrimPoE::Runtime
         Core::EnergyShieldPool* esPool,
         Core::KillTracker* killTracker,
         const Core::DataPack* dataPack,
+        const Core::PassiveTreeData* treeData,
         const Core::Config* config)
     {
         g_queue = queue;
@@ -723,6 +843,7 @@ namespace SkyrimPoE::Runtime
         g_esPool = esPool;
         g_killTracker = killTracker;
         g_dataPack = dataPack;
+        g_treeData = treeData;
         g_config = config;
 
         const auto logDir = SKSE::log::log_directory();
@@ -759,7 +880,7 @@ namespace SkyrimPoE::Runtime
         g_startedAt = Clock::now();
         g_enabled.store(true, std::memory_order_release);
 
-        LogInfo(std::format("SkyrimPoE Stage 2 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
+        LogInfo(std::format("SkyrimPoE Stage 3 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
             g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
         if (g_cfg.baselineSave.empty()) {
@@ -1546,15 +1667,15 @@ namespace SkyrimPoE::Runtime
             auto npc = g_foxHandle.get();
             if (!player || !npc || npc->IsDead()) {
                 Check("C6_NonHostileFirstHitZeroXp", false, "Spawned neutral NPC (TestJeremyRegular) unavailable before first hit.");
-                FinishAndScheduleQuit("Scenario C complete (neutral NPC spawn failed).");
-                return;
+                BeginScenarioD();
+                break;
             }
             g_foxFormId = npc->GetFormID();
             const bool wasHostile = npc->IsHostileToActor(player);
             if (wasHostile) {
                 Check("C6_NonHostileFirstHitZeroXp", false, "Neutral NPC (TestJeremyRegular) was unexpectedly hostile before first hit.");
-                FinishAndScheduleQuit("Scenario C complete (neutral NPC hostile).");
-                return;
+                BeginScenarioD();
+                break;
             }
             // 실제 무기 타격(DealDamage -> ApplyHitHook -> RecordFirstHitHostility(false) -> HandleHealthDamageHook)
             CallDealDamage(player, npc.get(), nullptr, false);
@@ -1595,7 +1716,357 @@ namespace SkyrimPoE::Runtime
                     rec.playerContributed, rec.rewardClaimed,
                     g_exileLevelBeforeFox, g_exileXpBeforeFox, stAfter.exileLevel, stAfter.exileXp));
 
-            FinishAndScheduleQuit("All Stage 2 AutoTest scenarios (A, B, C) completed.");
+            BeginScenarioD();
+            break;
+        }
+
+        // ================= SCENARIO D (Stage 3 Passive Tree) =================
+        case Phase::ScenarioD_BaselineWait: {
+            if (g_unpausedAccumSec < 0.35 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* av = player ? player->AsActorValueOwner() : nullptr;
+            const auto snapBefore = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            if (!player || !av || !snapBefore || !g_treeData || !g_config) {
+                FinishAndScheduleQuit("Scenario D baseline unavailable.");
+                return;
+            }
+            g_treeStrBefore = snapBefore->str;
+            g_treePoeLifeBefore = snapBefore->poeMaxLife;
+            g_treePermHealthBefore = static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth));
+
+            // D2: UiBridge JSON 명령으로 Marauder(1) 선택 + Attack Mastery notable(12809) 경로 + 31628(+16 Life) 할당
+            SendUiCmd(json{ { "op", "treeSelectClass" }, { "classId", 1 } });
+            auto stMid = SaveLoad::GetStateCopy();
+            const auto pathTo12809 = Core::PassiveTree::ComputeShortestPath(*g_treeData, stMid.tree, 12809);
+            if (!pathTo12809.empty()) {
+                SendUiCmd(json{ { "op", "treeAllocatePath" }, { "nodes", pathTo12809 } });
+            }
+            SendUiCmd(json{ { "op", "treeAllocatePath" }, { "nodes", json::array({ 31628 }) } });
+
+            const auto stAfter = SaveLoad::GetStateCopy();
+            const auto spent = Core::PassiveTree::ComputeSpentNormalPoints(*g_treeData, stAfter.tree);
+            const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(*g_treeData, stAfter.tree, stAfter.exileLevel, *g_config);
+            const auto hasNode = [&](std::uint32_t nid) {
+                return std::binary_search(stAfter.tree.allocatedNodes.begin(), stAfter.tree.allocatedNodes.end(), nid);
+            };
+            const auto expectedAvail = 49 + std::max<std::int32_t>(0, g_config->bonusPassivePoints) - spent;
+            const bool d2Ok = stAfter.tree.classSelected && stAfter.tree.classId == 1 &&
+                hasNode(12809) && hasNode(31628) && hasNode(50904) && spent >= 3 && avail == expectedAvail;
+            Check("D2_SelectClassAndAllocatePath", d2Ok,
+                std::format("classId={}, spent={}, avail={} (exp {}), has12809={}, has31628={}, has50904={}",
+                    static_cast<int>(stAfter.tree.classId), spent, avail, expectedAvail,
+                    hasNode(12809), hasNode(31628), hasNode(50904)));
+
+            EnterPhase(Phase::ScenarioD_AllocateAndPoolWait);
+            break;
+        }
+
+        case Phase::ScenarioD_AllocateAndPoolWait: {
+            if (g_unpausedAccumSec < 0.35 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* av = player ? player->AsActorValueOwner() : nullptr;
+            const auto snapAfter = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            if (!player || !av || !snapAfter || !g_treeData || !g_config) {
+                FinishAndScheduleQuit("Scenario D pool check unavailable.");
+                return;
+            }
+
+            // D3: StatEngine 힘/생명력 증가 및 실제 스카이림 플레이어 최대 체력(kPermanent) 증가 확인
+            const double permHealthAfter = static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth));
+            const bool d3Ok = (snapAfter->str > g_treeStrBefore) &&
+                (snapAfter->poeMaxLife > g_treePoeLifeBefore + 1.0) &&
+                (permHealthAfter > g_treePermHealthBefore + 1.0);
+            Check("D3_StatReflectionIntoSkyrimPools", d3Ok,
+                std::format("str {}->{}, poeLife {:.1f}->{:.1f}, skyrimPermHP {:.1f}->{:.1f}",
+                    g_treeStrBefore, snapAfter->str, g_treePoeLifeBefore, snapAfter->poeMaxLife,
+                    g_treePermHealthBefore, permHealthAfter));
+
+            // D4: 마스터리 선택(8629 -> 28524) -> 두 번째 Attack Mastery(8556, notable 20835) 할당 ->
+            //     중복 effectId(28524) 거절 -> 대체 효과(39154) 허용 -> 중간 브리지 단절 회수 거절 ->
+            //     리프 notable(20835) 회수 시 마스터리 8556 자동 회수 검증
+            SendUiCmd(json{ { "op", "treeSelectMastery" }, { "masteryNodeId", 8629 }, { "effectId", 28524 } });
+            auto stM1 = SaveLoad::GetStateCopy();
+            const bool m1Selected = stM1.tree.masterySelections.contains(8629) && stM1.tree.masterySelections.at(8629) == 28524;
+
+            const auto pathTo20835 = Core::PassiveTree::ComputeShortestPath(*g_treeData, stM1.tree, 20835);
+            if (!pathTo20835.empty()) {
+                SendUiCmd(json{ { "op", "treeAllocatePath" }, { "nodes", pathTo20835 } });
+            }
+            // 중복 effectId 28524 거절 검증
+            SendUiCmd(json{ { "op", "treeSelectMastery" }, { "masteryNodeId", 8556 }, { "effectId", 28524 } });
+            const auto stDup = SaveLoad::GetStateCopy();
+            const bool dupRejected = !stDup.tree.masterySelections.contains(8556);
+
+            // 다른 효과 39154 선택 후 리프 notable(20835) 회수 -> 마스터리 8556 자동 회수
+            SendUiCmd(json{ { "op", "treeSelectMastery" }, { "masteryNodeId", 8556 }, { "effectId", 39154 } });
+            const auto stM2 = SaveLoad::GetStateCopy();
+            const bool m2Selected = stM2.tree.masterySelections.contains(8556) && stM2.tree.masterySelections.at(8556) == 39154;
+
+            // 중간 브리지 노드(pathTo20835의 첫 노드 또는 31628) 단절 회수 거절 검증
+            const std::uint32_t bridgeId = (pathTo20835.size() >= 2) ? pathTo20835[0] : 31628u;
+            SendUiCmd(json{ { "op", "treeRefundNode" }, { "nodeId", bridgeId } });
+            const auto stBridge = SaveLoad::GetStateCopy();
+            const bool bridgeKept = std::binary_search(
+                stBridge.tree.allocatedNodes.begin(), stBridge.tree.allocatedNodes.end(), bridgeId);
+
+            // 리프 notable 20835 회수 -> 마스터리 8556 자동 회수, 8629는 유지
+            SendUiCmd(json{ { "op", "treeRefundNode" }, { "nodeId", 20835 } });
+            const auto stAuto = SaveLoad::GetStateCopy();
+            const bool leafRefunded = !std::binary_search(
+                stAuto.tree.allocatedNodes.begin(), stAuto.tree.allocatedNodes.end(), 20835u);
+            const bool autoRefundedM2 = !stAuto.tree.masterySelections.contains(8556) &&
+                stAuto.tree.masterySelections.contains(8629);
+
+            Check("D4_MasteryAndDisconnectGuard",
+                m1Selected && dupRejected && m2Selected && bridgeKept && leafRefunded && autoRefundedM2,
+                std::format("m1={}, dupRej={}, m2={}, bridgeKept(id={})={}, leafRef={}, autoRefM2={}",
+                    m1Selected, dupRejected, m2Selected, bridgeId, bridgeKept, leafRefunded, autoRefundedM2));
+
+            // D5 준비: Chaos Inoculation + 임시 ES 50 적용 후 주 갱신 TickPlayerPools가 안전 체력 하한·ES 풀을 반영하는지 확인
+            Core::Layer1Input ciL1;
+            ciL1.exileLevel = 50;
+            ciL1.className = "Marauder";
+            ciL1.slots = stAuto.slots;
+            ciL1.flatEnergyShield = 50.0;
+            ciL1.passives.chaosInoculation = true;
+            g_statEngine->SetLayer1(ciL1);
+            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+
+            EnterPhase(Phase::ScenarioD_KeystoneCiVerify);
+            break;
+        }
+
+        case Phase::ScenarioD_KeystoneCiVerify: {
+            if (g_unpausedAccumSec < 0.3 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* av = player ? player->AsActorValueOwner() : nullptr;
+            const auto snapCi = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            if (!player || !av || !snapCi || !g_dataPack || !g_config) {
+                FinishAndScheduleQuit("Scenario D keystone verify unavailable.");
+                return;
+            }
+
+            // 1) Chaos Inoculation: 카오스 피해 0 + 안전 체력 하한(<= 25.5, >= 1.0) + ES 풀 유지 + 플레이어 생존
+            const double ciPermHp = static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth));
+            const double chaosDmg = Core::ConvertDefenseResistDamage(100.0, Core::DamageType::Chaos, 50, *snapCi, *g_dataPack, *g_config);
+            const bool esIntactUnderCi = !g_esPool || g_esPool->Snapshot().max > 0.0;
+            const bool ciOk = snapCi->chaosInoculation && snapCi->chaosImmune &&
+                std::abs(snapCi->poeMaxLife - 1.0) < 1e-6 &&
+                chaosDmg == 0.0 && esIntactUnderCi && !player->IsDead() && ciPermHp >= 1.0 && ciPermHp <= 25.5;
+
+            // 2) Blood Magic + MoM 상호작용: 체력 비용 환산 + 1 HP 자살 방지 가드 + Blood Magic 시 MoM 비활성(momRatio == 0)
+            Core::Layer1Input bmL1;
+            bmL1.exileLevel = 50;
+            bmL1.className = "Marauder";
+            bmL1.slots = SaveLoad::GetStateCopy().slots;
+            bmL1.passives.bloodMagic = true;
+            bmL1.passives.moreLifeMult = 1.1;
+            bmL1.passives.mindOverMatterRatio = 0.40;
+            g_statEngine->SetLayer1(bmL1);
+            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            const auto snapBm = g_statEngine->GetSnapshot();
+            Core::SkillSystem bmSys;
+            const auto blockedAtLowHp = snapBm
+                ? bmSys.TryTriggerOnCrit(0, *snapBm, bmL1.slots, 0.0, 100.0, *g_dataPack, *g_config, 1.2, 200.0)
+                : std::nullopt;
+            const auto allowedAtFullHp = snapBm
+                ? bmSys.TryTriggerOnCrit(0, *snapBm, bmL1.slots, 0.0, 100.0, *g_dataPack, *g_config, 200.0, 200.0)
+                : std::nullopt;
+            const bool bmOk = snapBm && snapBm->bloodMagic && snapBm->poeMaxMana == 0.0 &&
+                snapBm->momRatio == 0.0 &&
+                !blockedAtLowHp.has_value() &&
+                allowedAtFullHp.has_value() && allowedAtFullHp->usesHealthCost && allowedAtFullHp->skyrimHealthCost > 0.0;
+
+            // 3) Mind Over Matter: StatEngine momRatio=0.40 스냅샷 + 실제 플레이어 매지카/인게임 난이도 배율 정렬 흡수
+            Core::Layer1Input momL1;
+            momL1.exileLevel = 50;
+            momL1.className = "Marauder";
+            momL1.slots = bmL1.slots;
+            momL1.passives.mindOverMatterRatio = 0.40;
+            g_statEngine->SetLayer1(momL1);
+            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            const auto snapMom = g_statEngine->GetSnapshot();
+            const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
+            const double curMagicka = std::max(50.0, static_cast<double>(av->GetActorValue(RE::ActorValue::kMagicka)));
+            const auto momRes = snapMom
+                ? Core::AbsorbWithMindOverMatter(50.0, diffMult, snapMom->momRatio, curMagicka)
+                : Core::MindOverMatterAbsorbResult{};
+            const double expectedMomAbsorb = std::min(curMagicka, 50.0 * diffMult * 0.40);
+            const bool momOk = snapMom && std::abs(snapMom->momRatio - 0.40) < 1e-6 &&
+                std::abs(momRes.absorbedMagicka - expectedMomAbsorb) < 0.05 &&
+                momRes.remainingRawDamage < 50.0;
+
+            Check("D5_KeystonesRuntime", ciOk && bmOk && momOk,
+                std::format("ciOk(hp={:.1f},es={},chaos={:.1f})={}, bmOk(mom0={},blockLow={},allowFull={})={}, momOk(ratio={:.2f},diff={:.2f},abs={:.1f})={}",
+                    ciPermHp, esIntactUnderCi, chaosDmg, ciOk,
+                    snapBm ? (snapBm->momRatio == 0.0) : false,
+                    !blockedAtLowHp.has_value(), allowedAtFullHp.has_value(), bmOk,
+                    snapMom ? snapMom->momRatio : 0.0, diffMult, momRes.absorbedMagicka, momOk));
+
+            // 원래 패시브 트리 스탯으로 즉시 복원
+            SaveLoad::SyncStateToStatEngine();
+            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            RestorePlayerVitals(player, true, true);
+
+            // D6: 창 활성 및 Prisma DOM 준비 시에만 트리 탭·검색 포커스 검증(시나리오 A와 동일 가드, 검수 Major #1)
+            const bool gameActive = (!main || main->gameActive);
+            if (!gameActive || !UiBridge::IsDomReady()) {
+                LogWarn(std::format("D6_TreeTabAndSearchFocus skipped (gameActive={}, domReady={}).",
+                    gameActive, UiBridge::IsDomReady()));
+                BeginScenarioD_AscendancyAndSave();
+                break;
+            }
+            g_d6OpenedOnTree = UiBridge::TryOpenPanelOnMainThread("tree") && (UiBridge::ActiveTab() == "tree");
+            SendUiCmd(json{ { "op", "treeSearchFocus" }, { "focused", true } });
+            EnterPhase(Phase::ScenarioD_SearchFocusWait);
+            break;
+        }
+
+        case Phase::ScenarioD_SearchFocusWait: {
+            if (PhaseElapsedSec() < 0.5) {
+                break;
+            }
+            const auto* controls = RE::ControlMap::GetSingleton();
+            const std::int32_t teCountDuring = controls ? controls->GetRuntimeData().textEntryCount : -1;
+            const bool imeAvail = SimpleImeBridge::Available();
+            const bool imeActive = SimpleImeBridge::TextEntryActive();
+            g_d6ImeVerified = !imeAvail || (imeActive && teCountDuring >= 1);
+            g_d6SurvivedSearchFocus = UiBridge::IsPanelOpen() &&
+                (UiBridge::ActiveTab() == "tree") &&
+                UiBridge::IsSearchFocused();
+            LogInfo(std::format("D6 search focus probe: panelOpen={}, imeAvail={}, imeActive={}, textEntryCount={}",
+                UiBridge::IsPanelOpen(), imeAvail, imeActive, teCountDuring));
+
+            SendUiCmd(json{ { "op", "switchTab" }, { "tab", "skills" } });
+            g_d6SwitchedToSkills = UiBridge::IsPanelOpen() &&
+                (UiBridge::ActiveTab() == "skills") &&
+                !UiBridge::IsSearchFocused();
+            UiBridge::ClosePanelOnMainThread();
+            EnterPhase(Phase::ScenarioD_TabCloseWait);
+            break;
+        }
+
+        case Phase::ScenarioD_TabCloseWait: {
+            // 검수 Minor #2: CI 복원·패널 닫힘 뒤 unpaused 틱 최소 0.15초를 보장해 TickPlayerPools 원복 완료 후 D8/D7 진행
+            if ((g_unpausedAccumSec < 0.15 || PhaseElapsedSec() < 0.35) && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            const auto* controls = RE::ControlMap::GetSingleton();
+            const std::int32_t textEntryCount = controls ? controls->GetRuntimeData().textEntryCount : -1;
+            const bool closedCleanly = !UiBridge::IsPanelOpen() && UiBridge::IsHudShown() && (textEntryCount == 0);
+            Check("D6_TreeTabAndSearchFocus",
+                g_d6OpenedOnTree && g_d6SurvivedSearchFocus && g_d6ImeVerified && g_d6SwitchedToSkills && closedCleanly,
+                std::format("openTree={}, survivedFocus={}, imeOk={}, switchSkills={}, closed={}, hud={}, textEntryCount={}",
+                    g_d6OpenedOnTree, g_d6SurvivedSearchFocus, g_d6ImeVerified, g_d6SwitchedToSkills,
+                    !UiBridge::IsPanelOpen(), UiBridge::IsHudShown(), textEntryCount));
+
+            BeginScenarioD_AscendancyAndSave();
+            break;
+        }
+
+        case Phase::ScenarioD_SavePump: {
+            bool matched = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                matched = g_saveMatched;
+            }
+            if (matched) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                LogInfo(std::format("Scenario D temp save '{}' confirmed by kSaveGame (attempts={}).",
+                    g_cfg.tempSave, g_saveAttempts));
+                EnterPhase(Phase::ScenarioD_SaveWaitBeforeLoad);
+                break;
+            }
+            if (PhaseElapsedSec() > 25.0) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                Check("D7_TreeCosaveRoundTrip", false,
+                    std::format("Timed out waiting for Scenario D kSaveGame('{}') after {} attempts.",
+                        g_cfg.tempSave, g_saveAttempts));
+                FinishAndScheduleQuit("Scenario D save timeout.");
+                break;
+            }
+            const auto now = Clock::now();
+            if (now >= g_nextSaveRetryAt) {
+                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    ++g_saveAttempts;
+                    mgr->Save(g_cfg.tempSave.c_str());
+                }
+                g_nextSaveRetryAt = now + std::chrono::seconds(2);
+            }
+            break;
+        }
+
+        case Phase::ScenarioD_SaveWaitBeforeLoad: {
+            if (PhaseElapsedSec() < 1.0) {
+                break;
+            }
+            LogInfo(std::format("Reloading temp save '{}' to verify TREE co-save round-trip...", g_cfg.tempSave));
+            if (!RequestLoadSave(g_cfg.tempSave)) {
+                Check("D7_TreeCosaveRoundTrip", false, "BGSSaveLoadManager singleton unavailable.");
+                FinishAndScheduleQuit("Scenario D reload request failed.");
+                break;
+            }
+            EnterPhase(Phase::ScenarioD_AwaitReload);
+            break;
+        }
+
+        case Phase::ScenarioD_AwaitReload: {
+            bool signaled = false;
+            bool ok = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                signaled = g_postLoadSignaled;
+                ok = g_postLoadSucceeded;
+            }
+            if (signaled && !ok) {
+                Check("D7_TreeCosaveRoundTrip", false, "kPostLoadGame reported failure on Scenario D reload.");
+                FinishAndScheduleQuit("Scenario D reload failed.");
+                return;
+            }
+            if (signaled && ok && IsPlayerReadyInWorld()) {
+                EnterPhase(Phase::ScenarioD_ReloadSettle);
+            } else if (PhaseElapsedSec() > 90.0) {
+                Check("D7_TreeCosaveRoundTrip", false, "Timed out waiting for Scenario D temp save reload.");
+                FinishAndScheduleQuit("Scenario D reload timeout.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioD_ReloadSettle: {
+            if (g_unpausedAccumSec < 2.0 && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            const auto stReloaded = SaveLoad::GetStateCopy();
+            const auto snapReloaded = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const bool d7Ok = stReloaded.tree.classSelected &&
+                stReloaded.tree.classId == 1 &&
+                stReloaded.tree.ascendancyId == "Juggernaut" &&
+                stReloaded.tree.allocatedNodes == g_d7ExpectedNodes &&
+                stReloaded.tree.masterySelections == g_d7ExpectedMasteries &&
+                (stReloaded.tree.ascendancyMilestonesBitmask & 0x1u) != 0 &&
+                snapReloaded && snapReloaded->str > g_treeStrBefore;
+            Check("D7_TreeCosaveRoundTrip", d7Ok,
+                std::format("clsSel={}, classId={}, asc='{}', nodes={}/{}, masteries={}/{}, msMask=0x{:X}, str={}",
+                    stReloaded.tree.classSelected, static_cast<int>(stReloaded.tree.classId),
+                    stReloaded.tree.ascendancyId,
+                    stReloaded.tree.allocatedNodes.size(), g_d7ExpectedNodes.size(),
+                    stReloaded.tree.masterySelections.size(), g_d7ExpectedMasteries.size(),
+                    stReloaded.tree.ascendancyMilestonesBitmask,
+                    snapReloaded ? snapReloaded->str : 0u));
+
+            FinishAndScheduleQuit("All Stage 3 AutoTest scenarios (A, B, C, D) completed.");
             break;
         }
 

@@ -12,6 +12,21 @@ namespace SkyrimPoE::Core
     inline constexpr std::uint32_t kMaxExileLevel = 100;
     inline constexpr std::uint32_t kMaxGemLevel = 20;
     inline constexpr std::uint32_t kMaxGemSockets = 5;
+    inline constexpr std::uint8_t kClassCount = 7;
+    inline constexpr std::uint32_t kMaxAscendancyPoints = 8;
+
+    // 3단계 패시브 트리 영구 상태(코세이브 'TREE' 레코드)
+    struct PassiveTreeState
+    {
+        bool classSelected = false;
+        std::uint8_t classId = 0;  // 0..6 (Scion..Shadow)
+        std::string ascendancyId;  // "" 또는 기본 전직 19종 id (예: "Raider", "Juggernaut")
+        std::vector<std::uint32_t> allocatedNodes;  // 정렬·중복 제거된 소비 노드 ID (시작점/허브/마스터리 제외)
+        std::unordered_map<std::uint32_t, std::uint32_t> masterySelections;  // masteryNodeId -> effectId
+        std::uint32_t bossKillCount = 0;
+        std::uint32_t dragonKillCount = 0;
+        std::uint32_t ascendancyMilestonesBitmask = 0;  // bit 0..2 = 1~3차 보스 이정표(각 +2점)
+    };
 
     enum class DamageType : std::uint8_t
     {
@@ -123,5 +138,12 @@ namespace SkyrimPoE::Core
         std::string powerAttackInput = "rightHand";
         double minChannelSeconds = 0.6;
         double channelIgnoreStagger = 0.5;
+
+        // [PassiveTree] (3단계: 결정 151~155)
+        std::uint32_t treePanelKey = 0x19;  // P
+        bool freePassiveRefund = true;
+        std::string simpleImeMode = "auto";  // auto | on | off
+        std::int32_t bonusPassivePoints = 0;
+        std::int32_t bonusAscendancyPoints = 0;
     };
 }

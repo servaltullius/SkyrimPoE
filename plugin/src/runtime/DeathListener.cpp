@@ -20,17 +20,21 @@ namespace SkyrimPoE::Runtime
             return actor && g_dragonKeyword && actor->HasKeyword(g_dragonKeyword);
         }
 
-        [[nodiscard]] bool IsBossActor(const RE::Actor* actor)
+        [[nodiscard]] bool HasLocationBossRefType(const RE::Actor* actor)
         {
             if (!actor) {
                 return false;
             }
-            if (const auto* base = actor->GetActorBase()) {
-                if (base->IsUnique()) {
-                    return true;
+            // 검수 M5: ExtraLocationRefType의 Boss 참조 타입을 우선 검사
+            if (const auto* extraLocRef = actor->extraList.GetByType<RE::ExtraLocationRefType>()) {
+                if (extraLocRef->locRefType) {
+                    const auto edid = extraLocRef->locRefType->GetFormEditorID();
+                    if (edid && std::string_view(edid).find("Boss") != std::string_view::npos) {
+                        return true;
+                    }
                 }
             }
-            // 현재 로케이션의 보스 레퍼런스 타입을 가졌는지 검사(안전 null 체크)
+            // 현재 로케이션의 specialRefs에서 보스 참조 타입 검사
             if (auto* loc = actor->GetCurrentLocation()) {
                 for (const auto& ref : loc->specialRefs) {
                     if (ref.refData.refID == actor->GetFormID() && ref.type) {
@@ -39,6 +43,22 @@ namespace SkyrimPoE::Runtime
                             return true;
                         }
                     }
+                }
+            }
+            return false;
+        }
+
+        [[nodiscard]] bool IsBossActor(const RE::Actor* actor)
+        {
+            if (!actor) {
+                return false;
+            }
+            if (HasLocationBossRefType(actor)) {
+                return true;
+            }
+            if (const auto* base = actor->GetActorBase()) {
+                if (base->IsUnique()) {
+                    return true;
                 }
             }
             return false;
@@ -84,8 +104,10 @@ namespace SkyrimPoE::Runtime
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 const std::uint32_t enemyLvl = actor->GetLevel();
                 const std::uint32_t playerLvl = player ? player->GetLevel() : 1;
-                const bool isBoss = IsBossActor(actor);
                 const bool isDragon = IsDragonActor(actor);
+                const bool isBoss = IsBossActor(actor);
+                // 검수 M5: 이정표 보스 카운트는 드래곤과 배타적으로 분리하고 고유 비보스 NPC 오판 방지를 위해 Boss 참조 타입만 인정
+                const bool isMilestoneBoss = !isDragon && HasLocationBossRefType(actor);
 
                 const auto* actorState = actor->AsActorState();
                 const bool fallbackExcluded = actor->IsSummoned() ||
@@ -103,25 +125,57 @@ namespace SkyrimPoE::Runtime
                     *g_config,
                     fallbackExcluded);
 
-                if (!reward.awarded || (reward.exileXpGained == 0 && reward.gemXpGained == 0)) {
+                // 검수 M5: reward.awarded가 참이면 XP가 0(유배자 Lv.100 등)이어도 1~3차 보스 이정표 판정을 수행
+                if (!reward.awarded) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                const bool hasXp = (reward.exileXpGained > 0 || reward.gemXpGained > 0);
+                if (!hasXp && !isDragon && !isMilestoneBoss) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
 
                 // 상태 갱신·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
-                g_queue->Enqueue([reward]() {
+                g_queue->Enqueue([reward, hasXp, isDragon, isMilestoneBoss]() {
                     if (!g_config) {
                         return;
                     }
                     Core::ExileLevelUpResult exileRes;
                     Core::GemLevelUpSummary gemRes;
+                    std::uint32_t unlockedTier = 0;
+                    std::uint32_t bossCountAfter = 0;
+                    std::uint32_t dragonCountAfter = 0;
+
                     SaveLoad::UpdateState([&](PersistentState& st) {
-                        exileRes = Core::KillTracker::ApplyExileXp(
-                            st.exileLevel,
-                            st.exileXp,
-                            st.unallocatedPassivePoints,
-                            reward.exileXpGained,
-                            *g_config);
-                        gemRes = Core::KillTracker::ApplyGemXpToSlots(st.slots, reward.gemXpGained);
+                        if (hasXp) {
+                            exileRes = Core::KillTracker::ApplyExileXp(
+                                st.exileLevel,
+                                st.exileXp,
+                                st.unallocatedPassivePoints,
+                                reward.exileXpGained,
+                                *g_config);
+                            gemRes = Core::KillTracker::ApplyGemXpToSlots(st.slots, reward.gemXpGained);
+                        }
+                        if (isDragon) {
+                            ++st.tree.dragonKillCount;
+                        } else if (isMilestoneBoss) {
+                            ++st.tree.bossKillCount;
+                        }
+                        bossCountAfter = st.tree.bossKillCount;
+                        dragonCountAfter = st.tree.dragonKillCount;
+
+                        const std::uint32_t prevMask = st.tree.ascendancyMilestonesBitmask;
+                        if ((st.tree.dragonKillCount >= 1 || st.tree.bossKillCount >= 5) && (prevMask & 0x1u) == 0) {
+                            st.tree.ascendancyMilestonesBitmask |= 0x1u;
+                            unlockedTier = std::max(unlockedTier, 1u);
+                        }
+                        if ((st.tree.dragonKillCount >= 3 || st.tree.bossKillCount >= 15) && (prevMask & 0x2u) == 0) {
+                            st.tree.ascendancyMilestonesBitmask |= 0x2u;
+                            unlockedTier = std::max(unlockedTier, 2u);
+                        }
+                        if ((st.tree.dragonKillCount >= 6 || st.tree.bossKillCount >= 30) && (prevMask & 0x4u) == 0) {
+                            st.tree.ascendancyMilestonesBitmask |= 0x4u;
+                            unlockedTier = std::max(unlockedTier, 3u);
+                        }
                     });
 
                     if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0) {
@@ -140,6 +194,12 @@ namespace SkyrimPoE::Runtime
                         RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
                         SKSE::log::info("DeathListener: {} equipped gem level-up(s) (+{} gem XP).",
                             gemRes.gemLevelsGained, reward.gemXpGained);
+                    }
+                    if (unlockedTier > 0) {
+                        const auto msg = std::format("[SkyrimPoE] {}차 보스 이정표 달성! 전직 포인트 +2 획득!", unlockedTier);
+                        RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
+                        SKSE::log::info("DeathListener: Ascendancy milestone tier {} unlocked (dragons={}, bosses={}).",
+                            unlockedTier, dragonCountAfter, bossCountAfter);
                     }
                 });
 

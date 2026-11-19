@@ -1,11 +1,13 @@
 #pragma once
 
 #include "core/DataPack.h"
+#include "core/PassiveStatParser.h"
 #include "core/Types.h"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -46,6 +48,9 @@ namespace SkyrimPoE::Core
         double incCritChancePct = 0.0;
         double critMultiplierPct = 150.0;
         bool bloodMagic = false;
+
+        // 3단계: 패시브 트리 전체에서 집계된 정적 스탯·키스톤 합산치
+        PassiveStatTotals passives{};
     };
 
     // 층 ②: 충전·버프·이동·생명력 비율 등 동적 상태 입력(결정 117)
@@ -53,6 +58,7 @@ namespace SkyrimPoE::Core
     {
         bool moving = false;
         bool lowLife = false;
+        bool elementalOverloadActive = false;  // 최근 8초 이내 치명타 적중 시 활성(원소 피해 40% 증폭)
         std::uint8_t enduranceCharges = 0;
         std::uint8_t frenzyCharges = 0;
         std::uint8_t powerCharges = 0;
@@ -69,6 +75,7 @@ namespace SkyrimPoE::Core
 
         DamagePacket baseHitDamage;
         double attackSpeedMult = 1.0;        // 사이클론 기본 3.0 × 보조/충전 배율
+        double castSpeedMult = 1.0;          // 주문 시전 속도 배율(패시브 시전 속도 + 격분 충전)
         double baseCritChancePct = 5.0;      // 무기 또는 주문 기본 치명타 + 추가 기본 치명타
         double critChanceIncPct = 0.0;       // 치명타 확률 증가 합
         double critMultiplierPct = 150.0;    // 치명타 피해 배율(%)
@@ -103,12 +110,30 @@ namespace SkyrimPoE::Core
         double coldResist = 0.0;
         double lightningResist = 0.0;
         double chaosResist = 0.0;
+        double maxFireResist = 75.0;
+        double maxColdResist = 75.0;
+        double maxLightningResist = 75.0;
+        double maxChaosResist = 75.0;
         double physDamageReduction = 0.0;
         double elementalDamageReduction = 0.0;  // PoE 3.30 인내 충전: 원소 피해 감소(+4%/충전, 저항 상한과 별도 곱연산)
         double attackBlockChance = 0.0;
         double spellBlockChance = 0.0;
         double spellSuppressionChance = 0.0;
         double spellSuppressionPrevent = 50.0;
+        double spellDodgeChance = 0.0;
+        double esRechargeRateMult = 1.0;
+        double esRechargeDelayMult = 1.0;
+        double momRatio = 0.0;
+
+        bool bloodMagic = false;
+        bool chaosInoculation = false;
+        bool chaosImmune = false;
+        bool resoluteTechnique = false;
+        bool unwaveringStance = false;
+
+        std::uint8_t maxEnduranceCharges = 3;
+        std::uint8_t maxFrenzyCharges = 3;
+        std::uint8_t maxPowerCharges = 3;
 
         // 9칸 슬롯별 스탯 및 발동 젬 안 주문 젬(instanceId -> ComputedSkillStats)
         std::array<ComputedSkillStats, kSkillSlotCount> slotStats{};
@@ -125,6 +150,7 @@ namespace SkyrimPoE::Core
 
         void SetLayer1(const Layer1Input& input);
         void SetLayer2(const Layer2Input& input);
+        void UpdateLayer2(const std::function<void(Layer2Input&)>& mutator);
         void MarkDirty() noexcept;
 
         // 주 갱신 스레드에서만 호출. dirty 상태면 층 ①·②를 함께 재계산해 새 불변 사본을 게시한다.
