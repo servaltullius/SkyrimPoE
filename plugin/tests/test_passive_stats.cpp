@@ -375,8 +375,12 @@ POE_TEST("Config: parses [PassiveTree] section from SkyrimPoE.ini")
     POE_CHECK(loaded.fileFound);
     const auto& cfg = loaded.config;
     POE_CHECK(cfg.treePanelKey == 0x19);
-    POE_CHECK(cfg.freePassiveRefund);
+    POE_CHECK(!cfg.freePassiveRefund);
     POE_CHECK(cfg.simpleImeMode == "auto");
+    POE_CHECK(cfg.gearPanelKey == 0x18);
+    POE_CHECK(cfg.ascendancyRefundCost == 5);
+    POE_CHECK(cfg.worldDropEnabled);
+    POE_CHECK(cfg.worldDropMaxCount == 16);
     POE_CHECK(cfg.bonusPassivePoints == 0);
     POE_CHECK(cfg.bonusAscendancyPoints == 0);
 }

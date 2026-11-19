@@ -40,6 +40,11 @@ add_library(skyrimpoe_core STATIC
     src/core/PassiveTreeData.cpp
     src/core/PassiveTree.cpp
     src/core/PassiveStatParser.cpp
+    src/core/ItemData.cpp
+    src/core/ItemAffixParser.cpp
+    src/core/ItemCrafting.cpp
+    src/core/ItemFormatter.cpp
+    src/core/LootTable.cpp
 )
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
@@ -65,7 +70,12 @@ add_commonlibsse_plugin(${PROJECT_NAME}
     SOURCES
         src/main.cpp
         src/runtime/MainUpdateHook.cpp
+        src/runtime/UniqueIdUtil.cpp
         src/runtime/GemInventory.cpp
+        src/runtime/ItemTracker.cpp
+        src/runtime/EquipmentSync.cpp
+        src/runtime/CraftingRuntime.cpp
+        src/runtime/WorldDropTracker.cpp
         src/runtime/SaveLoad.cpp
         src/runtime/SkillExecution.cpp
         src/runtime/CombatHooks.cpp
@@ -94,6 +104,7 @@ add_executable(skyrimpoe_tests
     tests/test_gem_transaction.cpp
     tests/test_passive_tree.cpp
     tests/test_passive_stats.cpp
+    tests/test_items.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE
@@ -124,6 +135,9 @@ add_custom_target(package_mod
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${POE_DATA_DIR}/packs/tree_3_30.json"
         "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_DATA_DIR}/packs/items_3_30.json"
+        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/items_3_30.json"
     COMMAND "${Python3_EXECUTABLE}" "${POE_TREE_COMPILER}"
         --wrap-only-from "${POE_DATA_DIR}/packs/tree_3_30.json"
         --js-out "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/tree-data.js"
@@ -145,6 +159,9 @@ add_custom_target(package_mod
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${POE_UI_DIR}/tree.js"
         "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/tree.js"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_UI_DIR}/gear.js"
+        "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/gear.js"
     COMMAND "${Python3_EXECUTABLE}" "${POE_OAR_PACKAGER}" --package-dir "${POE_PACKAGE_DIR}"
     DEPENDS SkyrimPoE
     VERBATIM

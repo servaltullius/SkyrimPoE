@@ -4,6 +4,7 @@
 #include "core/Config.h"
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
+#include "core/ItemData.h"
 #include "core/KillTracker.h"
 #include "core/PassiveTreeData.h"
 #include "core/SkillSystem.h"
@@ -11,14 +12,18 @@
 #include "runtime/Addresses.h"
 #include "runtime/AutoTest.h"
 #include "runtime/CombatHooks.h"
+#include "runtime/CraftingRuntime.h"
 #include "runtime/CycloneRuntime.h"
 #include "runtime/DeathListener.h"
+#include "runtime/EquipmentSync.h"
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
+#include "runtime/ItemTracker.h"
 #include "runtime/MainUpdateHook.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 #include "runtime/UiBridge.h"
+#include "runtime/WorldDropTracker.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 
@@ -30,10 +35,12 @@ namespace
     constexpr auto kConfigPath = "Data/SKSE/Plugins/SkyrimPoE.ini";
     constexpr auto kDataPackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/core_3_30.json";
     constexpr auto kTreePackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json";
+    constexpr auto kItemsPackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/items_3_30.json";
 
     Core::Config g_config;
     Core::DataPack g_dataPack;
     Core::PassiveTreeData g_treeData;
+    Core::ItemData g_itemData;
     Core::CommandQueue g_commandQueue;
     Core::StatEngine g_statEngine;
     Core::EnergyShieldPool g_energyShield;
@@ -98,6 +105,19 @@ namespace
         check(Runtime::FormIds::Lookup<RE::BGSExplosion>(Runtime::FormIds::kVfxShockNova),
             "SPOE_Vfx_ShockNova", Runtime::FormIds::kVfxShockNova);
 
+        // 4단계 폼(화폐 오브 12종 + 봉인 토큰 80종 + 빛기둥 마커 2종)
+        for (const auto fid : Runtime::FormIds::kCurrencyOrbForms) {
+            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Orb", fid);
+        }
+        for (std::size_t off = 0; off < Runtime::FormIds::kSealedTokenCount; ++off) {
+            const auto fid = Runtime::FormIds::kSealedTokenBase + static_cast<RE::FormID>(off);
+            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Tok", fid);
+        }
+        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamRare),
+            "SPOE_LootBeam_Rare", Runtime::FormIds::kLootBeamRare);
+        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamCurrency),
+            "SPOE_LootBeam_Currency", Runtime::FormIds::kLootBeamCurrency);
+
         SKSE::log::info("SkyrimPoE.esp form verification: {} found, {} missing.", found, missing);
     }
 
@@ -133,31 +153,49 @@ namespace
                 kTreePackPath, treeError);
         }
 
+        // 2c. 4단계 아이템·어픽스·화폐 데이터 로드
+        std::string itemsError;
+        if (g_itemData.LoadFromFile(kItemsPackPath, &itemsError)) {
+            SKSE::log::info("ItemData loaded: affixes={}, currencies={}.",
+                g_itemData.AllAffixes().size(), g_itemData.AllCurrencies().size());
+        } else {
+            SKSE::log::error("ItemData load failed ('{}'): {}. Item crafting disabled.",
+                kItemsPackPath, itemsError);
+        }
+
         // 3. ESP 폼 검증
         VerifyEspForms();
 
-        // 4. 주 갱신 훅을 먼저 설치해 CommandQueue 드레인을 보장한 뒤 전투·스킬·처치 훅을 건다.
+        // 4. 주 갱신 훅을 먼저 설치해 CommandQueue 드레인을 보장한 뒤 전투·스킬·처치·아이템 훅을 건다.
         if (!Runtime::MainUpdateHook::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_config)) {
             SKSE::log::error("MainUpdateHook installation failed. Combat/skill hooks skipped.");
             return;
         }
 
         Runtime::SkillExecution::Initialize(&g_killTracker);
+        Runtime::EquipmentSync::Initialize(&g_itemData);
+        Runtime::CraftingRuntime::Initialize(&g_itemData, &g_dataPack, &g_treeData, &g_config);
+        Runtime::WorldDropTracker::Initialize(&g_itemData, &g_config);
         (void)Runtime::GemInventory::Install(&g_commandQueue);
+        (void)Runtime::ItemTracker::Install(&g_commandQueue, []() {
+            Runtime::EquipmentSync::MarkDirty();
+        });
         (void)Runtime::DeathListener::Install(&g_killTracker, &g_commandQueue, &g_config);
         (void)Runtime::CombatHooks::Install(
             &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_config);
         (void)Runtime::CycloneRuntime::Install(
             &g_commandQueue, &g_statEngine, &g_skillSystem, &g_dataPack, &g_config);
         (void)Runtime::UiBridge::Install(
-            &g_commandQueue, &g_statEngine, &g_energyShield, &g_dataPack, &g_treeData, &g_config);
+            &g_commandQueue, &g_statEngine, &g_energyShield, &g_dataPack, &g_treeData, &g_itemData, &g_config);
         Runtime::AutoTest::Install(
-            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_treeData, &g_config);
+            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_treeData, &g_itemData, &g_config);
 
-        // 주 갱신 스레드 프레임 콜백 등록: 플레이어 풀/ES 재충전 + 사이클론·CoC 틱 + HUD/UI 감시 + (마커 존재 시) 자동 시험
+        // 주 갱신 스레드 프레임 콜백 등록: 장비 동기화 + 바닥 드랍/빛기둥 + 풀/ES + 사이클론·CoC + HUD/UI + 자동 시험
         Runtime::MainUpdateHook::AddFrameCallback([](RE::Main* main, double dt) {
             auto* ui = RE::UI::GetSingleton();
             const bool paused = ui && ui->GameIsPaused();
+            Runtime::EquipmentSync::FlushIfDirty();
+            Runtime::WorldDropTracker::Tick(dt, paused);
             Runtime::CombatHooks::TickPlayerPools(dt, paused);
             Runtime::CycloneRuntime::Tick(dt, paused);
             Runtime::UiBridge::Tick(main);
@@ -165,7 +203,7 @@ namespace
         });
 
         Runtime::SaveLoad::SyncStateToStatEngine();
-        SKSE::log::info("SkyrimPoE Stage 3 runtime initialization complete.");
+        SKSE::log::info("SkyrimPoE Stage 4 runtime initialization complete.");
     }
 
     void OnSkseMessage(SKSE::MessagingInterface::Message* msg)

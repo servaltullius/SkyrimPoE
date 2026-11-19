@@ -1,15 +1,21 @@
 #include "PCH.h"
 #include "runtime/AutoTest.h"
 #include "runtime/CombatHooks.h"
+#include "runtime/CraftingRuntime.h"
 #include "runtime/CycloneRuntime.h"
+#include "runtime/EquipmentSync.h"
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
+#include "runtime/ItemTracker.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SimpleImeBridge.h"
 #include "runtime/SkillExecution.h"
 #include "runtime/UiBridge.h"
+#include "runtime/WorldDropTracker.h"
 
 #include "core/DamageConversion.h"
+#include "core/ItemCrafting.h"
+#include "core/LootTable.h"
 #include "core/PassiveTree.h"
 #include "core/SkillSystem.h"
 
@@ -41,6 +47,9 @@ namespace SkyrimPoE::Runtime
 
         // houseCARL로 대조 검증한 바닐라 Skyrim.esm 폼 ID
         constexpr RE::FormID kIronSwordId = 0x00012EB7;      // IronSword
+        constexpr RE::FormID kIronDaggerId = 0x0001397E;     // IronDagger (E3 오브 왕복용)
+        constexpr RE::FormID kIronWarAxeId = 0x00013790;     // IronWarAxe (E6 중복 베이스 격리용)
+        constexpr RE::FormID kIronHelmetId = 0x00012E4D;     // IronHelmet (E4 장비 스탯 반영용)
         constexpr RE::FormID kEncSkeeverId = 0x00023AB7;     // EncSkeever (Skyrim.esm 순정, Aggressive, Lv1)
         constexpr RE::FormID kNeutralNpcId = 0x0010D13E;     // AADeleteWhenDoneTestJeremyRegular (순정, 무팩션·Unaggressive·NoCrime)
         constexpr auto kFrenzyPlugin = "BerserkerFrenzy.esp"sv;
@@ -60,7 +69,7 @@ namespace SkyrimPoE::Runtime
             std::string tempSave = "SkyrimPoE_autotest";
             bool quitWhenDone = true;
             bool consumeMarker = true;
-            double globalTimeoutSec = 240.0;
+            double globalTimeoutSec = 300.0;
         };
 
         enum class Phase : std::uint8_t
@@ -100,6 +109,16 @@ namespace SkyrimPoE::Runtime
             ScenarioD_SaveWaitBeforeLoad,
             ScenarioD_AwaitReload,
             ScenarioD_ReloadSettle,
+            ScenarioE_Start,
+            ScenarioE_EquipPoolWait,
+            ScenarioE_DropWait,
+            ScenarioE_PickupWait,
+            ScenarioE_CorpseWait,
+            ScenarioE_SavePump,
+            ScenarioE_SaveWaitBeforeLoad,
+            ScenarioE_AwaitReload,
+            ScenarioE_ReloadSettle,
+            ScenarioE_GearTabCloseWait,
             QuitDelay,
             Done
         };
@@ -110,6 +129,7 @@ namespace SkyrimPoE::Runtime
         Core::KillTracker* g_killTracker = nullptr;
         const Core::DataPack* g_dataPack = nullptr;
         const Core::PassiveTreeData* g_treeData = nullptr;
+        const Core::ItemData* g_itemData = nullptr;
         const Core::Config* g_config = nullptr;
 
         std::atomic_bool g_enabled{ false };
@@ -740,6 +760,30 @@ namespace SkyrimPoE::Runtime
         std::vector<std::uint32_t> g_d7ExpectedNodes;
         std::unordered_map<std::uint32_t, std::uint32_t> g_d7ExpectedMasteries;
 
+        // 시나리오 E(4단계 아이템·제작·장비 동기화·바닥 드랍·UI) 관측 상태
+        std::uint32_t g_eStrBefore = 0;
+        double g_ePoeLifeBefore = 0.0;
+        double g_eFireResBefore = 0.0;
+        double g_ePermHpBefore = 0.0;
+        Core::InventoryItemKey g_eHelmetKey{};
+        Core::InventoryItemKey g_eIdentifiedKey{};
+        Core::InventoryItemKey g_eCraftedDaggerKey{};
+        Core::InventoryItemKey g_eDupOrigKey{};
+        Core::PoEItemRecord g_eDupExpectedRec{};
+        RE::ObjectRefHandle g_eDroppedRefHandle{};
+        bool g_eDroppedWorldStamped = false;
+        RE::ActorHandle g_eCorpseHandle{};
+        std::vector<TrackedItemEntry> g_eExpectedTrackedItems;
+        bool g_e8CosaveOk = false;
+        bool g_e8PayloadOk = false;
+        bool g_e8OpenedGearTab = false;
+        std::string g_e8Detail;
+
+        void BeginScenarioE()
+        {
+            EnterPhase(Phase::ScenarioE_Start);
+        }
+
         void BeginScenarioD_AscendancyAndSave()
         {
             // D8: 1차 보스 이정표(전직 +2점) 부여 -> Juggernaut 선택 + 전직 노드 2개(32115, 44297) 할당·스탯 반영 확인
@@ -836,6 +880,7 @@ namespace SkyrimPoE::Runtime
         Core::KillTracker* killTracker,
         const Core::DataPack* dataPack,
         const Core::PassiveTreeData* treeData,
+        const Core::ItemData* itemData,
         const Core::Config* config)
     {
         g_queue = queue;
@@ -844,6 +889,7 @@ namespace SkyrimPoE::Runtime
         g_killTracker = killTracker;
         g_dataPack = dataPack;
         g_treeData = treeData;
+        g_itemData = itemData;
         g_config = config;
 
         const auto logDir = SKSE::log::log_directory();
@@ -880,7 +926,7 @@ namespace SkyrimPoE::Runtime
         g_startedAt = Clock::now();
         g_enabled.store(true, std::memory_order_release);
 
-        LogInfo(std::format("SkyrimPoE Stage 3 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
+        LogInfo(std::format("SkyrimPoE Stage 4 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
             g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
         if (g_cfg.baselineSave.empty()) {
@@ -1328,19 +1374,19 @@ namespace SkyrimPoE::Runtime
 
             g_teammateHitsBeforeB = CombatHooks::GetPlayerToTeammateHitCount();
 
-            // 적대 스키버 6마리 소환(Skyrim.esm 순정 EncSkeever, 반경 50~70u 근접 배치 +300 HP로 충분한 치명타·CoC 표본 확보)
+            // 적대 스키버 6마리 소환(Skyrim.esm 순정 EncSkeever, 반경 40~55u 근접 배치 +500 HP로 안정적 치명타·CoC 표본 확보)
             g_spawnedSkeevers.clear();
             g_extraSkeeverWavesSpawned = 0;
             constexpr std::array<std::pair<float, float>, 6> kOffsets{{
-                {  55.0f, -25.0f },
-                {  55.0f,  25.0f },
-                {  70.0f,   0.0f },
-                {  45.0f, -45.0f },
-                {  45.0f,  45.0f },
-                { -55.0f,   0.0f }
+                {  45.0f, -20.0f },
+                {  45.0f,  20.0f },
+                {  55.0f,   0.0f },
+                {  35.0f, -35.0f },
+                {  35.0f,  35.0f },
+                { -45.0f,   0.0f }
             }};
             for (const auto& [fwd, side] : kOffsets) {
-                auto h = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, fwd, side, 300.0f, true);
+                auto h = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, fwd, side, 500.0f, true);
                 if (h) {
                     g_spawnedSkeevers.push_back(h);
                 }
@@ -1420,19 +1466,19 @@ namespace SkyrimPoE::Runtime
             const bool haveCoc = (tel.cocExecutions > g_telBeforeB.cocExecutions);
             const bool haveTicks = (tel.areaHitTicks >= g_telBeforeB.areaHitTicks + 3);
 
-            // CoC 발동 전에 반경 내 생존 스키버가 없으면 최대 3회까지 추가 소환
-            if (!haveCoc && g_extraSkeeverWavesSpawned < 3 && g_unpausedAccumSec >= 1.0) {
+            // CoC 발동 전에 반경 내 생존 스키버가 2마리 미만이면 최대 6회까지 추가 소환
+            if (!haveCoc && g_extraSkeeverWavesSpawned < 6 && g_unpausedAccumSec >= 1.0) {
                 const auto pPos = player->GetPosition();
                 std::size_t aliveNear = 0;
                 for (const auto& h : g_spawnedSkeevers) {
-                    if (auto a = h.get(); a && !a->IsDead() && a->GetPosition().GetDistance(pPos) <= 140.0f) {
+                    if (auto a = h.get(); a && !a->IsDead() && a->GetPosition().GetDistance(pPos) <= 130.0f) {
                         ++aliveNear;
                     }
                 }
-                if (aliveNear == 0) {
+                if (aliveNear < 2) {
                     ++g_extraSkeeverWavesSpawned;
-                    for (float side : { -30.0f, 30.0f }) {
-                        if (auto h = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 60.0f, side, 300.0f, true)) {
+                    for (float side : { -30.0f, 0.0f, 30.0f }) {
+                        if (auto h = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 48.0f, side, 500.0f, true)) {
                             g_spawnedSkeevers.push_back(h);
                         }
                     }
@@ -1441,7 +1487,7 @@ namespace SkyrimPoE::Runtime
                 }
             }
 
-            if ((haveCoc && haveTicks && g_unpausedAccumSec >= 1.5) || g_unpausedAccumSec >= 9.0 || !CycloneRuntime::IsActive()) {
+            if ((haveCoc && haveTicks && g_unpausedAccumSec >= 1.5) || g_unpausedAccumSec >= 12.0 || !CycloneRuntime::IsActive()) {
                 CycloneRuntime::SetAutoTestHeld(false);
                 EnterPhase(Phase::ScenarioB_AwaitStop);
             }
@@ -1806,6 +1852,9 @@ namespace SkyrimPoE::Runtime
             const auto stM2 = SaveLoad::GetStateCopy();
             const bool m2Selected = stM2.tree.masterySelections.contains(8556) && stM2.tree.masterySelections.at(8556) == 39154;
 
+            // 4단계 기본값 FreePassiveRefund=false 환경에서도 D4 회수 검증이 통과하도록 임시 후회의 오브 5개를 지급한다.
+            (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Regret, 5);
+
             // 중간 브리지 노드(pathTo20835의 첫 노드 또는 31628) 단절 회수 거절 검증
             const std::uint32_t bridgeId = (pathTo20835.size() >= 2) ? pathTo20835[0] : 31628u;
             SendUiCmd(json{ { "op", "treeRefundNode" }, { "nodeId", bridgeId } });
@@ -2066,7 +2115,623 @@ namespace SkyrimPoE::Runtime
                     stReloaded.tree.ascendancyMilestonesBitmask,
                     snapReloaded ? snapReloaded->str : 0u));
 
-            FinishAndScheduleQuit("All Stage 3 AutoTest scenarios (A, B, C, D) completed.");
+            BeginScenarioE();
+            break;
+        }
+
+        // ================= SCENARIO E (Stage 4 Items, Crafting, Gear Sync, World Drops & UI) =================
+        case Phase::ScenarioE_Start: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !g_statEngine || !g_dataPack || !g_treeData || !g_config) {
+                Check("E1_ItemsDataAndEspForms", false, "Core singletons unavailable.");
+                FinishAndScheduleQuit("Scenario E aborted.");
+                return;
+            }
+
+            // E1: items_3_30.json 로드 + 화폐 12종 + 토큰 80종 + 빛기둥 2종 ESP 폼 + 시작 화폐 플래그 검증
+            std::size_t orbFound = 0;
+            for (const auto fid : FormIds::kCurrencyOrbForms) {
+                if (FormIds::Lookup<RE::TESObjectMISC>(fid)) ++orbFound;
+            }
+            std::size_t tokFound = 0;
+            for (std::size_t off = 0; off < FormIds::kSealedTokenCount; ++off) {
+                const auto fid = FormIds::kSealedTokenBase + static_cast<RE::FormID>(off);
+                if (FormIds::Lookup<RE::TESObjectMISC>(fid)) ++tokFound;
+            }
+            const bool beamsFound = (FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamRare) != nullptr) &&
+                (FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamCurrency) != nullptr);
+            const auto stInitE = SaveLoad::GetStateCopy();
+            const bool e1Ok = g_itemData && g_itemData->IsLoaded() &&
+                g_itemData->AllAffixes().size() > 700 &&
+                g_itemData->AllCurrencies().size() == Core::kCurrencyKindCount &&
+                orbFound == Core::kCurrencyKindCount &&
+                tokFound == FormIds::kSealedTokenCount &&
+                beamsFound && stInitE.starterCurrencyGiven;
+            Check("E1_ItemsDataAndEspForms", e1Ok,
+                std::format("loaded={}, affixes={}, orbs={}/12, tokens={}/80, beams={}, starterCurr={}",
+                    g_itemData && g_itemData->IsLoaded(),
+                    g_itemData ? g_itemData->AllAffixes().size() : 0,
+                    orbFound, tokFound, beamsFound, stInitE.starterCurrencyGiven));
+
+            if (!e1Ok) {
+                FinishAndScheduleQuit("Scenario E aborted because Stage 4 data or ESP forms were missing.");
+                return;
+            }
+
+            // E2: LootTable 보스 드랍 판정(확률 편차 배제를 위해 5회 보스 표본 합산) + T3 희귀 갑옷 토큰 감정
+            std::mt19937_64 detRng(424242u);
+            std::size_t bossDropTotal = 0;
+            for (int r = 0; r < 5; ++r) {
+                bossDropTotal += Core::LootTable::RollKillDrops(50, true, false, *g_config, *g_itemData, detRng).size();
+            }
+            const bool rollValid = bossDropTotal > 0;
+            (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::ScrollOfWisdom, 2);
+            (void)CraftingRuntime::GrantToken(player, 3, Core::ItemRarity::Rare, Core::TokenSlotGroup::Body, 1);
+            const auto wisBefore = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::ScrollOfWisdom);
+            const auto idRes = CraftingRuntime::IdentifyToken(3, Core::ItemRarity::Rare, Core::TokenSlotGroup::Body);
+            const auto wisAfter = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::ScrollOfWisdom);
+            const auto trackedRec = idRes.ok ? ItemTracker::FindByKey(idRes.resultKey) : std::nullopt;
+            const bool e2Ok = rollValid && idRes.ok && idRes.resultKey.IsValid() &&
+                trackedRec.has_value() &&
+                trackedRec->rarity == Core::ItemRarity::Rare &&
+                trackedRec->itemLevel >= 41 && trackedRec->itemLevel <= 60 &&
+                trackedRec->affixes.size() >= 4 && trackedRec->affixes.size() <= 6 &&
+                wisAfter == wisBefore - 1;
+            if (idRes.ok) {
+                g_eIdentifiedKey = idRes.resultKey;
+            }
+            Check("E2_LootRollAndTokenIdentify", e2Ok,
+                std::format("bossDrops5={}(ok={}), idOk={}, uid={}, rarity={}, iLvl={}, affixes={}, wis {}->{}",
+                    bossDropTotal, rollValid, idRes.ok, idRes.resultKey.uniqueId,
+                    trackedRec ? static_cast<int>(trackedRec->rarity) : -1,
+                    trackedRec ? trackedRec->itemLevel : 0u,
+                    trackedRec ? trackedRec->affixes.size() : 0,
+                    wisBefore, wisAfter));
+
+            // E3: 화폐 오브 전체 왕복(불법 Chaos 거절 -> Transmutation -> Alteration -> Augmentation -> Regal -> Exalted -> Divine -> Chaos -> Scouring[iLvl 보존] -> Alchemy)
+            auto* dagger = RE::TESForm::LookupByID<RE::TESObjectWEAP>(kIronDaggerId);
+            bool e3Ok = false;
+            std::string e3Detail;
+            if (dagger) {
+                player->AddObjectToContainer(dagger, nullptr, 1, nullptr);
+                for (auto kind : {
+                         Core::CurrencyKind::Transmutation,
+                         Core::CurrencyKind::Augmentation,
+                         Core::CurrencyKind::Alteration,
+                         Core::CurrencyKind::Regal,
+                         Core::CurrencyKind::Alchemy,
+                         Core::CurrencyKind::Chaos,
+                         Core::CurrencyKind::Exalted,
+                         Core::CurrencyKind::Scouring,
+                         Core::CurrencyKind::Divine }) {
+                    (void)CraftingRuntime::GrantCurrency(player, kind, 10);
+                }
+                const auto chaosBeforeIllegal = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Chaos);
+                const auto illegalChaos = CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Chaos, kIronDaggerId, 0, false);
+                const auto chaosAfterIllegal = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Chaos);
+                const bool illegalGuarded = !illegalChaos.ok && (chaosAfterIllegal == chaosBeforeIllegal);
+
+                const auto rTrans = CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Transmutation, kIronDaggerId, 0, false);
+                const std::uint16_t uid = rTrans.resultKey.uniqueId;
+                const std::uint32_t origIlvl = rTrans.resultRecord.itemLevel;
+                bool magicChainOk = rTrans.ok && uid != 0 && rTrans.resultRecord.rarity == Core::ItemRarity::Magic;
+
+                // Alteration 실행 및 Augmentation(1어픽스면 성공, 2어픽스면 거절 후 0차감) 검증
+                auto rAlt = magicChainOk
+                    ? CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Alteration, kIronDaggerId, uid, false)
+                    : CraftActionResult{};
+                magicChainOk = magicChainOk && rAlt.ok && rAlt.resultRecord.rarity == Core::ItemRarity::Magic;
+                bool augOk = false;
+                if (magicChainOk) {
+                    const std::size_t affBeforeAug = rAlt.resultRecord.affixes.size();
+                    const auto augBefore = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Augmentation);
+                    const auto rAug = CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Augmentation, kIronDaggerId, uid, false);
+                    const auto augAfter = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Augmentation);
+                    if (affBeforeAug < 2) {
+                        augOk = rAug.ok && rAug.resultRecord.affixes.size() == affBeforeAug + 1 && augAfter == augBefore - 1;
+                    } else {
+                        augOk = !rAug.ok && augAfter == augBefore;
+                    }
+                }
+
+                const auto rRegal = (magicChainOk && augOk)
+                    ? CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Regal, kIronDaggerId, uid, false)
+                    : CraftActionResult{};
+                const auto rExalt = rRegal.ok
+                    ? CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Exalted, kIronDaggerId, uid, false)
+                    : CraftActionResult{};
+                const auto rDivine = rExalt.ok
+                    ? CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Divine, kIronDaggerId, uid, false)
+                    : CraftActionResult{};
+                const auto rChaos = rDivine.ok
+                    ? CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Chaos, kIronDaggerId, uid, false)
+                    : CraftActionResult{};
+                const auto rScour = rChaos.ok
+                    ? CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Scouring, kIronDaggerId, uid, false)
+                    : CraftActionResult{};
+                const bool scourIlvlKept = rScour.ok &&
+                    rScour.resultRecord.rarity == Core::ItemRarity::Normal &&
+                    rScour.resultRecord.affixes.empty() &&
+                    rScour.resultRecord.itemLevel == origIlvl;
+                const auto rAlch = scourIlvlKept
+                    ? CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Alchemy, kIronDaggerId, uid, false)
+                    : CraftActionResult{};
+
+                e3Ok = illegalGuarded && magicChainOk && augOk &&
+                    rRegal.ok && rRegal.resultRecord.rarity == Core::ItemRarity::Rare &&
+                    rExalt.ok && rExalt.resultRecord.affixes.size() == rRegal.resultRecord.affixes.size() + 1 &&
+                    rDivine.ok && rDivine.resultRecord.affixes.size() == rExalt.resultRecord.affixes.size() &&
+                    rChaos.ok && rChaos.resultRecord.affixes.size() >= 4 &&
+                    scourIlvlKept &&
+                    rAlch.ok && rAlch.resultRecord.rarity == Core::ItemRarity::Rare &&
+                    rAlch.resultRecord.affixes.size() >= 4 &&
+                    rAlch.resultRecord.itemLevel == origIlvl;
+                if (e3Ok) {
+                    g_eCraftedDaggerKey = rAlch.resultKey;
+                }
+                e3Detail = std::format(
+                    "illegalGuard={}, trans={}, alt={}, aug={}, regal={}, exalt={}, divine={}, chaos={}, scourIlvl({}=={})={}, alch={}",
+                    illegalGuarded, rTrans.ok, rAlt.ok, augOk, rRegal.ok, rExalt.ok,
+                    rDivine.ok, rChaos.ok, rScour.resultRecord.itemLevel, origIlvl, scourIlvlKept, rAlch.ok);
+            } else {
+                e3Detail = "IronDagger (0x0001397E) lookup failed";
+            }
+            Check("E3_CurrencyOrbsRoundTripAndGuard", e3Ok, e3Detail);
+
+            // E4 준비: 기존 투구/서클릿 등 Helmet 슬롯 선점 장비를 먼저 해제해 충돌 차단(검수 Major #6)
+            auto* equipMgr = RE::ActorEquipManager::GetSingleton();
+            if (equipMgr) {
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    EquipmentSync::RefreshFromPlayerNow();
+                    const auto curMeta = EquipmentSync::GetCurrentGearMeta();
+                    const auto& hMeta = curMeta[static_cast<std::size_t>(Core::EquipSlot::Helmet)];
+                    if (!hMeta.occupied) {
+                        break;
+                    }
+                    if (auto* prevHelm = RE::TESForm::LookupByID<RE::TESBoundObject>(hMeta.baseFormId)) {
+                        equipMgr->UnequipObject(player, prevHelm, nullptr, 1, nullptr, false, true, false, true);
+                    } else {
+                        break;
+                    }
+                }
+                EquipmentSync::RefreshFromPlayerNow();
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            }
+
+            const auto snapBeforeGear = g_statEngine->GetSnapshot();
+            auto* av = player->AsActorValueOwner();
+            g_eStrBefore = snapBeforeGear ? snapBeforeGear->str : 0u;
+            g_ePoeLifeBefore = snapBeforeGear ? snapBeforeGear->poeMaxLife : 0.0;
+            g_eFireResBefore = snapBeforeGear ? snapBeforeGear->fireResist : 0.0;
+            g_ePermHpBefore = av ? static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)) : 0.0;
+
+            auto* helmet = RE::TESForm::LookupByID<RE::TESObjectARMO>(kIronHelmetId);
+            if (helmet && equipMgr) {
+                player->AddObjectToContainer(helmet, nullptr, 1, nullptr);
+                RE::ExtraDataList* helmExtra = nullptr;
+                g_eHelmetKey = ItemTracker::EnsureUniqueId(player, helmet, nullptr, &helmExtra);
+                if (g_eHelmetKey.IsValid()) {
+                    Core::PoEItemRecord hRec;
+                    hRec.rarity = Core::ItemRarity::Rare;
+                    // 검수 Critical #1: Lv50 Marauder(힘 ~122) 요구치 충족을 위해 iLvl 48(reqLevel=48, reqStr=101) 사용
+                    hRec.itemLevel = 48;
+                    hRec.baseFormId = kIronHelmetId;
+                    hRec.slotGroup = Core::TokenSlotGroup::Helmet;
+                    hRec.defenseSubtype = EquipmentSync::ClassifyDefenseSubtype(helmet);
+                    // items_3_30.json에 존재하는 실제 어픽스 ID 및 법정 롤 범위 값 사용
+                    hRec.affixes = {
+                        { "IncreasedLife8", { 120.0 } },
+                        { "FireResist6", { 40.0 } },
+                        { "Strength5", { 30.0 } }
+                    };
+                    ItemTracker::Upsert(g_eHelmetKey, hRec, false);
+                    equipMgr->EquipObject(player, helmet, helmExtra, 1, nullptr, false, true, false, true);
+                    EquipmentSync::RefreshFromPlayerNow();
+                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                }
+            }
+            EnterPhase(Phase::ScenarioE_EquipPoolWait);
+            break;
+        }
+
+        case Phase::ScenarioE_EquipPoolWait: {
+            if (g_unpausedAccumSec < 0.4 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* av = player ? player->AsActorValueOwner() : nullptr;
+            const auto snapAfterGear = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            if (!player || !av || !snapAfterGear) {
+                FinishAndScheduleQuit("Scenario E4 player/snapshot unavailable.");
+                return;
+            }
+
+            const double permHpAfter = static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth));
+            const bool wornReflected = (snapAfterGear->str >= g_eStrBefore + 25) &&
+                (snapAfterGear->poeMaxLife > g_ePoeLifeBefore + 80.0) &&
+                (snapAfterGear->fireResist > g_eFireResBefore + 30.0) &&
+                (permHpAfter > g_ePermHpBefore + 1.0);
+
+            // 순환 자기충족 방지 + 젬 요구치 평가 검증: 요구 힘 300이면서 자기 자신이 힘 +300을 주는 장비는 비활성 유지
+            Core::StatEngine circEngine;
+            Core::Layer1Input circL1;
+            circL1.exileLevel = 10;
+            circL1.className = "Scion";
+            circL1.slots[0].occupied = true;
+            circL1.slots[0].gem.instanceId = 1;
+            circL1.slots[0].gem.gemId = "Cyclone";
+            circL1.slots[0].gem.level = 20;  // Lv20 Cyclone requires high Dex -> unmet on base Scion(20)
+            circL1.slots[0].gem.socketCount = 3;
+            auto& circBody = circL1.equippedGear[static_cast<std::size_t>(Core::EquipSlot::Body)];
+            circBody.occupied = true;
+            circBody.isCrafted = true;
+            circBody.reqStr = 300;
+            circBody.stats.flatStr = 300.0;
+            circBody.stats.flatLife = 500.0;
+            circEngine.SetLayer1(circL1);
+            (void)circEngine.RebuildIfDirty(*g_dataPack, *g_config);
+            const auto circSnap = circEngine.GetSnapshot();
+            const bool circularBlocked = circSnap &&
+                circSnap->gearSlotReqFailed[static_cast<std::size_t>(Core::EquipSlot::Body)] &&
+                !circSnap->gearSlotActive[static_cast<std::size_t>(Core::EquipSlot::Body)] &&
+                circSnap->str < 100 &&
+                !circSnap->slotStats[0].requirementMet;
+
+            Check("E4_EquipGearStatSyncAndCircularGuard", wornReflected && circularBlocked,
+                std::format("str {}->{}, life {:.1f}->{:.1f}, fireRes {:.0f}->{:.0f}, permHp {:.1f}->{:.1f}, circBlocked={}",
+                    g_eStrBefore, snapAfterGear->str, g_ePoeLifeBefore, snapAfterGear->poeMaxLife,
+                    g_eFireResBefore, snapAfterGear->fireResist, g_ePermHpBefore, permHpAfter, circularBlocked));
+
+            // E5: 쥬얼러의 오브(스킬 젬 3->4->5 + 5 초과 거절 + 발동 젬 내부 주문 젬 3->4) & 후회의 오브 연동 회수
+            (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Jeweller, 5);
+            const auto jw0 = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Jeweller);
+            const auto j1 = CraftingRuntime::ApplyJewellerToGem(0, 0);
+            const auto j2 = CraftingRuntime::ApplyJewellerToGem(0, 0);
+            const auto jwBeforeCap = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Jeweller);
+            const auto jCap = CraftingRuntime::ApplyJewellerToGem(0, 0);
+            const auto jwAfterCap = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Jeweller);
+
+            const auto stForJew = SaveLoad::GetStateCopy();
+            const std::uint64_t spellInstId = (stForJew.slots[1].occupied && !stForJew.slots[1].gem.socketedGems.empty())
+                ? stForJew.slots[1].gem.socketedGems[0].instanceId
+                : 0;
+            const auto jSp = (spellInstId != 0)
+                ? CraftingRuntime::ApplyJewellerToGem(1, spellInstId)
+                : CraftActionResult{};
+            Core::GemInstance dummySup;
+            dummySup.gemId = "SupportBrutality";
+            dummySup.socketCount = 0;
+            const bool supRejected =
+                Core::ItemCrafting::ApplyJewellerToGem(dummySup, Core::GemKind::Support).code == Core::CraftResultCode::UnsupportedTarget;
+
+            const auto stAfterJew = SaveLoad::GetStateCopy();
+            const bool jewOk = j1.ok && j2.ok && !jCap.ok && (jwAfterCap == jwBeforeCap) &&
+                jSp.ok && supRejected &&
+                stAfterJew.slots[0].occupied && stAfterJew.slots[0].gem.socketCount == 5 &&
+                stAfterJew.slots[1].occupied && !stAfterJew.slots[1].gem.socketedGems.empty() &&
+                stAfterJew.slots[1].gem.socketedGems[0].socketCount == 4 &&
+                jw0 - 3 == CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Jeweller);
+
+            // 후회의 오브 연동 패시브 회수: 0개일 때 실패 -> 1개 지급 후 성공 및 차감(검수 Minor #8: FreePassiveRefund=true 분기 대응)
+            const auto remRegret = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Regret);
+            if (remRegret > 0) {
+                (void)CraftingRuntime::ConsumeCurrency(player, Core::CurrencyKind::Regret, remRegret);
+            }
+            const std::uint32_t expectedRefundCost = g_config->freePassiveRefund ? 0u : 1u;
+            std::uint32_t leafNodeId = 0;
+            for (const auto nid : stAfterJew.tree.allocatedNodes) {
+                const auto* nd = g_treeData->FindNode(nid);
+                if (nd && nd->ascendancyId.empty() &&
+                    Core::PassiveTree::GetRefundNodeCost(*g_treeData, stAfterJew.tree, nid, *g_config) == expectedRefundCost) {
+                    auto probeTree = stAfterJew.tree;
+                    if (Core::PassiveTree::RefundNode(*g_treeData, probeTree, nid, stAfterJew.exileLevel, *g_config, expectedRefundCost).ok) {
+                        leafNodeId = nid;
+                        break;
+                    }
+                }
+            }
+            bool regretOk = false;
+            if (leafNodeId != 0) {
+                if (!g_config->freePassiveRefund) {
+                    const auto failZero = CraftingRuntime::RefundPassiveNodeWithRegret(leafNodeId);
+                    (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Regret, 1);
+                    const auto okOne = CraftingRuntime::RefundPassiveNodeWithRegret(leafNodeId);
+                    const auto regretEnd = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Regret);
+                    regretOk = !failZero.ok && okOne.ok && regretEnd == 0;
+                } else {
+                    const auto okFree = CraftingRuntime::RefundPassiveNodeWithRegret(leafNodeId);
+                    regretOk = okFree.ok;
+                }
+            }
+            Check("E5_JewellerAndRegretRuntime", jewOk && regretOk,
+                std::format("jewOk(slot0={}, spell={}, capRej={})={}, regretOk(leaf={})={}",
+                    stAfterJew.slots[0].occupied ? stAfterJew.slots[0].gem.socketCount : 0,
+                    (stAfterJew.slots[1].occupied && !stAfterJew.slots[1].gem.socketedGems.empty())
+                        ? stAfterJew.slots[1].gem.socketedGems[0].socketCount : 0,
+                    !jCap.ok, jewOk, leafNodeId, regretOk));
+
+            // E6 준비: 동일 베이스(IronWarAxe) 2개 중 1개만 제작 -> 제작품만 바닥 드랍 -> 픽업 후 격리 보존 검증
+            auto* axe = RE::TESForm::LookupByID<RE::TESObjectWEAP>(kIronWarAxeId);
+            g_eDupOrigKey = {};
+            g_eDroppedRefHandle = {};
+            g_eDroppedWorldStamped = false;
+            if (axe) {
+                player->AddObjectToContainer(axe, nullptr, 2, nullptr);
+                (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Transmutation, 1);
+                const auto craftAxe = CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Transmutation, kIronWarAxeId, 0, false);
+                if (craftAxe.ok && craftAxe.resultKey.IsValid()) {
+                    g_eDupOrigKey = craftAxe.resultKey;
+                    g_eDupExpectedRec = craftAxe.resultRecord;
+                    auto* axeExtra = ItemTracker::FindExtraListByKey(player, axe, g_eDupOrigKey);
+                    if (axeExtra) {
+                        g_eDroppedRefHandle = player->DropObject(axe, axeExtra, 1);
+                    }
+                }
+            }
+            EnterPhase(Phase::ScenarioE_DropWait);
+            break;
+        }
+
+        case Phase::ScenarioE_DropWait: {
+            if (g_unpausedAccumSec < 0.25 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto droppedRef = g_eDroppedRefHandle.get();
+            if (player && droppedRef && g_eDupOrigKey.IsValid()) {
+                // 검수 Critical #2: 바닥 드랍 항목은 isWorld=true, key={droppedRef->GetFormID(), stampUid}로 저장되므로 스냅샷에서 직접 대조
+                const auto* xUid = droppedRef->extraList.GetByType<RE::ExtraUniqueID>();
+                if (xUid && xUid->uniqueID >= 0xC000) {
+                    const RE::FormID groundRefId = droppedRef->GetFormID();
+                    const auto snapItems = ItemTracker::TakeSnapshotForSave();
+                    for (const auto& e : snapItems) {
+                        if (e.isWorld && e.key.ownerFormId == groundRefId && e.key.uniqueId == xUid->uniqueID &&
+                            e.record.rarity == g_eDupExpectedRec.rarity &&
+                            e.record.affixes.size() == g_eDupExpectedRec.affixes.size()) {
+                            g_eDroppedWorldStamped = true;
+                            break;
+                        }
+                    }
+                }
+                player->PickUpObject(droppedRef.get(), 1, false, false);
+            }
+            EnterPhase(Phase::ScenarioE_PickupWait);
+            break;
+        }
+
+        case Phase::ScenarioE_PickupWait: {
+            if (g_unpausedAccumSec < 0.45 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            std::int32_t trackedAxeCount = 0;
+            std::int32_t untouchedAxeCount = 0;
+            std::string axeSummary;
+            if (player && g_eDupOrigKey.IsValid()) {
+                const auto bag = CraftingRuntime::ListPlayerCraftableItems(player);
+                for (const auto& entry : bag) {
+                    if (entry.baseFormId != kIronWarAxeId) {
+                        continue;
+                    }
+                    if (!axeSummary.empty()) axeSummary += ",";
+                    axeSummary += std::format("(uid={},cnt={},rec={})", entry.uniqueId, entry.count, entry.hasPoERecord);
+                    if (entry.hasPoERecord && entry.uniqueId != 0 &&
+                        entry.record.rarity == g_eDupExpectedRec.rarity &&
+                        entry.record.affixes.size() == g_eDupExpectedRec.affixes.size()) {
+                        trackedAxeCount += entry.count;
+                    } else if (!entry.hasPoERecord && entry.count >= 1) {
+                        untouchedAxeCount += entry.count;
+                    }
+                }
+            }
+            const bool foundTrackedAxe = (trackedAxeCount == 1);
+            const bool foundPlainAxe = (untouchedAxeCount >= 1);
+            Check("E6_ItemTrackerDuplicateBaseIsolation",
+                g_eDroppedWorldStamped && foundTrackedAxe && foundPlainAxe,
+                std::format("worldStamped={}, trackedCnt={}, plainCnt={}, entries=[{}]",
+                    g_eDroppedWorldStamped, trackedAxeCount, untouchedAxeCount, axeSummary));
+
+            // E7 준비: 시체 1구 소환·즉사(검수 Minor #9: nullptr 공격자로 DeathListener 간섭 차단) -> 바닥 물리 드랍+빛기둥 생성 -> 세이브·로드 왕복
+            WorldDropTracker::ReturnAllToCorpsesNow();
+            g_eCorpseHandle = {};
+            if (player) {
+                g_eCorpseHandle = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 75.0f, 0.0f, 0.0f, false);
+                if (auto sk = g_eCorpseHandle.get()) {
+                    (void)sk->DoDamage(1200.0f, nullptr, true);
+                }
+            }
+            EnterPhase(Phase::ScenarioE_CorpseWait);
+            break;
+        }
+
+        case Phase::ScenarioE_CorpseWait: {
+            if (g_unpausedAccumSec < 0.4 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto corpse = g_eCorpseHandle.get();
+            const auto rareTokLocal = FormIds::SealedTokenLocalFormId(3, Core::ItemRarity::Rare, Core::TokenSlotGroup::Body);
+            auto* rareTokObj = FormIds::Lookup<RE::TESObjectMISC>(rareTokLocal);
+            bool spawnedDrop = false;
+            if (corpse && rareTokObj) {
+                // SpawnPhysicalDropFromContainer가 내부에서 AddObjectToContainer -> RemoveItem(kDropping)을 원자 수행함
+                spawnedDrop = WorldDropTracker::SpawnPhysicalDropFromContainer(corpse.get(), rareTokObj, 2, false);
+            }
+            LogInfo(std::format("Scenario E7: physical world drop spawned={}, activeCount={}.",
+                spawnedDrop, WorldDropTracker::ActiveCount()));
+
+            // E8 코세이브 왕복 대조용 현재 추적 아이템 전체 스냅샷 저장
+            g_eExpectedTrackedItems = ItemTracker::TakeSnapshotForSave();
+
+            g_saveAttempts = 0;
+            g_nextSaveRetryAt = Clock::now();
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = g_cfg.tempSave;
+                g_saveMatched = false;
+            }
+            EnterPhase(Phase::ScenarioE_SavePump);
+            break;
+        }
+
+        case Phase::ScenarioE_SavePump: {
+            bool matched = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                matched = g_saveMatched;
+            }
+            if (matched) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                LogInfo(std::format("Scenario E temp save '{}' confirmed by kSaveGame (attempts={}).",
+                    g_cfg.tempSave, g_saveAttempts));
+                EnterPhase(Phase::ScenarioE_SaveWaitBeforeLoad);
+                break;
+            }
+            if (PhaseElapsedSec() > 25.0) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                Check("E7_WorldDropCosaveAndReturn", false, "Timed out waiting for Scenario E kSaveGame.");
+                Check("E8_ItemCosaveRoundTripAndGearUi", false, "Skipped due to Scenario E save timeout.");
+                FinishAndScheduleQuit("Scenario E save timeout.");
+                break;
+            }
+            const auto now = Clock::now();
+            if (now >= g_nextSaveRetryAt) {
+                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    ++g_saveAttempts;
+                    mgr->Save(g_cfg.tempSave.c_str());
+                }
+                g_nextSaveRetryAt = now + std::chrono::seconds(2);
+            }
+            break;
+        }
+
+        case Phase::ScenarioE_SaveWaitBeforeLoad: {
+            if (PhaseElapsedSec() < 1.0) {
+                break;
+            }
+            LogInfo(std::format("Reloading temp save '{}' to verify ITEM + WDRP co-save round-trip...", g_cfg.tempSave));
+            if (!RequestLoadSave(g_cfg.tempSave)) {
+                Check("E7_WorldDropCosaveAndReturn", false, "BGSSaveLoadManager singleton unavailable.");
+                Check("E8_ItemCosaveRoundTripAndGearUi", false, "Skipped due to reload failure.");
+                FinishAndScheduleQuit("Scenario E reload request failed.");
+                break;
+            }
+            EnterPhase(Phase::ScenarioE_AwaitReload);
+            break;
+        }
+
+        case Phase::ScenarioE_AwaitReload: {
+            bool signaled = false;
+            bool ok = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                signaled = g_postLoadSignaled;
+                ok = g_postLoadSucceeded;
+            }
+            if (signaled && !ok) {
+                Check("E7_WorldDropCosaveAndReturn", false, "kPostLoadGame reported failure on Scenario E reload.");
+                Check("E8_ItemCosaveRoundTripAndGearUi", false, "Skipped due to reload failure.");
+                FinishAndScheduleQuit("Scenario E reload failed.");
+                return;
+            }
+            if (signaled && ok && IsPlayerReadyInWorld()) {
+                EnterPhase(Phase::ScenarioE_ReloadSettle);
+            } else if (PhaseElapsedSec() > 90.0) {
+                Check("E7_WorldDropCosaveAndReturn", false, "Timed out waiting for Scenario E reload.");
+                Check("E8_ItemCosaveRoundTripAndGearUi", false, "Skipped due to reload timeout.");
+                FinishAndScheduleQuit("Scenario E reload timeout.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioE_ReloadSettle: {
+            if (g_unpausedAccumSec < 2.0 && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+
+            // E7 검증: 로드 직후 'WDRP' 복원 -> 고아 빛기둥 0개 -> ReturnAllToCorpsesNow() 후 활성 0 & 고아 0
+            const auto activeAfterReload = WorldDropTracker::ActiveCount();
+            const auto orphansBeforeReturn = WorldDropTracker::SweepOrphanBeamsNearPlayer();
+            WorldDropTracker::ReturnAllToCorpsesNow();
+            const auto activeAfterReturn = WorldDropTracker::ActiveCount();
+            const auto orphansAfterReturn = WorldDropTracker::SweepOrphanBeamsNearPlayer();
+            const bool e7Ok = (activeAfterReload >= 1) &&
+                (orphansBeforeReturn == 0) &&
+                (activeAfterReturn == 0) &&
+                (orphansAfterReturn == 0);
+            Check("E7_WorldDropCosaveAndReturn", e7Ok,
+                std::format("activeAfterReload={}, orphansBefore={}, activeAfterReturn={}, orphansAfter={}",
+                    activeAfterReload, orphansBeforeReturn, activeAfterReturn, orphansAfterReturn));
+
+            // E8 검증: 'ITEM' v1 코세이브 복원 + Prisma UI 3번째 탭(장비·제작) 페이로드 및 탭 열기/닫기
+            const auto stReloadedE = SaveLoad::GetStateCopy();
+            const auto restoredHelmet = ItemTracker::FindByKey(g_eHelmetKey);
+            const auto restoredIdent = ItemTracker::FindByKey(g_eIdentifiedKey);
+            const auto restoredDagger = ItemTracker::FindByKey(g_eCraftedDaggerKey);
+            const auto restoredCount = ItemTracker::CountTracked();
+            g_e8CosaveOk = stReloadedE.starterCurrencyGiven &&
+                restoredCount == g_eExpectedTrackedItems.size() &&
+                restoredHelmet.has_value() && restoredHelmet->rarity == Core::ItemRarity::Rare &&
+                restoredHelmet->affixes.size() == 3 &&
+                restoredIdent.has_value() && restoredIdent->rarity == Core::ItemRarity::Rare &&
+                restoredDagger.has_value() && restoredDagger->rarity == Core::ItemRarity::Rare;
+
+            g_e8PayloadOk = false;
+            std::size_t eqCount = 0;
+            std::size_t curCount = 0;
+            bool helmCardHasRare = false;
+            try {
+                const auto panelJson = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread());
+                if (panelJson.contains("gear") && panelJson["gear"].is_object()) {
+                    const auto& gj = panelJson["gear"];
+                    const bool loaded = gj.value("loaded", false);
+                    eqCount = gj.contains("equippedSlots") && gj["equippedSlots"].is_array() ? gj["equippedSlots"].size() : 0;
+                    curCount = gj.contains("currencies") && gj["currencies"].is_array() ? gj["currencies"].size() : 0;
+                    if (eqCount == Core::kEquipSlotCount) {
+                        const auto& hSlot = gj["equippedSlots"][static_cast<std::size_t>(Core::EquipSlot::Helmet)];
+                        if (hSlot.value("occupied", false) && hSlot.contains("card") && hSlot["card"].is_object()) {
+                            helmCardHasRare = (hSlot["card"].value("rarityBadge", "") == "[희귀]") &&
+                                hSlot["card"].contains("affixLines") && hSlot["card"]["affixLines"].size() == 3;
+                        }
+                    }
+                    g_e8PayloadOk = loaded && (eqCount == Core::kEquipSlotCount) &&
+                        (curCount == Core::kCurrencyKindCount) && helmCardHasRare;
+                }
+            } catch (...) {
+                g_e8PayloadOk = false;
+            }
+
+            g_e8Detail = std::format("tracked={}/{}, helm={}, id={}, dag={}, eqSlots={}, cur={}, helmCardRare={}",
+                restoredCount, g_eExpectedTrackedItems.size(),
+                restoredHelmet.has_value(), restoredIdent.has_value(), restoredDagger.has_value(),
+                eqCount, curCount, helmCardHasRare);
+
+            const bool gameActive = (!main || main->gameActive);
+            if (gameActive && UiBridge::IsDomReady()) {
+                g_e8OpenedGearTab = UiBridge::TryOpenPanelOnMainThread("gear") && (UiBridge::ActiveTab() == "gear");
+                EnterPhase(Phase::ScenarioE_GearTabCloseWait);
+            } else {
+                Check("E8_ItemCosaveRoundTripAndGearUi", g_e8CosaveOk && g_e8PayloadOk,
+                    std::format("{}, uiTabSkipped(gameActive={}, domReady={})", g_e8Detail, gameActive, UiBridge::IsDomReady()));
+                FinishAndScheduleQuit("All Stage 4 AutoTest scenarios (A, B, C, D, E) completed.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioE_GearTabCloseWait: {
+            if (PhaseElapsedSec() < 0.35) {
+                break;
+            }
+            UiBridge::ClosePanelOnMainThread();
+            const bool closedClean = !UiBridge::IsPanelOpen() && UiBridge::IsHudShown();
+            Check("E8_ItemCosaveRoundTripAndGearUi", g_e8CosaveOk && g_e8PayloadOk && g_e8OpenedGearTab && closedClean,
+                std::format("{}, openGearTab={}, closedClean={}", g_e8Detail, g_e8OpenedGearTab, closedClean));
+            FinishAndScheduleQuit("All Stage 4 AutoTest scenarios (A, B, C, D, E) completed.");
             break;
         }
 

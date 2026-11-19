@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "runtime/DeathListener.h"
 #include "runtime/SaveLoad.h"
+#include "runtime/WorldDropTracker.h"
 
 namespace SkyrimPoE::Runtime
 {
@@ -125,17 +126,17 @@ namespace SkyrimPoE::Runtime
                     *g_config,
                     fallbackExcluded);
 
-                // 검수 M5: reward.awarded가 참이면 XP가 0(유배자 Lv.100 등)이어도 1~3차 보스 이정표 판정을 수행
+                // 검수 M5 & 4단계 검수 M2: reward.awarded가 참이면 XP가 0(유배자 Lv.100 등)이어도
+                // 1~3차 보스 이정표 및 전리품 드랍 판정을 항상 수행한다.
                 if (!reward.awarded) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 const bool hasXp = (reward.exileXpGained > 0 || reward.gemXpGained > 0);
-                if (!hasXp && !isDragon && !isMilestoneBoss) {
-                    return RE::BSEventNotifyControl::kContinue;
-                }
+                // 결정 119: 원시 Actor* 대신 ActorHandle을 캡처해 주 갱신에서 유효성 재확인
+                const RE::ActorHandle corpseHandle = actor->GetHandle();
 
-                // 상태 갱신·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
-                g_queue->Enqueue([reward, hasXp, isDragon, isMilestoneBoss]() {
+                // 상태 갱신·드랍 판정·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
+                g_queue->Enqueue([reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle]() {
                     if (!g_config) {
                         return;
                     }
@@ -145,38 +146,43 @@ namespace SkyrimPoE::Runtime
                     std::uint32_t bossCountAfter = 0;
                     std::uint32_t dragonCountAfter = 0;
 
-                    SaveLoad::UpdateState([&](PersistentState& st) {
-                        if (hasXp) {
-                            exileRes = Core::KillTracker::ApplyExileXp(
-                                st.exileLevel,
-                                st.exileXp,
-                                st.unallocatedPassivePoints,
-                                reward.exileXpGained,
-                                *g_config);
-                            gemRes = Core::KillTracker::ApplyGemXpToSlots(st.slots, reward.gemXpGained);
-                        }
-                        if (isDragon) {
-                            ++st.tree.dragonKillCount;
-                        } else if (isMilestoneBoss) {
-                            ++st.tree.bossKillCount;
-                        }
-                        bossCountAfter = st.tree.bossKillCount;
-                        dragonCountAfter = st.tree.dragonKillCount;
+                    if (hasXp || isDragon || isMilestoneBoss) {
+                        SaveLoad::UpdateState([&](PersistentState& st) {
+                            if (hasXp) {
+                                exileRes = Core::KillTracker::ApplyExileXp(
+                                    st.exileLevel,
+                                    st.exileXp,
+                                    st.unallocatedPassivePoints,
+                                    reward.exileXpGained,
+                                    *g_config);
+                                gemRes = Core::KillTracker::ApplyGemXpToSlots(st.slots, reward.gemXpGained);
+                            }
+                            if (isDragon) {
+                                ++st.tree.dragonKillCount;
+                            } else if (isMilestoneBoss) {
+                                ++st.tree.bossKillCount;
+                            }
+                            bossCountAfter = st.tree.bossKillCount;
+                            dragonCountAfter = st.tree.dragonKillCount;
 
-                        const std::uint32_t prevMask = st.tree.ascendancyMilestonesBitmask;
-                        if ((st.tree.dragonKillCount >= 1 || st.tree.bossKillCount >= 5) && (prevMask & 0x1u) == 0) {
-                            st.tree.ascendancyMilestonesBitmask |= 0x1u;
-                            unlockedTier = std::max(unlockedTier, 1u);
-                        }
-                        if ((st.tree.dragonKillCount >= 3 || st.tree.bossKillCount >= 15) && (prevMask & 0x2u) == 0) {
-                            st.tree.ascendancyMilestonesBitmask |= 0x2u;
-                            unlockedTier = std::max(unlockedTier, 2u);
-                        }
-                        if ((st.tree.dragonKillCount >= 6 || st.tree.bossKillCount >= 30) && (prevMask & 0x4u) == 0) {
-                            st.tree.ascendancyMilestonesBitmask |= 0x4u;
-                            unlockedTier = std::max(unlockedTier, 3u);
-                        }
-                    });
+                            const std::uint32_t prevMask = st.tree.ascendancyMilestonesBitmask;
+                            if ((st.tree.dragonKillCount >= 1 || st.tree.bossKillCount >= 5) && (prevMask & 0x1u) == 0) {
+                                st.tree.ascendancyMilestonesBitmask |= 0x1u;
+                                unlockedTier = std::max(unlockedTier, 1u);
+                            }
+                            if ((st.tree.dragonKillCount >= 3 || st.tree.bossKillCount >= 15) && (prevMask & 0x2u) == 0) {
+                                st.tree.ascendancyMilestonesBitmask |= 0x2u;
+                                unlockedTier = std::max(unlockedTier, 2u);
+                            }
+                            if ((st.tree.dragonKillCount >= 6 || st.tree.bossKillCount >= 30) && (prevMask & 0x4u) == 0) {
+                                st.tree.ascendancyMilestonesBitmask |= 0x4u;
+                                unlockedTier = std::max(unlockedTier, 3u);
+                            }
+                        });
+                    }
+
+                    // 4단계(결정 16, 157~159): 시체 인벤토리 봉인 토큰·오브 및 고등급 바닥 드랍
+                    WorldDropTracker::OnKillAwarded(corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon);
 
                     if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0) {
                         SaveLoad::SyncStateToStatEngine();

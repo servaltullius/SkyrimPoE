@@ -3,422 +3,3322 @@
     "record_type": "MagicEffect",
     "editorid": "SPOE_ProxySpellEffect",
     "ops": [
-      { "field_path": "Name", "value": "SkyrimPoE 대리 주문 효과" },
-      { "field_path": "Archetype", "compose": { "type": "MagicEffectArchetype", "fields": { "Type": "Script" } } },
-      { "field_path": "BaseCost", "value": "1" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "MagicSkill", "value": "Destruction" },
-      { "field_path": "SkillUsageMultiplier", "value": "0" },
-      { "field_path": "Flags", "op": "Add", "value": "NoDuration" },
-      { "field_path": "Flags", "op": "Add", "value": "NoMagnitude" },
-      { "field_path": "Flags", "op": "Add", "value": "NoArea" }
+      {
+        "field_path": "Name",
+        "value": "SkyrimPoE 대리 주문 효과"
+      },
+      {
+        "field_path": "Archetype",
+        "compose": {
+          "type": "MagicEffectArchetype",
+          "fields": {
+            "Type": "Script"
+          }
+        }
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "1"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "MagicSkill",
+        "value": "Destruction"
+      },
+      {
+        "field_path": "SkillUsageMultiplier",
+        "value": "0"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoDuration"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoMagnitude"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoArea"
+      }
     ]
   },
   {
     "record_type": "MagicEffect",
     "editorid": "SPOE_ProxyPowerEffect",
     "ops": [
-      { "field_path": "Name", "value": "SkyrimPoE 대리 파워 효과" },
-      { "field_path": "Archetype", "compose": { "type": "MagicEffectArchetype", "fields": { "Type": "Script" } } },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "MagicSkill", "value": "None" },
-      { "field_path": "SkillUsageMultiplier", "value": "0" },
-      { "field_path": "Flags", "op": "Add", "value": "NoDuration" },
-      { "field_path": "Flags", "op": "Add", "value": "NoMagnitude" },
-      { "field_path": "Flags", "op": "Add", "value": "NoArea" }
+      {
+        "field_path": "Name",
+        "value": "SkyrimPoE 대리 파워 효과"
+      },
+      {
+        "field_path": "Archetype",
+        "compose": {
+          "type": "MagicEffectArchetype",
+          "fields": {
+            "Type": "Script"
+          }
+        }
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "MagicSkill",
+        "value": "None"
+      },
+      {
+        "field_path": "SkillUsageMultiplier",
+        "value": "0"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoDuration"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoMagnitude"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoArea"
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_1",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 1" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 1"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_2",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 2" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 2"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_3",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 3" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 3"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_4",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 4" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 4"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_5",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 5" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 5"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_6",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 6" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 6"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_7",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 7" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 7"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_8",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 8" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 8"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxySpell_9",
     "ops": [
-      { "field_path": "Name", "value": "PoE 주문 칸 9" },
-      { "field_path": "Type", "value": "Spell" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Aimed" },
-      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
-      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "10" },
-      { "field_path": "ChargeTime", "value": "0.5" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 주문 칸 9"
+      },
+      {
+        "field_path": "Type",
+        "value": "Spell"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Aimed"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "013F44:Skyrim.esm"
+      },
+      {
+        "field_path": "MenuDisplayObject",
+        "value": "04E264:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "10"
+      },
+      {
+        "field_path": "ChargeTime",
+        "value": "0.5"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxySpellEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_1",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 1" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 1"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_2",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 2" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 2"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_3",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 3" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 3"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_4",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 4" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 4"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_5",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 5" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 5"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_6",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 6" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 6"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_7",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 7" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 7"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_8",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 8" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 8"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "Spell",
     "editorid": "SPOE_ProxyPower_9",
     "ops": [
-      { "field_path": "Name", "value": "PoE 파워 칸 9" },
-      { "field_path": "Type", "value": "LesserPower" },
-      { "field_path": "CastType", "value": "FireAndForget" },
-      { "field_path": "TargetType", "value": "Self" },
-      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
-      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
-      { "field_path": "BaseCost", "value": "0" },
-      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+      {
+        "field_path": "Name",
+        "value": "PoE 파워 칸 9"
+      },
+      {
+        "field_path": "Type",
+        "value": "LesserPower"
+      },
+      {
+        "field_path": "CastType",
+        "value": "FireAndForget"
+      },
+      {
+        "field_path": "TargetType",
+        "value": "Self"
+      },
+      {
+        "field_path": "EquipmentType",
+        "value": "025BEE:Skyrim.esm"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "ManualCostCalc"
+      },
+      {
+        "field_path": "BaseCost",
+        "value": "0"
+      },
+      {
+        "field_path": "Effects",
+        "op": "Add",
+        "compose": {
+          "type": "Effect",
+          "fields": {
+            "BaseEffect": "@SPOE_ProxyPowerEffect"
+          }
+        }
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_Cyclone",
     "ops": [
-      { "field_path": "Name", "value": "스킬 젬: 사이클론" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Emerald.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 사이클론"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_CastOnCrit",
     "ops": [
-      { "field_path": "Name", "value": "발동 젬: 치명타 시 시전" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Emerald.nif" },
-      { "field_path": "Value", "value": "100" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "발동 젬: 치명타 시 시전"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_IceNova",
     "ops": [
-      { "field_path": "Name", "value": "스킬 젬: 얼음 회오리" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 얼음 회오리"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_ShockNova",
     "ops": [
-      { "field_path": "Name", "value": "스킬 젬: 충격 회오리" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 충격 회오리"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_SupIncCrit",
     "ops": [
-      { "field_path": "Name", "value": "보조 젬: 치명타 확률 증가" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 치명타 확률 증가"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_SupMeleePhys",
     "ops": [
-      { "field_path": "Name", "value": "보조 젬: 근접 물리 피해" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Ruby.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 근접 물리 피해"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_SupBrutality",
     "ops": [
-      { "field_path": "Name", "value": "보조 젬: 포악함" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Ruby.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 포악함"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_SupIncAoE",
     "ops": [
-      { "field_path": "Name", "value": "보조 젬: 효과 범위 증가" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 효과 범위 증가"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "MiscItem",
     "editorid": "SPOE_Gem_SupConcEffect",
     "ops": [
-      { "field_path": "Name", "value": "보조 젬: 집중 효과" },
-      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
-      { "field_path": "Value", "value": "50" },
-      { "field_path": "Weight", "value": "0.1" }
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 집중 효과"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "50"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
     ]
   },
   {
     "record_type": "Explosion",
     "editorid": "SPOE_Vfx_IceNova",
     "ops": [
-      { "field_path": "Name", "value": "PoE 얼음 회오리 연출" },
-      { "field_path": "Model.File", "value": "Magic\\ExplosionFrost01.nif" },
-      { "field_path": "Sound1", "value": "03EDD8:Skyrim.esm" },
-      { "field_path": "Radius", "value": "160" },
-      { "field_path": "Damage", "value": "0" },
-      { "field_path": "Force", "value": "0" },
-      { "field_path": "Flags", "op": "Add", "value": "AlwaysUsesWorldOrientation" },
-      { "field_path": "Flags", "op": "Add", "value": "IgnoreImageSpaceSwap" },
-      { "field_path": "Flags", "op": "Add", "value": "NoControllerVibration" }
+      {
+        "field_path": "Name",
+        "value": "PoE 얼음 회오리 연출"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Magic\\ExplosionFrost01.nif"
+      },
+      {
+        "field_path": "Sound1",
+        "value": "03EDD8:Skyrim.esm"
+      },
+      {
+        "field_path": "Radius",
+        "value": "160"
+      },
+      {
+        "field_path": "Damage",
+        "value": "0"
+      },
+      {
+        "field_path": "Force",
+        "value": "0"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "AlwaysUsesWorldOrientation"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "IgnoreImageSpaceSwap"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoControllerVibration"
+      }
     ]
   },
   {
     "record_type": "Explosion",
     "editorid": "SPOE_Vfx_ShockNova",
     "ops": [
-      { "field_path": "Name", "value": "PoE 충격 회오리 연출" },
-      { "field_path": "Model.File", "value": "Magic\\ExplosionShockMass01.nif" },
-      { "field_path": "Sound1", "value": "03F206:Skyrim.esm" },
-      { "field_path": "Radius", "value": "160" },
-      { "field_path": "Damage", "value": "0" },
-      { "field_path": "Force", "value": "0" },
-      { "field_path": "Flags", "op": "Add", "value": "AlwaysUsesWorldOrientation" },
-      { "field_path": "Flags", "op": "Add", "value": "IgnoreImageSpaceSwap" },
-      { "field_path": "Flags", "op": "Add", "value": "NoControllerVibration" }
+      {
+        "field_path": "Name",
+        "value": "PoE 충격 회오리 연출"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Magic\\ExplosionShockMass01.nif"
+      },
+      {
+        "field_path": "Sound1",
+        "value": "03F206:Skyrim.esm"
+      },
+      {
+        "field_path": "Radius",
+        "value": "160"
+      },
+      {
+        "field_path": "Damage",
+        "value": "0"
+      },
+      {
+        "field_path": "Force",
+        "value": "0"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "AlwaysUsesWorldOrientation"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "IgnoreImageSpaceSwap"
+      },
+      {
+        "field_path": "Flags",
+        "op": "Add",
+        "value": "NoControllerVibration"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Wisdom",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지혜의 두루마리"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "10"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Transmutation",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "변화의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemPetty01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "25"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Augmentation",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "증폭의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemLesser01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "35"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Alteration",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "진화의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Regal",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "제왕의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Garnet.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Alchemy",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "연금술의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Diamond.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Chaos",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "카오스 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemCommon01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Exalted",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "엑잘티드 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemGrand01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "1000"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Scouring",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "정제의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Amethyst.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Divine",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "신성한 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemBlack01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "2000"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Regret",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "후회의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Orb_Jeweller",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "쥬얼러의 오브"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 한손 무기 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 양손·원거리 무기 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 방패 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 투구 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 갑옷 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장갑 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장화 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장신구 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "40"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 한손 무기 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 양손·원거리 무기 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 방패 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 투구 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 갑옷 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장갑 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장화 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장신구 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 한손 무기 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 양손·원거리 무기 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 방패 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 투구 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 갑옷 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장갑 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장화 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장신구 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 한손 무기 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 양손·원거리 무기 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 방패 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 투구 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 갑옷 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장갑 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장화 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장신구 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 한손 무기 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 양손·원거리 무기 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 방패 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 투구 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 갑옷 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장갑 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장화 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장신구 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 한손 무기 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 양손·원거리 무기 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 방패 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 투구 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 갑옷 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장갑 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장화 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장신구 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 한손 무기 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 양손·원거리 무기 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 방패 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 투구 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 갑옷 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장갑 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장화 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장신구 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "160"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 한손 무기 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 양손·원거리 무기 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 방패 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 투구 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 갑옷 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장갑 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장화 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장신구 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 한손 무기 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 양손·원거리 무기 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 방패 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 투구 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 갑옷 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장갑 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장화 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 장신구 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_OneHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 한손 무기 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_TwoHand",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 양손·원거리 무기 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_Shield",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 방패 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_Helmet",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 투구 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_Body",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 갑옷 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_Gloves",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장갑 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_Boots",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장화 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_Jewelry",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 장신구 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "Static",
+    "editorid": "SPOE_LootBeam_Rare",
+    "ops": [
+      {
+        "field_path": "Model.File",
+        "value": "Effects\\Ambient\\FXGlowFillRndLitXBrt.nif"
+      }
+    ]
+  },
+  {
+    "record_type": "Static",
+    "editorid": "SPOE_LootBeam_Currency",
+    "ops": [
+      {
+        "field_path": "Model.File",
+        "value": "Effects\\Ambient\\FXGlowFlatRndXBrt.nif"
+      }
     ]
   }
 ]

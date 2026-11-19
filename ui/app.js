@@ -14,8 +14,10 @@
   const panelToast = document.getElementById("panel-toast");
   const tabBtnSkills = document.getElementById("tab-btn-skills");
   const tabBtnTree = document.getElementById("tab-btn-tree");
+  const tabBtnGear = document.getElementById("tab-btn-gear");
   const tabPanelSkills = document.getElementById("tab-panel-skills");
   const tabPanelTree = document.getElementById("tab-panel-tree");
+  const tabPanelGear = document.getElementById("tab-panel-gear");
   const targetIndicator = document.getElementById("target-indicator");
   const slotsList = document.getElementById("slots-list");
   const inventoryList = document.getElementById("inventory-list");
@@ -40,14 +42,24 @@
   }
 
   function applyActiveTab(tab) {
-    activeTab = tab === "tree" ? "tree" : "skills";
+    activeTab = tab === "tree" ? "tree" : (tab === "gear" ? "gear" : "skills");
+    const isSkills = activeTab === "skills";
     const isTree = activeTab === "tree";
-    tabBtnSkills.classList.toggle("active", !isTree);
+    const isGear = activeTab === "gear";
+    const visible = !panelBackdrop.classList.contains("hidden");
+
+    tabBtnSkills.classList.toggle("active", isSkills);
     tabBtnTree.classList.toggle("active", isTree);
-    tabPanelSkills.classList.toggle("hidden", isTree);
+    if (tabBtnGear) tabBtnGear.classList.toggle("active", isGear);
+    tabPanelSkills.classList.toggle("hidden", !isSkills);
     tabPanelTree.classList.toggle("hidden", !isTree);
+    if (tabPanelGear) tabPanelGear.classList.toggle("hidden", !isGear);
+
     if (window.poeTreeModule && typeof window.poeTreeModule.setActive === "function") {
-      window.poeTreeModule.setActive(isTree && !panelBackdrop.classList.contains("hidden"));
+      window.poeTreeModule.setActive(isTree && visible);
+    }
+    if (window.poeGearModule && typeof window.poeGearModule.setActive === "function") {
+      window.poeGearModule.setActive(isGear && visible);
     }
   }
 
@@ -60,6 +72,13 @@
     applyActiveTab("tree");
     sendCommand({ op: "switchTab", tab: "tree" });
   };
+
+  if (tabBtnGear) {
+    tabBtnGear.onclick = () => {
+      applyActiveTab("gear");
+      sendCommand({ op: "switchTab", tab: "gear" });
+    };
+  }
 
   function kindBadge(kind) {
     switch (kind) {
@@ -455,6 +474,9 @@
       if (window.poeTreeModule && typeof window.poeTreeModule.updateState === "function") {
         window.poeTreeModule.updateState(data);
       }
+      if (window.poeGearModule && typeof window.poeGearModule.updateState === "function") {
+        window.poeGearModule.updateState(data);
+      }
     } catch (_) {
     }
   };
@@ -489,6 +511,9 @@
       } else if (typeof window.poeTreeModule.setActive === "function") {
         window.poeTreeModule.setActive(false);
       }
+    }
+    if (window.poeGearModule && typeof window.poeGearModule.onPanelClose === "function") {
+      window.poeGearModule.onPanelClose();
     }
   };
 

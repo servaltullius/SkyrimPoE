@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/DataPack.h"
+#include "core/ItemTypes.h"
 #include "core/PassiveStatParser.h"
 #include "core/Types.h"
 
@@ -51,6 +52,9 @@ namespace SkyrimPoE::Core
 
         // 3단계: 패시브 트리 전체에서 집계된 정적 스탯·키스톤 합산치
         PassiveStatTotals passives{};
+
+        // 4단계(결정 156): 논리 8칸 장착 장비 입력
+        std::array<EquippedSlotInput, kEquipSlotCount> equippedGear{};
     };
 
     // 층 ②: 충전·버프·이동·생명력 비율 등 동적 상태 입력(결정 117)
@@ -84,6 +88,7 @@ namespace SkyrimPoE::Core
         double cooldownSec = 0.0;            // 쿨다운(초)
         bool dealNoElemental = false;
         bool dealNoChaos = false;
+        bool requirementMet = true;  // 4단계: 젬 레벨·능력치 요구치 충족 여부(검수 C3)
 
         [[nodiscard]] double EffectiveCritChancePct() const noexcept
         {
@@ -124,6 +129,9 @@ namespace SkyrimPoE::Core
         double esRechargeRateMult = 1.0;
         double esRechargeDelayMult = 1.0;
         double momRatio = 0.0;
+        double lifeRegenPerSec = 0.0;      // 4단계 검수 C2: 장비 생명력 재생
+        double incManaRegenPct = 0.0;      // 4단계 검수 C2: 장비 마나 재생 속도 증가(%)
+        double incMovementSpeedPct = 0.0;  // 4단계 검수 C2: 장비 이동 속도 증가(%)
 
         bool bloodMagic = false;
         bool chaosInoculation = false;
@@ -134,6 +142,10 @@ namespace SkyrimPoE::Core
         std::uint8_t maxEnduranceCharges = 3;
         std::uint8_t maxFrenzyCharges = 3;
         std::uint8_t maxPowerCharges = 3;
+
+        // 4단계(결정 156, 통합 설계서 17장): 고정점 수렴 후 8칸 장비 활성 및 요구치 미달 상태
+        std::array<bool, kEquipSlotCount> gearSlotActive{};
+        std::array<bool, kEquipSlotCount> gearSlotReqFailed{};
 
         // 9칸 슬롯별 스탯 및 발동 젬 안 주문 젬(instanceId -> ComputedSkillStats)
         std::array<ComputedSkillStats, kSkillSlotCount> slotStats{};

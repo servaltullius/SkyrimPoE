@@ -707,48 +707,127 @@ namespace SkyrimPoE::Core
         return { true, "패시브 노드를 할당했습니다.", 0 };
     }
 
+    std::uint32_t PassiveTree::GetRefundNodeCost(
+        const PassiveTreeData& data,
+        const PassiveTreeState& state,
+        std::uint32_t nodeId,
+        const Config& config)
+    {
+        if (config.freePassiveRefund || !state.classSelected) {
+            return 0;
+        }
+        if (state.masterySelections.contains(nodeId)) {
+            return 1;
+        }
+        const auto alloc = BuildAllocatedSet(state);
+        if (!alloc.contains(nodeId)) {
+            return 0;
+        }
+        const auto* node = data.FindNode(nodeId);
+        if (!node) {
+            return 0;
+        }
+        if (!IsNormalSpendable(*node)) {
+            return std::max<std::uint32_t>(1, config.ascendancyRefundCost);
+        }
+        auto nextAlloc = alloc;
+        nextAlloc.erase(nodeId);
+        PassiveTreeState temp = state;
+        const auto orphaned = PruneOrphanedMasteries(data, temp, nextAlloc);
+        return static_cast<std::uint32_t>(1 + orphaned);
+    }
+
+    std::uint32_t PassiveTree::GetRefundAllCost(
+        const PassiveTreeData& data,
+        const PassiveTreeState& state,
+        bool ascendancyOnly,
+        const Config& config)
+    {
+        if (config.freePassiveRefund || !state.classSelected) {
+            return 0;
+        }
+        const std::uint32_t ascUnit = std::max<std::uint32_t>(1, config.ascendancyRefundCost);
+        std::uint32_t cost = 0;
+        for (const auto nid : state.allocatedNodes) {
+            const auto* node = data.FindNode(nid);
+            if (!node) continue;
+            if (IsNormalSpendable(*node)) {
+                if (!ascendancyOnly) {
+                    cost += 1;
+                }
+            } else {
+                cost += ascUnit;
+            }
+        }
+        if (!ascendancyOnly) {
+            cost += static_cast<std::uint32_t>(state.masterySelections.size());
+        }
+        return cost;
+    }
+
+    std::uint32_t PassiveTree::GetSelectMasterySwapCost(
+        const PassiveTreeState& state,
+        std::uint32_t masteryNodeId,
+        std::uint32_t effectId,
+        const Config& config) noexcept
+    {
+        if (config.freePassiveRefund) {
+            return 0;
+        }
+        const auto it = state.masterySelections.find(masteryNodeId);
+        if (it != state.masterySelections.end() && it->second != effectId) {
+            return 1;
+        }
+        return 0;
+    }
+
     PassiveTreeOpResult PassiveTree::SelectMastery(
         const PassiveTreeData& data,
         PassiveTreeState& state,
         std::uint32_t masteryNodeId,
         std::uint32_t effectId,
         std::uint32_t exileLevel,
-        const Config& config)
+        const Config& config,
+        std::uint32_t availableRegretOrbs)
     {
         if (!state.classSelected) {
-            return { false, "먼저 시작 클래스를 선택해야 합니다.", 0 };
+            return { false, "먼저 시작 클래스를 선택해야 합니다.", 0, 0 };
         }
         const auto* node = data.FindNode(masteryNodeId);
         if (!node || node->kind != PassiveNodeKind::Mastery) {
-            return { false, "마스터리 노드가 아닙니다.", 0 };
+            return { false, "마스터리 노드가 아닙니다.", 0, 0 };
         }
         if (!IsMasteryUnlocked(data, state, masteryNodeId)) {
-            return { false, "같은 그룹의 주요 패시브를 먼저 1개 이상 할당해야 합니다.", 0 };
+            return { false, "같은 그룹의 주요 패시브를 먼저 1개 이상 할당해야 합니다.", 0, 0 };
         }
         const bool validEffect = std::find(node->masteryEffectIds.begin(), node->masteryEffectIds.end(), effectId) !=
             node->masteryEffectIds.end();
         if (!validEffect || !data.FindMasteryEffect(effectId)) {
-            return { false, "이 마스터리에서 선택할 수 없는 효과입니다.", 0 };
+            return { false, "이 마스터리에서 선택할 수 없는 효과입니다.", 0, 0 };
         }
 
         // 결정 153 ①: 같은 마스터리 효과(effectId) 전역 중복 금지
         for (const auto& [otherNodeId, otherEffectId] : state.masterySelections) {
             if (otherNodeId != masteryNodeId && otherEffectId == effectId) {
-                return { false, "이미 다른 마스터리에서 선택한 효과입니다.", 0 };
+                return { false, "이미 다른 마스터리에서 선택한 효과입니다.", 0, 0 };
             }
         }
 
         const bool alreadyAllocated = state.masterySelections.contains(masteryNodeId);
+        std::uint32_t orbCost = 0;
         if (!alreadyAllocated) {
             if (ComputeAvailableNormalPoints(data, state, exileLevel, config) < 1) {
-                return { false, "패시브 포인트가 부족합니다.", 0 };
+                return { false, "패시브 포인트가 부족합니다.", 0, 0 };
             }
-        } else if (!config.freePassiveRefund && state.masterySelections[masteryNodeId] != effectId) {
-            return { false, "현재 설정에서는 마스터리 효과를 무료로 바꿀 수 없습니다.", 0 };
+        } else {
+            orbCost = GetSelectMasterySwapCost(state, masteryNodeId, effectId, config);
+            if (orbCost > 0 && availableRegretOrbs < orbCost) {
+                return { false, "마스터리 효과를 교체하려면 후회의 오브가 1개 필요합니다.", 0, 0 };
+            }
         }
 
         state.masterySelections[masteryNodeId] = effectId;
-        return { true, "마스터리 효과를 적용했습니다.", 0 };
+        return { true, "마스터리 효과를 적용했습니다.", 0, orbCost };
     }
 
     PassiveTreeOpResult PassiveTree::RefundNode(
@@ -756,30 +835,36 @@ namespace SkyrimPoE::Core
         PassiveTreeState& state,
         std::uint32_t nodeId,
         std::uint32_t exileLevel,
-        const Config& config)
+        const Config& config,
+        std::uint32_t availableRegretOrbs)
     {
-        if (!config.freePassiveRefund) {
-            return { false, "무료 회수가 비활성화되어 있습니다.", 0 };
-        }
         if (!state.classSelected) {
-            return { false, "선택된 클래스가 없습니다.", 0 };
+            return { false, "선택된 클래스가 없습니다.", 0, 0 };
         }
 
         // 마스터리 회수
         if (state.masterySelections.contains(nodeId)) {
+            const std::uint32_t cost = config.freePassiveRefund ? 0u : 1u;
+            if (cost > 0 && availableRegretOrbs < cost) {
+                return { false, "후회의 오브가 부족합니다 (필요: 1개).", 0, 0 };
+            }
             state.masterySelections.erase(nodeId);
-            return { true, "마스터리 선택을 회수했습니다.", 0 };
+            return { true, "마스터리 선택을 회수했습니다.", 0, cost };
         }
 
         PassiveTreeState working = state;
         auto alloc = BuildAllocatedSet(working);
         if (!alloc.contains(nodeId)) {
-            return { false, "할당되어 있지 않은 노드입니다.", 0 };
+            return { false, "할당되어 있지 않은 노드입니다.", 0, 0 };
+        }
+        const auto* targetNode = data.FindNode(nodeId);
+        if (!targetNode) {
+            return { false, "존재하지 않는 노드입니다.", 0, 0 };
         }
         alloc.erase(nodeId);
 
         if (!VerifyConnectivity(data, working, alloc)) {
-            return { false, "다른 할당 노드와의 연결이 끊어져 회수할 수 없습니다.", 0 };
+            return { false, "다른 할당 노드와의 연결이 끊어져 회수할 수 없습니다.", 0, 0 };
         }
 
         // 결정 153 ①: 근거 주요 패시브 전량 회수 시 연결 마스터리 자동 회수
@@ -787,15 +872,31 @@ namespace SkyrimPoE::Core
         WriteSortedAllocated(working, alloc);
 
         // Ascendant grantedPassivePoints 노드를 빼서 일반 포인트 잔액이 기존보다 줄어들며 음수가 되는 경우만 거절
-        // (INI BonusPassivePoints 축소로 이미 음수인 상태에서 일반 노드 회수는 항상 허용: 검수 C7)
         const std::int32_t availBefore = ComputeAvailableNormalPoints(data, state, exileLevel, config);
         const std::int32_t availAfter = ComputeAvailableNormalPoints(data, working, exileLevel, config);
         if (availAfter < availBefore && availAfter < 0) {
-            return { false, "이 노드가 부여한 패시브 포인트를 먼저 회수해야 합니다.", 0 };
+            return { false, "이 노드가 부여한 패시브 포인트를 먼저 회수해야 합니다.", 0, 0 };
+        }
+
+        std::uint32_t orbCost = 0;
+        if (!config.freePassiveRefund) {
+            if (!IsNormalSpendable(*targetNode)) {
+                orbCost = std::max<std::uint32_t>(1, config.ascendancyRefundCost);
+            } else {
+                orbCost = static_cast<std::uint32_t>(1 + autoRefunded);
+            }
+            if (availableRegretOrbs < orbCost) {
+                return { false, "후회의 오브가 부족합니다 (필요: " + std::to_string(orbCost) + "개).", 0, 0 };
+            }
         }
 
         state = std::move(working);
-        return { true, autoRefunded > 0 ? "노드와 연결된 마스터리를 함께 회수했습니다." : "노드를 회수했습니다.", autoRefunded };
+        return {
+            true,
+            autoRefunded > 0 ? "노드와 연결된 마스터리를 함께 회수했습니다." : "노드를 회수했습니다.",
+            autoRefunded,
+            orbCost
+        };
     }
 
     PassiveTreeOpResult PassiveTree::RefundAll(
@@ -803,23 +904,25 @@ namespace SkyrimPoE::Core
         PassiveTreeState& state,
         bool ascendancyOnly,
         std::uint32_t exileLevel,
-        const Config& config)
+        const Config& config,
+        std::uint32_t availableRegretOrbs)
     {
-        if (!config.freePassiveRefund) {
-            return { false, "무료 회수가 비활성화되어 있습니다.", 0 };
-        }
         if (!state.classSelected) {
-            return { false, "선택된 클래스가 없습니다.", 0 };
+            return { false, "선택된 클래스가 없습니다.", 0, 0 };
         }
 
+        const std::uint32_t orbCost = GetRefundAllCost(data, state, ascendancyOnly, config);
         if (!ascendancyOnly) {
+            if (!config.freePassiveRefund && orbCost > 0 && availableRegretOrbs < orbCost) {
+                return { false, "후회의 오브가 부족합니다 (필요: " + std::to_string(orbCost) + "개).", 0, 0 };
+            }
             state.allocatedNodes.clear();
             state.masterySelections.clear();
             state.ascendancyId.clear();
-            return { true, "모든 패시브 노드를 회수했습니다.", 0 };
+            return { true, "모든 패시브 노드를 회수했습니다.", 0, orbCost };
         }
 
-        // 검수 M3: 전직만 회수 시 Scion Path of the ... 제거 후 일반 트리 연결성과 포인트 잔액 검증
+        // 검수 M3, m5: 전직만 회수 시 연결성·부여 포인트 검증을 먼저 수행한 뒤 후회의 오브 잔량 확인
         PassiveTreeState working = state;
         std::unordered_set<std::uint32_t> remaining;
         for (const auto nid : working.allocatedNodes) {
@@ -830,17 +933,20 @@ namespace SkyrimPoE::Core
         }
         working.ascendancyId.clear();
         if (!VerifyConnectivity(data, working, remaining)) {
-            return { false, "전직 시작점에 연결된 일반 노드를 먼저 회수하거나 전체 회수를 사용해 주세요.", 0 };
+            return { false, "전직 시작점에 연결된 일반 노드를 먼저 회수하거나 전체 회수를 사용해 주세요.", 0, 0 };
         }
         WriteSortedAllocated(working, remaining);
         const std::int32_t availBefore = ComputeAvailableNormalPoints(data, state, exileLevel, config);
         const std::int32_t availAfter = ComputeAvailableNormalPoints(data, working, exileLevel, config);
         if (availAfter < availBefore && availAfter < 0) {
-            return { false, "전직이 부여한 패시브 포인트를 먼저 회수하거나 전체 회수를 사용해 주세요.", 0 };
+            return { false, "전직이 부여한 패시브 포인트를 먼저 회수하거나 전체 회수를 사용해 주세요.", 0, 0 };
+        }
+        if (!config.freePassiveRefund && orbCost > 0 && availableRegretOrbs < orbCost) {
+            return { false, "후회의 오브가 부족합니다 (필요: " + std::to_string(orbCost) + "개).", 0, 0 };
         }
 
         state = std::move(working);
-        return { true, "전직 노드를 모두 회수했습니다.", 0 };
+        return { true, "전직 노드를 모두 회수했습니다.", 0, orbCost };
     }
 
     void PassiveTree::SanitizeLoadedState(

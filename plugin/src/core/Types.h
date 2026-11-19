@@ -141,9 +141,29 @@ namespace SkyrimPoE::Core
 
         // [PassiveTree] (3단계: 결정 151~155)
         std::uint32_t treePanelKey = 0x19;  // P
-        bool freePassiveRefund = true;
+        bool freePassiveRefund = true;      // C++ 기본값은 단위 테스트 호환을 위해 true 유지; 배포 INI 기본값은 false(결정 152·158)
         std::string simpleImeMode = "auto";  // auto | on | off
         std::int32_t bonusPassivePoints = 0;
         std::int32_t bonusAscendancyPoints = 0;
+
+        // [Items] (4단계: 결정 156~160)
+        std::uint32_t gearPanelKey = 0x18;  // O
+        bool giveStarterCurrency = true;
+        bool enforceGemRequirements = false;  // 4단계 9개 스타터 젬(Cyclone Lv28 등) Lv1 호환 유지; 5단계 전 젬 풀 시 true
+        bool includeModdedBasesInTokenPool = false;
+        std::uint32_t ascendancyRefundCost = 5;  // 전직 노드 1개 회수 시 후회의 오브 비용(PoE1 표준 5)
+
+        // [Loot] (4단계: 결정 16, 157, 159)
+        bool enableLootDrops = true;
+        double tokenDropChance = 0.25;
+        double rareTokenRatio = 0.25;
+        double currencyDropChance = 0.30;
+        double bossDropMultiplier = 2.5;
+        bool worldDropEnabled = true;
+        std::uint8_t worldDropMinTier = 2;  // 0=전체, 1=매직+, 2=희귀+고가치오브
+        std::uint32_t worldDropMaxCount = 16;
+        double worldDropReturnSeconds = 120.0;
+        bool lootBeamEnabled = true;
+        bool lootSoundEnabled = true;
     };
 }

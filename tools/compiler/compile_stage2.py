@@ -46,6 +46,40 @@ def poe_round(x: float) -> int:
     return math.floor(x + 0.5)
 
 
+def gem_stat_requirement(level_req: int, is_support: bool, multi: int) -> int:
+    """PoB Modules/CalcTools.lua:getGemStatRequirement 공식."""
+    if multi <= 0:
+        return 0
+    stat_type = 0.5 if is_support else 0.7
+    req = poe_round((20 + (level_req - 3) * 3) * ((multi / 100.0) ** 0.9) * stat_type)
+    return 0 if req < 14 else req
+
+
+def read_gem_req_multipliers(pob: Path) -> dict[str, tuple[int, int, int]]:
+    """Data/Gems.lua에서 grantedEffectId별 (reqStr, reqDex, reqInt) 배율(0..100)을 추출한다."""
+    gems_src = (pob / "Data" / "Gems.lua").read_text(encoding="utf-8")
+    out: dict[str, tuple[int, int, int]] = {}
+    for m in re.finditer(r'\["[^"]+"\]\s*=\s*\{', gems_src):
+        block = extract_balanced_block(gems_src, m.end() - 1)
+        gid_m = re.search(r'grantedEffectId\s*=\s*"([^"]+)"', block)
+        if not gid_m:
+            continue
+        gid = gid_m.group(1)
+        # 기본 젬(AltX/AltY 등 변형 젬보다 먼저 또는 variantId == grantedEffectId 우선)
+        var_m = re.search(r'variantId\s*=\s*"([^"]+)"', block)
+        if gid in out and (not var_m or var_m.group(1) != gid):
+            continue
+        rs = re.search(r'\breqStr\s*=\s*(\d+)', block)
+        rd = re.search(r'\breqDex\s*=\s*(\d+)', block)
+        ri = re.search(r'\breqInt\s*=\s*(\d+)', block)
+        out[gid] = (
+            int(rs.group(1)) if rs else 0,
+            int(rd.group(1)) if rd else 0,
+            int(ri.group(1)) if ri else 0,
+        )
+    return out
+
+
 def extract_balanced_block(src: str, open_brace_idx: int) -> str:
     """open_brace_idx 위치의 '{'에 대응하는 '}'까지의 블록(중괄호 포함)을 돌려준다."""
     assert src[open_brace_idx] == "{"
@@ -255,6 +289,7 @@ def parse_skill_block(
     skill_id: str,
     base_eff_const: float,
     inc_eff_const: float,
+    req_mult: tuple[int, int, int] = (0, 0, 0),
 ) -> dict[str, Any]:
     m = re.search(r'skills\["' + re.escape(skill_id) + r'"\]\s*=\s*\{', skill_src)
     if not m:
@@ -334,6 +369,9 @@ def parse_skill_block(
         levels[str(lv_num)] = {
             "level": lv_num,
             "levelRequirement": level_req,
+            "reqStr": gem_stat_requirement(level_req, is_support, req_mult[0]),
+            "reqDex": gem_stat_requirement(level_req, is_support, req_mult[1]),
+            "reqInt": gem_stat_requirement(level_req, is_support, req_mult[2]),
             "manaCost": mana_cost,
             "manaMultiplier": lv_scalar("manaMultiplier", 0.0),
             "attackSpeedMultiplier": lv_scalar("attackSpeedMultiplier", 0.0),
@@ -504,6 +542,7 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
 
     expected_defense = build_expected_defense_table(pob, 100)
     classes = read_classes(pob)
+    gem_req_mults = read_gem_req_multipliers(pob)
 
     skill_files_cache: dict[str, str] = {}
     gems_out: dict[str, Any] = {}
@@ -511,10 +550,15 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
         fname = entry["file"]
         if fname not in skill_files_cache:
             skill_files_cache[fname] = (pob / "Data" / "Skills" / fname).read_text(encoding="utf-8")
-        parsed = parse_skill_block(skill_files_cache[fname], entry["id"], base_eff_const, inc_eff_const)
+        req_mult = gem_req_mults.get(entry["id"], (0, 0, 0))
+        parsed = parse_skill_block(
+            skill_files_cache[fname], entry["id"], base_eff_const, inc_eff_const, req_mult
+        )
         parsed["kind"] = entry["kind"]
         if "secondaryId" in entry:
-            sec = parse_skill_block(skill_files_cache[fname], entry["secondaryId"], base_eff_const, inc_eff_const)
+            sec = parse_skill_block(
+                skill_files_cache[fname], entry["secondaryId"], base_eff_const, inc_eff_const, req_mult
+            )
             parsed["triggeredEffect"] = sec
         gems_out[entry["id"]] = parsed
 

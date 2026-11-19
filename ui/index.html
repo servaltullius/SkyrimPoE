@@ -20,7 +20,7 @@
         <span class="hud-lv-badge">유배자 Lv.<span id="hud-level">1</span></span>
         <span id="hud-xp-text">0 / 1000</span>
         <span id="hud-pts-badge" class="hud-pts-badge hidden">+0P</span>
-        <span class="hud-hint">[K] 스킬 · [P] 패시브</span>
+        <span class="hud-hint">[K] 스킬 · [P] 패시브 · [O] 장비</span>
       </div>
       <div class="hud-track">
         <div id="hud-xp-fill" class="hud-fill hud-fill-xp" style="width: 0%"></div>
@@ -37,6 +37,7 @@
           <nav class="panel-tabs" aria-label="메인 탭">
             <button id="tab-btn-skills" class="tab-btn active" type="button">스킬 및 젬 [K]</button>
             <button id="tab-btn-tree" class="tab-btn" type="button">패시브 트리 [P]</button>
+            <button id="tab-btn-gear" class="tab-btn" type="button">장비·제작 [O]</button>
           </nav>
           <span id="panel-header-meta" class="panel-meta">유배자 Lv.1 · 미선택</span>
         </div>
@@ -79,6 +80,7 @@
           <div class="tree-points-group">
             <span class="tree-pill tree-pill-normal">패시브 <strong id="tree-pts-normal">0</strong></span>
             <span class="tree-pill tree-pill-asc">전직 <strong id="tree-pts-asc">0 / 0</strong></span>
+            <span id="tree-regret-pill" class="tree-pill tree-pill-regret hidden">후회 오브 <strong id="tree-regret-count">0</strong></span>
             <span id="tree-class-pill" class="tree-pill tree-pill-class">클래스 미선택</span>
           </div>
 
@@ -156,11 +158,75 @@
           </aside>
         </div>
       </div>
+
+      <!-- 탭 3: 장비·제작 (4단계, 결정 156~160) -->
+      <div id="tab-panel-gear" class="gear-layout hidden">
+        <!-- 좌측 열: 장착 8칸 + 가방 제작 가능 장비 -->
+        <section class="gear-col">
+          <div class="side-block gear-block-eq">
+            <div class="section-head">
+              <h2>장착 장비 (논리 8칸)</h2>
+              <span class="section-sub">클릭해 제작 대상 선택</span>
+            </div>
+            <div id="gear-equipped-list" class="gear-list"></div>
+          </div>
+          <div class="side-block gear-block-bag">
+            <div class="section-head">
+              <h2>가방 장비 (제작 가능)</h2>
+              <span id="gear-bag-count" class="section-sub">0개</span>
+            </div>
+            <div id="gear-bag-list" class="gear-list"></div>
+          </div>
+        </section>
+
+        <!-- 중앙 열: 선택 아이템 카드 + 봉인 토큰 감정 + 쥬얼러 소켓 확장 -->
+        <section class="gear-col">
+          <div class="side-block gear-block-card">
+            <div class="section-head">
+              <h2>선택 장비 상세</h2>
+              <span id="gear-selected-tag" class="target-indicator">장비를 선택하세요</span>
+            </div>
+            <div id="gear-item-card" class="gear-item-card"></div>
+          </div>
+          <div class="side-block gear-block-tokens">
+            <div class="section-head">
+              <h2>봉인 전리품 토큰 감정</h2>
+              <span id="gear-wisdom-count" class="section-sub">지혜의 두루마리 0개</span>
+            </div>
+            <div id="gear-token-list" class="gear-list"></div>
+          </div>
+          <div class="side-block gear-block-jeweller">
+            <div class="section-head">
+              <h2>젬 소켓 확장 (최대 5)</h2>
+              <span id="gear-jeweller-count" class="section-sub">쥬얼러의 오브 0개</span>
+            </div>
+            <div id="gear-jeweller-list" class="gear-list"></div>
+          </div>
+        </section>
+
+        <!-- 우측 열: 12종 화폐 오브 팔레트 + 능력치 요약 -->
+        <section class="gear-col">
+          <div class="side-block gear-block-orbs">
+            <div class="section-head">
+              <h2>화폐 오브 (12종)</h2>
+              <span class="section-sub">선택 장비에 즉시 적용</span>
+            </div>
+            <div id="gear-currency-grid" class="gear-currency-grid"></div>
+          </div>
+          <div class="side-block gear-block-stats">
+            <div class="section-head">
+              <h2>PoE 능력치 요약</h2>
+            </div>
+            <div id="gear-stats-grid" class="stats-grid"></div>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 
   <script src="tree-data.js"></script>
   <script src="app.js"></script>
   <script src="tree.js"></script>
+  <script src="gear.js"></script>
 </body>
 </html>

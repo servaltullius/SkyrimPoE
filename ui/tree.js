@@ -21,6 +21,8 @@
 
   const ptsNormalEl = document.getElementById("tree-pts-normal");
   const ptsAscEl = document.getElementById("tree-pts-asc");
+  const regretPillEl = document.getElementById("tree-regret-pill");
+  const regretCountEl = document.getElementById("tree-regret-count");
   const classPillEl = document.getElementById("tree-class-pill");
   const ascSelectEl = document.getElementById("tree-asc-select");
   const btnFocusAsc = document.getElementById("btn-tree-focus-asc");
@@ -1178,6 +1180,11 @@
   function renderToolbarAndSidebar() {
     ptsNormalEl.textContent = String(treeState.availableNormalPoints ?? 0);
     ptsAscEl.textContent = `${treeState.availableAscendancyPoints ?? 0} / ${treeState.earnedAscendancyPoints ?? 0}`;
+    if (regretPillEl && regretCountEl) {
+      const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
+      regretPillEl.classList.toggle("hidden", freeRefund);
+      regretCountEl.textContent = String(treeState.regretOrbCount ?? 0);
+    }
 
     const cls = treeState.classSelected ? classById.get(treeState.classId) : null;
     const asc = treeState.ascendancyId ? ascById.get(treeState.ascendancyId) : null;

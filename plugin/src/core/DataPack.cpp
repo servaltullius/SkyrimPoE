@@ -24,6 +24,9 @@ namespace SkyrimPoE::Core
             GemLevelData d;
             d.level = static_cast<std::uint8_t>(j.value("level", 1));
             d.levelRequirement = static_cast<std::uint8_t>(j.value("levelRequirement", 1));
+            d.reqStr = j.value("reqStr", 0u);
+            d.reqDex = j.value("reqDex", 0u);
+            d.reqInt = j.value("reqInt", 0u);
             d.manaCost = j.value("manaCost", 0.0);
             d.manaMultiplier = j.value("manaMultiplier", 0.0);
             d.attackSpeedMultiplier = j.value("attackSpeedMultiplier", 0.0);

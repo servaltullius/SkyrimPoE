@@ -78,6 +78,10 @@ namespace SkyrimPoE::Core
                 continue;
             }
             const auto& stats = statsIt->second;
+            // 검수 M2: EnforceGemRequirements=true일 때 요구치 미달 발동 주문 젬은 발동 대상에서 제외
+            if (config.enforceGemRequirements && !stats.requirementMet) {
+                continue;
+            }
 
             // 개별 쿨다운 중이면 다음 후보 주문 확인
             if (RemainingCooldown(spellInst.instanceId) > 0.0) {

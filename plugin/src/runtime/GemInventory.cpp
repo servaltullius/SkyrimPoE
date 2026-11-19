@@ -1,16 +1,17 @@
 #include "PCH.h"
 #include "runtime/GemInventory.h"
 #include "runtime/FormIds.h"
+#include "runtime/UniqueIdUtil.h"
 
 namespace SkyrimPoE::Runtime
 {
     namespace
     {
-        // 인벤토리 고유 번호 대역과 바닥 참조 스탬프 대역을 완전히 분리한다.
-        constexpr std::uint16_t kInventoryUidMin = 0x7000;
-        constexpr std::uint16_t kInventoryUidMax = 0x7EFF;
-        constexpr std::uint16_t kWorldStampMin = 0x7F00;
-        constexpr std::uint16_t kWorldStampMax = 0xFFFD;
+        // 검수 C2: UniqueIdUtil 공용 비중복 대역 사용(젬 바닥 스탬프 0x7F00..0xBFFF)
+        constexpr std::uint16_t kInventoryUidMin = UniqueIdUtil::kInventoryUidMin;
+        constexpr std::uint16_t kInventoryUidMax = UniqueIdUtil::kInventoryUidMax;
+        constexpr std::uint16_t kWorldStampMin = UniqueIdUtil::kGemWorldStampMin;
+        constexpr std::uint16_t kWorldStampMax = UniqueIdUtil::kGemWorldStampMax;
 
         std::mutex g_mutex;
         std::vector<TrackedGemEntry> g_entries;
@@ -30,57 +31,15 @@ namespace SkyrimPoE::Runtime
             return false;
         }
 
-        // CommonLibSSE-NG v16.4.0 듀얼 SE+AE 빌드에서 ExtraDataList 크기가 런타임별로 다르므로(SE 0x18, AE 1.6.629+ 0x20)
-        // new RE::ExtraDataList() 대신 런타임 크기로 게임 힙에 할당하고 게임 생성자를 직접 호출한다.
         [[nodiscard]] RE::ExtraDataList* CreateGameExtraDataList()
         {
-            const auto ver = REL::Module::get().version();
-            const std::size_t allocSize = (ver >= SKSE::RUNTIME_SSE_1_6_629) ? 0x20 : 0x18;
-            auto* mem = RE::calloc<std::byte>(allocSize);
-            if (!mem) {
-                return nullptr;
-            }
-            auto* list = reinterpret_cast<RE::ExtraDataList*>(mem);
-            REL::Relocation<void(RE::ExtraDataList*)> ctor{ RELOCATION_ID(11437, 11583) };
-            ctor(list);
-            return list;
+            return UniqueIdUtil::CreateGameExtraDataList();
         }
 
-        // owner 인벤토리 및 추적 목록에서 미사용 인벤토리 고유 번호([0x7000, 0x7EFF])를 선택한다(프로토타입 5 방식).
+        // 공용 할당기 위임(엔진 + GemInventory + ItemTracker UID 모두 회피, 검수 C2)
         [[nodiscard]] std::uint16_t NextFreeInventoryUniqueId(RE::TESObjectREFR* owner)
         {
-            std::unordered_set<std::uint16_t> used;
-            if (owner) {
-                auto* changes = owner->GetInventoryChanges();
-                if (changes && changes->entryList) {
-                    for (auto* entry : *changes->entryList) {
-                        if (!entry || !entry->extraLists) {
-                            continue;
-                        }
-                        for (auto* extra : *entry->extraLists) {
-                            const auto* unique = extra ? extra->GetByType<RE::ExtraUniqueID>() : nullptr;
-                            if (unique && unique->uniqueID >= kInventoryUidMin && unique->uniqueID <= kInventoryUidMax) {
-                                used.insert(unique->uniqueID);
-                            }
-                        }
-                    }
-                }
-            }
-            {
-                std::scoped_lock lock(g_mutex);
-                for (const auto& e : g_entries) {
-                    if (!e.isWorld && e.key.uniqueId >= kInventoryUidMin && e.key.uniqueId <= kInventoryUidMax) {
-                        used.insert(e.key.uniqueId);
-                    }
-                }
-            }
-            for (std::uint32_t candidate = kInventoryUidMin; candidate <= kInventoryUidMax; ++candidate) {
-                const auto uid = static_cast<std::uint16_t>(candidate);
-                if (!used.contains(uid)) {
-                    return uid;
-                }
-            }
-            return kInventoryUidMax;
+            return UniqueIdUtil::AllocateInventoryUniqueId(owner);
         }
 
         // g_mutex가 잡힌 상태에서 호출: 바닥 스탬프 대역([0x7F00, 0xFFFD])에서 미사용 번호를 할당한다.
@@ -114,7 +73,7 @@ namespace SkyrimPoE::Runtime
             if (!owner || !baseObj || !key.IsValid()) {
                 return nullptr;
             }
-            auto* changes = owner->GetInventoryChanges();
+            auto* changes = owner->GetInventoryChanges(true);
             if (!changes || !changes->entryList) {
                 return nullptr;
             }
@@ -138,7 +97,7 @@ namespace SkyrimPoE::Runtime
             if (!owner || !baseObj) {
                 return 0;
             }
-            auto* changes = owner->GetInventoryChanges();
+            auto* changes = owner->GetInventoryChanges(true);
             if (!changes || !changes->entryList) {
                 return 0;
             }
@@ -268,6 +227,14 @@ namespace SkyrimPoE::Runtime
             return false;
         }
         holder->AddEventSink<RE::TESUniqueIDChangeEvent>(&UniqueIdEventSink::Get());
+        UniqueIdUtil::RegisterUsedInventoryUidCollector([](std::unordered_set<std::uint16_t>& used) {
+            std::scoped_lock lock(g_mutex);
+            for (const auto& e : g_entries) {
+                if (!e.isWorld && e.key.uniqueId >= kInventoryUidMin && e.key.uniqueId <= kInventoryUidMax) {
+                    used.insert(e.key.uniqueId);
+                }
+            }
+        });
         g_installed = true;
         SKSE::log::info("GemInventory: TESUniqueIDChangeEvent sink registered.");
         return true;

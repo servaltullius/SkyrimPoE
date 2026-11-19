@@ -1111,6 +1111,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 28,
+          "reqStr": 29,
+          "reqDex": 42,
+          "reqInt": 0,
           "manaCost": 2.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1128,6 +1131,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 31,
+          "reqStr": 32,
+          "reqDex": 46,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1145,6 +1151,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 34,
+          "reqStr": 35,
+          "reqDex": 50,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1162,6 +1171,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 37,
+          "reqStr": 37,
+          "reqDex": 54,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1179,6 +1191,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 40,
+          "reqStr": 40,
+          "reqDex": 58,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1196,6 +1211,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 42,
+          "reqStr": 42,
+          "reqDex": 61,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1213,6 +1231,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 44,
+          "reqStr": 44,
+          "reqDex": 63,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1230,6 +1251,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 46,
+          "reqStr": 46,
+          "reqDex": 66,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1247,6 +1271,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 48,
+          "reqStr": 48,
+          "reqDex": 69,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1264,6 +1291,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 50,
+          "reqStr": 49,
+          "reqDex": 71,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1281,6 +1311,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 52,
+          "reqStr": 51,
+          "reqDex": 74,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1298,6 +1331,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 54,
+          "reqStr": 53,
+          "reqDex": 76,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1315,6 +1351,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 56,
+          "reqStr": 55,
+          "reqDex": 79,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1332,6 +1371,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 58,
+          "reqStr": 57,
+          "reqDex": 82,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1349,6 +1391,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 60,
+          "reqStr": 59,
+          "reqDex": 84,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1366,6 +1411,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 62,
+          "reqStr": 60,
+          "reqDex": 87,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1383,6 +1431,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 64,
+          "reqStr": 62,
+          "reqDex": 90,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1400,6 +1451,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 66,
+          "reqStr": 64,
+          "reqDex": 92,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1417,6 +1471,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 68,
+          "reqStr": 66,
+          "reqDex": 95,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1434,6 +1491,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 68,
+          "reqDex": 98,
+          "reqInt": 0,
           "manaCost": 3.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 200.0,
@@ -1477,6 +1537,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 38,
+          "reqStr": 0,
+          "reqDex": 39,
+          "reqInt": 27,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1491,6 +1554,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 40,
+          "reqStr": 0,
+          "reqDex": 41,
+          "reqInt": 29,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1505,6 +1571,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 42,
+          "reqStr": 0,
+          "reqDex": 43,
+          "reqInt": 30,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1519,6 +1588,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 44,
+          "reqStr": 0,
+          "reqDex": 45,
+          "reqInt": 31,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1533,6 +1605,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 46,
+          "reqStr": 0,
+          "reqDex": 47,
+          "reqInt": 33,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1547,6 +1622,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 48,
+          "reqStr": 0,
+          "reqDex": 49,
+          "reqInt": 34,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1561,6 +1639,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 50,
+          "reqStr": 0,
+          "reqDex": 51,
+          "reqInt": 35,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1575,6 +1656,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 52,
+          "reqStr": 0,
+          "reqDex": 53,
+          "reqInt": 37,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1589,6 +1673,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 54,
+          "reqStr": 0,
+          "reqDex": 55,
+          "reqInt": 38,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1603,6 +1690,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 56,
+          "reqStr": 0,
+          "reqDex": 57,
+          "reqInt": 39,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1617,6 +1707,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 58,
+          "reqStr": 0,
+          "reqDex": 58,
+          "reqInt": 41,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1631,6 +1724,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 60,
+          "reqStr": 0,
+          "reqDex": 60,
+          "reqInt": 42,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1645,6 +1741,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 62,
+          "reqStr": 0,
+          "reqDex": 62,
+          "reqInt": 43,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1659,6 +1758,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 64,
+          "reqStr": 0,
+          "reqDex": 64,
+          "reqInt": 44,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1673,6 +1775,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 65,
+          "reqStr": 0,
+          "reqDex": 65,
+          "reqInt": 45,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1687,6 +1792,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 66,
+          "reqStr": 0,
+          "reqDex": 66,
+          "reqInt": 46,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1701,6 +1809,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 67,
+          "reqStr": 0,
+          "reqDex": 67,
+          "reqInt": 46,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1715,6 +1826,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 68,
+          "reqStr": 0,
+          "reqDex": 68,
+          "reqInt": 47,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1729,6 +1843,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 69,
+          "reqStr": 0,
+          "reqDex": 69,
+          "reqInt": 48,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1743,6 +1860,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 0,
+          "reqDex": 70,
+          "reqInt": 48,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -1786,6 +1906,9 @@
           "1": {
             "level": 1,
             "levelRequirement": 38,
+            "reqStr": 0,
+            "reqDex": 39,
+            "reqInt": 27,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1803,6 +1926,9 @@
           "2": {
             "level": 2,
             "levelRequirement": 40,
+            "reqStr": 0,
+            "reqDex": 41,
+            "reqInt": 29,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1820,6 +1946,9 @@
           "3": {
             "level": 3,
             "levelRequirement": 42,
+            "reqStr": 0,
+            "reqDex": 43,
+            "reqInt": 30,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1837,6 +1966,9 @@
           "4": {
             "level": 4,
             "levelRequirement": 44,
+            "reqStr": 0,
+            "reqDex": 45,
+            "reqInt": 31,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1854,6 +1986,9 @@
           "5": {
             "level": 5,
             "levelRequirement": 46,
+            "reqStr": 0,
+            "reqDex": 47,
+            "reqInt": 33,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1871,6 +2006,9 @@
           "6": {
             "level": 6,
             "levelRequirement": 48,
+            "reqStr": 0,
+            "reqDex": 49,
+            "reqInt": 34,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1888,6 +2026,9 @@
           "7": {
             "level": 7,
             "levelRequirement": 50,
+            "reqStr": 0,
+            "reqDex": 51,
+            "reqInt": 35,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1905,6 +2046,9 @@
           "8": {
             "level": 8,
             "levelRequirement": 52,
+            "reqStr": 0,
+            "reqDex": 53,
+            "reqInt": 37,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1922,6 +2066,9 @@
           "9": {
             "level": 9,
             "levelRequirement": 54,
+            "reqStr": 0,
+            "reqDex": 55,
+            "reqInt": 38,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1939,6 +2086,9 @@
           "10": {
             "level": 10,
             "levelRequirement": 56,
+            "reqStr": 0,
+            "reqDex": 57,
+            "reqInt": 39,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1956,6 +2106,9 @@
           "11": {
             "level": 11,
             "levelRequirement": 58,
+            "reqStr": 0,
+            "reqDex": 58,
+            "reqInt": 41,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1973,6 +2126,9 @@
           "12": {
             "level": 12,
             "levelRequirement": 60,
+            "reqStr": 0,
+            "reqDex": 60,
+            "reqInt": 42,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -1990,6 +2146,9 @@
           "13": {
             "level": 13,
             "levelRequirement": 62,
+            "reqStr": 0,
+            "reqDex": 62,
+            "reqInt": 43,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2007,6 +2166,9 @@
           "14": {
             "level": 14,
             "levelRequirement": 64,
+            "reqStr": 0,
+            "reqDex": 64,
+            "reqInt": 44,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2024,6 +2186,9 @@
           "15": {
             "level": 15,
             "levelRequirement": 65,
+            "reqStr": 0,
+            "reqDex": 65,
+            "reqInt": 45,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2041,6 +2206,9 @@
           "16": {
             "level": 16,
             "levelRequirement": 66,
+            "reqStr": 0,
+            "reqDex": 66,
+            "reqInt": 46,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2058,6 +2226,9 @@
           "17": {
             "level": 17,
             "levelRequirement": 67,
+            "reqStr": 0,
+            "reqDex": 67,
+            "reqInt": 46,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2075,6 +2246,9 @@
           "18": {
             "level": 18,
             "levelRequirement": 68,
+            "reqStr": 0,
+            "reqDex": 68,
+            "reqInt": 47,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2092,6 +2266,9 @@
           "19": {
             "level": 19,
             "levelRequirement": 69,
+            "reqStr": 0,
+            "reqDex": 69,
+            "reqInt": 48,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2109,6 +2286,9 @@
           "20": {
             "level": 20,
             "levelRequirement": 70,
+            "reqStr": 0,
+            "reqDex": 70,
+            "reqInt": 48,
             "manaCost": 0.0,
             "manaMultiplier": 20.0,
             "attackSpeedMultiplier": 0.0,
@@ -2158,6 +2338,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 12,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 33,
           "manaCost": 8.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2176,6 +2359,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 15,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 39,
           "manaCost": 9.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2194,6 +2380,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 19,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 48,
           "manaCost": 10.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2212,6 +2401,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 23,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 56,
           "manaCost": 11.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2230,6 +2422,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 27,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 64,
           "manaCost": 12.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2248,6 +2443,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 31,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 73,
           "manaCost": 13.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2266,6 +2464,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 35,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 81,
           "manaCost": 14.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2284,6 +2485,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 38,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 88,
           "manaCost": 15.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2302,6 +2506,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 41,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 94,
           "manaCost": 16.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2320,6 +2527,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 44,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 100,
           "manaCost": 16.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2338,6 +2548,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 47,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 106,
           "manaCost": 17.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2356,6 +2569,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 50,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 113,
           "manaCost": 18.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2374,6 +2590,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 53,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 119,
           "manaCost": 19.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2392,6 +2611,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 56,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 125,
           "manaCost": 19.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2410,6 +2632,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 59,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 132,
           "manaCost": 20.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2428,6 +2653,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 62,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 138,
           "manaCost": 21.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2446,6 +2674,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 64,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 142,
           "manaCost": 21.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2464,6 +2695,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 66,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 146,
           "manaCost": 22.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2482,6 +2716,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 68,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 151,
           "manaCost": 22.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2500,6 +2737,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 155,
           "manaCost": 23.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2550,6 +2790,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 28,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 67,
           "manaCost": 15.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2568,6 +2811,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 31,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 73,
           "manaCost": 16.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2586,6 +2832,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 34,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 79,
           "manaCost": 18.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2604,6 +2853,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 37,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 85,
           "manaCost": 19.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2622,6 +2874,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 40,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 92,
           "manaCost": 19.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2640,6 +2895,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 42,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 96,
           "manaCost": 20.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2658,6 +2916,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 44,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 100,
           "manaCost": 20.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2676,6 +2937,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 46,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 104,
           "manaCost": 21.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2694,6 +2958,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 48,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 109,
           "manaCost": 21.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2712,6 +2979,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 50,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 113,
           "manaCost": 23.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2730,6 +3000,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 52,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 117,
           "manaCost": 23.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2748,6 +3021,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 54,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 121,
           "manaCost": 24.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2766,6 +3042,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 56,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 125,
           "manaCost": 24.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2784,6 +3063,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 58,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 130,
           "manaCost": 25.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2802,6 +3084,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 60,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 134,
           "manaCost": 25.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2820,6 +3105,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 62,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 138,
           "manaCost": 26.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2838,6 +3126,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 64,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 142,
           "manaCost": 26.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2856,6 +3147,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 66,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 146,
           "manaCost": 28.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2874,6 +3168,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 68,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 151,
           "manaCost": 28.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2892,6 +3189,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 155,
           "manaCost": 29.0,
           "manaMultiplier": 0.0,
           "attackSpeedMultiplier": 0.0,
@@ -2931,6 +3231,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 8,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 18,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -2946,6 +3249,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 10,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 21,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -2961,6 +3267,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 13,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 25,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -2976,6 +3285,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 17,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 31,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -2991,6 +3303,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 21,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 37,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3006,6 +3321,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 25,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 43,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3021,6 +3339,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 29,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 49,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3036,6 +3357,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 33,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 55,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3051,6 +3375,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 37,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 61,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3066,6 +3393,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 40,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 66,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3081,6 +3411,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 43,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 70,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3096,6 +3429,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 46,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 75,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3111,6 +3447,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 49,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 79,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3126,6 +3465,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 52,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 84,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3141,6 +3483,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 55,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 88,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3156,6 +3501,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 58,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 93,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3171,6 +3519,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 61,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 97,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3186,6 +3537,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 64,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 102,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3201,6 +3555,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 67,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 106,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3216,6 +3573,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 111,
           "manaCost": 0.0,
           "manaMultiplier": 20.0,
           "attackSpeedMultiplier": 0.0,
@@ -3251,6 +3611,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 18,
+          "reqStr": 33,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3267,6 +3630,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 22,
+          "reqStr": 39,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3283,6 +3649,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 26,
+          "reqStr": 45,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3299,6 +3668,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 29,
+          "reqStr": 49,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3315,6 +3687,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 32,
+          "reqStr": 54,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3331,6 +3706,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 35,
+          "reqStr": 58,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3347,6 +3725,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 38,
+          "reqStr": 63,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3363,6 +3744,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 41,
+          "reqStr": 67,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3379,6 +3763,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 44,
+          "reqStr": 72,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3395,6 +3782,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 47,
+          "reqStr": 76,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3411,6 +3801,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 50,
+          "reqStr": 81,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3427,6 +3820,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 53,
+          "reqStr": 85,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3443,6 +3839,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 56,
+          "reqStr": 90,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3459,6 +3858,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 58,
+          "reqStr": 93,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3475,6 +3877,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 60,
+          "reqStr": 96,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3491,6 +3896,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 62,
+          "reqStr": 99,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3507,6 +3915,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 64,
+          "reqStr": 102,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3523,6 +3934,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 66,
+          "reqStr": 105,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3539,6 +3953,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 68,
+          "reqStr": 108,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3555,6 +3972,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 111,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3591,6 +4011,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 38,
+          "reqStr": 63,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3607,6 +4030,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 40,
+          "reqStr": 66,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3623,6 +4049,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 42,
+          "reqStr": 69,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3639,6 +4068,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 44,
+          "reqStr": 72,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3655,6 +4087,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 46,
+          "reqStr": 75,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3671,6 +4106,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 48,
+          "reqStr": 78,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3687,6 +4125,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 50,
+          "reqStr": 81,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3703,6 +4144,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 52,
+          "reqStr": 84,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3719,6 +4163,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 54,
+          "reqStr": 87,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3735,6 +4182,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 56,
+          "reqStr": 90,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3751,6 +4201,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 58,
+          "reqStr": 93,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3767,6 +4220,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 60,
+          "reqStr": 96,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3783,6 +4239,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 62,
+          "reqStr": 99,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3799,6 +4258,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 64,
+          "reqStr": 102,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3815,6 +4277,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 65,
+          "reqStr": 103,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3831,6 +4296,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 66,
+          "reqStr": 105,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3847,6 +4315,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 67,
+          "reqStr": 106,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3863,6 +4334,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 68,
+          "reqStr": 108,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3879,6 +4353,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 69,
+          "reqStr": 109,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3895,6 +4372,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 111,
+          "reqDex": 0,
+          "reqInt": 0,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -3931,6 +4411,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 38,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 63,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3945,6 +4428,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 40,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 66,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3959,6 +4445,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 42,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 69,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3973,6 +4462,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 44,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 72,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -3987,6 +4479,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 46,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 75,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4001,6 +4496,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 48,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 78,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4015,6 +4513,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 50,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 81,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4029,6 +4530,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 52,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 84,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4043,6 +4547,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 54,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 87,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4057,6 +4564,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 56,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 90,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4071,6 +4581,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 58,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 93,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4085,6 +4598,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 60,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 96,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4099,6 +4615,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 62,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 99,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4113,6 +4632,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 64,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 102,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4127,6 +4649,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 65,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 103,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4141,6 +4666,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 66,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 105,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4155,6 +4683,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 67,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 106,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4169,6 +4700,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 68,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 108,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4183,6 +4717,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 69,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 109,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4197,6 +4734,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 111,
           "manaCost": 0.0,
           "manaMultiplier": 30.0,
           "attackSpeedMultiplier": 0.0,
@@ -4233,6 +4773,9 @@
         "1": {
           "level": 1,
           "levelRequirement": 18,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 33,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4248,6 +4791,9 @@
         "2": {
           "level": 2,
           "levelRequirement": 22,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 39,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4263,6 +4809,9 @@
         "3": {
           "level": 3,
           "levelRequirement": 26,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 45,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4278,6 +4827,9 @@
         "4": {
           "level": 4,
           "levelRequirement": 29,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 49,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4293,6 +4845,9 @@
         "5": {
           "level": 5,
           "levelRequirement": 32,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 54,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4308,6 +4863,9 @@
         "6": {
           "level": 6,
           "levelRequirement": 35,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 58,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4323,6 +4881,9 @@
         "7": {
           "level": 7,
           "levelRequirement": 38,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 63,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4338,6 +4899,9 @@
         "8": {
           "level": 8,
           "levelRequirement": 41,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 67,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4353,6 +4917,9 @@
         "9": {
           "level": 9,
           "levelRequirement": 44,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 72,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4368,6 +4935,9 @@
         "10": {
           "level": 10,
           "levelRequirement": 47,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 76,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4383,6 +4953,9 @@
         "11": {
           "level": 11,
           "levelRequirement": 50,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 81,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4398,6 +4971,9 @@
         "12": {
           "level": 12,
           "levelRequirement": 53,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 85,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4413,6 +4989,9 @@
         "13": {
           "level": 13,
           "levelRequirement": 56,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 90,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4428,6 +5007,9 @@
         "14": {
           "level": 14,
           "levelRequirement": 58,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 93,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4443,6 +5025,9 @@
         "15": {
           "level": 15,
           "levelRequirement": 60,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 96,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4458,6 +5043,9 @@
         "16": {
           "level": 16,
           "levelRequirement": 62,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 99,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4473,6 +5061,9 @@
         "17": {
           "level": 17,
           "levelRequirement": 64,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 102,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4488,6 +5079,9 @@
         "18": {
           "level": 18,
           "levelRequirement": 66,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 105,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4503,6 +5097,9 @@
         "19": {
           "level": 19,
           "levelRequirement": 68,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 108,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,
@@ -4518,6 +5115,9 @@
         "20": {
           "level": 20,
           "levelRequirement": 70,
+          "reqStr": 0,
+          "reqDex": 0,
+          "reqInt": 111,
           "manaCost": 0.0,
           "manaMultiplier": 40.0,
           "attackSpeedMultiplier": 0.0,

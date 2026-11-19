@@ -1,11 +1,15 @@
 #include "PCH.h"
 #include "runtime/UiBridge.h"
+#include "runtime/CraftingRuntime.h"
+#include "runtime/EquipmentSync.h"
 #include "runtime/GemInventory.h"
 #include "runtime/PrismaUIApi.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SimpleImeBridge.h"
 
 #include "core/GemTransaction.h"
+#include "core/ItemCrafting.h"
+#include "core/ItemFormatter.h"
 #include "core/KillTracker.h"
 #include "core/PassiveTree.h"
 
@@ -36,12 +40,69 @@ namespace SkyrimPoE::Runtime
         constexpr auto kViewRetryCooldown = std::chrono::seconds(5);
         constexpr std::uint8_t kTabSkills = 0;
         constexpr std::uint8_t kTabTree = 1;
+        constexpr std::uint8_t kTabGear = 2;
+
+        std::string_view TabNameFromId(std::uint8_t tab) noexcept
+        {
+            switch (tab) {
+                case kTabTree: return "tree";
+                case kTabGear: return "gear";
+                default:       return "skills";
+            }
+        }
+
+        std::uint8_t TabIdFromName(std::string_view name) noexcept
+        {
+            if (name == "tree") return kTabTree;
+            if (name == "gear") return kTabGear;
+            return kTabSkills;
+        }
+
+        const char* EquipSlotLabelKo(Core::EquipSlot slot) noexcept
+        {
+            switch (slot) {
+                case Core::EquipSlot::MainHand: return "주무기";
+                case Core::EquipSlot::OffHand:  return "보조장비";
+                case Core::EquipSlot::Helmet:   return "투구";
+                case Core::EquipSlot::Body:     return "갑옷";
+                case Core::EquipSlot::Gloves:   return "장갑";
+                case Core::EquipSlot::Boots:    return "신발";
+                case Core::EquipSlot::Amulet:   return "목걸이";
+                case Core::EquipSlot::Ring1:    return "반지";
+                default:                        return "장비";
+            }
+        }
+
+        const char* TokenSlotGroupLabelKo(Core::TokenSlotGroup g) noexcept
+        {
+            switch (g) {
+                case Core::TokenSlotGroup::OneHandWeapon:         return "한손 무기";
+                case Core::TokenSlotGroup::TwoHandOrRangedWeapon: return "양손·원거리";
+                case Core::TokenSlotGroup::Shield:                return "방패";
+                case Core::TokenSlotGroup::Helmet:                return "투구";
+                case Core::TokenSlotGroup::Body:                  return "갑옷";
+                case Core::TokenSlotGroup::Gloves:                return "장갑";
+                case Core::TokenSlotGroup::Boots:                 return "신발";
+                case Core::TokenSlotGroup::Jewelry:               return "장신구";
+                default:                                          return "장비";
+            }
+        }
+
+        const char* RarityStr(Core::ItemRarity r) noexcept
+        {
+            switch (r) {
+                case Core::ItemRarity::Magic: return "magic";
+                case Core::ItemRarity::Rare:  return "rare";
+                default:                      return "normal";
+            }
+        }
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
         Core::EnergyShieldPool* g_esPool = nullptr;
         const Core::DataPack* g_dataPack = nullptr;
         const Core::PassiveTreeData* g_treeData = nullptr;
+        const Core::ItemData* g_itemData = nullptr;
         const Core::Config* g_config = nullptr;
         bool g_installed = false;
 
@@ -339,20 +400,90 @@ namespace SkyrimPoE::Runtime
             return j;
         }
 
-        void PushPanelStateToJs()
+        json SerializeFormattedCard(const Core::FormattedItemCard& card)
         {
-            if (!ViewUsable() || !g_domReady.load(std::memory_order_acquire)) {
+            json affArr = json::array();
+            for (const auto& a : card.affixLines) {
+                affArr.push_back(json{
+                    { "type", a.type == Core::AffixType::Prefix ? "prefix" : "suffix" },
+                    { "tier", a.tier },
+                    { "tierBadge", a.tierBadge },
+                    { "textKo", a.textKo }
+                });
+            }
+            return json{
+                { "title", card.title },
+                { "rarity", RarityStr(card.rarity) },
+                { "rarityBadge", card.rarityBadge },
+                { "itemLevel", card.itemLevel },
+                { "slotLabel", card.slotLabel },
+                { "requirementMet", card.requirementMet },
+                { "requirementText", card.requirementText },
+                { "baseStatLines", card.baseStatLines },
+                { "affixLines", std::move(affArr) }
+            };
+        }
+
+        void BuildCanApplyOrbData(
+            const Core::PoEItemRecord* existingRecord,
+            Core::TokenSlotGroup slotGroup,
+            Core::DefenseSubtype defenseSubtype,
+            const std::string& weaponTag,
+            bool isAmulet,
+            std::uint32_t baseFormId,
+            std::uint32_t exileLevel,
+            json& outFlags,
+            json& outReasons)
+        {
+            outFlags = json::array();
+            outReasons = json::array();
+            if (!g_itemData || !g_itemData->IsLoaded()) {
+                for (std::size_t i = 0; i < Core::kCurrencyKindCount; ++i) {
+                    outFlags.push_back(false);
+                    outReasons.push_back("아이템 데이터가 로드되지 않았습니다.");
+                }
                 return;
             }
+            Core::PoEItemRecord tmp;
+            const Core::PoEItemRecord* rec = existingRecord;
+            if (!rec) {
+                tmp.rarity = Core::ItemRarity::Normal;
+                tmp.itemLevel = std::clamp<std::uint32_t>(exileLevel, 1u, 100u);
+                tmp.baseFormId = baseFormId;
+                tmp.slotGroup = slotGroup;
+                tmp.defenseSubtype = defenseSubtype;
+                tmp.isAmulet = isAmulet;
+                tmp.weaponTag = weaponTag;
+                rec = &tmp;
+            }
+            const auto tags = Core::ItemData::BuildItemTags(
+                rec->slotGroup, rec->defenseSubtype, rec->weaponTag, rec->isAmulet);
+            for (std::size_t i = 0; i < Core::kCurrencyKindCount; ++i) {
+                const auto kind = static_cast<Core::CurrencyKind>(i);
+                const auto chk = Core::ItemCrafting::CanApplyOrb(kind, *rec, tags, *g_itemData);
+                outFlags.push_back(chk.IsOk());
+                outReasons.push_back(chk.IsOk() ? std::string() : chk.message);
+            }
+        }
+
+        std::string BuildPanelPayloadJson()
+        {
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player || !g_statEngine || !g_config) {
-                return;
+                return "{}";
+            }
+
+            // 장비 탭·능력치에 최신 착용 장비 및 제작 변경이 즉시 반영되도록 더티 상태를 플러시하고 스탯을 재계산한다(검수 C3).
+            EquipmentSync::FlushIfDirty();
+            if (g_dataPack && g_dataPack->IsLoaded()) {
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
             }
 
             const auto state = SaveLoad::GetStateCopy();
             const auto snap = g_statEngine->GetSnapshot();
             const auto inv = GemInventory::ListPlayerGems(player);
             const auto es = g_esPool ? g_esPool->Snapshot() : Core::EnergyShieldState{};
+            const auto currencyCounts = CraftingRuntime::CountAllCurrencies(player);
 
             const bool treeLoaded = g_treeData && g_treeData->IsLoaded();
             const std::int32_t availNormal = treeLoaded
@@ -371,7 +502,7 @@ namespace SkyrimPoE::Runtime
             const std::int32_t availAsc = earnedAsc - spentAsc;
 
             json root;
-            root["activeTab"] = (g_activeTab.load(std::memory_order_acquire) == kTabTree) ? "tree" : "skills";
+            root["activeTab"] = std::string(TabNameFromId(g_activeTab.load(std::memory_order_acquire)));
             root["simpleImeAvailable"] = SimpleImeBridge::Available();
             root["freePassiveRefund"] = g_config->freePassiveRefund;
             root["exileLevel"] = state.exileLevel;
@@ -402,6 +533,7 @@ namespace SkyrimPoE::Runtime
             treeJ["bossKillCount"] = state.tree.bossKillCount;
             treeJ["dragonKillCount"] = state.tree.dragonKillCount;
             treeJ["ascendancyMilestonesBitmask"] = state.tree.ascendancyMilestonesBitmask;
+            treeJ["regretOrbCount"] = currencyCounts[static_cast<std::size_t>(Core::CurrencyKind::Regret)];
             root["tree"] = std::move(treeJ);
 
             if (snap) {
@@ -431,6 +563,9 @@ namespace SkyrimPoE::Runtime
                 st["spellSuppression"] = std::round(snap->spellSuppressionChance);
                 st["spellDodge"] = std::round(snap->spellDodgeChance);
                 st["momRatio"] = std::round(snap->momRatio * 100.0);
+                st["lifeRegenPerSec"] = std::round(snap->lifeRegenPerSec * 10.0) / 10.0;
+                st["incManaRegenPct"] = std::round(snap->incManaRegenPct);
+                st["incMovementSpeedPct"] = std::round(snap->incMovementSpeedPct);
                 st["bloodMagic"] = snap->bloodMagic;
                 st["chaosInoculation"] = snap->chaosInoculation;
                 st["resoluteTechnique"] = snap->resoluteTechnique;
@@ -498,7 +633,173 @@ namespace SkyrimPoE::Runtime
             }
             root["inventory"] = std::move(invArr);
 
-            const std::string payload = root.dump();
+            // 4단계 3번째 탭(장비·제작) 페이로드(결정 156, 157, 158, 160)
+            const bool itemsLoaded = g_itemData && g_itemData->IsLoaded();
+            json gearJ;
+            gearJ["loaded"] = itemsLoaded;
+            if (itemsLoaded) {
+                json curArr = json::array();
+                for (std::size_t i = 0; i < Core::kCurrencyKindCount; ++i) {
+                    const auto kind = static_cast<Core::CurrencyKind>(i);
+                    const auto* def = g_itemData->FindCurrency(kind);
+                    curArr.push_back(json{
+                        { "kind", i },
+                        { "id", def ? def->id : std::string("Currency") },
+                        { "koName", def ? def->koName : std::string("오브") },
+                        { "koDesc", def ? def->koDesc : std::string() },
+                        { "count", currencyCounts[i] }
+                    });
+                }
+                gearJ["currencies"] = std::move(curArr);
+
+                const auto tokens = CraftingRuntime::ListPlayerTokens(player);
+                json tokArr = json::array();
+                for (const auto& tk : tokens) {
+                    tokArr.push_back(json{
+                        { "tier", tk.tier },
+                        { "rarity", RarityStr(tk.rarity) },
+                        { "rarityCode", static_cast<std::uint8_t>(tk.rarity) },
+                        { "slotGroup", static_cast<std::uint8_t>(tk.slotGroup) },
+                        { "slotLabel", TokenSlotGroupLabelKo(tk.slotGroup) },
+                        { "count", tk.count },
+                        { "displayName", tk.displayName }
+                    });
+                }
+                gearJ["tokens"] = std::move(tokArr);
+
+                const auto gearInputs = EquipmentSync::GetCurrentGearSnapshot();
+                const auto gearMetas = EquipmentSync::GetCurrentGearMeta();
+                json eqArr = json::array();
+                for (std::size_t i = 0; i < Core::kEquipSlotCount; ++i) {
+                    const auto slot = static_cast<Core::EquipSlot>(i);
+                    const auto& meta = gearMetas[i];
+                    const auto& inp = gearInputs[i];
+                    const bool reqMet = !snap || !snap->gearSlotReqFailed[i];
+                    json ej;
+                    ej["slotIndex"] = i;
+                    ej["slotLabel"] = EquipSlotLabelKo(slot);
+                    ej["occupied"] = meta.occupied;
+                    ej["baseFormId"] = meta.baseFormId;
+                    ej["uniqueId"] = meta.key.uniqueId;
+                    ej["displayName"] = meta.displayName;
+                    ej["hasPoERecord"] = meta.hasPoERecord;
+                    ej["rarity"] = meta.hasPoERecord ? RarityStr(meta.record.rarity) : "normal";
+                    ej["requirementMet"] = reqMet;
+                    if (meta.occupied) {
+                        const Core::PoEItemRecord* recPtr = meta.hasPoERecord ? &meta.record : nullptr;
+                        const auto card = Core::ItemFormatter::FormatItem(
+                            recPtr, meta.displayName, slot, inp, reqMet, *g_itemData);
+                        ej["card"] = SerializeFormattedCard(card);
+                        json canFlags;
+                        json canReasons;
+                        BuildCanApplyOrbData(
+                            recPtr, meta.slotGroup, meta.defenseSubtype, meta.weaponTag, meta.isAmulet,
+                            meta.baseFormId, state.exileLevel, canFlags, canReasons);
+                        ej["canApplyOrb"] = std::move(canFlags);
+                        ej["canApplyOrbReason"] = std::move(canReasons);
+                    }
+                    eqArr.push_back(std::move(ej));
+                }
+                gearJ["equippedSlots"] = std::move(eqArr);
+
+                const auto bagItems = CraftingRuntime::ListPlayerCraftableItems(player);
+                json bagArr = json::array();
+                for (const auto& b : bagItems) {
+                    auto* baseForm = RE::TESForm::LookupByID<RE::TESBoundObject>(b.baseFormId);
+                    const Core::PoEItemRecord* recPtr = b.hasPoERecord ? &b.record : nullptr;
+                    const auto slotInp = baseForm
+                        ? EquipmentSync::BuildSlotInput(baseForm, recPtr, state.exileLevel, *g_itemData)
+                        : Core::EquippedSlotInput{};
+                    // 검수 Major #4: StatEngine과 동일하게 exileLevel >= reqLevel 포함 4조건 모두 판정
+                    const bool reqMet = !snap ||
+                        (snap->exileLevel >= slotInp.reqLevel &&
+                         snap->str >= slotInp.reqStr &&
+                         snap->dex >= slotInp.reqDex &&
+                         snap->intel >= slotInp.reqInt);
+                    const auto card = Core::ItemFormatter::FormatItem(
+                        recPtr, b.displayName, b.equipSlot, slotInp, reqMet, *g_itemData);
+                    json canFlags;
+                    json canReasons;
+                    BuildCanApplyOrbData(
+                        recPtr, b.slotGroup, b.defenseSubtype, b.weaponTag, b.isAmulet,
+                        b.baseFormId, state.exileLevel, canFlags, canReasons);
+                    bagArr.push_back(json{
+                        { "baseFormId", b.baseFormId },
+                        { "uniqueId", b.uniqueId },
+                        { "count", b.count },
+                        { "equipped", b.equipped },
+                        { "displayName", b.displayName },
+                        { "slotIndex", static_cast<std::size_t>(b.equipSlot) },
+                        { "slotLabel", EquipSlotLabelKo(b.equipSlot) },
+                        { "hasPoERecord", b.hasPoERecord },
+                        { "rarity", b.hasPoERecord ? RarityStr(b.record.rarity) : "normal" },
+                        { "card", SerializeFormattedCard(card) },
+                        { "canApplyOrb", std::move(canFlags) },
+                        { "canApplyOrbReason", std::move(canReasons) }
+                    });
+                }
+                gearJ["bagItems"] = std::move(bagArr);
+
+                // 쥬얼러의 오브 대상 젬 목록(장착 스킬/발동 젬 + 발동 젬 내부 주문 젬)
+                json jewArr = json::array();
+                for (std::size_t i = 0; i < state.slots.size(); ++i) {
+                    const auto& s = state.slots[i];
+                    if (!s.occupied) {
+                        continue;
+                    }
+                    Core::GemKind rootKind = Core::GemKind::Unknown;
+                    if (g_dataPack) {
+                        if (const auto* def = g_dataPack->FindGem(s.gem.gemId)) {
+                            rootKind = def->kind;
+                        }
+                    }
+                    if (rootKind != Core::GemKind::Support && rootKind != Core::GemKind::Unknown) {
+                        const auto rootName = DisplayGemName(s.gem.gemId);
+                        jewArr.push_back(json{
+                            { "slotIndex", i },
+                            { "triggeredSpellInstanceId", 0 },
+                            { "label", std::format("칸 {} · {} Lv.{}", i + 1, rootName, s.gem.level) },
+                            { "gemId", s.gem.gemId },
+                            { "name", rootName },
+                            { "level", s.gem.level },
+                            { "socketCount", s.gem.socketCount },
+                            { "maxSockets", Core::kMaxGemSockets },
+                            { "canExpand", s.gem.socketCount < Core::kMaxGemSockets }
+                        });
+                    }
+                    if (rootKind == Core::GemKind::Trigger) {
+                        for (const auto& sp : s.gem.socketedGems) {
+                            const auto spName = DisplayGemName(sp.gemId);
+                            jewArr.push_back(json{
+                                { "slotIndex", i },
+                                { "triggeredSpellInstanceId", sp.instanceId },
+                                { "label", std::format("칸 {} > {} Lv.{}", i + 1, spName, sp.level) },
+                                { "gemId", sp.gemId },
+                                { "name", spName },
+                                { "level", sp.level },
+                                { "socketCount", sp.socketCount },
+                                { "maxSockets", Core::kMaxGemSockets },
+                                { "canExpand", sp.socketCount < Core::kMaxGemSockets }
+                            });
+                        }
+                    }
+                }
+                gearJ["jewellerTargets"] = std::move(jewArr);
+            }
+            root["gear"] = std::move(gearJ);
+
+            return root.dump();
+        }
+
+        void PushPanelStateToJs()
+        {
+            if (!ViewUsable() || !g_domReady.load(std::memory_order_acquire)) {
+                return;
+            }
+            const std::string payload = BuildPanelPayloadJson();
+            if (payload == "{}") {
+                return;
+            }
             g_api->InteropCall(g_view, kJsUpdatePanel, payload.c_str());
         }
 
@@ -560,6 +861,7 @@ namespace SkyrimPoE::Runtime
             }
             const std::uint32_t panelKey = g_config->panelKey;
             const std::uint32_t treeKey = g_config->treePanelKey;
+            const std::uint32_t gearKey = g_config->gearPanelKey;
             const bool open = g_panelOpen.load(std::memory_order_acquire);
             const bool imeActive = open && SimpleImeBridge::TextEntryActive();
             const bool searchFocused = open && g_searchFocused.load(std::memory_order_acquire);
@@ -612,6 +914,16 @@ namespace SkyrimPoE::Runtime
                             UiBridge::ClosePanelOnMainThread();
                         } else {
                             SwitchTabOnMainThread(kTabTree);
+                        }
+                    });
+                } else if (code == gearKey) {
+                    g_queue->Enqueue([]() {
+                        if (!g_panelOpen.load(std::memory_order_acquire)) {
+                            OpenPanelOnMainThread(kTabGear);
+                        } else if (g_activeTab.load(std::memory_order_acquire) == kTabGear) {
+                            UiBridge::ClosePanelOnMainThread();
+                        } else {
+                            SwitchTabOnMainThread(kTabGear);
                         }
                     });
                 } else if (open && code == kEscapeScanCode) {
@@ -799,7 +1111,7 @@ namespace SkyrimPoE::Runtime
                 }
                 if (op == "switchTab") {
                     const std::string tab = cmd.contains("tab") && cmd["tab"].is_string() ? cmd["tab"].get<std::string>() : "skills";
-                    SwitchTabOnMainThread(tab == "tree" ? kTabTree : kTabSkills);
+                    SwitchTabOnMainThread(TabIdFromName(tab));
                     return;
                 }
 
@@ -829,70 +1141,83 @@ namespace SkyrimPoE::Runtime
                         return;
                     }
                     Core::PassiveTreeOpResult treeRes;
+                    // 잠금 계층 + 원자성 준수(결정 118, 검수 C2/M4):
+                    // 사본에서 먼저 검증·연산 → 필요 후회의 오브 차감 성공 확인 → 성공 시에만 g_state 커밋
                     SaveLoad::RunSerializedTransaction([&]() {
-                        SaveLoad::UpdateState([&](PersistentState& st) {
-                            if (op == "treeSelectClass") {
-                                std::int64_t clsVal = -1;
-                                if (!ReadBoundedInt(cmd, "classId", 0, Core::kClassCount - 1, clsVal)) {
-                                    treeRes = { false, "잘못된 클래스 번호입니다.", 0 };
-                                    return;
-                                }
-                                treeRes = Core::PassiveTree::SelectClass(*g_treeData, st.tree, static_cast<std::uint8_t>(clsVal));
-                                if (treeRes.ok) {
-                                    if (const auto* cls = g_treeData->FindClass(st.tree.classId)) {
-                                        st.className = cls->name;
-                                    }
-                                }
-                            } else if (op == "treeSelectAscendancy") {
-                                const std::string ascId = cmd.contains("ascendancyId") && cmd["ascendancyId"].is_string()
-                                    ? cmd["ascendancyId"].get<std::string>() : "";
-                                treeRes = Core::PassiveTree::SelectAscendancy(*g_treeData, st.tree, ascId, *g_config);
-                            } else if (op == "treeClearAscendancy") {
-                                treeRes = Core::PassiveTree::ClearAscendancy(*g_treeData, st.tree);
-                            } else if (op == "treeAllocatePath") {
-                                std::vector<std::uint32_t> nodes;
-                                if (cmd.contains("nodes") && cmd["nodes"].is_array() && cmd["nodes"].size() <= 256) {
-                                    for (const auto& nv : cmd["nodes"]) {
-                                        if (nv.is_number_unsigned()) {
-                                            nodes.push_back(nv.get<std::uint32_t>());
-                                        }
-                                    }
-                                }
-                                treeRes = Core::PassiveTree::AllocatePath(*g_treeData, st.tree, nodes, st.exileLevel, *g_config);
-                            } else if (op == "treeRefundNode") {
-                                std::int64_t nidVal = 0;
-                                if (!ReadBoundedInt(cmd, "nodeId", 1, 0xFFFFFFFFLL, nidVal)) {
-                                    treeRes = { false, "잘못된 노드 번호입니다.", 0 };
-                                    return;
-                                }
-                                treeRes = Core::PassiveTree::RefundNode(
-                                    *g_treeData, st.tree, static_cast<std::uint32_t>(nidVal), st.exileLevel, *g_config);
-                            } else if (op == "treeRefundAll") {
-                                const bool ascOnly = cmd.contains("ascendancyOnly") && cmd["ascendancyOnly"].is_boolean() &&
-                                    cmd["ascendancyOnly"].get<bool>();
-                                treeRes = Core::PassiveTree::RefundAll(*g_treeData, st.tree, ascOnly, st.exileLevel, *g_config);
-                            } else if (op == "treeSelectMastery") {
-                                std::int64_t mNodeVal = 0;
-                                std::int64_t effVal = 0;
-                                if (!ReadBoundedInt(cmd, "masteryNodeId", 1, 0xFFFFFFFFLL, mNodeVal) ||
-                                    !ReadBoundedInt(cmd, "effectId", 1, 0xFFFFFFFFLL, effVal)) {
-                                    treeRes = { false, "잘못된 마스터리 요청입니다.", 0 };
-                                    return;
-                                }
-                                treeRes = Core::PassiveTree::SelectMastery(
-                                    *g_treeData, st.tree,
-                                    static_cast<std::uint32_t>(mNodeVal),
-                                    static_cast<std::uint32_t>(effVal),
-                                    st.exileLevel, *g_config);
-                            } else {
-                                treeRes = { false, "지원하지 않는 패시브 트리 명령입니다.", 0 };
+                        const auto availOrbs = static_cast<std::uint32_t>(std::max<std::int32_t>(
+                            0, CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Regret)));
+                        PersistentState working = SaveLoad::GetStateCopy();
+                        if (op == "treeSelectClass") {
+                            std::int64_t clsVal = -1;
+                            if (!ReadBoundedInt(cmd, "classId", 0, Core::kClassCount - 1, clsVal)) {
+                                treeRes = { false, "잘못된 클래스 번호입니다.", 0, 0 };
+                                return;
                             }
+                            treeRes = Core::PassiveTree::SelectClass(*g_treeData, working.tree, static_cast<std::uint8_t>(clsVal));
                             if (treeRes.ok) {
-                                const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                                    *g_treeData, st.tree, st.exileLevel, *g_config);
-                                st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
+                                if (const auto* cls = g_treeData->FindClass(working.tree.classId)) {
+                                    working.className = cls->name;
+                                }
                             }
-                        });
+                        } else if (op == "treeSelectAscendancy") {
+                            const std::string ascId = cmd.contains("ascendancyId") && cmd["ascendancyId"].is_string()
+                                ? cmd["ascendancyId"].get<std::string>() : "";
+                            treeRes = Core::PassiveTree::SelectAscendancy(*g_treeData, working.tree, ascId, *g_config);
+                        } else if (op == "treeClearAscendancy") {
+                            treeRes = Core::PassiveTree::ClearAscendancy(*g_treeData, working.tree);
+                        } else if (op == "treeAllocatePath") {
+                            std::vector<std::uint32_t> nodes;
+                            if (cmd.contains("nodes") && cmd["nodes"].is_array() && cmd["nodes"].size() <= 256) {
+                                for (const auto& nv : cmd["nodes"]) {
+                                    if (nv.is_number_unsigned()) {
+                                        nodes.push_back(nv.get<std::uint32_t>());
+                                    }
+                                }
+                            }
+                            treeRes = Core::PassiveTree::AllocatePath(*g_treeData, working.tree, nodes, working.exileLevel, *g_config);
+                        } else if (op == "treeRefundNode") {
+                            std::int64_t nidVal = 0;
+                            if (!ReadBoundedInt(cmd, "nodeId", 1, 0xFFFFFFFFLL, nidVal)) {
+                                treeRes = { false, "잘못된 노드 번호입니다.", 0, 0 };
+                                return;
+                            }
+                            treeRes = Core::PassiveTree::RefundNode(
+                                *g_treeData, working.tree, static_cast<std::uint32_t>(nidVal), working.exileLevel, *g_config, availOrbs);
+                        } else if (op == "treeRefundAll") {
+                            const bool ascOnly = cmd.contains("ascendancyOnly") && cmd["ascendancyOnly"].is_boolean() &&
+                                cmd["ascendancyOnly"].get<bool>();
+                            treeRes = Core::PassiveTree::RefundAll(*g_treeData, working.tree, ascOnly, working.exileLevel, *g_config, availOrbs);
+                        } else if (op == "treeSelectMastery") {
+                            std::int64_t mNodeVal = 0;
+                            std::int64_t effVal = 0;
+                            if (!ReadBoundedInt(cmd, "masteryNodeId", 1, 0xFFFFFFFFLL, mNodeVal) ||
+                                !ReadBoundedInt(cmd, "effectId", 1, 0xFFFFFFFFLL, effVal)) {
+                                treeRes = { false, "잘못된 마스터리 요청입니다.", 0, 0 };
+                                return;
+                            }
+                            treeRes = Core::PassiveTree::SelectMastery(
+                                *g_treeData, working.tree,
+                                static_cast<std::uint32_t>(mNodeVal),
+                                static_cast<std::uint32_t>(effVal),
+                                working.exileLevel, *g_config, availOrbs);
+                        } else {
+                            treeRes = { false, "지원하지 않는 패시브 트리 명령입니다.", 0, 0 };
+                            return;
+                        }
+
+                        if (!treeRes.ok) {
+                            return;
+                        }
+                        if (treeRes.regretOrbsConsumed > 0 &&
+                            !CraftingRuntime::ConsumeCurrency(
+                                player, Core::CurrencyKind::Regret, static_cast<std::int32_t>(treeRes.regretOrbsConsumed))) {
+                            treeRes = { false, "후회의 오브 차감에 실패해 변경을 취소했습니다.", 0, 0 };
+                            return;
+                        }
+                        const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
+                            *g_treeData, working.tree, working.exileLevel, *g_config);
+                        working.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
+                        SaveLoad::SetState(working);
                     });
 
                     if (treeRes.ok) {
@@ -900,6 +1225,90 @@ namespace SkyrimPoE::Runtime
                         (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
                     }
                     PushToastToJs(treeRes.ok, treeRes.message);
+                    PushPanelStateToJs();
+                    return;
+                }
+
+                // 4단계 장비·제작 탭 명령 분기(결정 157, 158, 160)
+                if (op.starts_with("gear")) {
+                    if (!g_itemData || !g_itemData->IsLoaded()) {
+                        PushToastToJs(false, "아이템 데이터가 로드되지 않았습니다.");
+                        return;
+                    }
+                    CraftActionResult craftRes;
+                    if (op == "gearIdentifyToken") {
+                        std::int64_t tierVal = 0;
+                        std::int64_t slotGroupVal = 0;
+                        std::int64_t rarityVal = 0;
+                        if (!ReadBoundedInt(cmd, "tier", 1, 5, tierVal) ||
+                            !ReadBoundedInt(cmd, "slotGroup", 0, static_cast<std::int64_t>(Core::kTokenSlotGroupCount - 1), slotGroupVal)) {
+                            craftRes = { false, "잘못된 봉인 토큰 정보입니다." };
+                        } else {
+                            Core::ItemRarity rar = Core::ItemRarity::Magic;
+                            bool rarOk = false;
+                            if (ReadBoundedInt(cmd, "rarityCode", 1, 2, rarityVal)) {
+                                rar = static_cast<Core::ItemRarity>(rarityVal);
+                                rarOk = true;
+                            } else if (cmd.contains("rarity") && cmd["rarity"].is_string()) {
+                                const auto rs = cmd["rarity"].get<std::string>();
+                                if (rs == "magic") {
+                                    rar = Core::ItemRarity::Magic;
+                                    rarOk = true;
+                                } else if (rs == "rare") {
+                                    rar = Core::ItemRarity::Rare;
+                                    rarOk = true;
+                                }
+                            }
+                            if (!rarOk) {
+                                craftRes = { false, "잘못된 봉인 토큰 희귀도입니다." };
+                            } else {
+                                craftRes = CraftingRuntime::IdentifyToken(
+                                    static_cast<std::uint8_t>(tierVal),
+                                    rar,
+                                    static_cast<Core::TokenSlotGroup>(slotGroupVal));
+                            }
+                        }
+                    } else if (op == "gearApplyOrb") {
+                        std::int64_t orbVal = -1;
+                        std::int64_t baseFormVal = 0;
+                        std::int64_t uidVal = 0;
+                        const bool preferEquipped = cmd.contains("preferEquipped") &&
+                            cmd["preferEquipped"].is_boolean() && cmd["preferEquipped"].get<bool>();
+                        if (!ReadBoundedInt(cmd, "orbKind", 0, static_cast<std::int64_t>(Core::kCurrencyKindCount - 1), orbVal) ||
+                            !ReadBoundedInt(cmd, "baseFormId", 1, 0xFFFFFFFFLL, baseFormVal) ||
+                            !ReadBoundedInt(cmd, "uniqueId", 0, 0xFFFFLL, uidVal)) {
+                            craftRes = { false, "잘못된 오브 제작 요청입니다." };
+                        } else {
+                            craftRes = CraftingRuntime::ApplyOrbToItem(
+                                static_cast<Core::CurrencyKind>(orbVal),
+                                static_cast<RE::FormID>(baseFormVal),
+                                static_cast<std::uint16_t>(uidVal),
+                                preferEquipped);
+                        }
+                    } else if (op == "gearApplyJeweller") {
+                        std::int64_t slotVal = -1;
+                        std::uint64_t spellInstId = 0;
+                        bool spellIdValid = true;
+                        if (cmd.contains("triggeredSpellInstanceId")) {
+                            if (cmd["triggeredSpellInstanceId"].is_number_unsigned()) {
+                                spellInstId = cmd["triggeredSpellInstanceId"].get<std::uint64_t>();
+                            } else {
+                                spellIdValid = false;
+                            }
+                        }
+                        if (!spellIdValid ||
+                            !ReadBoundedInt(cmd, "slotIndex", 0, static_cast<std::int64_t>(Core::kSkillSlotCount - 1), slotVal)) {
+                            craftRes = { false, "잘못된 젬 소켓 확장 요청입니다." };
+                        } else {
+                            craftRes = CraftingRuntime::ApplyJewellerToGem(
+                                static_cast<std::uint8_t>(slotVal),
+                                spellInstId);
+                        }
+                    } else {
+                        craftRes = { false, "지원하지 않는 장비·제작 명령입니다." };
+                    }
+
+                    PushToastToJs(craftRes.ok, craftRes.message);
                     PushPanelStateToJs();
                     return;
                 }
@@ -1074,7 +1483,7 @@ namespace SkyrimPoE::Runtime
             g_activeTab.store(targetTab, std::memory_order_release);
             g_searchFocused.store(false, std::memory_order_release);
             g_panelOpen.store(true, std::memory_order_release);
-            const std::string openArg = json{ { "tab", targetTab == kTabTree ? "tree" : "skills" } }.dump();
+            const std::string openArg = json{ { "tab", std::string(TabNameFromId(targetTab)) } }.dump();
             g_api->InteropCall(g_view, kJsOnPanelOpen, openArg.c_str());
             PushPanelStateToJs();
         }
@@ -1086,6 +1495,7 @@ namespace SkyrimPoE::Runtime
         Core::EnergyShieldPool* esPool,
         const Core::DataPack* dataPack,
         const Core::PassiveTreeData* treeData,
+        const Core::ItemData* itemData,
         const Core::Config* config)
     {
         if (g_installed) {
@@ -1096,6 +1506,7 @@ namespace SkyrimPoE::Runtime
         g_esPool = esPool;
         g_dataPack = dataPack;
         g_treeData = treeData;
+        g_itemData = itemData;
         g_config = config;
 
         LoadLangNames();
@@ -1269,17 +1680,22 @@ namespace SkyrimPoE::Runtime
 
     std::string_view UiBridge::ActiveTab() noexcept
     {
-        return (g_activeTab.load(std::memory_order_acquire) == kTabTree) ? "tree" : "skills";
+        return TabNameFromId(g_activeTab.load(std::memory_order_acquire));
     }
 
     bool UiBridge::TryOpenPanelOnMainThread(std::string_view initialTab)
     {
-        OpenPanelOnMainThread(initialTab == "tree" ? kTabTree : kTabSkills);
+        OpenPanelOnMainThread(TabIdFromName(initialTab));
         return IsPanelOpen();
     }
 
     void UiBridge::ExecuteCommandForTestOnMainThread(std::string_view rawJson)
     {
         ExecuteCommandOnMainThread(std::string(rawJson));
+    }
+
+    std::string UiBridge::BuildPanelJsonForTestOnMainThread()
+    {
+        return BuildPanelPayloadJson();
     }
 }

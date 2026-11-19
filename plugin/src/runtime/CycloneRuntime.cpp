@@ -551,7 +551,9 @@ namespace SkyrimPoE::Runtime
                     }
 
                     if (player && cycSlot && snap && matchedInput) {
-                        const bool allowed = IsPlayerAllowedForCyclone(player);
+                        const bool gemReqOk = !(g_config && g_config->enforceGemRequirements) ||
+                            snap->slotStats[*cycSlot].requirementMet;
+                        const bool allowed = gemReqOk && IsPlayerAllowedForCyclone(player);
                         const double curResource = ReadAvailableCycleResource(player, *snap);
                         const double firstCost = ComputeCycleResourceCost(player, *snap, *cycSlot);
 
@@ -801,7 +803,9 @@ namespace SkyrimPoE::Runtime
         }
 
         const bool yielding = g_yieldingToFrenzy.load(std::memory_order_acquire);
-        const bool allowed = !yielding && IsPlayerAllowedForCyclone(player);
+        const bool gemReqOk = !(g_config && g_config->enforceGemRequirements) ||
+            snap->slotStats[*cycSlot].requirementMet;
+        const bool allowed = !yielding && gemReqOk && IsPlayerAllowedForCyclone(player);
 
         double weaponSpeed = 1.0;
         if (auto* form = player->GetEquippedObject(false)) {

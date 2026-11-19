@@ -46,6 +46,9 @@ namespace SkyrimPoE::Core
     {
         std::uint8_t level = 1;
         std::uint8_t levelRequirement = 1;
+        std::uint32_t reqStr = 0;
+        std::uint32_t reqDex = 0;
+        std::uint32_t reqInt = 0;
         double manaCost = 0.0;
         double manaMultiplier = 0.0;          // +20 -> ×1.20
         double attackSpeedMultiplier = 0.0;   // +200 -> ×3.00

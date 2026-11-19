@@ -236,6 +236,49 @@ namespace SkyrimPoE::Core
                 } else {
                     warnInvalid();
                 }
+            } else if (section == "Items") {
+                std::uint32_t u = 0;
+                if (key == "GearPanelKey") {
+                    if (ParseUint(val, u) && u <= 0xFF) c.gearPanelKey = u; else warnInvalid();
+                } else if (key == "GiveStarterCurrency") {
+                    if (!ParseBool(val, c.giveStarterCurrency)) warnInvalid();
+                } else if (key == "EnforceGemRequirements") {
+                    if (!ParseBool(val, c.enforceGemRequirements)) warnInvalid();
+                } else if (key == "IncludeModdedBasesInTokenPool") {
+                    if (!ParseBool(val, c.includeModdedBasesInTokenPool)) warnInvalid();
+                } else if (key == "AscendancyRefundCost") {
+                    if (ParseUint(val, u) && u >= 1 && u <= 50) c.ascendancyRefundCost = u; else warnInvalid();
+                } else {
+                    warnInvalid();
+                }
+            } else if (section == "Loot") {
+                double d = 0.0;
+                std::uint32_t u = 0;
+                if (key == "EnableLootDrops") {
+                    if (!ParseBool(val, c.enableLootDrops)) warnInvalid();
+                } else if (key == "TokenDropChance") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.tokenDropChance = d; else warnInvalid();
+                } else if (key == "RareTokenRatio") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.rareTokenRatio = d; else warnInvalid();
+                } else if (key == "CurrencyDropChance") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.currencyDropChance = d; else warnInvalid();
+                } else if (key == "BossDropMultiplier") {
+                    if (ParseDouble(val, d) && d >= 1.0 && d <= 10.0) c.bossDropMultiplier = d; else warnInvalid();
+                } else if (key == "WorldDropEnabled") {
+                    if (!ParseBool(val, c.worldDropEnabled)) warnInvalid();
+                } else if (key == "WorldDropMinTier") {
+                    if (ParseUint(val, u) && u <= 2) c.worldDropMinTier = static_cast<std::uint8_t>(u); else warnInvalid();
+                } else if (key == "WorldDropMaxCount") {
+                    if (ParseUint(val, u) && u >= 1 && u <= 64) c.worldDropMaxCount = u; else warnInvalid();
+                } else if (key == "WorldDropReturnSeconds") {
+                    if (ParseDouble(val, d) && d >= 5.0 && d <= 3600.0) c.worldDropReturnSeconds = d; else warnInvalid();
+                } else if (key == "LootBeamEnabled") {
+                    if (!ParseBool(val, c.lootBeamEnabled)) warnInvalid();
+                } else if (key == "LootSoundEnabled") {
+                    if (!ParseBool(val, c.lootSoundEnabled)) warnInvalid();
+                } else {
+                    warnInvalid();
+                }
             }
         }
 

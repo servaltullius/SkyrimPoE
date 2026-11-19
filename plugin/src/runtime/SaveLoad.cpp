@@ -1,7 +1,11 @@
 #include "PCH.h"
 #include "runtime/SaveLoad.h"
+#include "runtime/CraftingRuntime.h"
+#include "runtime/EquipmentSync.h"
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
+#include "runtime/ItemTracker.h"
+#include "runtime/WorldDropTracker.h"
 
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
@@ -13,6 +17,10 @@ namespace SkyrimPoE::Runtime
         constexpr std::uint32_t kMaxStringLen = 256;
         constexpr std::uint32_t kMaxListLen = 1024;
         constexpr std::uint32_t kMaxTreeNodes = 4096;
+        constexpr std::uint32_t kMaxItemRecords = 8192;
+        constexpr std::uint32_t kMaxWorldDropRecords = 64;
+        constexpr std::uint32_t kMaxAffixesPerItem = 16;
+        constexpr std::uint32_t kMaxValuesPerAffix = 16;
         constexpr std::uint32_t kMaxGemDepth = 4;
 
         Core::CommandQueue* g_queue = nullptr;
@@ -155,6 +163,8 @@ namespace SkyrimPoE::Runtime
                 l1.className = state.className.empty() ? "Scion" : state.className;
             }
             l1.slots = state.slots;
+            // 검수 C5: 단일 Layer1 조합 지점 — 장비 스냅샷을 항상 병합해 레벨업/패시브/젬 변경 시 덮어쓰기를 방지
+            l1.equippedGear = EquipmentSync::GetCurrentGearSnapshot();
             return l1;
         }
 
@@ -168,6 +178,9 @@ namespace SkyrimPoE::Runtime
                 g_state = PersistentState{};
             }
             GemInventory::Clear();
+            ItemTracker::Clear();
+            EquipmentSync::Clear();
+            WorldDropTracker::Clear();
             if (g_statEngine) {
                 g_statEngine->SetLayer1(Core::Layer1Input{});
                 g_statEngine->SetLayer2(Core::Layer2Input{});
@@ -202,13 +215,17 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            // 결정 137(ㅁ): 장착 거래와 직렬화해 슬롯 상태와 인벤토리 추적 키의 일관 스냅샷을 함께 확보한다.
+            // 결정 137(ㅁ), 검수 M4: g_txMutex 아래 상태·젬·아이템·바닥드랍 일관 스냅샷을 원자 캡처한다.
             PersistentState state;
             std::vector<TrackedGemEntry> tracked;
+            std::vector<TrackedItemEntry> trackedItems;
+            std::vector<SavedWorldDropEntry> savedWorldDrops;
             {
                 std::scoped_lock txLock(g_txMutex);
                 state = SaveLoad::GetStateCopy();
                 tracked = GemInventory::TakeSnapshotForSave();
+                trackedItems = ItemTracker::TakeSnapshotForSave();
+                savedWorldDrops = WorldDropTracker::TakeSnapshotForSave();
             }
 
             if (!intfc->OpenRecord(SaveLoad::kRecordCore, SaveLoad::kCoreVersion)) {
@@ -297,8 +314,72 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            SKSE::log::info("SaveLoad: saved CORE (exileLevel={}, class={}), {} tracked gem keys, and TREE (selected={}, nodes={}, masteries={}).",
-                state.exileLevel, state.className, trackedCount, tr.classSelected, nodeCount, masteryCount);
+            // 4단계: 제작/감정 PoE 아이템('ITEM' v1) + starterCurrencyGiven 헤더
+            if (!intfc->OpenRecord(SaveLoad::kRecordItems, SaveLoad::kItemsVersion)) {
+                SKSE::log::error("SaveLoad: failed to open ITEM record for writing.");
+                return;
+            }
+            const std::uint8_t starterCurrByte = state.starterCurrencyGiven ? 1 : 0;
+            const auto itemCount = static_cast<std::uint32_t>(std::min<std::size_t>(trackedItems.size(), kMaxItemRecords));
+            ok = intfc->WriteRecordData(&starterCurrByte, sizeof(starterCurrByte));
+            ok = ok && intfc->WriteRecordData(&itemCount, sizeof(itemCount));
+            for (std::uint32_t i = 0; i < itemCount && ok; ++i) {
+                const auto& entry = trackedItems[i];
+                const auto& rec = entry.record;
+                const std::uint8_t worldByte = entry.isWorld ? 1 : 0;
+                const auto rarityByte = static_cast<std::uint8_t>(rec.rarity);
+                const auto slotGroupByte = static_cast<std::uint8_t>(rec.slotGroup);
+                const auto defSubByte = static_cast<std::uint8_t>(rec.defenseSubtype);
+                const std::uint8_t amuletByte = rec.isAmulet ? 1 : 0;
+                ok = ok && intfc->WriteRecordData(&entry.key.ownerFormId, sizeof(entry.key.ownerFormId));
+                ok = ok && intfc->WriteRecordData(&entry.key.uniqueId, sizeof(entry.key.uniqueId));
+                ok = ok && intfc->WriteRecordData(&worldByte, sizeof(worldByte));
+                ok = ok && intfc->WriteRecordData(&rec.baseFormId, sizeof(rec.baseFormId));
+                ok = ok && intfc->WriteRecordData(&rarityByte, sizeof(rarityByte));
+                ok = ok && intfc->WriteRecordData(&rec.itemLevel, sizeof(rec.itemLevel));
+                ok = ok && intfc->WriteRecordData(&slotGroupByte, sizeof(slotGroupByte));
+                ok = ok && intfc->WriteRecordData(&defSubByte, sizeof(defSubByte));
+                ok = ok && intfc->WriteRecordData(&amuletByte, sizeof(amuletByte));
+                ok = ok && WriteString(intfc, rec.weaponTag);
+                const auto affixCount = static_cast<std::uint32_t>(std::min<std::size_t>(rec.affixes.size(), kMaxAffixesPerItem));
+                ok = ok && intfc->WriteRecordData(&affixCount, sizeof(affixCount));
+                for (std::uint32_t a = 0; a < affixCount && ok; ++a) {
+                    ok = ok && WriteString(intfc, rec.affixes[a].affixId);
+                    const auto valCount = static_cast<std::uint32_t>(
+                        std::min<std::size_t>(rec.affixes[a].values.size(), kMaxValuesPerAffix));
+                    ok = ok && intfc->WriteRecordData(&valCount, sizeof(valCount));
+                    for (std::uint32_t v = 0; v < valCount && ok; ++v) {
+                        ok = ok && intfc->WriteRecordData(&rec.affixes[a].values[v], sizeof(double));
+                    }
+                }
+            }
+            if (!ok) {
+                SKSE::log::error("SaveLoad: error while writing ITEM record.");
+                return;
+            }
+
+            // 4단계(검수 C4): 활성 바닥 드랍·빛기둥('WDRP' v1)
+            if (!intfc->OpenRecord(SaveLoad::kRecordWorldDrops, SaveLoad::kWorldDropsVersion)) {
+                SKSE::log::error("SaveLoad: failed to open WDRP record for writing.");
+                return;
+            }
+            const auto wdrpCount = static_cast<std::uint32_t>(
+                std::min<std::size_t>(savedWorldDrops.size(), kMaxWorldDropRecords));
+            ok = intfc->WriteRecordData(&wdrpCount, sizeof(wdrpCount));
+            for (std::uint32_t i = 0; i < wdrpCount && ok; ++i) {
+                const auto& w = savedWorldDrops[i];
+                ok = ok && intfc->WriteRecordData(&w.dropRefFormId, sizeof(w.dropRefFormId));
+                ok = ok && intfc->WriteRecordData(&w.corpseRefFormId, sizeof(w.corpseRefFormId));
+                ok = ok && intfc->WriteRecordData(&w.beamRefFormId, sizeof(w.beamRefFormId));
+                ok = ok && intfc->WriteRecordData(&w.worldDropTier, sizeof(w.worldDropTier));
+            }
+            if (!ok) {
+                SKSE::log::error("SaveLoad: error while writing WDRP record.");
+                return;
+            }
+
+            SKSE::log::info("SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}).",
+                state.exileLevel, trackedCount, nodeCount, itemCount, wdrpCount);
         }
 
         // SKSE 코세이브 콜백: 불러오기(순수 메모리 복원만 수행, 엔진 조작은 주 갱신으로 이연)
@@ -312,7 +393,11 @@ namespace SkyrimPoE::Runtime
             bool hasCore = false;
             Core::PassiveTreeState loadedTree;
             bool hasTree = false;
+            bool hasItems = false;
+            bool loadedStarterCurrencyGiven = false;
             std::vector<TrackedGemEntry> loadedGems;
+            std::vector<TrackedItemEntry> loadedItems;
+            std::vector<SavedWorldDropEntry> loadedWorldDrops;
 
             std::uint32_t type = 0;
             std::uint32_t version = 0;
@@ -458,6 +543,148 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse TREE record (truncated or corrupt); falling back to empty tree.");
                     }
+                } else if (type == SaveLoad::kRecordItems) {
+                    if (version != SaveLoad::kItemsVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported ITEM record version {} (expected {}).", version, SaveLoad::kItemsVersion);
+                        continue;
+                    }
+                    std::uint8_t starterCurrByte = 0;
+                    std::uint32_t itemCount = 0;
+                    if (!ReadExactPod(intfc, starterCurrByte) || !ReadExactPod(intfc, itemCount) || itemCount > kMaxItemRecords) {
+                        SKSE::log::error("SaveLoad: invalid ITEM header.");
+                        continue;
+                    }
+                    std::vector<TrackedItemEntry> tmpItems;
+                    tmpItems.reserve(itemCount);
+                    bool ok = true;
+                    for (std::uint32_t i = 0; i < itemCount && ok; ++i) {
+                        RE::FormID rawOwner = 0;
+                        std::uint16_t uid = 0;
+                        std::uint8_t worldByte = 0;
+                        RE::FormID rawBase = 0;
+                        std::uint8_t rarityByte = 0;
+                        std::uint32_t iLvl = 1;
+                        std::uint8_t slotGroupByte = 0;
+                        std::uint8_t defSubByte = 0;
+                        std::uint8_t amuletByte = 0;
+                        std::string weaponTag;
+                        std::uint32_t affixCount = 0;
+
+                        ok = ok && ReadExactPod(intfc, rawOwner);
+                        ok = ok && ReadExactPod(intfc, uid);
+                        ok = ok && ReadExactPod(intfc, worldByte);
+                        ok = ok && ReadExactPod(intfc, rawBase);
+                        ok = ok && ReadExactPod(intfc, rarityByte);
+                        ok = ok && ReadExactPod(intfc, iLvl);
+                        ok = ok && ReadExactPod(intfc, slotGroupByte);
+                        ok = ok && ReadExactPod(intfc, defSubByte);
+                        ok = ok && ReadExactPod(intfc, amuletByte);
+                        ok = ok && ReadString(intfc, weaponTag);
+                        ok = ok && ReadExactPod(intfc, affixCount);
+                        if (!ok || affixCount > kMaxAffixesPerItem) {
+                            ok = false;
+                            break;
+                        }
+
+                        Core::PoEItemRecord rec;
+                        rec.rarity = rarityByte <= static_cast<std::uint8_t>(Core::ItemRarity::Rare)
+                            ? static_cast<Core::ItemRarity>(rarityByte)
+                            : Core::ItemRarity::Normal;
+                        rec.itemLevel = std::clamp<std::uint32_t>(iLvl, 1, Core::kMaxExileLevel);
+                        rec.slotGroup = slotGroupByte < Core::kTokenSlotGroupCount
+                            ? static_cast<Core::TokenSlotGroup>(slotGroupByte)
+                            : Core::TokenSlotGroup::OneHandWeapon;
+                        rec.defenseSubtype = defSubByte <= static_cast<std::uint8_t>(Core::DefenseSubtype::EnergyShield)
+                            ? static_cast<Core::DefenseSubtype>(defSubByte)
+                            : Core::DefenseSubtype::None;
+                        rec.isAmulet = (amuletByte != 0);
+                        rec.weaponTag = std::move(weaponTag);
+                        rec.affixes.reserve(affixCount);
+
+                        for (std::uint32_t a = 0; a < affixCount && ok; ++a) {
+                            Core::RolledAffix af;
+                            std::uint32_t valCount = 0;
+                            ok = ok && ReadString(intfc, af.affixId);
+                            ok = ok && ReadExactPod(intfc, valCount);
+                            if (!ok || valCount > kMaxValuesPerAffix) {
+                                ok = false;
+                                break;
+                            }
+                            af.values.resize(valCount);
+                            for (std::uint32_t v = 0; v < valCount && ok; ++v) {
+                                ok = ok && ReadExactPod(intfc, af.values[v]);
+                                if (ok && !std::isfinite(af.values[v])) {
+                                    af.values[v] = 0.0;
+                                }
+                            }
+                            if (ok) {
+                                rec.affixes.push_back(std::move(af));
+                            }
+                        }
+                        if (!ok) {
+                            break;
+                        }
+
+                        RE::FormID resolvedOwner = 0;
+                        RE::FormID resolvedBase = 0;
+                        if (intfc->ResolveFormID(rawOwner, resolvedOwner) && resolvedOwner != 0 &&
+                            intfc->ResolveFormID(rawBase, resolvedBase) && resolvedBase != 0) {
+                            rec.baseFormId = resolvedBase;
+                            tmpItems.push_back(TrackedItemEntry{
+                                Core::InventoryItemKey{ resolvedOwner, uid },
+                                worldByte != 0,
+                                std::move(rec)
+                            });
+                        } else {
+                            SKSE::log::warn("SaveLoad: pruning stale item key owner=0x{:08X} base=0x{:08X}.", rawOwner, rawBase);
+                        }
+                    }
+                    if (ok) {
+                        loadedStarterCurrencyGiven = (starterCurrByte != 0);
+                        loadedItems = std::move(tmpItems);
+                        hasItems = true;
+                    } else {
+                        SKSE::log::error("SaveLoad: failed to parse ITEM record.");
+                    }
+                } else if (type == SaveLoad::kRecordWorldDrops) {
+                    if (version != SaveLoad::kWorldDropsVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported WDRP record version {} (expected {}).", version, SaveLoad::kWorldDropsVersion);
+                        continue;
+                    }
+                    std::uint32_t count = 0;
+                    if (!ReadExactPod(intfc, count) || count > kMaxWorldDropRecords) {
+                        SKSE::log::error("SaveLoad: invalid WDRP count.");
+                        continue;
+                    }
+                    std::vector<SavedWorldDropEntry> tmpWdrp;
+                    tmpWdrp.reserve(count);
+                    bool ok = true;
+                    for (std::uint32_t i = 0; i < count && ok; ++i) {
+                        RE::FormID rawDrop = 0, rawCorpse = 0, rawBeam = 0;
+                        std::uint8_t tier = 2;
+                        ok = ok && ReadExactPod(intfc, rawDrop);
+                        ok = ok && ReadExactPod(intfc, rawCorpse);
+                        ok = ok && ReadExactPod(intfc, rawBeam);
+                        ok = ok && ReadExactPod(intfc, tier);
+                        if (!ok) break;
+
+                        RE::FormID resDrop = 0, resCorpse = 0, resBeam = 0;
+                        const bool dropOk = intfc->ResolveFormID(rawDrop, resDrop) && resDrop != 0;
+                        if (rawBeam != 0 && !intfc->ResolveFormID(rawBeam, resBeam)) {
+                            resBeam = 0;  // 검수 m6: 빛기둥만 소실돼도 드랍 본체 회수 추적은 유지
+                        }
+                        if (rawCorpse != 0) {
+                            (void)intfc->ResolveFormID(rawCorpse, resCorpse);
+                        }
+                        if (dropOk) {
+                            tmpWdrp.push_back(SavedWorldDropEntry{ resDrop, resCorpse, resBeam, tier });
+                        }
+                    }
+                    if (ok) {
+                        loadedWorldDrops = std::move(tmpWdrp);
+                    } else {
+                        SKSE::log::error("SaveLoad: failed to parse WDRP record.");
+                    }
                 } else {
                     SKSE::log::warn("SaveLoad: ignoring unknown record type 0x{:08X}.", type);
                 }
@@ -492,7 +719,10 @@ namespace SkyrimPoE::Runtime
             for (const auto& entry : loadedGems) {
                 CollectMaxInstanceId(entry.gem, maxInstanceId);
             }
-            if (hasCore || hasTree) {
+            if (hasItems) {
+                loadedState.starterCurrencyGiven = loadedStarterCurrencyGiven;
+            }
+            if (hasCore || hasTree || hasItems) {
                 if (loadedState.nextGemInstanceId <= maxInstanceId) {
                     loadedState.nextGemInstanceId = maxInstanceId + 1;
                 }
@@ -505,10 +735,13 @@ namespace SkyrimPoE::Runtime
             }
 
             GemInventory::RestoreFromSave(std::move(loadedGems));
+            ItemTracker::RestoreFromSave(std::move(loadedItems));
+            WorldDropTracker::RestoreFromSave(std::move(loadedWorldDrops));
             SaveLoad::SyncStateToStatEngine();
 
-            SKSE::log::info("SaveLoad: OnLoad restored CORE(present={}), TREE(present={}, nodes={}) and {} tracked gem keys (engine sync deferred to MainUpdate).",
-                hasCore, hasTree, loadedState.tree.allocatedNodes.size(), GemInventory::CountTracked());
+            SKSE::log::info("SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}).",
+                hasCore, loadedState.tree.allocatedNodes.size(),
+                GemInventory::CountTracked(), ItemTracker::CountTracked(), WorldDropTracker::ActiveCount());
         }
     }
 
@@ -566,10 +799,14 @@ namespace SkyrimPoE::Runtime
             }
 
             bool needStarterGems = false;
+            bool needStarterCurrency = false;
             {
                 std::scoped_lock lock(g_stateMutex);
                 if (g_config && g_config->giveStarterGems && !g_state.starterGemsGiven) {
                     needStarterGems = true;
+                }
+                if (g_config && g_config->giveStarterCurrency && !g_state.starterCurrencyGiven) {
+                    needStarterCurrency = true;
                 }
             }
 
@@ -585,6 +822,18 @@ namespace SkyrimPoE::Runtime
                     g_state.starterGemsGiven = true;
                 }
             }
+
+            if (needStarterCurrency) {
+                const auto granted = CraftingRuntime::GiveStarterCurrency(player);
+                if (granted > 0) {
+                    std::scoped_lock lock(g_stateMutex);
+                    g_state.starterCurrencyGiven = true;
+                }
+            }
+
+            // 검수 M3 & C4: 로드 직후 착용 장비 즉시 스캔 및 미추적 고아 빛기둥 스윕
+            EquipmentSync::RefreshFromPlayerNow();
+            (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
 
             SaveLoad::SyncStateToStatEngine();
             if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {

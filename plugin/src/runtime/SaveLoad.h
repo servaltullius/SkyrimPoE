@@ -20,6 +20,7 @@ namespace SkyrimPoE::Runtime
         std::uint32_t unallocatedPassivePoints = 0;
         std::string className = "Scion";
         bool starterGemsGiven = false;
+        bool starterCurrencyGiven = false;  // 4단계: 'ITEM' v1 헤더에 저장(CORE v2 하위 호환 유지)
         std::uint64_t nextGemInstanceId = 1;
         double appliedHealthDelta = 0.0;   // kPermanent 체력 보정 누적치(세이브 왕복 드리프트 방지)
         double appliedMagickaDelta = 0.0;  // kPermanent 매지카 보정 누적치(세이브 왕복 드리프트 방지)
@@ -43,9 +44,13 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kRecordCore = 'CORE';
         static constexpr std::uint32_t kRecordGemKeys = 'GKEY';
         static constexpr std::uint32_t kRecordTree = 'TREE';
+        static constexpr std::uint32_t kRecordItems = 'ITEM';
+        static constexpr std::uint32_t kRecordWorldDrops = 'WDRP';
         static constexpr std::uint32_t kCoreVersion = 2;
         static constexpr std::uint32_t kGemKeysVersion = 1;
         static constexpr std::uint32_t kTreeVersion = 1;
+        static constexpr std::uint32_t kItemsVersion = 1;
+        static constexpr std::uint32_t kWorldDropsVersion = 1;
 
         static bool Install(
             Core::CommandQueue* queue,
