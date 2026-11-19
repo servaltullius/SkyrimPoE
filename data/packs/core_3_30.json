@@ -1,0 +1,4537 @@
+{
+  "meta": {
+    "schemaVersion": 1,
+    "pobVersion": "2.68.1",
+    "poeVersion": "3.30"
+  },
+  "constants": {
+    "lifeBase": 38.0,
+    "lifePerLevel": 12.0,
+    "manaBase": 34.0,
+    "manaPerLevel": 6.0,
+    "resistCap": 75.0,
+    "esRechargeDelay": 2.0,
+    "esRechargeRatePerMinPct": 2000.0,
+    "esRechargeRate": 0.33,
+    "skillDamageBaseEffectiveness": 3.885209,
+    "skillDamageIncrementalEffectiveness": 0.360246,
+    "monsterDamageMult": 1.5,
+    "armourMitigationCap": 0.9,
+    "minHitChance": 0.05
+  },
+  "tables": {
+    "monsterLife": [
+      22.0,
+      26.0,
+      31.0,
+      36.0,
+      42.0,
+      48.0,
+      55.0,
+      62.0,
+      70.0,
+      78.0,
+      87.0,
+      97.0,
+      107.0,
+      119.0,
+      131.0,
+      144.0,
+      158.0,
+      173.0,
+      190.0,
+      207.0,
+      226.0,
+      246.0,
+      267.0,
+      290.0,
+      315.0,
+      341.0,
+      370.0,
+      400.0,
+      432.0,
+      467.0,
+      504.0,
+      543.0,
+      585.0,
+      630.0,
+      678.0,
+      730.0,
+      785.0,
+      843.0,
+      905.0,
+      972.0,
+      1042.0,
+      1118.0,
+      1198.0,
+      1284.0,
+      1375.0,
+      1472.0,
+      1575.0,
+      1685.0,
+      1802.0,
+      1927.0,
+      2059.0,
+      2200.0,
+      2350.0,
+      2509.0,
+      2678.0,
+      2858.0,
+      3050.0,
+      3253.0,
+      3469.0,
+      3698.0,
+      3942.0,
+      4201.0,
+      4476.0,
+      4768.0,
+      5078.0,
+      5407.0,
+      5756.0,
+      6127.0,
+      6520.0,
+      6937.0,
+      7380.0,
+      7850.0,
+      8348.0,
+      8876.0,
+      9436.0,
+      10030.0,
+      10660.0,
+      11328.0,
+      12036.0,
+      12787.0,
+      13582.0,
+      14425.0,
+      15319.0,
+      16265.0,
+      17268.0,
+      18331.0,
+      19457.0,
+      20649.0,
+      21913.0,
+      23250.0,
+      24667.0,
+      26168.0,
+      27756.0,
+      29438.0,
+      31220.0,
+      33105.0,
+      35101.0,
+      37214.0,
+      39450.0,
+      41817.0
+    ],
+    "monsterDamage": [
+      4.9899997711182,
+      5.5599999427795,
+      6.1599998474121,
+      6.8099999427795,
+      7.5,
+      8.2299995422363,
+      9.0,
+      9.8199996948242,
+      10.699999809265,
+      11.619999885559,
+      12.60000038147,
+      13.640000343323,
+      14.739999771118,
+      15.909999847412,
+      17.139999389648,
+      18.450000762939,
+      19.829999923706,
+      21.290000915527,
+      22.840000152588,
+      24.469999313354,
+      26.190000534058,
+      28.010000228882,
+      29.940000534058,
+      31.959999084473,
+      34.110000610352,
+      36.360000610352,
+      38.75,
+      41.259998321533,
+      43.909999847412,
+      46.700000762939,
+      49.650001525879,
+      52.75,
+      56.009998321533,
+      59.450000762939,
+      63.080001831055,
+      66.889999389648,
+      70.910003662109,
+      75.129997253418,
+      79.580001831055,
+      84.26000213623,
+      89.180000305176,
+      94.349998474121,
+      99.800003051758,
+      105.51999664307,
+      111.5299987793,
+      117.86000061035,
+      124.5,
+      131.49000549316,
+      138.83000183105,
+      146.5299987793,
+      154.63000488281,
+      163.13999938965,
+      172.07000732422,
+      181.44999694824,
+      191.30000305176,
+      201.63000488281,
+      212.47999572754,
+      223.86999511719,
+      235.83000183105,
+      248.36999511719,
+      261.5299987793,
+      275.32998657227,
+      289.82000732422,
+      305.01000976562,
+      320.94000244141,
+      337.64999389648,
+      355.17999267578,
+      373.54998779297,
+      392.80999755859,
+      413.01000976562,
+      434.17999267578,
+      456.36999511719,
+      479.61999511719,
+      504.0,
+      529.53997802734,
+      556.29998779297,
+      584.34997558594,
+      613.72998046875,
+      644.5,
+      676.75,
+      710.52001953125,
+      745.89001464844,
+      782.94000244141,
+      821.72998046875,
+      862.35998535156,
+      904.90002441406,
+      949.44000244141,
+      996.07000732422,
+      1044.8900146484,
+      1096.0,
+      1149.5,
+      1205.5,
+      1264.1099853516,
+      1325.4499511719,
+      1389.6400146484,
+      1456.8199462891,
+      1527.1199951172,
+      1600.6800537109,
+      1677.6400146484,
+      1758.1700439453
+    ],
+    "monsterAccuracy": [
+      14.0,
+      15.0,
+      15.0,
+      16.0,
+      17.0,
+      18.0,
+      19.0,
+      20.0,
+      21.0,
+      23.0,
+      24.0,
+      25.0,
+      26.0,
+      28.0,
+      29.0,
+      31.0,
+      32.0,
+      34.0,
+      35.0,
+      37.0,
+      39.0,
+      41.0,
+      43.0,
+      45.0,
+      47.0,
+      49.0,
+      52.0,
+      54.0,
+      57.0,
+      59.0,
+      62.0,
+      65.0,
+      68.0,
+      71.0,
+      74.0,
+      77.0,
+      81.0,
+      84.0,
+      88.0,
+      92.0,
+      96.0,
+      100.0,
+      105.0,
+      109.0,
+      114.0,
+      119.0,
+      124.0,
+      129.0,
+      135.0,
+      140.0,
+      146.0,
+      152.0,
+      159.0,
+      165.0,
+      172.0,
+      179.0,
+      187.0,
+      195.0,
+      203.0,
+      211.0,
+      220.0,
+      229.0,
+      238.0,
+      247.0,
+      257.0,
+      268.0,
+      279.0,
+      290.0,
+      301.0,
+      314.0,
+      326.0,
+      339.0,
+      352.0,
+      366.0,
+      381.0,
+      396.0,
+      412.0,
+      428.0,
+      444.0,
+      462.0,
+      480.0,
+      499.0,
+      518.0,
+      538.0,
+      559.0,
+      580.0,
+      603.0,
+      626.0,
+      650.0,
+      675.0,
+      701.0,
+      728.0,
+      755.0,
+      784.0,
+      814.0,
+      845.0,
+      877.0,
+      910.0,
+      945.0,
+      980.0
+    ],
+    "expectedDefense": [
+      {
+        "level": 1,
+        "bestArmour": 49.0,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 37.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 2,
+        "bestArmour": 49.0,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 37.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 3,
+        "bestArmour": 49.0,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 37.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 4,
+        "bestArmour": 49.0,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 37.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 5,
+        "bestArmour": 49.0,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 37.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 6,
+        "bestArmour": 104.5,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 37.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 7,
+        "bestArmour": 137.5,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 37.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 8,
+        "bestArmour": 137.5,
+        "bestEvasion": 89.0,
+        "bestEnergyShield": 42.5,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 9,
+        "bestArmour": 167.0,
+        "bestEvasion": 188.0,
+        "bestEnergyShield": 46.0,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 10,
+        "bestArmour": 167.0,
+        "bestEvasion": 226.0,
+        "bestEnergyShield": 46.0,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 11,
+        "bestArmour": 204.0,
+        "bestEvasion": 226.0,
+        "bestEnergyShield": 63.0,
+        "bestResistTier": 8.5
+      },
+      {
+        "level": 12,
+        "bestArmour": 204.0,
+        "bestEvasion": 258.5,
+        "bestEnergyShield": 68.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 13,
+        "bestArmour": 204.0,
+        "bestEvasion": 258.5,
+        "bestEnergyShield": 68.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 14,
+        "bestArmour": 204.0,
+        "bestEvasion": 258.5,
+        "bestEnergyShield": 68.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 15,
+        "bestArmour": 204.0,
+        "bestEvasion": 258.5,
+        "bestEnergyShield": 68.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 16,
+        "bestArmour": 204.0,
+        "bestEvasion": 258.5,
+        "bestEnergyShield": 68.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 17,
+        "bestArmour": 324.0,
+        "bestEvasion": 344.5,
+        "bestEnergyShield": 77.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 18,
+        "bestArmour": 383.5,
+        "bestEvasion": 344.5,
+        "bestEnergyShield": 91.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 19,
+        "bestArmour": 383.5,
+        "bestEvasion": 344.5,
+        "bestEnergyShield": 91.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 20,
+        "bestArmour": 383.5,
+        "bestEvasion": 397.5,
+        "bestEnergyShield": 91.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 21,
+        "bestArmour": 417.0,
+        "bestEvasion": 440.0,
+        "bestEnergyShield": 91.5,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 22,
+        "bestArmour": 417.0,
+        "bestEvasion": 475.0,
+        "bestEnergyShield": 101.0,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 23,
+        "bestArmour": 508.5,
+        "bestEvasion": 475.0,
+        "bestEnergyShield": 101.0,
+        "bestResistTier": 14.5
+      },
+      {
+        "level": 24,
+        "bestArmour": 508.5,
+        "bestEvasion": 475.0,
+        "bestEnergyShield": 101.0,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 25,
+        "bestArmour": 508.5,
+        "bestEvasion": 557.0,
+        "bestEnergyShield": 122.0,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 26,
+        "bestArmour": 545.0,
+        "bestEvasion": 557.0,
+        "bestEnergyShield": 130.0,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 27,
+        "bestArmour": 545.0,
+        "bestEvasion": 557.0,
+        "bestEnergyShield": 130.0,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 28,
+        "bestArmour": 614.5,
+        "bestEvasion": 582.0,
+        "bestEnergyShield": 135.5,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 29,
+        "bestArmour": 614.5,
+        "bestEvasion": 582.0,
+        "bestEnergyShield": 135.5,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 30,
+        "bestArmour": 614.5,
+        "bestEvasion": 629.0,
+        "bestEnergyShield": 135.5,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 31,
+        "bestArmour": 614.5,
+        "bestEvasion": 629.0,
+        "bestEnergyShield": 135.5,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 32,
+        "bestArmour": 669.5,
+        "bestEvasion": 676.5,
+        "bestEnergyShield": 149.5,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 33,
+        "bestArmour": 697.5,
+        "bestEvasion": 712.5,
+        "bestEnergyShield": 149.5,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 34,
+        "bestArmour": 697.5,
+        "bestEvasion": 749.0,
+        "bestEnergyShield": 157.0,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 35,
+        "bestArmour": 805.5,
+        "bestEvasion": 770.5,
+        "bestEnergyShield": 164.0,
+        "bestResistTier": 20.5
+      },
+      {
+        "level": 36,
+        "bestArmour": 805.5,
+        "bestEvasion": 770.5,
+        "bestEnergyShield": 170.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 37,
+        "bestArmour": 840.0,
+        "bestEvasion": 797.0,
+        "bestEnergyShield": 173.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 38,
+        "bestArmour": 840.0,
+        "bestEvasion": 818.0,
+        "bestEnergyShield": 177.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 39,
+        "bestArmour": 860.0,
+        "bestEvasion": 837.0,
+        "bestEnergyShield": 183.5,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 40,
+        "bestArmour": 891.0,
+        "bestEvasion": 837.0,
+        "bestEnergyShield": 183.5,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 41,
+        "bestArmour": 933.0,
+        "bestEvasion": 943.5,
+        "bestEnergyShield": 198.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 42,
+        "bestArmour": 933.0,
+        "bestEvasion": 943.5,
+        "bestEnergyShield": 198.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 43,
+        "bestArmour": 933.0,
+        "bestEvasion": 943.5,
+        "bestEnergyShield": 198.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 44,
+        "bestArmour": 933.0,
+        "bestEvasion": 963.0,
+        "bestEnergyShield": 202.5,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 45,
+        "bestArmour": 968.5,
+        "bestEvasion": 1013.5,
+        "bestEnergyShield": 207.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 46,
+        "bestArmour": 998.0,
+        "bestEvasion": 1013.5,
+        "bestEnergyShield": 207.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 47,
+        "bestArmour": 1020.0,
+        "bestEvasion": 1047.5,
+        "bestEnergyShield": 211.0,
+        "bestResistTier": 26.5
+      },
+      {
+        "level": 48,
+        "bestArmour": 1059.0,
+        "bestEvasion": 1047.5,
+        "bestEnergyShield": 218.5,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 49,
+        "bestArmour": 1120.5,
+        "bestEvasion": 1097.5,
+        "bestEnergyShield": 228.0,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 50,
+        "bestArmour": 1120.5,
+        "bestEvasion": 1097.5,
+        "bestEnergyShield": 228.0,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 51,
+        "bestArmour": 1120.5,
+        "bestEvasion": 1097.5,
+        "bestEnergyShield": 228.0,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 52,
+        "bestArmour": 1120.5,
+        "bestEvasion": 1097.5,
+        "bestEnergyShield": 228.0,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 53,
+        "bestArmour": 1181.5,
+        "bestEvasion": 1124.5,
+        "bestEnergyShield": 244.5,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 54,
+        "bestArmour": 1212.0,
+        "bestEvasion": 1163.5,
+        "bestEnergyShield": 252.0,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 55,
+        "bestArmour": 1258.0,
+        "bestEvasion": 1255.0,
+        "bestEnergyShield": 258.0,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 56,
+        "bestArmour": 1281.5,
+        "bestEvasion": 1294.0,
+        "bestEnergyShield": 262.5,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 57,
+        "bestArmour": 1281.5,
+        "bestEvasion": 1294.0,
+        "bestEnergyShield": 262.5,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 58,
+        "bestArmour": 1281.5,
+        "bestEvasion": 1294.0,
+        "bestEnergyShield": 262.5,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 59,
+        "bestArmour": 1326.5,
+        "bestEvasion": 1354.0,
+        "bestEnergyShield": 278.5,
+        "bestResistTier": 32.5
+      },
+      {
+        "level": 60,
+        "bestArmour": 1389.5,
+        "bestEvasion": 1417.0,
+        "bestEnergyShield": 286.5,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 61,
+        "bestArmour": 1389.5,
+        "bestEvasion": 1417.0,
+        "bestEnergyShield": 298.5,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 62,
+        "bestArmour": 1533.5,
+        "bestEvasion": 1605.0,
+        "bestEnergyShield": 307.5,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 63,
+        "bestArmour": 1595.5,
+        "bestEvasion": 1605.0,
+        "bestEnergyShield": 307.5,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 64,
+        "bestArmour": 1595.5,
+        "bestEvasion": 1638.5,
+        "bestEnergyShield": 307.5,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 65,
+        "bestArmour": 1684.0,
+        "bestEvasion": 1799.5,
+        "bestEnergyShield": 347.0,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 66,
+        "bestArmour": 1684.0,
+        "bestEvasion": 1799.5,
+        "bestEnergyShield": 347.0,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 67,
+        "bestArmour": 1684.0,
+        "bestEvasion": 1799.5,
+        "bestEnergyShield": 351.0,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 68,
+        "bestArmour": 1748.0,
+        "bestEvasion": 1799.5,
+        "bestEnergyShield": 366.0,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 69,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1827.5,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 70,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 71,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 38.5
+      },
+      {
+        "level": 72,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 73,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 74,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 75,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 76,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 77,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 78,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 79,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 80,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 81,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 82,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 83,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 43.5
+      },
+      {
+        "level": 84,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 85,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 86,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 87,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 88,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 89,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 90,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 91,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 92,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 93,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 94,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 95,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 96,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 97,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 98,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 99,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      },
+      {
+        "level": 100,
+        "bestArmour": 1759.0,
+        "bestEvasion": 1851.0,
+        "bestEnergyShield": 378.0,
+        "bestResistTier": 47.0
+      }
+    ]
+  },
+  "classes": [
+    {
+      "name": "Scion",
+      "baseStr": 20,
+      "baseDex": 20,
+      "baseInt": 20
+    },
+    {
+      "name": "Marauder",
+      "baseStr": 32,
+      "baseDex": 14,
+      "baseInt": 14
+    },
+    {
+      "name": "Ranger",
+      "baseStr": 14,
+      "baseDex": 32,
+      "baseInt": 14
+    },
+    {
+      "name": "Witch",
+      "baseStr": 14,
+      "baseDex": 14,
+      "baseInt": 32
+    },
+    {
+      "name": "Duelist",
+      "baseStr": 23,
+      "baseDex": 23,
+      "baseInt": 14
+    },
+    {
+      "name": "Templar",
+      "baseStr": 23,
+      "baseDex": 14,
+      "baseInt": 23
+    },
+    {
+      "name": "Shadow",
+      "baseStr": 14,
+      "baseDex": 23,
+      "baseInt": 23
+    }
+  ],
+  "gems": {
+    "Cyclone": {
+      "id": "Cyclone",
+      "name": "Cyclone",
+      "color": 2,
+      "support": false,
+      "castTime": 1.0,
+      "skillTypes": [
+        "Attack",
+        "Area",
+        "Melee",
+        "Movement",
+        "Channel"
+      ],
+      "requireSkillTypes": [],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [
+        "Claw",
+        "Dagger",
+        "None",
+        "One Handed Axe",
+        "One Handed Mace",
+        "One Handed Sword",
+        "Sceptre",
+        "Staff",
+        "Thrusting One Handed Sword",
+        "Two Handed Axe",
+        "Two Handed Mace",
+        "Two Handed Sword"
+      ],
+      "constantStats": {
+        "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0
+      },
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 28,
+          "manaCost": 2.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 0.816,
+          "damageEffectiveness": 0.816,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -30.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 31,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 0.852,
+          "damageEffectiveness": 0.852,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -29.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 34,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 0.888,
+          "damageEffectiveness": 0.888,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -29.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 37,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 0.924,
+          "damageEffectiveness": 0.924,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -28.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 40,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 0.96,
+          "damageEffectiveness": 0.96,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -28.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 42,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 0.996,
+          "damageEffectiveness": 0.996,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -27.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 44,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.032,
+          "damageEffectiveness": 1.032,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -27.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 46,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.068,
+          "damageEffectiveness": 1.068,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -26.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 48,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.104,
+          "damageEffectiveness": 1.104,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -26.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 50,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.14,
+          "damageEffectiveness": 1.14,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -25.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 52,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.176,
+          "damageEffectiveness": 1.176,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -25.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 54,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.212,
+          "damageEffectiveness": 1.212,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -24.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 56,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.248,
+          "damageEffectiveness": 1.248,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -24.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 58,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.284,
+          "damageEffectiveness": 1.284,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -23.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 60,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.32,
+          "damageEffectiveness": 1.32,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -23.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 62,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.356,
+          "damageEffectiveness": 1.356,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -22.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 64,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.392,
+          "damageEffectiveness": 1.392,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -22.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 66,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.428,
+          "damageEffectiveness": 1.428,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -21.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 68,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.464,
+          "damageEffectiveness": 1.464,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -21.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 3.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 200.0,
+          "baseMultiplier": 1.5,
+          "damageEffectiveness": 1.5,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cyclone_area_of_effect_+%_per_additional_melee_range": 15.0,
+            "cyclone_movement_speed_+%_final": -20.0,
+            "is_area_damage": 1.0,
+            "skill_can_add_multiple_charges_per_action": 1.0
+          }
+        }
+      },
+      "kind": "attack_channel"
+    },
+    "SupportCastOnCriticalStrike": {
+      "id": "SupportCastOnCriticalStrike",
+      "name": "Cast On Critical Strike",
+      "color": 2,
+      "support": true,
+      "castTime": 0.0,
+      "skillTypes": [],
+      "requireSkillTypes": [
+        "Attack"
+      ],
+      "excludeSkillTypes": [
+        "Trapped",
+        "RemoteMined",
+        "SummonsTotem",
+        "HasReservation",
+        "DisallowTriggerSupports"
+      ],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {
+        "cast_linked_spells_on_attack_crit_%": 100.0
+      },
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 38,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 40,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 42,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 44,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 46,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 48,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 50,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 52,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 54,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 56,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 58,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 60,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 62,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 64,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 65,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 66,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 67,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 68,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 69,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "cast_linked_spells_on_attack_crit_%": 100.0
+          }
+        }
+      },
+      "kind": "trigger",
+      "triggeredEffect": {
+        "id": "SupportCastOnCritTriggered",
+        "name": "Cast On Critical Strike",
+        "color": 2,
+        "support": true,
+        "castTime": 0.0,
+        "skillTypes": [],
+        "requireSkillTypes": [
+          "Spell",
+          "Triggerable",
+          "AND"
+        ],
+        "excludeSkillTypes": [
+          "Trapped",
+          "RemoteMined",
+          "SummonsTotem",
+          "HasReservation",
+          "InbuiltTrigger",
+          "DisallowTriggerSupports"
+        ],
+        "addSkillTypes": [
+          "Triggered",
+          "Cooldown"
+        ],
+        "weaponTypes": [],
+        "constantStats": {},
+        "levels": {
+          "1": {
+            "level": 1,
+            "levelRequirement": 38,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -19.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "2": {
+            "level": 2,
+            "levelRequirement": 40,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -19.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "3": {
+            "level": 3,
+            "levelRequirement": 42,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -18.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "4": {
+            "level": 4,
+            "levelRequirement": 44,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -18.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "5": {
+            "level": 5,
+            "levelRequirement": 46,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -17.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "6": {
+            "level": 6,
+            "levelRequirement": 48,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -17.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "7": {
+            "level": 7,
+            "levelRequirement": 50,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -16.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "8": {
+            "level": 8,
+            "levelRequirement": 52,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -16.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "9": {
+            "level": 9,
+            "levelRequirement": 54,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -15.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "10": {
+            "level": 10,
+            "levelRequirement": 56,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -15.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "11": {
+            "level": 11,
+            "levelRequirement": 58,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -14.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "12": {
+            "level": 12,
+            "levelRequirement": 60,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -14.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "13": {
+            "level": 13,
+            "levelRequirement": 62,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -13.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "14": {
+            "level": 14,
+            "levelRequirement": 64,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -13.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "15": {
+            "level": 15,
+            "levelRequirement": 65,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -12.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "16": {
+            "level": 16,
+            "levelRequirement": 66,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -12.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "17": {
+            "level": 17,
+            "levelRequirement": 67,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -11.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "18": {
+            "level": 18,
+            "levelRequirement": 68,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -11.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "19": {
+            "level": 19,
+            "levelRequirement": 69,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -10.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          },
+          "20": {
+            "level": 20,
+            "levelRequirement": 70,
+            "manaCost": 0.0,
+            "manaMultiplier": 20.0,
+            "attackSpeedMultiplier": 0.0,
+            "baseMultiplier": 1.0,
+            "damageEffectiveness": 1.0,
+            "critChance": 0.0,
+            "cooldown": 0.15,
+            "stats": {
+              "support_cast_on_crit_spell_damage_+%_final": -10.0,
+              "spell_uncastable_if_triggerable": 1.0,
+              "triggered_skill_uses_main_hand_or_averaged_attack_time_for_pvp_scaling": 1.0,
+              "cast_spell_on_linked_attack_crit": 1.0
+            }
+          }
+        }
+      }
+    },
+    "IceNova": {
+      "id": "IceNova",
+      "name": "Ice Nova",
+      "color": 3,
+      "support": false,
+      "castTime": 0.7,
+      "skillTypes": [
+        "Spell",
+        "Damage",
+        "Area",
+        "Trappable",
+        "Totemable",
+        "Mineable",
+        "Multicastable",
+        "Triggerable",
+        "Cold",
+        "CanRapidFire",
+        "AreaSpell",
+        "Nova"
+      ],
+      "requireSkillTypes": [],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {
+        "active_skill_base_area_of_effect_radius": 26.0,
+        "base_chance_to_freeze_%": 25.0
+      },
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 12,
+          "manaCost": 8.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.3,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 26.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 25.0,
+            "spell_maximum_base_cold_damage": 38.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 15,
+          "manaCost": 9.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.3,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 26.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 33.0,
+            "spell_maximum_base_cold_damage": 49.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 19,
+          "manaCost": 10.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.3,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 26.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 45.0,
+            "spell_maximum_base_cold_damage": 68.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 23,
+          "manaCost": 11.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.3,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 26.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 61.0,
+            "spell_maximum_base_cold_damage": 91.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 27,
+          "manaCost": 12.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.3,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 27.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 81.0,
+            "spell_maximum_base_cold_damage": 122.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 31,
+          "manaCost": 13.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.3,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 27.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 107.0,
+            "spell_maximum_base_cold_damage": 160.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 35,
+          "manaCost": 14.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.4,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 27.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 140.0,
+            "spell_maximum_base_cold_damage": 209.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 38,
+          "manaCost": 15.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.4,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 27.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 169.0,
+            "spell_maximum_base_cold_damage": 254.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 41,
+          "manaCost": 16.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.4,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 28.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 205.0,
+            "spell_maximum_base_cold_damage": 307.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 44,
+          "manaCost": 16.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.4,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 28.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 247.0,
+            "spell_maximum_base_cold_damage": 370.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 47,
+          "manaCost": 17.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.4,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 28.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 297.0,
+            "spell_maximum_base_cold_damage": 445.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 50,
+          "manaCost": 18.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.4,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 28.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 355.0,
+            "spell_maximum_base_cold_damage": 533.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 53,
+          "manaCost": 19.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.4,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 29.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 425.0,
+            "spell_maximum_base_cold_damage": 637.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 56,
+          "manaCost": 19.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.5,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 29.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 506.0,
+            "spell_maximum_base_cold_damage": 760.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 59,
+          "manaCost": 20.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.5,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 29.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 602.0,
+            "spell_maximum_base_cold_damage": 904.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 62,
+          "manaCost": 21.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.5,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 29.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 715.0,
+            "spell_maximum_base_cold_damage": 1073.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 64,
+          "manaCost": 21.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.5,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 30.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 801.0,
+            "spell_maximum_base_cold_damage": 1202.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 66,
+          "manaCost": 22.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.5,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 30.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 897.0,
+            "spell_maximum_base_cold_damage": 1346.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 68,
+          "manaCost": 22.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.5,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 30.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 1004.0,
+            "spell_maximum_base_cold_damage": 1506.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 23.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.5,
+          "critChance": 7.5,
+          "cooldown": 0.0,
+          "stats": {
+            "active_skill_base_area_of_effect_radius": 30.0,
+            "base_chance_to_freeze_%": 25.0,
+            "spell_minimum_base_cold_damage": 1122.0,
+            "spell_maximum_base_cold_damage": 1683.0,
+            "is_area_damage": 1.0
+          }
+        }
+      },
+      "kind": "spell"
+    },
+    "ShockNova": {
+      "id": "ShockNova",
+      "name": "Shock Nova",
+      "color": 3,
+      "support": false,
+      "castTime": 0.6,
+      "skillTypes": [
+        "Spell",
+        "Damage",
+        "Area",
+        "Trappable",
+        "Totemable",
+        "Mineable",
+        "Multicastable",
+        "Triggerable",
+        "Lightning",
+        "CanRapidFire",
+        "AreaSpell",
+        "Nova"
+      ],
+      "requireSkillTypes": [],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {
+        "shock_nova_ring_chance_to_shock_+%": 100.0,
+        "shock_maximum_magnitude_+": 10.0
+      },
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 28,
+          "manaCost": 15.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.6,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 15.0,
+            "spell_maximum_base_lightning_damage": 137.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 31,
+          "manaCost": 16.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.7,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 19.0,
+            "spell_maximum_base_lightning_damage": 170.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 34,
+          "manaCost": 18.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.7,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 23.0,
+            "spell_maximum_base_lightning_damage": 211.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 37,
+          "manaCost": 19.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.7,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 29.0,
+            "spell_maximum_base_lightning_damage": 261.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 40,
+          "manaCost": 19.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.8,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 36.0,
+            "spell_maximum_base_lightning_damage": 321.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 42,
+          "manaCost": 20.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.8,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 41.0,
+            "spell_maximum_base_lightning_damage": 367.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 44,
+          "manaCost": 20.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.8,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 47.0,
+            "spell_maximum_base_lightning_damage": 420.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 46,
+          "manaCost": 21.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.8,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 53.0,
+            "spell_maximum_base_lightning_damage": 479.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 48,
+          "manaCost": 21.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.9,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 61.0,
+            "spell_maximum_base_lightning_damage": 547.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 50,
+          "manaCost": 23.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.9,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 69.0,
+            "spell_maximum_base_lightning_damage": 623.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 52,
+          "manaCost": 23.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.9,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 79.0,
+            "spell_maximum_base_lightning_damage": 709.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 54,
+          "manaCost": 24.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.9,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 90.0,
+            "spell_maximum_base_lightning_damage": 806.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 56,
+          "manaCost": 24.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.0,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 102.0,
+            "spell_maximum_base_lightning_damage": 915.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 58,
+          "manaCost": 25.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.0,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 115.0,
+            "spell_maximum_base_lightning_damage": 1038.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 60,
+          "manaCost": 25.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.0,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 131.0,
+            "spell_maximum_base_lightning_damage": 1176.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 62,
+          "manaCost": 26.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.1,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 148.0,
+            "spell_maximum_base_lightning_damage": 1332.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 64,
+          "manaCost": 26.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.1,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 168.0,
+            "spell_maximum_base_lightning_damage": 1508.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 66,
+          "manaCost": 28.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.1,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 189.0,
+            "spell_maximum_base_lightning_damage": 1705.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 68,
+          "manaCost": 28.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.1,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 214.0,
+            "spell_maximum_base_lightning_damage": 1927.0,
+            "is_area_damage": 1.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 29.0,
+          "manaMultiplier": 0.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 2.2,
+          "critChance": 6.0,
+          "cooldown": 0.0,
+          "stats": {
+            "shock_nova_ring_chance_to_shock_+%": 100.0,
+            "shock_maximum_magnitude_+": 10.0,
+            "spell_minimum_base_lightning_damage": 242.0,
+            "spell_maximum_base_lightning_damage": 2176.0,
+            "is_area_damage": 1.0
+          }
+        }
+      },
+      "kind": "spell"
+    },
+    "SupportIncreasedCriticalStrikes": {
+      "id": "SupportIncreasedCriticalStrikes",
+      "name": "Increased Critical Strikes",
+      "color": 3,
+      "support": true,
+      "castTime": 0.0,
+      "skillTypes": [],
+      "requireSkillTypes": [
+        "Damage",
+        "Attack"
+      ],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {
+        "additional_base_critical_strike_chance": 200.0
+      },
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 8,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 60.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 10,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 63.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 13,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 66.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 17,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 69.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 21,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 72.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 25,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 75.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 29,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 78.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 33,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 81.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 37,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 84.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 40,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 87.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 43,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 90.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 46,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 93.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 49,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 96.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 52,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 99.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 55,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 102.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 58,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 105.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 61,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 108.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 64,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 111.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 67,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 114.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 0.0,
+          "manaMultiplier": 20.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "additional_base_critical_strike_chance": 200.0,
+            "critical_strike_chance_+%": 117.0
+          }
+        }
+      },
+      "kind": "support"
+    },
+    "SupportMeleePhysicalDamage": {
+      "id": "SupportMeleePhysicalDamage",
+      "name": "Melee Physical Damage",
+      "color": 1,
+      "support": true,
+      "castTime": 0.0,
+      "skillTypes": [],
+      "requireSkillTypes": [
+        "Melee"
+      ],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {
+        "support_melee_physical_damage_attack_speed_+%_final": -10.0
+      },
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 18,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 30.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 30.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 22,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 31.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 31.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 26,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 32.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 32.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 29,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 33.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 33.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 32,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 34.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 34.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 35,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 35.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 35.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 38,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 36.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 36.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 41,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 37.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 37.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 44,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 38.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 38.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 47,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 39.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 39.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 50,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 40.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 40.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 53,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 41.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 41.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 56,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 42.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 42.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 58,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 43.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 43.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 60,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 44.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 44.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 62,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 45.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 45.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 64,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 46.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 46.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 66,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 47.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 47.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 68,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 48.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 48.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_melee_physical_damage_attack_speed_+%_final": -10.0,
+            "support_melee_physical_damage_+%_final": 49.0,
+            "support_melee_physical_damage_poison_and_bleeding_damage_+%_final_from_melee_hits": 49.0
+          }
+        }
+      },
+      "kind": "support"
+    },
+    "SupportBrutality": {
+      "id": "SupportBrutality",
+      "name": "Brutality",
+      "color": 1,
+      "support": true,
+      "castTime": 0.0,
+      "skillTypes": [],
+      "requireSkillTypes": [
+        "Damage",
+        "Attack",
+        "DamageOverTime"
+      ],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {},
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 38,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 25.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 40,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 25.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 42,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 26.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 44,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 27.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 46,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 28.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 48,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 28.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 50,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 29.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 52,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 30.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 54,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 31.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 56,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 31.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 58,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 32.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 60,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 33.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 62,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 34.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 64,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 34.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 65,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 35.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 66,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 36.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 67,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 37.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 68,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 37.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 69,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 38.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_brutality_physical_damage_+%_final": 39.0,
+            "deal_no_elemental_damage": 1.0,
+            "base_deal_no_chaos_damage": 1.0
+          }
+        }
+      },
+      "kind": "support"
+    },
+    "SupportIncreasedAreaOfEffect": {
+      "id": "SupportIncreasedAreaOfEffect",
+      "name": "Increased Area of Effect",
+      "color": 3,
+      "support": true,
+      "castTime": 0.0,
+      "skillTypes": [],
+      "requireSkillTypes": [
+        "Area",
+        "MinionsCanExplode",
+        "ThresholdJewelArea"
+      ],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {},
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 38,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 30.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 40,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 31.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 42,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 32.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 44,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 33.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 46,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 34.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 48,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 35.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 50,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 36.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 52,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 37.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 54,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 38.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 56,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 39.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 58,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 40.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 60,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 41.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 62,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 42.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 64,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 43.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 65,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 44.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 66,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 45.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 67,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 46.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 68,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 47.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 69,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 48.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 0.0,
+          "manaMultiplier": 30.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "base_skill_area_of_effect_+%": 49.0
+          }
+        }
+      },
+      "kind": "support"
+    },
+    "SupportConcentratedEffect": {
+      "id": "SupportConcentratedEffect",
+      "name": "Concentrated Effect",
+      "color": 3,
+      "support": true,
+      "castTime": 0.0,
+      "skillTypes": [],
+      "requireSkillTypes": [
+        "Area",
+        "MinionsCanExplode",
+        "ThresholdJewelArea"
+      ],
+      "excludeSkillTypes": [],
+      "addSkillTypes": [],
+      "weaponTypes": [],
+      "constantStats": {
+        "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0
+      },
+      "levels": {
+        "1": {
+          "level": 1,
+          "levelRequirement": 18,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 25.0
+          }
+        },
+        "2": {
+          "level": 2,
+          "levelRequirement": 22,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 25.0
+          }
+        },
+        "3": {
+          "level": 3,
+          "levelRequirement": 26,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 26.0
+          }
+        },
+        "4": {
+          "level": 4,
+          "levelRequirement": 29,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 27.0
+          }
+        },
+        "5": {
+          "level": 5,
+          "levelRequirement": 32,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 28.0
+          }
+        },
+        "6": {
+          "level": 6,
+          "levelRequirement": 35,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 28.0
+          }
+        },
+        "7": {
+          "level": 7,
+          "levelRequirement": 38,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 29.0
+          }
+        },
+        "8": {
+          "level": 8,
+          "levelRequirement": 41,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 30.0
+          }
+        },
+        "9": {
+          "level": 9,
+          "levelRequirement": 44,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 31.0
+          }
+        },
+        "10": {
+          "level": 10,
+          "levelRequirement": 47,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 31.0
+          }
+        },
+        "11": {
+          "level": 11,
+          "levelRequirement": 50,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 32.0
+          }
+        },
+        "12": {
+          "level": 12,
+          "levelRequirement": 53,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 33.0
+          }
+        },
+        "13": {
+          "level": 13,
+          "levelRequirement": 56,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 34.0
+          }
+        },
+        "14": {
+          "level": 14,
+          "levelRequirement": 58,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 34.0
+          }
+        },
+        "15": {
+          "level": 15,
+          "levelRequirement": 60,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 35.0
+          }
+        },
+        "16": {
+          "level": 16,
+          "levelRequirement": 62,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 36.0
+          }
+        },
+        "17": {
+          "level": 17,
+          "levelRequirement": 64,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 37.0
+          }
+        },
+        "18": {
+          "level": 18,
+          "levelRequirement": 66,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 37.0
+          }
+        },
+        "19": {
+          "level": 19,
+          "levelRequirement": 68,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 38.0
+          }
+        },
+        "20": {
+          "level": 20,
+          "levelRequirement": 70,
+          "manaCost": 0.0,
+          "manaMultiplier": 40.0,
+          "attackSpeedMultiplier": 0.0,
+          "baseMultiplier": 1.0,
+          "damageEffectiveness": 1.0,
+          "critChance": 0.0,
+          "cooldown": 0.0,
+          "stats": {
+            "support_concentrated_effect_skill_area_of_effect_+%_final": -30.0,
+            "support_area_concentrate_area_damage_+%_final": 39.0
+          }
+        }
+      },
+      "kind": "support"
+    }
+  }
+}

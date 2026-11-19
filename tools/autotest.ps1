@@ -1,0 +1,87 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("arm", "disarm", "status", "report")]
+    [string]$Action,
+
+    [string]$Save = "",
+    [string]$TempSave = "SkyrimPoE_autotest",
+    [bool]$Quit = $true,
+    [ValidateRange(30, 1800)]
+    [int]$TimeoutSec = 180
+)
+
+$ErrorActionPreference = "Stop"
+
+function Normalize-SaveStem([string]$Name, [string]$ParamName) {
+    $trimmed = $Name.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return ""
+    }
+    if ($trimmed -match '[\r\n\\/]') {
+        throw "Parameter -$ParamName must be a save filename/stem without path separators or newlines."
+    }
+    if ($trimmed.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $trimmed = $trimmed.Substring(0, $trimmed.Length - 4)
+    }
+    return $trimmed
+}
+
+$skseDir = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition\SKSE"
+$markerPath = Join-Path $skseDir "SkyrimPoE.autotest"
+$reportPath = Join-Path $skseDir "SkyrimPoE.autotest.log"
+
+switch ($Action) {
+    "arm" {
+        $cleanSave = Normalize-SaveStem $Save "Save"
+        if ([string]::IsNullOrWhiteSpace($cleanSave)) {
+            throw "Action 'arm' requires -Save <save_stem>."
+        }
+        $cleanTemp = Normalize-SaveStem $TempSave "TempSave"
+        if ([string]::IsNullOrWhiteSpace($cleanTemp)) {
+            throw "Parameter -TempSave cannot be empty."
+        }
+        if (-not (Test-Path $skseDir)) {
+            New-Item -ItemType Directory -Path $skseDir -Force | Out-Null
+        }
+        $lines = @(
+            "# SkyrimPoE Stage 2 AutoTest marker (consumed on startup)"
+            "save=$cleanSave"
+            "temp_save=$cleanTemp"
+            ("quit=" + ($Quit.ToString().ToLowerInvariant()))
+            "consume_marker=true"
+            "timeout_sec=$TimeoutSec"
+        )
+        [System.IO.File]::WriteAllLines($markerPath, $lines, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "Armed AutoTest marker: $markerPath"
+        Write-Host "Target save: $cleanSave (temp_save=$cleanTemp, quit=$Quit, timeout=${TimeoutSec}s)"
+        Write-Host "Note: Skyrim is NOT launched by this script. Launch SKSE via MO2 when ready."
+    }
+    "disarm" {
+        if (Test-Path $markerPath) {
+            Remove-Item -Path $markerPath -Force
+            Write-Host "Removed AutoTest marker: $markerPath"
+        } else {
+            Write-Host "AutoTest marker is not present."
+        }
+    }
+    "status" {
+        $armed = Test-Path $markerPath
+        $hasReport = Test-Path $reportPath
+        Write-Host "Armed: $armed"
+        if ($armed) {
+            Get-Content -Path $markerPath -Encoding UTF8 | ForEach-Object { Write-Host "  $_" }
+        }
+        Write-Host "Report exists: $hasReport"
+        if ($hasReport) {
+            $fi = Get-Item $reportPath
+            Write-Host ("Report updated: " + $fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"))
+        }
+    }
+    "report" {
+        if (-not (Test-Path $reportPath)) {
+            Write-Host "No AutoTest report found at $reportPath"
+            exit 1
+        }
+        Get-Content -Path $reportPath -Encoding UTF8
+    }
+}

@@ -1,0 +1,61 @@
+{
+  "locale": "en-US",
+  "gems": {
+    "Cyclone": {
+      "name": "Cyclone",
+      "short": "Channelling melee area attack while moving"
+    },
+    "SupportCastOnCriticalStrike": {
+      "name": "Cast On Critical Strike",
+      "short": "Triggers socketed spells in order on linked attack critical hit"
+    },
+    "IceNova": {
+      "name": "Ice Nova",
+      "short": "Area cold damage spell centered on target"
+    },
+    "ShockNova": {
+      "name": "Shock Nova",
+      "short": "Area lightning damage spell centered on target"
+    },
+    "SupportIncreasedCriticalStrikes": {
+      "name": "Increased Critical Strikes",
+      "short": "Adds base critical strike chance and increased critical strike chance"
+    },
+    "SupportMeleePhysicalDamage": {
+      "name": "Melee Physical Damage",
+      "short": "More melee physical damage, slightly less attack speed"
+    },
+    "SupportBrutality": {
+      "name": "Brutality",
+      "short": "More physical damage, deals no elemental or chaos damage"
+    },
+    "SupportIncreasedAreaOfEffect": {
+      "name": "Increased Area of Effect",
+      "short": "Increased area of effect for area skills"
+    },
+    "SupportConcentratedEffect": {
+      "name": "Concentrated Effect",
+      "short": "More area damage, less area of effect"
+    }
+  },
+  "classes": {
+    "Scion": "Scion",
+    "Marauder": "Marauder",
+    "Ranger": "Ranger",
+    "Witch": "Witch",
+    "Duelist": "Duelist",
+    "Templar": "Templar",
+    "Shadow": "Shadow"
+  },
+  "ui": {
+    "exileLevel": "Exile Level",
+    "energyShield": "Energy Shield",
+    "skillSlots": "Skill Slots",
+    "linkedAttack": "Linked Attack Slot",
+    "equip": "Equip",
+    "unequip": "Unequip",
+    "evade": "Evaded",
+    "block": "Blocked",
+    "levelUp": "Exile Level Up!"
+  }
+}

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkyrimPoE</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 상시 표시 HUD (입력 비활성, 값 변경 시에만 C++가 갱신) -->
+  <div id="hud-root" class="hud-root">
+    <div id="hud-es-row" class="hud-bar-row hidden">
+      <div class="hud-label">ES <span id="hud-es-text">0 / 0</span></div>
+      <div class="hud-track">
+        <div id="hud-es-fill" class="hud-fill hud-fill-es" style="width: 0%"></div>
+      </div>
+    </div>
+    <div class="hud-bar-row">
+      <div class="hud-label">
+        <span class="hud-lv-badge">유배자 Lv.<span id="hud-level">1</span></span>
+        <span id="hud-xp-text">0 / 1000</span>
+        <span id="hud-pts-badge" class="hud-pts-badge hidden">+0P</span>
+        <span class="hud-hint">[K] 스킬</span>
+      </div>
+      <div class="hud-track">
+        <div id="hud-xp-fill" class="hud-fill hud-fill-xp" style="width: 0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- K 키로 여는 최소 스킬 화면 (포커스 획득 시에만 표시) -->
+  <div id="panel-backdrop" class="panel-backdrop hidden">
+    <div class="panel-shell">
+      <header class="panel-header">
+        <div class="panel-title-group">
+          <h1 class="panel-title">SKYRIM POE — 스킬 및 젬</h1>
+          <span id="panel-header-meta" class="panel-meta">유배자 Lv.1 · 사이온</span>
+        </div>
+        <button id="btn-close" class="btn-close" type="button">닫기 [Esc / K]</button>
+      </header>
+
+      <div id="panel-toast" class="panel-toast hidden"></div>
+
+      <div class="panel-body">
+        <section class="panel-col panel-col-slots">
+          <div class="section-head">
+            <h2>스킬 칸 (9칸)</h2>
+            <span id="target-indicator" class="target-indicator">장착 대상을 먼저 선택하세요</span>
+          </div>
+          <div id="slots-list" class="slots-list"></div>
+        </section>
+
+        <section class="panel-col panel-col-side">
+          <div class="side-block">
+            <div class="section-head">
+              <h2>인벤토리 젬</h2>
+              <span class="section-sub">대상 선택 후 클릭해 장착</span>
+            </div>
+            <div id="inventory-list" class="inventory-list"></div>
+          </div>
+
+          <div class="side-block">
+            <div class="section-head">
+              <h2>PoE 능력치 요약</h2>
+            </div>
+            <div id="stats-grid" class="stats-grid"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

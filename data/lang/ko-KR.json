@@ -1,0 +1,61 @@
+{
+  "locale": "ko-KR",
+  "gems": {
+    "Cyclone": {
+      "name": "사이클론",
+      "short": "회전하며 이동하는 근접 범위 채널링 공격"
+    },
+    "SupportCastOnCriticalStrike": {
+      "name": "치명타 시 시전",
+      "short": "연결한 공격의 치명타 적중 시 담긴 주문을 순환 발동"
+    },
+    "IceNova": {
+      "name": "얼음 회오리",
+      "short": "대상 중심 원형 범위 냉기 피해 주문"
+    },
+    "ShockNova": {
+      "name": "충격 회오리",
+      "short": "대상 중심 원형 범위 번개 피해 주문"
+    },
+    "SupportIncreasedCriticalStrikes": {
+      "name": "치명타 확률 증가",
+      "short": "기본 치명타 확률과 치명타 확률 증가 부여"
+    },
+    "SupportMeleePhysicalDamage": {
+      "name": "근접 물리 피해",
+      "short": "근접 물리 피해 증폭, 공격 속도 소폭 감폭"
+    },
+    "SupportBrutality": {
+      "name": "포악함",
+      "short": "물리 피해 증폭, 원소·카오스 피해 불가"
+    },
+    "SupportIncreasedAreaOfEffect": {
+      "name": "효과 범위 증가",
+      "short": "범위 스킬의 효과 범위 증가"
+    },
+    "SupportConcentratedEffect": {
+      "name": "집중 효과",
+      "short": "범위 피해 증폭, 효과 범위 감폭"
+    }
+  },
+  "classes": {
+    "Scion": "사이온",
+    "Marauder": "머라우더",
+    "Ranger": "레인저",
+    "Witch": "위치",
+    "Duelist": "듀얼리스트",
+    "Templar": "템플러",
+    "Shadow": "섀도우"
+  },
+  "ui": {
+    "exileLevel": "유배자 레벨",
+    "energyShield": "에너지 실드",
+    "skillSlots": "스킬 칸",
+    "linkedAttack": "연결 공격 칸",
+    "equip": "장착",
+    "unequip": "해제",
+    "evade": "회피",
+    "block": "막음",
+    "levelUp": "유배자 레벨 상승!"
+  }
+}

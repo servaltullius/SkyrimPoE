@@ -1,0 +1,424 @@
+[
+  {
+    "record_type": "MagicEffect",
+    "editorid": "SPOE_ProxySpellEffect",
+    "ops": [
+      { "field_path": "Name", "value": "SkyrimPoE 대리 주문 효과" },
+      { "field_path": "Archetype", "compose": { "type": "MagicEffectArchetype", "fields": { "Type": "Script" } } },
+      { "field_path": "BaseCost", "value": "1" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "MagicSkill", "value": "Destruction" },
+      { "field_path": "SkillUsageMultiplier", "value": "0" },
+      { "field_path": "Flags", "op": "Add", "value": "NoDuration" },
+      { "field_path": "Flags", "op": "Add", "value": "NoMagnitude" },
+      { "field_path": "Flags", "op": "Add", "value": "NoArea" }
+    ]
+  },
+  {
+    "record_type": "MagicEffect",
+    "editorid": "SPOE_ProxyPowerEffect",
+    "ops": [
+      { "field_path": "Name", "value": "SkyrimPoE 대리 파워 효과" },
+      { "field_path": "Archetype", "compose": { "type": "MagicEffectArchetype", "fields": { "Type": "Script" } } },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "MagicSkill", "value": "None" },
+      { "field_path": "SkillUsageMultiplier", "value": "0" },
+      { "field_path": "Flags", "op": "Add", "value": "NoDuration" },
+      { "field_path": "Flags", "op": "Add", "value": "NoMagnitude" },
+      { "field_path": "Flags", "op": "Add", "value": "NoArea" }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_1",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 1" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_2",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 2" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_3",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 3" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_4",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 4" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_5",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 5" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_6",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 6" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_7",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 7" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_8",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 8" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxySpell_9",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 주문 칸 9" },
+      { "field_path": "Type", "value": "Spell" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Aimed" },
+      { "field_path": "EquipmentType", "value": "013F44:Skyrim.esm" },
+      { "field_path": "MenuDisplayObject", "value": "04E264:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "10" },
+      { "field_path": "ChargeTime", "value": "0.5" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxySpellEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_1",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 1" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_2",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 2" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_3",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 3" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_4",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 4" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_5",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 5" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_6",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 6" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_7",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 7" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_8",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 8" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "Spell",
+    "editorid": "SPOE_ProxyPower_9",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 파워 칸 9" },
+      { "field_path": "Type", "value": "LesserPower" },
+      { "field_path": "CastType", "value": "FireAndForget" },
+      { "field_path": "TargetType", "value": "Self" },
+      { "field_path": "EquipmentType", "value": "025BEE:Skyrim.esm" },
+      { "field_path": "Flags", "op": "Add", "value": "ManualCostCalc" },
+      { "field_path": "BaseCost", "value": "0" },
+      { "field_path": "Effects", "op": "Add", "compose": { "type": "Effect", "fields": { "BaseEffect": "@SPOE_ProxyPowerEffect" } } }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Cyclone",
+    "ops": [
+      { "field_path": "Name", "value": "스킬 젬: 사이클론" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Emerald.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_CastOnCrit",
+    "ops": [
+      { "field_path": "Name", "value": "발동 젬: 치명타 시 시전" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Emerald.nif" },
+      { "field_path": "Value", "value": "100" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_IceNova",
+    "ops": [
+      { "field_path": "Name", "value": "스킬 젬: 얼음 회오리" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_ShockNova",
+    "ops": [
+      { "field_path": "Name", "value": "스킬 젬: 충격 회오리" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupIncCrit",
+    "ops": [
+      { "field_path": "Name", "value": "보조 젬: 치명타 확률 증가" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupMeleePhys",
+    "ops": [
+      { "field_path": "Name", "value": "보조 젬: 근접 물리 피해" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Ruby.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupBrutality",
+    "ops": [
+      { "field_path": "Name", "value": "보조 젬: 포악함" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Ruby.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupIncAoE",
+    "ops": [
+      { "field_path": "Name", "value": "보조 젬: 효과 범위 증가" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupConcEffect",
+    "ops": [
+      { "field_path": "Name", "value": "보조 젬: 집중 효과" },
+      { "field_path": "Model.File", "value": "Clutter\\Gemstones\\Sapphire.nif" },
+      { "field_path": "Value", "value": "50" },
+      { "field_path": "Weight", "value": "0.1" }
+    ]
+  },
+  {
+    "record_type": "Explosion",
+    "editorid": "SPOE_Vfx_IceNova",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 얼음 회오리 연출" },
+      { "field_path": "Model.File", "value": "Magic\\ExplosionFrost01.nif" },
+      { "field_path": "Sound1", "value": "03EDD8:Skyrim.esm" },
+      { "field_path": "Radius", "value": "160" },
+      { "field_path": "Damage", "value": "0" },
+      { "field_path": "Force", "value": "0" },
+      { "field_path": "Flags", "op": "Add", "value": "AlwaysUsesWorldOrientation" },
+      { "field_path": "Flags", "op": "Add", "value": "IgnoreImageSpaceSwap" },
+      { "field_path": "Flags", "op": "Add", "value": "NoControllerVibration" }
+    ]
+  },
+  {
+    "record_type": "Explosion",
+    "editorid": "SPOE_Vfx_ShockNova",
+    "ops": [
+      { "field_path": "Name", "value": "PoE 충격 회오리 연출" },
+      { "field_path": "Model.File", "value": "Magic\\ExplosionShockMass01.nif" },
+      { "field_path": "Sound1", "value": "03F206:Skyrim.esm" },
+      { "field_path": "Radius", "value": "160" },
+      { "field_path": "Damage", "value": "0" },
+      { "field_path": "Force", "value": "0" },
+      { "field_path": "Flags", "op": "Add", "value": "AlwaysUsesWorldOrientation" },
+      { "field_path": "Flags", "op": "Add", "value": "IgnoreImageSpaceSwap" },
+      { "field_path": "Flags", "op": "Add", "value": "NoControllerVibration" }
+    ]
+  }
+]
