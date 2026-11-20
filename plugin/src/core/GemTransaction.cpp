@@ -38,6 +38,24 @@ namespace SkyrimPoE::Core
             return extra;
         }
 
+        [[nodiscard]] bool IsMainSlotEquipable(GemKind kind) noexcept
+        {
+            return kind == GemKind::AttackChannel ||
+                   kind == GemKind::Trigger ||
+                   kind == GemKind::Spell ||
+                   kind == GemKind::Aura ||
+                   kind == GemKind::Herald ||
+                   kind == GemKind::Guard;
+        }
+
+        [[nodiscard]] bool SupportsSubSockets(GemKind kind) noexcept
+        {
+            return kind == GemKind::AttackChannel ||
+                   kind == GemKind::Trigger ||
+                   kind == GemKind::Spell ||
+                   kind == GemKind::Guard;
+        }
+
         void UnlinkTriggersPointingTo(std::array<SkillSlot, kSkillSlotCount>& slots, std::uint8_t attackSlotIndex) noexcept
         {
             for (auto& slot : slots) {
@@ -65,15 +83,14 @@ namespace SkyrimPoE::Core
         if (!def) {
             return { false, "알 수 없는 젬입니다.", std::nullopt };
         }
-        if (def->kind == GemKind::Support) {
+        if (!IsMainSlotEquipable(def->kind)) {
             return { false, "보조 젬은 스킬 젬 소켓에만 장착할 수 있습니다.", std::nullopt };
-        }
-        if (def->kind == GemKind::Spell) {
-            return { false, "2단계에서 주문 젬은 발동 젬(치명타 시 시전) 소켓에 장착합니다.", std::nullopt };
         }
 
         // 1. 인벤토리에서 새 젬 1개 회수 시도(실패하면 기존 칸을 전혀 건드리지 않음)
-        const auto sockets = static_cast<std::uint8_t>(std::min<std::uint32_t>(defaultSockets, kMaxGemSockets));
+        const std::uint8_t sockets = SupportsSubSockets(def->kind)
+            ? static_cast<std::uint8_t>(std::min<std::uint32_t>(defaultSockets, kMaxGemSockets))
+            : static_cast<std::uint8_t>(0);
         auto taken = inventory.TakeGem(itemKey, gemId, sockets, nextInstanceId);
         if (!taken) {
             return { false, "인벤토리에 해당 젬이 남아 있지 않습니다.", std::nullopt };
@@ -81,10 +98,12 @@ namespace SkyrimPoE::Core
 
         // 회수된 데이터 젬의 실제 ID와 종류를 다시 검증(위조/불일치 요청 방어)
         const auto* takenDef = pack.FindGem(taken->gemId);
-        if (!takenDef || taken->gemId != def->id ||
-            (takenDef->kind != GemKind::AttackChannel && takenDef->kind != GemKind::Trigger)) {
+        if (!takenDef || taken->gemId != def->id || !IsMainSlotEquipable(takenDef->kind)) {
             (void)inventory.ReturnGem(std::move(*taken));
             return { false, "인벤토리 젬 정보가 요청과 일치하지 않거나 장착할 수 없는 종류입니다.", std::nullopt };
+        }
+        if (!SupportsSubSockets(takenDef->kind)) {
+            taken->socketCount = 0;
         }
 
         // 2. 기존 칸이 차 있으면 기존 젬을 인벤토리로 반환(반환 실패 시 새 젬을 되돌리고 롤백)
@@ -162,6 +181,9 @@ namespace SkyrimPoE::Core
         const SkillEffectDefinition* triggerParentDef = nullptr;
 
         if (triggeredSpellIndex < 0) {
+            if (!SupportsSubSockets(rootDef->kind)) {
+                return { false, "오라·전령 젬에는 보조 소켓을 장착할 수 없습니다.", std::nullopt };
+            }
             targetParent = &rootGem;
             targetParentDef = rootDef;
             expectingSpell = (rootDef->kind == GemKind::Trigger);

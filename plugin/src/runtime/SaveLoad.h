@@ -1,7 +1,10 @@
 #pragma once
 
+#include "core/CharmSystem.h"
 #include "core/CommandQueue.h"
 #include "core/DataPack.h"
+#include "core/ItemData.h"
+#include "core/ItemTypes.h"
 #include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
@@ -10,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 namespace SkyrimPoE::Runtime
 {
@@ -20,12 +24,22 @@ namespace SkyrimPoE::Runtime
         std::uint32_t unallocatedPassivePoints = 0;
         std::string className = "Scion";
         bool starterGemsGiven = false;
-        bool starterCurrencyGiven = false;  // 4단계: 'ITEM' v1 헤더에 저장(CORE v2 하위 호환 유지)
+        bool starterCurrencyGiven = false;  // 4단계: 'ITEM' 헤더에 저장(CORE v2 하위 호환 유지)
+        bool starterStage5GemsGiven = false; // 5단계: 'SPRT' v1에 저장(4단계 세이브 업그레이드용)
         std::uint64_t nextGemInstanceId = 1;
         double appliedHealthDelta = 0.0;   // kPermanent 체력 보정 누적치(세이브 왕복 드리프트 방지)
         double appliedMagickaDelta = 0.0;  // kPermanent 매지카 보정 누적치(세이브 왕복 드리프트 방지)
         std::array<Core::SkillSlot, Core::kSkillSlotCount> slots{};
         Core::PassiveTreeState tree{};
+
+        // 5단계(결정 161~164): 정신력 오라 토글, 논리 10칸 가상 반지2/벨트, 벨트 참, 패시브 주얼 소켓
+        std::uint16_t activeAuraMask = 0;
+        Core::InventoryItemKey virtualRing2Key{};
+        RE::FormID virtualRing2BaseFormId = 0;
+        Core::InventoryItemKey virtualBeltKey{};
+        RE::FormID virtualBeltBaseFormId = 0;
+        std::array<Core::CharmSlotState, Core::kMaxCharmSlots> charmSlots{};
+        std::unordered_map<std::uint32_t, Core::PoEItemRecord> socketedJewels;
 
         PersistentState()
         {
@@ -35,7 +49,7 @@ namespace SkyrimPoE::Runtime
         }
     };
 
-    // SKSE 코세이브('SPOE')와 세이브 전환 생명주기 관리(결정 59, 105~108, 117~119, 138, 150 ④).
+    // SKSE 코세이브('SPOE')와 세이브 전환 생명주기 관리(결정 59, 105~108, 117~119, 138, 150 ④, 161~164).
     // 코세이브 콜백(OnSave/OnLoad/OnRevert)은 순수 메모리 작업만 수행하고, 엔진 상태 반영은 CommandQueue로 넘긴다.
     class SaveLoad
     {
@@ -46,18 +60,26 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kRecordTree = 'TREE';
         static constexpr std::uint32_t kRecordItems = 'ITEM';
         static constexpr std::uint32_t kRecordWorldDrops = 'WDRP';
+        static constexpr std::uint32_t kRecordSpirit = 'SPRT';
+        static constexpr std::uint32_t kRecordGear = 'GEAR';
+        static constexpr std::uint32_t kRecordSpeedMods = 'SPDM';
         static constexpr std::uint32_t kCoreVersion = 2;
         static constexpr std::uint32_t kGemKeysVersion = 1;
         static constexpr std::uint32_t kTreeVersion = 1;
-        static constexpr std::uint32_t kItemsVersion = 1;
+        static constexpr std::uint32_t kItemsVersion = 2;
         static constexpr std::uint32_t kWorldDropsVersion = 1;
+        static constexpr std::uint32_t kSpiritVersion = 1;
+        static constexpr std::uint32_t kGearVersion = 1;
+        static constexpr std::uint32_t kSpeedModsVersion = 1;
 
         static bool Install(
             Core::CommandQueue* queue,
             Core::StatEngine* statEngine,
             const Core::DataPack* dataPack,
             const Core::PassiveTreeData* treeData,
-            const Core::Config* config);
+            const Core::Config* config,
+            const Core::ItemData* itemData = nullptr,
+            Core::CharmSystem* charmSystem = nullptr);
 
         // kNewGame / kPostLoadGame 시 호출: 주 갱신 스레드에 초기화·Variable09 정리·스탯 빌드를 예약한다.
         static void SchedulePostLoadOrNewGameInit(bool isNewGame);
@@ -65,9 +87,10 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static PersistentState GetStateCopy();
         static void SetState(const PersistentState& state);
         static void UpdateState(const std::function<void(PersistentState&)>& mutator);
-        // 결정 137(ㅁ): 젬 장착/탈착 거래를 코세이브 저장(OnSave)과 직렬화해 절반만 반영된 상태가 저장되지 않도록 보장한다.
+        // 결정 137(ㅁ): 젬·장비·주얼 거래를 코세이브 저장(OnSave)과 직렬화해 절반만 반영된 상태가 저장되지 않도록 보장한다.
         static void RunSerializedTransaction(const std::function<void()>& txFn);
         static void AddRevertCallback(std::function<void()> cb);
         static void SyncStateToStatEngine();
+        static void PersistCharmSlotsFromSystem();
     };
 }

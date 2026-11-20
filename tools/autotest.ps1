@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("arm", "disarm", "status", "report")]
     [string]$Action,
@@ -39,6 +39,10 @@ switch ($Action) {
         $cleanTemp = Normalize-SaveStem $TempSave "TempSave"
         if ([string]::IsNullOrWhiteSpace($cleanTemp)) {
             throw "Parameter -TempSave cannot be empty."
+        }
+        # T-5: 기준 세이브와 임시 세이브가 같으면 사용자 세이브 덮어쓰기 차단
+        if ($cleanTemp.Equals($cleanSave, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to arm AutoTest: -TempSave ('$cleanTemp') must differ from -Save ('$cleanSave')."
         }
         if (-not (Test-Path $skseDir)) {
             New-Item -ItemType Directory -Path $skseDir -Force | Out-Null

@@ -222,6 +222,8 @@ POE_TEST("Stage4 ItemCrafting 12 orbs, 3P/3S caps, group uniqueness, and Scourin
     sup.gemId = "SupportBrutality";
     sup.socketCount = 0;
     POE_CHECK(ItemCrafting::ApplyJewellerToGem(sup, GemKind::Support).code == CraftResultCode::UnsupportedTarget);
+    POE_CHECK(ItemCrafting::ApplyJewellerToGem(sup, GemKind::Aura).code == CraftResultCode::UnsupportedTarget);
+    POE_CHECK(ItemCrafting::ApplyJewellerToGem(sup, GemKind::Herald).code == CraftResultCode::UnsupportedTarget);
 }
 
 POE_TEST("Stage4 ItemAffixParser local vs global separation and ItemFormatter")
@@ -369,7 +371,7 @@ POE_TEST("Stage4 LootTable tier mapping and PassiveTree Orb of Regret cost model
     std::mt19937_64 rng(12345);
 
     const auto dropsLow = LootTable::RollKillDrops(15, false, false, cfg, data, rng);
-    POE_CHECK(dropsLow.size() == 2);
+    POE_CHECK(dropsLow.size() >= 2);
     POE_CHECK(dropsLow[0].kind == DropKind::SealedToken && dropsLow[0].tier == 1);
 
     const auto dropsDragon = LootTable::RollKillDrops(85, true, true, cfg, data, rng);

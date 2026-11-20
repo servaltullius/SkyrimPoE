@@ -20,13 +20,15 @@ namespace SkyrimPoE::Core
     struct FormattedItemCard
     {
         std::string title;
+        std::string uniqueId;
         ItemRarity rarity = ItemRarity::Normal;
-        std::string rarityBadge;  // "[일반]" / "[매직]" / "[희귀]" (색상 단독 의존 금지 §17)
+        std::string rarityBadge;  // "[일반]" / "[매직]" / "[희귀]" / "[고유]" (색상 단독 의존 금지 §17)
         std::uint32_t itemLevel = 1;
         std::string slotLabel;
         bool requirementMet = true;
         std::string requirementText;
         std::vector<std::string> baseStatLines;
+        std::vector<FormattedAffixLine> implicitLines;
         std::vector<FormattedAffixLine> affixLines;
     };
 

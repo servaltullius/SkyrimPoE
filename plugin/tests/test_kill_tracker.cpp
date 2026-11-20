@@ -61,7 +61,21 @@ POE_TEST("KillTracker: hostility-on-first-hit, partial block contribution, zero-
     kt.OnDeathStart(0x1003, false, false, false);
     POE_CHECK(kt.OnDeathConfirm(0x1003, 10, 10, false, false, 10, cfg).awarded);
 
-    // 5. kRevert 시 메모리 기록 전체 초기화(결정 138)
+    // 5. C-12: 부활/리스폰된 생존 액터 재타격 시 새 세대(lifeGeneration: 1 -> 2)로 2회차 보상 허용
+    POE_CHECK(kt.GetActorRecordSnapshot(0x1003).lifeGeneration == 1);
+    kt.RecordFirstHitHostility(0x1003, true, true);
+    POE_CHECK(kt.GetActorRecordSnapshot(0x1003).lifeGeneration == 2);
+    kt.ConfirmDamageContribution(0x1003, 50.0);
+    kt.OnDeathStart(0x1003, false, false, false);
+    POE_CHECK(kt.OnDeathConfirm(0x1003, 10, 10, false, false, 10, cfg).awarded);
+
+    // 6. Q-2: 원샷 처치로 OnDeathStart가 ConfirmDamageContribution보다 먼저 와도 보상 1회 허용
+    kt.RecordFirstHitHostility(0x1004, true, true);
+    kt.OnDeathStart(0x1004, false, false, false);
+    kt.ConfirmDamageContribution(0x1004, 120.0);
+    POE_CHECK(kt.OnDeathConfirm(0x1004, 10, 10, false, false, 10, cfg).awarded);
+
+    // 7. kRevert 시 메모리 기록 전체 초기화(결정 138)
     POE_CHECK(kt.TrackedActorCount() > 0);
     kt.ClearOnRevert();
     POE_CHECK(kt.TrackedActorCount() == 0);
@@ -87,9 +101,9 @@ POE_TEST("KillTracker: effective monster level, PoB 2.68.1 lower-enemy penalty, 
     const double safeMult = KillTracker::ComputeLevelDiffXpMultiplier(20, 16, cfg);
     POE_CHECK(std::isfinite(safeMult));
     POE_CHECK_NEAR(safeMult, 1.0, 1e-9);
-    // 안전 폭 밖(L=20, M=10 -> d=6) -> 감소하되 하한 1% 이상
+    // 안전 폭 밖(L=20, M=10 -> d=6) -> PoB 2.68.1 식: (25 / (25 + 6^2.5))^1.5 ~= 0.103786 (T-7)
     const double lowMult = KillTracker::ComputeLevelDiffXpMultiplier(20, 10, cfg);
-    POE_CHECK(lowMult > 0.01 && lowMult < 1.0);
+    POE_CHECK_NEAR(lowMult, 0.103786, 1e-4);
     // 극단적 저렙(L=80, M=1) -> 하한 1%
     POE_CHECK_NEAR(KillTracker::ComputeLevelDiffXpMultiplier(80, 1, cfg), 0.01, 1e-9);
     // 높은 적: 레벨당 +10%, 상한 2.0

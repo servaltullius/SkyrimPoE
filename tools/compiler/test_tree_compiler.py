@@ -5,20 +5,29 @@ from pathlib import Path
 from compile_tree import (
     BASE_ASCENDANCY_SET,
     KIND_CLASS_START,
+    KIND_KEYSTONE,
     KIND_MASTERY,
+    SUPPORTED_KEYSTONE_NAMES,
     compile_tree,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TREE_JSON = REPO_ROOT / "data" / "packs" / "tree_3_30.json"
+DEFAULT_POB_DIR = Path(r"G:\poe\PathOfBuilding-2.68.1")
+DEFAULT_KO_DIR = Path(r"G:\poe\POE1 한글 POB (2025.10.31)\Data\Translate\ko-KR")
 
 
 class TestTreeCompiler(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if not TREE_JSON.is_file():
-            raise unittest.SkipTest(f"{TREE_JSON} not generated yet")
-        cls.data = json.loads(TREE_JSON.read_text(encoding="utf-8"))
+        # T-7: PoB 원본이 있으면 compile_tree()를 메모리에서 직접 실행해 실제 컴파일러를 검증(저장소 파일 미오염)
+        if DEFAULT_POB_DIR.is_dir():
+            ko_dir = DEFAULT_KO_DIR if DEFAULT_KO_DIR.is_dir() else None
+            cls.data = compile_tree(DEFAULT_POB_DIR, ko_dir, "3_30")
+        elif TREE_JSON.is_file():
+            cls.data = json.loads(TREE_JSON.read_text(encoding="utf-8"))
+        else:
+            raise unittest.SkipTest(f"Neither {DEFAULT_POB_DIR} nor {TREE_JSON} exists")
         cls.nodes_by_id = {n["id"]: n for n in cls.data["nodes"]}
 
     def test_classes_and_19_base_ascendancies(self) -> None:
@@ -123,6 +132,10 @@ class TestTreeCompiler(unittest.TestCase):
         # Normal life/damage notables must NOT be deferred
         self.assertFalse(self.nodes_by_id[57279].get("deferred", False))  # Blood Magic
         self.assertFalse(self.nodes_by_id[3533].get("deferred", False))   # Life and Cost Efficiency
+        # C-29: 미지원 키스톤은 모두 deferred=True여야 하며, 지원 키스톤 10종만 deferred=False
+        keystones = [n for n in self.data["nodes"] if n["k"] == KIND_KEYSTONE]
+        supported_ks = [n for n in keystones if not n.get("deferred", False)]
+        self.assertEqual({n["name"] for n in supported_ks}, SUPPORTED_KEYSTONE_NAMES)
 
 
 if __name__ == "__main__":

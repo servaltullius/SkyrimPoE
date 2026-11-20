@@ -6,6 +6,10 @@
 int main()
 {
     const auto& tests = SkyrimPoE::Tests::Registry();
+    if (tests.empty()) {
+        std::cerr << "[FAIL] No tests registered.\n";
+        return 1;
+    }
     std::size_t passed = 0;
     std::size_t failed = 0;
 

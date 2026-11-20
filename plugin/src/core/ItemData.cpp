@@ -47,6 +47,23 @@ namespace SkyrimPoE::Core
                 default:                           return "Armour";
             }
         }
+
+        MonsterModKind ParseMonsterModKind(std::string_view id) noexcept
+        {
+            if (id == "Hasted")             return MonsterModKind::Hasted;
+            if (id == "Armoured")           return MonsterModKind::Armoured;
+            if (id == "FireResistant")      return MonsterModKind::FireResistant;
+            if (id == "ColdResistant")      return MonsterModKind::ColdResistant;
+            if (id == "LightningResistant") return MonsterModKind::LightningResistant;
+            if (id == "ChaosResistant")     return MonsterModKind::ChaosResistant;
+            if (id == "EnergyShielded")     return MonsterModKind::EnergyShielded;
+            if (id == "ExtraPhysical")      return MonsterModKind::ExtraPhysical;
+            if (id == "ExtraFire")          return MonsterModKind::ExtraFire;
+            if (id == "ExtraCold")          return MonsterModKind::ExtraCold;
+            if (id == "ExtraLightning")     return MonsterModKind::ExtraLightning;
+            if (id == "Deadly")             return MonsterModKind::Deadly;
+            return MonsterModKind::Count;
+        }
     }
 
     bool ItemData::LoadFromFile(const std::filesystem::path& path, std::string* errorOut)
@@ -205,9 +222,99 @@ namespace SkyrimPoE::Core
                 }
             }
 
+            std::vector<BeltBaseDef> loadedBelts;
+            if (root.contains("beltBases") && root["beltBases"].is_array()) {
+                for (const auto& jb : root["beltBases"]) {
+                    BeltBaseDef b;
+                    b.id = jb.value("id", "");
+                    if (b.id.empty()) continue;
+                    b.enName = jb.value("enName", b.id);
+                    b.koName = jb.value("koName", b.enName);
+                    b.localFormId = jb.value("localFormId", 0u);
+                    b.reqLevel = jb.value("reqLevel", 1u);
+                    b.bonusCharmSlot = jb.value("bonusCharmSlot", false);
+                    b.implicitAffixId = jb.value("implicitAffixId", "");
+                    loadedBelts.push_back(std::move(b));
+                }
+            }
+
+            std::vector<CharmMetadata> loadedCharms;
+            if (root.contains("charms") && root["charms"].is_array()) {
+                for (const auto& jch : root["charms"]) {
+                    const auto kInt = jch.value("kind", static_cast<std::uint32_t>(kCharmKindCount));
+                    if (kInt >= kCharmKindCount) continue;
+                    CharmMetadata cm;
+                    cm.id = jch.value("id", "");
+                    cm.kind = static_cast<CharmKind>(kInt);
+                    cm.localFormId = jch.value("localFormId", 0u);
+                    cm.enName = jch.value("enName", cm.id);
+                    cm.koName = jch.value("koName", cm.enName);
+                    cm.koDesc = jch.value("koDesc", "");
+                    cm.maxCharges = jch.value("maxCharges", 40.0);
+                    cm.chargesPerUse = jch.value("chargesPerUse", 20.0);
+                    cm.durationSec = jch.value("durationSec", 4.0);
+                    loadedCharms.push_back(std::move(cm));
+                }
+            }
+
+            std::vector<MonsterModMetadata> loadedMonsterMods;
+            if (root.contains("monsterMods") && root["monsterMods"].is_array()) {
+                for (const auto& jm : root["monsterMods"]) {
+                    MonsterModMetadata mm;
+                    mm.id = jm.value("id", "");
+                    mm.kind = ParseMonsterModKind(mm.id);
+                    if (mm.kind == MonsterModKind::Count) continue;
+                    mm.koName = jm.value("koName", mm.id);
+                    mm.koDesc = jm.value("koDesc", "");
+                    loadedMonsterMods.push_back(std::move(mm));
+                }
+            }
+
+            std::vector<UniqueDefinition> loadedUniques;
+            std::unordered_map<std::string, std::size_t> loadedUniqueById;
+            if (root.contains("uniques") && root["uniques"].is_array()) {
+                for (const auto& ju : root["uniques"]) {
+                    UniqueDefinition u;
+                    u.id = ju.value("id", "");
+                    if (u.id.empty()) continue;
+                    u.enName = ju.value("enName", u.id);
+                    u.koName = ju.value("koName", u.enName);
+                    const auto sg = ju.value("slotGroup", 3u);
+                    u.slotGroup = (sg < kTokenSlotGroupCount) ? static_cast<TokenSlotGroup>(sg) : TokenSlotGroup::Helmet;
+                    const auto ds = ju.value("defenseSubtype", 0u);
+                    u.defenseSubtype = (ds <= 3u) ? static_cast<DefenseSubtype>(ds) : DefenseSubtype::None;
+                    u.isAmulet = ju.value("isAmulet", false);
+                    u.weaponTag = ju.value("weaponTag", "");
+                    u.baseFormId = ju.value("baseFormId", 0u);
+                    u.reqLevel = ju.value("reqLevel", 1u);
+                    if (ju.contains("implicitAffixIds") && ju["implicitAffixIds"].is_array()) {
+                        for (const auto& s : ju["implicitAffixIds"]) {
+                            if (s.is_string()) u.implicitAffixIds.push_back(s.get<std::string>());
+                        }
+                    }
+                    if (ju.contains("explicitAffixIds") && ju["explicitAffixIds"].is_array()) {
+                        for (const auto& s : ju["explicitAffixIds"]) {
+                            if (s.is_string()) u.explicitAffixIds.push_back(s.get<std::string>());
+                        }
+                    }
+                    if (ju.contains("specialFlags") && ju["specialFlags"].is_array()) {
+                        for (const auto& s : ju["specialFlags"]) {
+                            if (s.is_string()) u.specialFlags.push_back(s.get<std::string>());
+                        }
+                    }
+                    loadedUniqueById[u.id] = loadedUniques.size();
+                    loadedUniques.push_back(std::move(u));
+                }
+            }
+
             affixes_ = std::move(loadedAffixes);
             byId_ = std::move(loadedById);
             currencies_ = std::move(loadedCurrencies);
+            beltBases_ = std::move(loadedBelts);
+            charms_ = std::move(loadedCharms);
+            monsterMods_ = std::move(loadedMonsterMods);
+            uniques_ = std::move(loadedUniques);
+            uniqueById_ = std::move(loadedUniqueById);
             armorCurves_ = std::move(loadedArmorCurves);
             weaponCurves_ = std::move(loadedWeaponCurves);
             loaded_ = !affixes_.empty();
@@ -239,6 +346,53 @@ namespace SkyrimPoE::Core
         return nullptr;
     }
 
+    const BeltBaseDef* ItemData::FindBelt(std::string_view id) const
+    {
+        for (const auto& b : beltBases_) {
+            if (b.id == id) return &b;
+        }
+        return nullptr;
+    }
+
+    const BeltBaseDef* ItemData::FindBeltByLocalFormId(std::uint32_t localFormId) const
+    {
+        for (const auto& b : beltBases_) {
+            if (b.localFormId == localFormId) return &b;
+        }
+        return nullptr;
+    }
+
+    const CharmMetadata* ItemData::FindCharm(CharmKind kind) const
+    {
+        for (const auto& c : charms_) {
+            if (c.kind == kind) return &c;
+        }
+        return nullptr;
+    }
+
+    const CharmMetadata* ItemData::FindCharmByLocalFormId(std::uint32_t localFormId) const
+    {
+        for (const auto& c : charms_) {
+            if (c.localFormId == localFormId) return &c;
+        }
+        return nullptr;
+    }
+
+    const MonsterModMetadata* ItemData::FindMonsterMod(MonsterModKind kind) const
+    {
+        for (const auto& m : monsterMods_) {
+            if (m.kind == kind) return &m;
+        }
+        return nullptr;
+    }
+
+    const UniqueDefinition* ItemData::FindUnique(std::string_view id) const
+    {
+        const auto it = uniqueById_.find(std::string(id));
+        if (it == uniqueById_.end()) return nullptr;
+        return &uniques_[it->second];
+    }
+
     std::uint32_t ItemData::ResolveWeight(
         const AffixDefinition& affix,
         const std::unordered_set<std::string>& itemTags) noexcept
@@ -255,9 +409,26 @@ namespace SkyrimPoE::Core
         TokenSlotGroup slotGroup,
         DefenseSubtype defenseSubtype,
         std::string_view weaponTag,
-        bool isAmulet)
+        bool isAmulet,
+        std::uint8_t jewelColor)
     {
         std::unordered_set<std::string> tags;
+        if (slotGroup == TokenSlotGroup::Jewel) {
+            // 5단계: 주얼은 "default"를 넣지 않아 일반 장비 어픽스와 완전 격리하고,
+            // PoB Data/Bases/jewel.lua 실측 태그(jewel + not_str/not_dex/not_int)만 부여한다.
+            tags.insert("jewel");
+            if (jewelColor == 0) {         // Crimson (Str)
+                tags.insert("not_dex");
+                tags.insert("not_int");
+            } else if (jewelColor == 1) {  // Viridian (Dex)
+                tags.insert("not_str");
+                tags.insert("not_int");
+            } else {                       // Cobalt (Int)
+                tags.insert("not_str");
+                tags.insert("not_dex");
+            }
+            return tags;
+        }
         tags.insert("default");
 
         auto insertArmorSubtypeTag = [&]() {
@@ -349,6 +520,10 @@ namespace SkyrimPoE::Core
 
             case TokenSlotGroup::Jewelry:
                 tags.insert(isAmulet ? "amulet" : "ring");
+                break;
+
+            case TokenSlotGroup::Belt:
+                tags.insert("belt");
                 break;
 
             default:

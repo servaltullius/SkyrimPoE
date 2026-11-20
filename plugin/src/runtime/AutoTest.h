@@ -1,18 +1,20 @@
 #pragma once
 
+#include "core/CharmSystem.h"
 #include "core/CommandQueue.h"
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
 #include "core/ItemData.h"
 #include "core/KillTracker.h"
 #include "core/PassiveTreeData.h"
+#include "core/SkillSystem.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
 
 namespace SkyrimPoE::Runtime
 {
     // 마커 파일(<SKSE 로그 폴더>/SkyrimPoE.autotest)이 있을 때만 활성화되는
-    // 2~4단계 시나리오 A·B·C·D·E 자동 통합 시험 하네스.
+    // 2~5단계 시나리오 A·B·C·D·E·F 자동 통합 시험 하네스(총 45건).
     // 마커 파일이 없으면 Install에서 비활성화되어 일반 플레이에 영향과 비용이 0이다.
     class AutoTest
     {
@@ -25,7 +27,9 @@ namespace SkyrimPoE::Runtime
             const Core::DataPack* dataPack,
             const Core::PassiveTreeData* treeData,
             const Core::ItemData* itemData,
-            const Core::Config* config);
+            Core::Config* config,
+            Core::SkillSystem* skillSystem = nullptr,
+            Core::CharmSystem* charmSystem = nullptr);
 
         [[nodiscard]] static bool IsEnabled() noexcept;
 

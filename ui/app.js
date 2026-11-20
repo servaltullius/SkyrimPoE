@@ -1,6 +1,10 @@
 (() => {
   "use strict";
 
+  const hudSpiritChip = document.getElementById("hud-spirit-chip");
+  const hudGuardChip = document.getElementById("hud-guard-chip");
+  const hudHhChip = document.getElementById("hud-hh-chip");
+  const hudCharmsRow = document.getElementById("hud-charms-row");
   const hudEsRow = document.getElementById("hud-es-row");
   const hudEsText = document.getElementById("hud-es-text");
   const hudEsFill = document.getElementById("hud-es-fill");
@@ -8,6 +12,7 @@
   const hudXpText = document.getElementById("hud-xp-text");
   const hudXpFill = document.getElementById("hud-xp-fill");
   const hudPtsBadge = document.getElementById("hud-pts-badge");
+  const skillsSpiritBadge = document.getElementById("skills-spirit-badge");
 
   const panelBackdrop = document.getElementById("panel-backdrop");
   const panelHeaderMeta = document.getElementById("panel-header-meta");
@@ -35,6 +40,7 @@
 
   let activeTab = "skills";
   let lastPanelData = null;
+  let lastManualTabSwitchAt = 0;
   let selectedTarget = null; // { mode: "equip"|"socket", slot: number, spellIdx: number, label: string }
 
   function sendCommand(payload) {
@@ -64,17 +70,20 @@
   }
 
   tabBtnSkills.onclick = () => {
+    lastManualTabSwitchAt = Date.now();
     applyActiveTab("skills");
     sendCommand({ op: "switchTab", tab: "skills" });
   };
 
   tabBtnTree.onclick = () => {
+    lastManualTabSwitchAt = Date.now();
     applyActiveTab("tree");
     sendCommand({ op: "switchTab", tab: "tree" });
   };
 
   if (tabBtnGear) {
     tabBtnGear.onclick = () => {
+      lastManualTabSwitchAt = Date.now();
       applyActiveTab("gear");
       sendCommand({ op: "switchTab", tab: "gear" });
     };
@@ -86,6 +95,9 @@
       case "trigger": return { text: "발동", cls: "badge-trigger" };
       case "spell": return { text: "주문", cls: "badge-spell" };
       case "support": return { text: "보조", cls: "badge-support" };
+      case "aura": return { text: "오라", cls: "badge-aura" };
+      case "herald": return { text: "전령", cls: "badge-herald" };
+      case "guard": return { text: "가드", cls: "badge-guard" };
       default: return { text: "젬", cls: "" };
     }
   }
@@ -143,6 +155,9 @@
 
   function renderSlots(data) {
     slotsList.textContent = "";
+    if (skillsSpiritBadge && data && data.stats) {
+      skillsSpiritBadge.textContent = `정신력 ${data.stats.spiritReserved ?? 0} / ${data.stats.spiritMax ?? 100}`;
+    }
     const slots = data.slots || [];
     const attackSlots = slots.filter(s => s.occupied && s.gem && s.gem.kind === "attack");
 
@@ -176,10 +191,37 @@
       const kb = kindBadge(gem.kind);
       top.appendChild(el("span", `badge ${kb.cls}`, kb.text));
       top.appendChild(el("span", "gem-name", `${gem.name} Lv.${gem.level}`));
-      top.appendChild(el("span", "section-sub", `소켓 ${(gem.socketedGems || []).length}/${gem.socketCount}`));
+      if (gem.kind !== "aura" && gem.kind !== "herald") {
+        top.appendChild(el("span", "section-sub", `소켓 ${(gem.socketedGems || []).length}/${gem.socketCount}`));
+      }
 
       const actions = el("div", "slot-actions");
-      if ((gem.socketedGems || []).length < gem.socketCount) {
+      if (gem.kind === "aura" || gem.kind === "herald") {
+        const isOn = Boolean(slot.auraActive);
+        const isRequested = Boolean(slot.auraRequested);
+        const sCost = (slot.computed && slot.computed.spiritCost) ? slot.computed.spiritCost : 0;
+        let auraCls = "btn btn-primary";
+        let auraLabel = `활성 OFF (-${sCost})`;
+        if (isOn) {
+          auraCls = "btn btn-aura-on";
+          auraLabel = `활성 ON (-${sCost})`;
+        } else if (isRequested) {
+          auraCls = "btn btn-danger";
+          auraLabel = `정신력 부족 · 대기 해제 (-${sCost})`;
+        }
+        const btnAura = el("button", auraCls, auraLabel);
+        btnAura.type = "button";
+        btnAura.onclick = () => {
+          sendCommand({ op: "toggleAura", reqId: window.poeNextReqId(), slot: slot.slotIndex });
+        };
+        actions.appendChild(btnAura);
+      } else if (gem.kind === "spell") {
+        actions.appendChild(el("span", "badge badge-spell", `주문 칸 ${slot.slotIndex + 1}`));
+      } else if (gem.kind === "guard") {
+        actions.appendChild(el("span", "badge badge-guard", `파워 칸 ${slot.slotIndex + 1}`));
+      }
+
+      if ((gem.socketedGems || []).length < gem.socketCount && gem.kind !== "aura" && gem.kind !== "herald") {
         const subLabel = gem.kind === "trigger" ? "+ 주문 담기" : "+ 보조 장착";
         const btnAddSub = el("button", "btn btn-primary", subLabel);
         btnAddSub.type = "button";
@@ -209,8 +251,20 @@
 
       if (slot.computed) {
         const c = slot.computed;
-        card.appendChild(el("div", "slot-stats-line",
-          `평균 PoE 피해 ${c.avgDamage} · 치명타 ${c.critPct}% · 마나 ${c.manaCost} · 반경 ×${c.areaMult}`));
+        let line = "";
+        if (gem.kind === "aura" || gem.kind === "herald") {
+          line = `정신력 예약 ${c.spiritCost ?? 0} · 상태 ${slot.auraActive ? "활성 중" : "꺼짐"}`;
+        } else {
+          line = `평균 PoE 피해 ${c.avgDamage} · 치명타 ${c.critPct}% · 마나 ${c.manaCost} · 반경 ×${c.areaMult}`;
+          const extras = [];
+          if ((c.projectileCount ?? 1) > 1) extras.push(`투사체 ${c.projectileCount}`);
+          if ((c.pierceCount ?? 0) > 0) extras.push(`관통 +${c.pierceCount}`);
+          if (c.forkEnabled) extras.push("분기");
+          if ((c.chainCount ?? 0) > 0) extras.push(`연쇄 +${c.chainCount}`);
+          if ((c.spellRepeatCount ?? 0) > 0) extras.push(`반복 +${c.spellRepeatCount}`);
+          if (extras.length > 0) line += ` · ${extras.join("/")}`;
+        }
+        card.appendChild(el("div", "slot-stats-line", line));
       }
 
       if (gem.kind === "trigger") {
@@ -403,7 +457,9 @@
       ["힘 / 민첩 / 지능", `${s.str} / ${s.dex} / ${s.intel}`],
       ["PoE 생명력", s.poeMaxLife],
       ["PoE 마나", s.poeMaxMana],
+      ["정신력 (예약/최대)", `${s.spiritReserved ?? 0} / ${s.spiritMax ?? 100}`],
       ["에너지 실드", `${s.esCurrent} / ${s.esMax}`],
+      ["용암 방패 보호막", `${s.guardShield ?? 0} / ${s.guardMax ?? 0}`],
       ["방어도 / 회피", `${s.armour} / ${s.evasion}`],
       ["물리 / 원소 피해 감소", `${s.physDR}% / ${s.elemDR}%`],
       ["화염 / 냉기 저항", `${s.fireResist}% (${s.maxFireResist ?? 75}%) / ${s.coldResist}% (${s.maxColdResist ?? 75}%)`],
@@ -452,6 +508,46 @@
       } else {
         hudEsRow.classList.add("hidden");
       }
+
+      if (hudSpiritChip) {
+        hudSpiritChip.textContent = `정신력 ${Number(h.spiritReserved || 0)} / ${Number(h.spiritMax || 100)}`;
+      }
+      if (hudGuardChip) {
+        const gCur = Number(h.guardShield || 0);
+        const gMax = Number(h.guardMax || 0);
+        if (gMax > 0 && gCur > 0) {
+          hudGuardChip.textContent = `용암 방패 ${gCur} / ${gMax}`;
+          hudGuardChip.classList.remove("hidden");
+        } else {
+          hudGuardChip.classList.add("hidden");
+        }
+      }
+      if (hudHhChip) {
+        const hh = Number(h.hhStacks || 0);
+        if (hh > 0) {
+          hudHhChip.textContent = `헤드헌터 ×${hh}`;
+          hudHhChip.classList.remove("hidden");
+        } else {
+          hudHhChip.classList.add("hidden");
+        }
+      }
+      if (hudCharmsRow) {
+        const charms = Array.isArray(h.charms) ? h.charms : [];
+        hudCharmsRow.textContent = "";
+        if (charms.length > 0) {
+          hudCharmsRow.classList.remove("hidden");
+          for (const ch of charms) {
+            const chip = el(
+              "span",
+              `hud-charm-chip${ch.active ? " active" : ""}`,
+              ch.occupied ? `${ch.koName} ${ch.charges}/${ch.maxCharges}` : "참 비어있음"
+            );
+            hudCharmsRow.appendChild(chip);
+          }
+        } else {
+          hudCharmsRow.classList.add("hidden");
+        }
+      }
     } catch (_) {
     }
   };
@@ -460,7 +556,8 @@
     try {
       const data = JSON.parse(jsonStr);
       lastPanelData = data;
-      if (data.activeTab) {
+      // C-31: 탭 전환 직후 앞서 보낸 명령의 응답이 방금 선택한 탭을 되돌리지 못하게 600ms 보호
+      if (data.activeTab && (Date.now() - lastManualTabSwitchAt > 600 || data.activeTab === activeTab)) {
         applyActiveTab(data.activeTab);
       }
       revalidateSelectedTarget(data);
@@ -477,7 +574,9 @@
       if (window.poeGearModule && typeof window.poeGearModule.updateState === "function") {
         window.poeGearModule.updateState(data);
       }
-    } catch (_) {
+    } catch (err) {
+      // C-31: 렌더/파싱 예외를 삼키지 않고 사용자에게 오류 토스트 노출
+      showToast(false, `패널 갱신 오류: ${err && err.message ? err.message : "알 수 없는 오류"}`);
     }
   };
 

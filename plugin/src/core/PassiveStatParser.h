@@ -84,6 +84,13 @@ namespace SkyrimPoE::Core
         double attackCostEfficiencyPct = 0.0;
         double spellCostEfficiencyPct = 0.0;
 
+        // 5단계(N-1): 상태이상 유발 확률(%)
+        double igniteChancePct = 0.0;
+        double freezeChancePct = 0.0;
+        double shockChancePct = 0.0;
+        double bleedChancePct = 0.0;
+        double poisonChancePct = 0.0;
+
         // 충전 상한 가산
         std::int32_t maxEnduranceBonus = 0;
         std::int32_t maxFrenzyBonus = 0;

@@ -45,6 +45,10 @@ namespace SkyrimPoE::Runtime
             RE::ExtraDataList* freshExtra,
             RE::ExtraDataList** outFinalExtra = nullptr);
 
+        // 주 갱신 스레드 전용(계약: g_txMutex 미보유 상태에서만 호출, C-34):
+        // owner 인벤토리에 (바닥 참조, 스탬프) 묶음으로 남아 있는 추적 아이템을 owner의 새 인벤토리 번호로 다시 잇는다.
+        static std::size_t RelinkPickedUpItems(RE::TESObjectREFR* owner, bool postLoadOwnerNormalized = false);
+
         // 키 조회·갱신·삭제 (스레드 안전)
         [[nodiscard]] static std::optional<Core::PoEItemRecord> FindByKey(const Core::InventoryItemKey& key);
         static void Upsert(const Core::InventoryItemKey& key, const Core::PoEItemRecord& record, bool isWorld = false);

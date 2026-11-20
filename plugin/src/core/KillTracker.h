@@ -38,6 +38,7 @@ namespace SkyrimPoE::Core
         bool playerContributed = false;
         bool deathStarted = false;
         bool rewardClaimed = false;
+        std::uint32_t lifeGeneration = 0;
     };
 
     // 결정 108, 113~116, 134~140, 146~149:
@@ -47,7 +48,9 @@ namespace SkyrimPoE::Core
     {
     public:
         // 피해 적용 직전: 이번 삶에서 첫 피격이면 적대 여부를 기록한다(결정 134, 140, 148).
-        void RecordFirstHitHostility(std::uint32_t actorFormId, bool wasHostileToPlayer);
+        // C-12: actorAliveForNewLife=true이고 직전 삶이 이미 보상 종료(rewardClaimed)된 상태면
+        // 리셋 없이 부활했거나 FF 참조 FormID가 재사용된 새 삶으로 보고 lifeGeneration을 전진한다.
+        void RecordFirstHitHostility(std::uint32_t actorFormId, bool wasHostileToPlayer, bool actorAliveForNewLife = false);
 
         // 실제 체력/에너지 실드 감소 확정 시 호출(결정 113, 140: 부분 막기 감소 > 0 포함, 0 감소 제외).
         void ConfirmDamageContribution(std::uint32_t actorFormId, double actualLoss);
@@ -110,6 +113,8 @@ namespace SkyrimPoE::Core
     private:
         struct ActorLifeRecord
         {
+            std::uint32_t lifeGeneration = 1;
+            std::uint64_t lastTouchedSeq = 0;
             bool firstHostilityRecorded = false;
             bool wasHostileOnFirstHit = false;
             bool playerContributed = false;
@@ -119,6 +124,7 @@ namespace SkyrimPoE::Core
         };
 
         mutable std::mutex mutex_;
+        std::uint64_t seqCounter_ = 0;
         std::unordered_map<std::uint32_t, ActorLifeRecord> records_;
     };
 }

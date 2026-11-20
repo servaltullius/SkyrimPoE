@@ -36,6 +36,82 @@
     "SupportConcentratedEffect": {
       "name": "Concentrated Effect",
       "short": "More area damage, less area of effect"
+    },
+    "Fireball": {
+      "name": "Fireball",
+      "short": "Exploding fire projectile spell (25% chance to Ignite)"
+    },
+    "FreezingPulse": {
+      "name": "Freezing Pulse",
+      "short": "Always-piercing cold projectile spell"
+    },
+    "Arc": {
+      "name": "Arc",
+      "short": "Instant chaining lightning spell"
+    },
+    "Spark": {
+      "name": "Spark",
+      "short": "Multi-projectile lightning spell"
+    },
+    "MoltenShell": {
+      "name": "Molten Shell",
+      "short": "Armour-scaled guard shield absorbing 75% of hit damage"
+    },
+    "Determination": {
+      "name": "Determination",
+      "short": "[50 Spirit] Grants flat and more Armour"
+    },
+    "Grace": {
+      "name": "Grace",
+      "short": "[50 Spirit] Grants flat and more Evasion"
+    },
+    "Discipline": {
+      "name": "Discipline",
+      "short": "[35 Spirit] Grants flat Energy Shield and ES Recharge Rate"
+    },
+    "Hatred": {
+      "name": "Hatred",
+      "short": "[50 Spirit] Gain Physical Damage as Extra Cold Damage"
+    },
+    "Wrath": {
+      "name": "Wrath",
+      "short": "[50 Spirit] Adds Attack Lightning Damage and More Spell Lightning Damage"
+    },
+    "Anger": {
+      "name": "Anger",
+      "short": "[50 Spirit] Adds Fire Damage to Attacks and Spells"
+    },
+    "PurityOfElements": {
+      "name": "Purity of Elements",
+      "short": "[50 Spirit] Grants All Elemental Resistances and Elemental Ailment Immunity"
+    },
+    "HeraldOfIce": {
+      "name": "Herald of Ice",
+      "short": "[25 Spirit] Adds Cold Damage and shatters Chilled/Frozen enemies on kill"
+    },
+    "HeraldOfAsh": {
+      "name": "Herald of Ash",
+      "short": "[25 Spirit] Gain Physical as Extra Fire and overkill fire burst on kill"
+    },
+    "SupportGreaterMultipleProjectiles": {
+      "name": "Greater Multiple Projectiles",
+      "short": "Fires 4 additional projectiles with less projectile damage"
+    },
+    "SupportChain": {
+      "name": "Chain",
+      "short": "Chains +2 times with slightly less hit damage"
+    },
+    "SupportFork": {
+      "name": "Fork",
+      "short": "Projectiles fork into 2 on first hit"
+    },
+    "SupportPierce": {
+      "name": "Pierce",
+      "short": "Projectiles pierce +2 targets with more projectile damage"
+    },
+    "SupportSpellEcho": {
+      "name": "Spell Echo",
+      "short": "More cast speed and repeats supported spell once"
     }
   },
   "classes": {

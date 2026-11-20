@@ -36,6 +36,82 @@
     "SupportConcentratedEffect": {
       "name": "집중 효과",
       "short": "범위 피해 증폭, 효과 범위 감폭"
+    },
+    "Fireball": {
+      "name": "화염구",
+      "short": "적중 시 폭발하는 화염 투사체 주문 (점화 확률 25%)"
+    },
+    "FreezingPulse": {
+      "name": "동결 파동",
+      "short": "모든 적을 관통하는 냉기 파동 투사체 주문"
+    },
+    "Arc": {
+      "name": "연쇄 번개",
+      "short": "적 사이를 연쇄 도약하는 즉발 번개 주문"
+    },
+    "Spark": {
+      "name": "전기불꽃",
+      "short": "여러 발의 번개 투사체를 부채꼴로 발사하는 주문"
+    },
+    "MoltenShell": {
+      "name": "용암 방패",
+      "short": "방어도 비례 보호막으로 타격 피해 75% 흡수 후 화염 반사 폭발"
+    },
+    "Determination": {
+      "name": "결의",
+      "short": "[정신력 50] 고정 방어도 및 방어도 증폭 오라"
+    },
+    "Grace": {
+      "name": "은총",
+      "short": "[정신력 50] 고정 회피 및 회피 증폭 오라"
+    },
+    "Discipline": {
+      "name": "단련",
+      "short": "[정신력 35] 최대 에너지 실드 및 ES 재충전 속도 증가 오라"
+    },
+    "Hatred": {
+      "name": "증오",
+      "short": "[정신력 50] 물리 피해의 일정 비율을 추가 냉기 피해로 부여"
+    },
+    "Wrath": {
+      "name": "진노",
+      "short": "[정신력 50] 공격 번개 피해 추가 및 주문 번개 피해 증폭"
+    },
+    "Anger": {
+      "name": "분노",
+      "short": "[정신력 50] 공격 및 주문에 화염 피해 추가"
+    },
+    "PurityOfElements": {
+      "name": "원소의 순수함",
+      "short": "[정신력 50] 모든 원소 저항 증가 및 원소 상태이상 면역"
+    },
+    "HeraldOfIce": {
+      "name": "얼음의 전령",
+      "short": "[정신력 25] 냉기 피해 추가 및 냉각·빙결 적 처치 시 냉기 폭발"
+    },
+    "HeraldOfAsh": {
+      "name": "재의 전령",
+      "short": "[정신력 25] 물리→화염 추가 피해 및 처치 시 과잉 피해 화염 폭발"
+    },
+    "SupportGreaterMultipleProjectiles": {
+      "name": "상위 다중 투사체",
+      "short": "투사체 +4발 추가 발사, 투사체 피해 감폭"
+    },
+    "SupportChain": {
+      "name": "연쇄",
+      "short": "투사체·스킬 연쇄 +2회 추가, 적중 피해 소폭 감폭"
+    },
+    "SupportFork": {
+      "name": "갈래",
+      "short": "투사체 최초 적중 시 양옆 2갈래로 분기"
+    },
+    "SupportPierce": {
+      "name": "관통",
+      "short": "투사체 관통 +2회 및 투사체 피해 증폭"
+    },
+    "SupportSpellEcho": {
+      "name": "주문 메아리",
+      "short": "주문 시전 속도 대폭 증폭 및 2연속 시전"
     }
   },
   "classes": {

@@ -164,6 +164,7 @@ POE_TEST("SkillSystem (CoC): round-robin 2 spells, insufficient magicka keeps cu
 {
     const DataPack pack = LoadStage2Pack();
     Config cfg;
+    cfg.enforceGemRequirements = false;  // Lv10 Scion 기본 스탯으로 CoC 순환·쿨다운 규칙 독립 검증
     StatEngine engine;
 
     Layer1Input l1;

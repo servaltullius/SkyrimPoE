@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/ItemTypes.h"
+#include "core/Types.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -86,6 +87,55 @@ namespace SkyrimPoE::Core
         double attackRate = 1.4;
     };
 
+    // 5단계(결정 162, 164): 벨트 베이스, 참, 몬스터 속성, PoE1 고유 아이템 정의
+    struct BeltBaseDef
+    {
+        std::string id;
+        std::string enName;
+        std::string koName;
+        std::uint32_t localFormId = 0;
+        std::uint32_t reqLevel = 1;
+        bool bonusCharmSlot = false;  // Stygian Vise 등 추가 참 슬롯 보유 여부
+        std::string implicitAffixId;
+    };
+
+    struct CharmMetadata
+    {
+        std::string id;
+        CharmKind kind = CharmKind::Ruby;
+        std::uint32_t localFormId = 0;
+        std::string enName;
+        std::string koName;
+        std::string koDesc;
+        double maxCharges = 40.0;
+        double chargesPerUse = 20.0;
+        double durationSec = 4.0;
+    };
+
+    struct MonsterModMetadata
+    {
+        std::string id;
+        MonsterModKind kind = MonsterModKind::Hasted;
+        std::string koName;
+        std::string koDesc;
+    };
+
+    struct UniqueDefinition
+    {
+        std::string id;
+        std::string enName;
+        std::string koName;
+        TokenSlotGroup slotGroup = TokenSlotGroup::Helmet;
+        DefenseSubtype defenseSubtype = DefenseSubtype::None;
+        bool isAmulet = false;
+        std::string weaponTag;
+        std::uint32_t baseFormId = 0;  // 바닐라 Skyrim.esm FormID 또는 0x000890..0x000894 로컬 FormID(벨트)
+        std::uint32_t reqLevel = 1;
+        std::vector<std::string> implicitAffixIds;
+        std::vector<std::string> explicitAffixIds;
+        std::vector<std::string> specialFlags;
+    };
+
     class ItemData
     {
     public:
@@ -98,6 +148,20 @@ namespace SkyrimPoE::Core
         [[nodiscard]] const std::vector<CurrencyMetadata>& AllCurrencies() const noexcept { return currencies_; }
         [[nodiscard]] const CurrencyMetadata* FindCurrency(CurrencyKind kind) const;
 
+        [[nodiscard]] const std::vector<BeltBaseDef>& AllBelts() const noexcept { return beltBases_; }
+        [[nodiscard]] const BeltBaseDef* FindBelt(std::string_view id) const;
+        [[nodiscard]] const BeltBaseDef* FindBeltByLocalFormId(std::uint32_t localFormId) const;
+
+        [[nodiscard]] const std::vector<CharmMetadata>& AllCharms() const noexcept { return charms_; }
+        [[nodiscard]] const CharmMetadata* FindCharm(CharmKind kind) const;
+        [[nodiscard]] const CharmMetadata* FindCharmByLocalFormId(std::uint32_t localFormId) const;
+
+        [[nodiscard]] const std::vector<MonsterModMetadata>& AllMonsterMods() const noexcept { return monsterMods_; }
+        [[nodiscard]] const MonsterModMetadata* FindMonsterMod(MonsterModKind kind) const;
+
+        [[nodiscard]] const std::vector<UniqueDefinition>& AllUniques() const noexcept { return uniques_; }
+        [[nodiscard]] const UniqueDefinition* FindUnique(std::string_view id) const;
+
         // PoE 본가 first-match-wins 가중치 평가기(검수 C1):
         // weights를 앞에서부터 순회해 itemTags에 포함된 첫 키의 weightVal을 즉시 반환한다(0이면 차단).
         [[nodiscard]] static std::uint32_t ResolveWeight(
@@ -109,7 +173,8 @@ namespace SkyrimPoE::Core
             TokenSlotGroup slotGroup,
             DefenseSubtype defenseSubtype,
             std::string_view weaponTag,
-            bool isAmulet = false);
+            bool isAmulet = false,
+            std::uint8_t jewelColor = 0);
 
         // 주어진 장비 조건에서 추첨 가능한 (AffixDefinition*, weight) 후보 목록을 수집한다.
         [[nodiscard]] std::vector<std::pair<const AffixDefinition*, std::uint32_t>> CollectCandidates(
@@ -133,6 +198,11 @@ namespace SkyrimPoE::Core
         std::vector<AffixDefinition> affixes_;
         std::unordered_map<std::string, std::size_t> byId_;
         std::vector<CurrencyMetadata> currencies_;
+        std::vector<BeltBaseDef> beltBases_;
+        std::vector<CharmMetadata> charms_;
+        std::vector<MonsterModMetadata> monsterMods_;
+        std::vector<UniqueDefinition> uniques_;
+        std::unordered_map<std::string, std::size_t> uniqueById_;
         std::unordered_map<std::string, std::vector<BaseArmorCurveRow>> armorCurves_;
         std::unordered_map<std::string, std::vector<BaseWeaponCurveRow>> weaponCurves_;
     };

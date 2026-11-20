@@ -285,14 +285,20 @@ def orbit_angles(count: int) -> list[float]:
 
 
 def split_stat_lines(raw_stats: list[Any]) -> list[str]:
+    # C-31: PoB 원문 내 문장 중간 줄바꿈(소문자 알파벳으로 이어지는 줄)은 공백으로 이어 붙여
+    # 하나의 논리적 스탯 문장이 두 줄로 쪼개지지 않게 정규화한다.
     out: list[str] = []
     for entry in raw_stats:
         if not isinstance(entry, str):
             continue
-        for part in entry.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            cleaned = part.strip()
-            if cleaned:
-                out.append(cleaned)
+        parts = [p.strip() for p in entry.replace("\r\n", "\n").replace("\r", "\n").split("\n") if p.strip()]
+        merged: list[str] = []
+        for part in parts:
+            if merged and part[0].islower() and not merged[-1].endswith((".", ")")):
+                merged[-1] = merged[-1] + " " + part
+            else:
+                merged.append(part)
+        out.extend(merged)
     return out
 
 
@@ -401,23 +407,115 @@ def classify_icon_category(kind: int, name: str, stats: list[str], asc_name: str
     return "generic"
 
 
-def is_node_deferred(kind: int, stats: list[str], is_mc: bool) -> bool:
-    if kind == KIND_SOCKET:
-        return True
-    if kind in (KIND_CLASS_START, KIND_ASCEND_START, KIND_MASTERY) or is_mc:
+# C-29: C++ PassiveStatParser::ParseLine의 실제 지원 패턴과 1:1 정합(키워드 어림 제거)
+SUPPORTED_KEYSTONE_NAMES = {
+    "Blood Magic",
+    "Chaos Inoculation",
+    "Resolute Technique",
+    "Iron Reflexes",
+    "Unwavering Stance",
+    "Acrobatics",
+    "Mind Over Matter",
+    "Elemental Overload",
+    "Pain Attunement",
+    "Iron Will",
+}
+
+_CPP_EXACT_SPECIAL_LINES = {
+    "removes all mana",
+    "maximum life becomes 1, immune to chaos damage",
+    "your hits can't be evaded",
+    "converts all evasion rating to armour. dexterity provides no bonus to evasion rating",
+    "cannot evade enemy attacks",
+    "cannot be stunned",
+    "modifiers to chance to suppress spell damage instead apply to chance to dodge spell hits at 50% of their value",
+    "40% of damage is taken from mana before life",
+    "skills that have dealt a critical strike in the past 8 seconds deal 40% more elemental damage with hits and ailments",
+    "30% more spell damage when on low life",
+    "strength's damage bonus applies to all spell damage as well",
+    "grants 1 passive skill point",
+    "grants 2 passive skill points",
+}
+
+_CPP_SUPPORTED_REST_EXACT = {
+    "to strength", "to dexterity", "to intelligence", "to all attributes",
+    "to strength and dexterity", "to strength and intelligence", "to dexterity and intelligence",
+    "increased strength", "increased dexterity", "increased intelligence", "increased attributes",
+    "to maximum life", "increased maximum life", "reduced maximum life", "more maximum life",
+    "to maximum mana", "increased maximum mana",
+    "to maximum energy shield", "increased maximum energy shield",
+    "increased energy shield recharge rate", "faster start of energy shield recharge",
+    "to armour", "increased armour",
+    "to evasion rating", "increased evasion rating",
+    "to armour and evasion rating", "to evasion rating and armour",
+    "increased armour and evasion", "increased armour and evasion rating", "increased evasion rating and armour",
+    "increased armour and energy shield", "increased armour and maximum energy shield",
+    "increased evasion rating and energy shield", "increased evasion rating and maximum energy shield",
+    "increased global defences",
+    "to fire resistance", "to cold resistance", "to lightning resistance", "to chaos resistance",
+    "to all elemental resistances",
+    "to fire and cold resistances", "to fire and lightning resistances", "to cold and lightning resistances",
+    "to maximum fire resistance", "to maximum cold resistance", "to maximum lightning resistance",
+    "to maximum chaos resistance", "to maximum all elemental resistances", "to all maximum elemental resistances",
+    "additional physical damage reduction",
+    "chance to block attack damage", "chance to block spell damage",
+    "chance to suppress spell damage", "to amount of suppressed spell damage prevented",
+    "to maximum endurance charges", "to maximum frenzy charges", "to maximum power charges",
+    "increased damage",
+    "increased physical damage", "increased melee damage", "increased melee physical damage",
+    "increased attack damage",
+    "increased physical attack damage", "increased attack physical damage",
+    "increased elemental damage", "increased elemental damage with attack skills",
+    "increased fire damage", "increased cold damage", "increased lightning damage",
+    "increased chaos damage", "increased spell damage", "increased area damage",
+    "increased attack speed", "reduced attack speed", "increased melee attack speed",
+    "increased cast speed", "increased attack and cast speed",
+    "increased critical strike chance", "increased global critical strike chance",
+    "increased critical strike chance for attacks", "increased melee critical strike chance",
+    "increased critical strike chance for spells", "increased spell critical strike chance",
+    "to critical strike multiplier", "to global critical strike multiplier",
+    "to melee critical strike multiplier", "to critical strike multiplier for melee",
+    "to critical strike multiplier for spells", "to spell critical strike multiplier",
+    "to critical strike multiplier for spell damage",
+    "increased area of effect",
+    "reduced mana cost of skills", "increased mana cost of skills",
+    "increased mana cost efficiency", "increased cost efficiency",
+    "increased cost efficiency of attacks", "increased mana cost efficiency of spells",
+    "chance to ignite", "chance to freeze", "chance to shock",
+    "chance to freeze, shock and ignite",
+    "chance to cause bleeding", "chance to bleed", "chance to cause bleeding with attacks",
+    "chance to poison on hit", "chance to poison", "chance to poison on hit with attacks",
+}
+
+_LEADING_NUM_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?%?\s+(.+)$")
+_PREVENT_SUPP_RE = re.compile(r"^prevent\s+[+-]?\d+(?:\.\d+)?%\s+of suppressed spell damage$")
+
+
+def is_stat_line_supported_by_cpp(line: str) -> bool:
+    low = line.strip().lower()
+    if not low:
         return False
+    if low in _CPP_EXACT_SPECIAL_LINES:
+        return True
+    if low.startswith("can allocate passives from the "):
+        return True
+    if _PREVENT_SUPP_RE.match(low):
+        return True
+    m = _LEADING_NUM_RE.match(low)
+    if not m:
+        return False
+    return m.group(1).strip() in _CPP_SUPPORTED_REST_EXACT
+
+
+def is_node_deferred(kind: int, name: str, stats: list[str], is_mc: bool, grant_pts: int = 0) -> bool:
+    # 5단계에서 패시브 주얼 소켓 장착이 구현되었으므로 KIND_SOCKET은 지원됨
+    if kind in (KIND_CLASS_START, KIND_ASCEND_START, KIND_MASTERY, KIND_SOCKET) or is_mc or grant_pts > 0:
+        return False
+    if kind == KIND_KEYSTONE:
+        return name not in SUPPORTED_KEYSTONE_NAMES
     if not stats:
         return False
-    any_supported_hint = False
-    any_deferred_hint = False
-    for line in stats:
-        low = line.lower()
-        line_deferred = any(k in low for k in DEFERRED_KEYWORDS)
-        if line_deferred:
-            any_deferred_hint = True
-        elif any(k in low for k in SUPPORTED_HINT_KEYWORDS):
-            any_supported_hint = True
-    return any_deferred_hint and not any_supported_hint
+    return not any(is_stat_line_supported_by_cpp(line) for line in stats)
 
 
 def node_kind(node: dict[str, Any]) -> int:
@@ -681,7 +779,7 @@ def compile_tree(pob_dir: Path, ko_dir: Path | None, version: str = "3_30") -> d
             )
 
         icon_cat = classify_icon_category(kind, en_name, en_stats, asc_id)
-        deferred = is_node_deferred(kind, en_stats, is_mc)
+        deferred = is_node_deferred(kind, en_name, en_stats, is_mc, granted_pts)
 
         node_entry: dict[str, Any] = {
             "id": nid,

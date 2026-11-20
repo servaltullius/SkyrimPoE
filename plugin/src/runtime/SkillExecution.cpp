@@ -1,12 +1,15 @@
 #include "PCH.h"
 #include "runtime/SkillExecution.h"
+#include "runtime/AilmentRuntime.h"
 #include "runtime/FormIds.h"
+#include "runtime/MonsterRuntime.h"
 
 namespace SkyrimPoE::Runtime
 {
     namespace
     {
         Core::KillTracker* g_killTracker = nullptr;
+        Core::StatEngine* g_statEngine = nullptr;
         thread_local std::uint32_t t_pluginDirectDamageDepth = 0;
 
         struct DirectDamageScope
@@ -47,9 +50,10 @@ namespace SkyrimPoE::Runtime
         }
     }
 
-    void SkillExecution::Initialize(Core::KillTracker* killTracker)
+    void SkillExecution::Initialize(Core::KillTracker* killTracker, Core::StatEngine* statEngine)
     {
         g_killTracker = killTracker;
+        g_statEngine = statEngine;
     }
 
     bool SkillExecution::IsInPluginDirectDamage() noexcept
@@ -75,6 +79,61 @@ namespace SkyrimPoE::Runtime
             return true;
         }
         return false;
+    }
+
+    bool SkillExecution::IsDragonActor(const RE::Actor* actor) noexcept
+    {
+        if (!actor) {
+            return false;
+        }
+        const auto* race = actor->GetRace();
+        if (!race) {
+            return false;
+        }
+        static constexpr RE::FormID kActorTypeDragonKw = 0x00035D59;
+        return race->HasKeywordID(kActorTypeDragonKw);
+    }
+
+    bool SkillExecution::HasLocationBossRefType(const RE::Actor* actor) noexcept
+    {
+        if (!actor) {
+            return false;
+        }
+        // m-1: 바닐라 Skyrim.esm LocTypeBoss(0x000130F7) 정확 FormID 우선, 보조로 정확 EDID("Boss"/"LocTypeBoss")만 허용
+        // (타 모드의 BossGuard/BossMinion 부분 문자열 오판 차단)
+        constexpr RE::FormID kVanillaBossLocRefTypeId = 0x000130F7;
+        auto isBossRefType = [](const RE::BGSLocationRefType* refType) noexcept -> bool {
+            if (!refType) {
+                return false;
+            }
+            if (refType->GetFormID() == kVanillaBossLocRefTypeId) {
+                return true;
+            }
+            const auto edid = refType->GetFormEditorID();
+            if (!edid) {
+                return false;
+            }
+            const std::string_view sv(edid);
+            return sv == "Boss" || sv == "LocTypeBoss";
+        };
+        if (const auto* extraLocRef = actor->extraList.GetByType<RE::ExtraLocationRefType>()) {
+            if (isBossRefType(extraLocRef->locRefType)) {
+                return true;
+            }
+        }
+        if (auto* loc = actor->GetCurrentLocation()) {
+            for (const auto& ref : loc->specialRefs) {
+                if (ref.refData.refID == actor->GetFormID() && isBossRefType(ref.type)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool SkillExecution::IsBossOrDragon(const RE::Actor* actor) noexcept
+    {
+        return IsDragonActor(actor) || HasLocationBossRefType(actor);
     }
 
     bool SkillExecution::CanDamageTarget(RE::PlayerCharacter* player, RE::Actor* target, bool isDirectHit)
@@ -151,11 +210,81 @@ namespace SkyrimPoE::Runtime
         return (std::isfinite(val) && val > 0.0) ? val : 1.0;
     }
 
+    void SkillExecution::SpawnHarmlessVfx(const RE::NiPoint3& origin, RE::FormID vfxExplosionLocalId)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || !player->Is3DLoaded() || player->IsDead()) {
+            return;
+        }
+        SpawnHarmlessExplosionAt(player, origin, vfxExplosionLocalId);
+    }
+
+    bool SkillExecution::DealDirectSkillDamage(
+        RE::Actor* target,
+        double rawSkyrimDamage,
+        Core::DamageType dominantType,
+        bool isDirectHit,
+        bool bypassesMonsterEs)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || player->IsDead() || !CanDamageTarget(player, target, isDirectHit)) {
+            return false;
+        }
+        if (!std::isfinite(rawSkyrimDamage) || rawSkyrimDamage <= 0.0) {
+            return false;
+        }
+
+        const auto targetId = target->GetFormID();
+        double scaledDmg = rawSkyrimDamage * AilmentRuntime::ShockDamageMultiplier(targetId);
+        // 검수 m2: 헤드헌터 등 레어 대상 추가 피해를 주문/투사체/노바/전령 폭발에도 동일 적용
+        if (g_statEngine) {
+            if (const auto snap = g_statEngine->GetSnapshot(); snap && snap->incDamageVsRarePct > 0.0) {
+                if (const auto prof = MonsterRuntime::GetProfileCopy(targetId);
+                    prof && prof->rarity == Core::MonsterRarity::Rare) {
+                    scaledDmg *= (1.0 + snap->incDamageVsRarePct / 100.0);
+                }
+            }
+        }
+        const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(
+            targetId, scaledDmg, dominantType, bypassesMonsterEs);
+        if (!hitRes.hadAnyImpact) {
+            return false;
+        }
+
+        // 결정 113, 134, 140 + C-15: 피격 직전 적대 선기록 → 실제 피해 실행 → 0 감소(무적 등)면 기여 확정 생략!
+        const bool targetAlive = !target->IsDead();
+        if (g_killTracker) {
+            g_killTracker->RecordFirstHitHostility(targetId, target->IsHostileToActor(player), targetAlive);
+        }
+
+        double actualHpLoss = 0.0;
+        if (hitRes.remainingHealthDamage > 0.0) {
+            auto* av = target->AsActorValueOwner();
+            const double hpBefore = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
+            {
+                const DirectDamageScope scope;
+                (void)target->DoDamage(static_cast<float>(hitRes.remainingHealthDamage), player, true);
+            }
+            const double hpAfter = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
+            actualHpLoss = std::max(0.0, hpBefore - hpAfter);
+            if (target->IsDead() && actualHpLoss <= 0.0) {
+                actualHpLoss = hitRes.remainingHealthDamage;
+            }
+        }
+
+        const double confirmedLoss = std::max(hitRes.absorbedByEs, actualHpLoss);
+        if (g_killTracker && confirmedLoss > 0.0) {
+            g_killTracker->ConfirmDamageContribution(targetId, confirmedLoss);
+        }
+        return confirmedLoss > 0.0;
+    }
+
     std::size_t SkillExecution::ExecuteAoESpell(
         const RE::NiPoint3& origin,
         float radius,
         double skyrimDamage,
-        RE::FormID vfxExplosionLocalId)
+        RE::FormID vfxExplosionLocalId,
+        Core::DamageType dominantType)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || !player->Is3DLoaded() || player->IsDead()) {
@@ -174,22 +303,11 @@ namespace SkyrimPoE::Runtime
             return 0;
         }
 
-        const float dmg = static_cast<float>(skyrimDamage);
         std::size_t hitCount = 0;
-
-        const DirectDamageScope scope;
         for (const auto& victim : targets) {
-            // 결정 109, 133, 139: 번지는 피해 적용 직전에 대상 유효성과 현재 적대 여부를 다시 확인한다.
-            if (!CanDamageTarget(player, victim.get(), false)) {
-                continue;
+            if (DealDirectSkillDamage(victim.get(), skyrimDamage, dominantType, false, dominantType == Core::DamageType::Chaos)) {
+                ++hitCount;
             }
-            // 결정 134, 140: 피해 적용 직전에 이번 삶 첫 피격 적대 여부를 선기록한다.
-            if (g_killTracker) {
-                g_killTracker->RecordFirstHitHostility(victim->GetFormID(), victim->IsHostileToActor(player));
-            }
-            // 결정 53, 55: 플레이어를 공격자로 넘겨 처치·어그로·난이도 배율이 정상 반영되도록 한다.
-            (void)victim->DoDamage(dmg, player, true);
-            ++hitCount;
         }
         return hitCount;
     }

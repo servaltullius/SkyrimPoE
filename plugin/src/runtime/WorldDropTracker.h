@@ -31,14 +31,16 @@ namespace SkyrimPoE::Runtime
             RE::ActorHandle corpseHandle,
             std::uint32_t effectiveMonsterLevel,
             bool isBoss,
-            bool isDragon);
+            bool isDragon,
+            Core::MonsterRarity monsterRarity = Core::MonsterRarity::Normal);
 
         // 명시적 바닥 드랍 + 빛기둥 생성 헬퍼(AutoTest E7 및 내부 공용)
         static bool SpawnPhysicalDropFromContainer(
             RE::TESObjectREFR* sourceContainer,
             RE::TESBoundObject* itemObj,
             std::uint8_t worldDropTier,
-            bool isCurrencyDrop);
+            bool isCurrencyDrop,
+            bool isUniqueDrop = false);
 
         // 주 갱신 스레드 틱: 줍기 감지·빛기둥 위치 동기화·시간 초과/셀 이탈 시체 회수·고아 스윕
         static void Tick(double dt, bool paused);

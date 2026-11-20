@@ -1,9 +1,11 @@
 #pragma once
 
+#include "core/CharmSystem.h"
 #include "core/CommandQueue.h"
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
 #include "core/KillTracker.h"
+#include "core/SkillSystem.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
 
@@ -18,12 +20,17 @@ namespace SkyrimPoE::Runtime
         double convertedSkyrimDamage = 0.0;
         bool isCrit = false;
         RE::FormID expectedTargetId = 0;
+        bool* outAbsorbedByMonsterEs = nullptr;  // 검수 M3: 적 ES 100% 흡수 시에도 CoC/상태이상 발동 보장
     };
 
     class ScopedCycloneHitContext
     {
     public:
-        ScopedCycloneHitContext(double convertedSkyrimDamage, bool isCrit, RE::FormID targetId) noexcept;
+        ScopedCycloneHitContext(
+            double convertedSkyrimDamage,
+            bool isCrit,
+            RE::FormID targetId,
+            bool* outAbsorbedByMonsterEs = nullptr) noexcept;
         ~ScopedCycloneHitContext() noexcept;
         ScopedCycloneHitContext(const ScopedCycloneHitContext&) = delete;
         ScopedCycloneHitContext& operator=(const ScopedCycloneHitContext&) = delete;
@@ -46,7 +53,9 @@ namespace SkyrimPoE::Runtime
             Core::EnergyShieldPool* esPool,
             Core::KillTracker* killTracker,
             const Core::DataPack* dataPack,
-            const Core::Config* config);
+            const Core::Config* config,
+            Core::SkillSystem* skillSystem = nullptr,
+            Core::CharmSystem* charmSystem = nullptr);
 
         // 주 갱신 스레드 프레임 콜백에서 호출: 최대 체력·매지카·ES 동기화, MoM 매지카 차감, Low Life/EO 감시 및 ES 재충전.
         static void TickPlayerPools(double deltaSec, bool gamePaused);

@@ -2,6 +2,8 @@
   "use strict";
 
   const equippedList = document.getElementById("gear-equipped-list");
+  const charmsUnlockedEl = document.getElementById("gear-charms-unlocked");
+  const charmsListEl = document.getElementById("gear-charms-list");
   const bagList = document.getElementById("gear-bag-list");
   const bagCountEl = document.getElementById("gear-bag-count");
   const selectedTagEl = document.getElementById("gear-selected-tag");
@@ -41,6 +43,7 @@
   }
 
   function rarityBadgeInfo(rarity) {
+    if (rarity === "unique") return { text: "[고유]", badgeCls: "badge-rarity-unique", textCls: "rarity-unique" };
     if (rarity === "rare") return { text: "[희귀]", badgeCls: "badge-rarity-rare", textCls: "rarity-rare" };
     if (rarity === "magic") return { text: "[매직]", badgeCls: "badge-rarity-magic", textCls: "rarity-magic" };
     return { text: "[일반]", badgeCls: "badge-rarity-normal", textCls: "rarity-normal" };
@@ -167,11 +170,24 @@
       }
 
       const rb = rarityBadgeInfo(slot.rarity);
+      const slotNameText = (slot.card && slot.card.uniqueId && slot.card.title) ? slot.card.title : slot.displayName;
       btn.appendChild(el("span", "gear-slot-tag", slot.slotLabel));
       btn.appendChild(el("span", `badge ${rb.badgeCls}`, rb.text));
-      btn.appendChild(el("span", `gear-item-name ${rb.textCls}`, slot.displayName));
+      btn.appendChild(el("span", `gear-item-name ${rb.textCls}`, slotNameText));
       if (slot.requirementMet === false) {
         btn.appendChild(el("span", "badge badge-req-fail", "요구 미달"));
+      }
+      if (slot.isVirtual) {
+        const unBtn = el("span", "badge badge-req-fail", "해제");
+        unBtn.title = "가상 장착 해제";
+        unBtn.onclick = (e) => {
+          e.stopPropagation();
+          window.poeSendCommand({
+            op: slot.slotIndex === 9 ? "gearUnequipBelt" : "gearUnequipRing2",
+            reqId: window.poeNextReqId(),
+          });
+        };
+        btn.appendChild(unBtn);
       }
 
       btn.onclick = () => {
@@ -213,11 +229,38 @@
       }
 
       const rb = rarityBadgeInfo(item.rarity);
+      const itemNameText = (item.card && item.card.uniqueId && item.card.title) ? item.card.title : item.displayName;
       btn.appendChild(el("span", "gear-slot-tag", item.slotLabel));
       btn.appendChild(el("span", `badge ${rb.badgeCls}`, rb.text));
-      btn.appendChild(el("span", `gear-item-name ${rb.textCls}`, item.displayName));
+      btn.appendChild(el("span", `gear-item-name ${rb.textCls}`, itemNameText));
       if (item.equipped) {
-        btn.appendChild(el("span", "badge badge-tracked", "장착"));
+        btn.appendChild(el("span", "badge badge-tracked", item.isVirtualEquipped ? "가상장착" : "장착"));
+      } else if (item.isRing) {
+        const eqR2 = el("span", "badge badge-aura", "반지2");
+        eqR2.title = "가상 반지2 칸에 장착";
+        eqR2.onclick = (e) => {
+          e.stopPropagation();
+          window.poeSendCommand({
+            op: "gearEquipRing2",
+            reqId: window.poeNextReqId(),
+            baseFormId: item.baseFormId,
+            uniqueId: item.uniqueId || 0,
+          });
+        };
+        btn.appendChild(eqR2);
+      } else if (item.isBelt) {
+        const eqBelt = el("span", "badge badge-aura", "벨트장착");
+        eqBelt.title = "가상 벨트 칸에 장착";
+        eqBelt.onclick = (e) => {
+          e.stopPropagation();
+          window.poeSendCommand({
+            op: "gearEquipBelt",
+            reqId: window.poeNextReqId(),
+            baseFormId: item.baseFormId,
+            uniqueId: item.uniqueId || 0,
+          });
+        };
+        btn.appendChild(eqBelt);
       }
       if (item.count > 1) {
         btn.appendChild(el("span", "inv-right", `×${item.count}`));
@@ -252,7 +295,8 @@
     const item = resolved.item;
     const card = item.card;
     const rb = rarityBadgeInfo(card.rarity);
-    if (card.rarity === "magic") itemCardEl.classList.add("card-magic");
+    if (card.rarity === "unique") itemCardEl.classList.add("card-unique");
+    else if (card.rarity === "magic") itemCardEl.classList.add("card-magic");
     else if (card.rarity === "rare") itemCardEl.classList.add("card-rare");
 
     selectedTagEl.textContent = resolved.preferEquipped
@@ -290,6 +334,17 @@
         baseSec.appendChild(el("div", "gear-base-line", line));
       }
       itemCardEl.appendChild(baseSec);
+    }
+
+    if (Array.isArray(card.implicitLines) && card.implicitLines.length > 0) {
+      const impSec = el("div", "gear-card-section");
+      for (const a of card.implicitLines) {
+        const row = el("div", "gear-affix-line gear-implicit-line");
+        row.appendChild(el("span", "gear-affix-badge badge-aura", a.tierBadge || "[고정]"));
+        row.appendChild(el("span", "", a.textKo));
+        impSec.appendChild(row);
+      }
+      itemCardEl.appendChild(impSec);
     }
 
     const affSec = el("div", "gear-card-section");
@@ -333,13 +388,20 @@
       btn.type = "button";
       btn.disabled = wisdomCount <= 0;
       btn.onclick = () => {
-        window.poeSendCommand({
-          op: "gearIdentifyToken",
-          reqId: window.poeNextReqId(),
-          tier: tk.tier,
-          rarityCode: tk.rarityCode,
-          slotGroup: tk.slotGroup,
-        });
+        if (tk.isUniqueToken) {
+          window.poeSendCommand({
+            op: "gearIdentifyUnique",
+            reqId: window.poeNextReqId(),
+          });
+        } else {
+          window.poeSendCommand({
+            op: "gearIdentifyToken",
+            reqId: window.poeNextReqId(),
+            tier: tk.tier,
+            rarityCode: tk.rarityCode,
+            slotGroup: tk.slotGroup,
+          });
+        }
       };
       row.appendChild(btn);
       tokenListEl.appendChild(row);
@@ -467,11 +529,76 @@
     }
   }
 
+  function renderCharms(gear) {
+    if (!charmsListEl) return;
+    charmsListEl.textContent = "";
+    const ch = gear && gear.charms;
+    if (!ch) return;
+    const unlocked = Number(ch.unlockedSlots || 0);
+    if (charmsUnlockedEl) {
+      charmsUnlockedEl.textContent = `개방 ${unlocked} / 3칸`;
+    }
+
+    const bagCounts = Array.isArray(ch.bagCounts) ? ch.bagCounts : [];
+    const availBagCharms = bagCounts.filter((c) => Number(c.count || 0) > 0);
+
+    for (const sl of ch.slots || []) {
+      const row = el("div", `gear-row gear-row-static${sl.locked ? " empty" : ""}`);
+      row.appendChild(el("span", "gear-slot-tag", `참 ${sl.slotIndex + 1}`));
+      if (sl.occupied) {
+        row.appendChild(el("span", "gear-item-name", `${sl.koName} (${sl.charges}/${sl.maxCharges})`));
+        if (sl.locked) {
+          row.appendChild(el("span", "badge badge-req-fail", "잠김"));
+        } else if (sl.active) {
+          row.appendChild(el("span", "badge btn-aura-on", "발동"));
+        }
+        // 검수 m6: 벨트 축소로 잠긴 칸의 참도 언제든 회수할 수 있게 해제 버튼 상시 제공
+        const btnUn = el("button", "btn btn-danger", "회수");
+        btnUn.type = "button";
+        btnUn.onclick = () => {
+          window.poeSendCommand({
+            op: "gearUnequipCharm",
+            reqId: window.poeNextReqId(),
+            slotIndex: sl.slotIndex,
+          });
+        };
+        row.appendChild(btnUn);
+      } else if (sl.locked) {
+        row.appendChild(el("span", "section-sub", "(잠김 — 벨트 등급/희귀도 필요)"));
+      } else if (availBagCharms.length > 0) {
+        const sel = document.createElement("select");
+        sel.className = "link-select";
+        for (const bc of availBagCharms) {
+          const opt = document.createElement("option");
+          opt.value = String(bc.kind);
+          opt.textContent = `${bc.koName} ×${bc.count}`;
+          sel.appendChild(opt);
+        }
+        const btnEq = el("button", "btn btn-primary", "장착");
+        btnEq.type = "button";
+        btnEq.onclick = () => {
+          window.poeSendCommand({
+            op: "gearEquipCharm",
+            reqId: window.poeNextReqId(),
+            slotIndex: sl.slotIndex,
+            charmKind: parseInt(sel.value, 10),
+          });
+        };
+        row.appendChild(sel);
+        row.appendChild(btnEq);
+      } else {
+        row.appendChild(el("span", "section-sub", "(비어 있음 — 가방에 참 없음)"));
+      }
+      charmsListEl.appendChild(row);
+    }
+  }
+
   function renderAll() {
     if (!lastData) return;
     const gear = lastData.gear;
     if (!gear || !gear.loaded) {
       equippedList.textContent = "";
+      if (charmsListEl) charmsListEl.textContent = "";
       bagList.textContent = "";
       tokenListEl.textContent = "";
       jewellerListEl.textContent = "";
@@ -484,6 +611,7 @@
 
     const resolved = resolveSelection(gear);
     renderEquippedList(gear);
+    renderCharms(gear);
     renderBagList(gear);
     renderItemCard(resolved);
     renderTokens(gear);

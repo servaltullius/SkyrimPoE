@@ -105,7 +105,7 @@ namespace SkyrimPoE::Core
                 return false;
             }
 
-            // 검수 m3: PoE1 표준 — 양쪽 풀이 모두 열려 있으면 50:50으로 접두/접미를 먼저 고른 뒤 해당 풀 내 가중 추첨
+            // U6 확정(2026-11-20, PoB 미명시): SkyrimPoE 확정 추첨 규칙 — 양쪽 풀이 모두 열려 있으면 50:50으로 접두/접미를 먼저 고른 뒤 가중 추첨
             const auto* chosenPool = &pCands;
             if (pCands.empty()) {
                 chosenPool = &sCands;
@@ -137,8 +137,10 @@ namespace SkyrimPoE::Core
             return true;
         }
 
-        // PoE1 표준 개수 분포: 매직 1개(50%) / 2개(50%), 희귀 4개(60%) / 5개(30%) / 6개(10%)
-        std::size_t RollTargetAffixCount(ItemRarity rarity, std::mt19937_64& rng)
+        // U6 확정(2026-11-20, PoB 미명시): SkyrimPoE 확정 어픽스 개수 분포:
+        // 일반 장비: 매직 1(50%)/2(50%), 희귀 4(60%)/5(30%)/6(10%)
+        // 주얼(5단계): 매직 1(50%)/2(50%), 희귀 3(70%)/4(30%) (최대 2P/2S)
+        std::size_t RollTargetAffixCount(ItemRarity rarity, bool isJewel, std::mt19937_64& rng)
         {
             std::uniform_int_distribution<int> d100(0, 99);
             const int r = d100(rng);
@@ -146,6 +148,9 @@ namespace SkyrimPoE::Core
                 return r < 50 ? 1 : 2;
             }
             if (rarity == ItemRarity::Rare) {
+                if (isJewel) {
+                    return r < 70 ? 3 : 4;
+                }
                 if (r < 60) return 4;
                 if (r < 90) return 5;
                 return 6;
@@ -163,8 +168,9 @@ namespace SkyrimPoE::Core
             item.rarity = targetRarity;
             item.affixes.clear();
 
-            const std::size_t maxPerSide = (targetRarity == ItemRarity::Magic) ? 1 : 3;
-            const std::size_t targetCount = RollTargetAffixCount(targetRarity, rng);
+            const bool isJewel = (item.slotGroup == TokenSlotGroup::Jewel);
+            const std::size_t maxPerSide = (targetRarity == ItemRarity::Magic) ? 1 : (isJewel ? 2 : 3);
+            const std::size_t targetCount = RollTargetAffixCount(targetRarity, isJewel, rng);
 
             for (std::size_t i = 0; i < targetCount; ++i) {
                 if (!TryAddOneAffix(item, maxPerSide, maxPerSide, itemTags, data, rng)) {
@@ -185,7 +191,9 @@ namespace SkyrimPoE::Core
         std::uint32_t baseFormId,
         std::uint32_t exileLevel,
         const ItemData& data,
-        std::mt19937_64& rng)
+        std::mt19937_64& rng,
+        std::string_view implicitAffixId,
+        std::uint8_t jewelColor)
     {
         PoEItemRecord rec;
         rec.baseFormId = baseFormId;
@@ -193,15 +201,93 @@ namespace SkyrimPoE::Core
         rec.defenseSubtype = defenseSubtype;
         rec.isAmulet = isAmulet;
         rec.weaponTag = std::string(weaponTag);
+        rec.jewelColor = jewelColor;
 
         // 결정 157: iLvl은 반드시 티어 구간 [tierMin, tierMax] 내부로 고정
         const auto [lo, hi] = TierLevelBounds(tier);
         rec.itemLevel = std::clamp(exileLevel, lo, hi);
 
+        if (!implicitAffixId.empty()) {
+            if (const auto* impDef = data.FindAffix(implicitAffixId)) {
+                rec.implicitAffixes.push_back(RollAffixValues(*impDef, rng));
+            }
+        }
+
         const ItemRarity effectiveRarity = (rarity == ItemRarity::Rare) ? ItemRarity::Rare : ItemRarity::Magic;
-        const auto tags = ItemData::BuildItemTags(slotGroup, defenseSubtype, weaponTag, isAmulet);
+        const auto tags = ItemData::BuildItemTags(slotGroup, defenseSubtype, weaponTag, isAmulet, jewelColor);
         RollFreshAffixes(rec, effectiveRarity, tags, data, rng);
         return rec;
+    }
+
+    PoEItemRecord ItemCrafting::RollUniqueItem(
+        const UniqueDefinition& def,
+        std::uint32_t resolvedBaseFormId,
+        std::uint32_t itemLevel,
+        const ItemData& data,
+        std::mt19937_64& rng)
+    {
+        PoEItemRecord rec;
+        rec.baseFormId = resolvedBaseFormId;
+        rec.rarity = ItemRarity::Unique;
+        rec.itemLevel = std::max(itemLevel, def.reqLevel);
+        rec.slotGroup = def.slotGroup;
+        rec.defenseSubtype = def.defenseSubtype;
+        rec.isAmulet = def.isAmulet;
+        rec.weaponTag = def.weaponTag;
+        rec.uniqueId = def.id;
+
+        for (const auto& impId : def.implicitAffixIds) {
+            if (const auto* impDef = data.FindAffix(impId)) {
+                rec.implicitAffixes.push_back(RollAffixValues(*impDef, rng));
+            }
+        }
+        for (const auto& expId : def.explicitAffixIds) {
+            if (const auto* expDef = data.FindAffix(expId)) {
+                rec.affixes.push_back(RollAffixValues(*expDef, rng));
+            }
+        }
+        return rec;
+    }
+
+    std::vector<RolledAffix> ItemCrafting::RollBeltImplicits(
+        const BeltBaseDef& belt,
+        const ItemData& data,
+        std::mt19937_64& rng)
+    {
+        std::vector<RolledAffix> out;
+        if (!belt.implicitAffixId.empty()) {
+            if (const auto* impDef = data.FindAffix(belt.implicitAffixId)) {
+                out.push_back(RollAffixValues(*impDef, rng));
+            }
+        }
+        return out;
+    }
+
+    std::uint8_t ItemCrafting::ComputeBeltCharmSlots(
+        bool beltEquipped,
+        const PoEItemRecord* beltRec,
+        bool isStygianVise) noexcept
+    {
+        if (!beltEquipped) {
+            return 0;
+        }
+        if (isStygianVise) {
+            return 3;
+        }
+        if (!beltRec) {
+            return 1;
+        }
+        if (beltRec->rarity == ItemRarity::Unique) {
+            return 3;
+        }
+        const std::uint8_t tier = ItemLevelToTier(beltRec->itemLevel);
+        if (beltRec->rarity == ItemRarity::Rare) {
+            return (tier >= 4) ? 3 : 2;
+        }
+        if (beltRec->rarity == ItemRarity::Magic) {
+            return (tier >= 4) ? 2 : 1;
+        }
+        return 1;
     }
 
     CraftOutcome ItemCrafting::CanApplyOrb(
@@ -210,6 +296,12 @@ namespace SkyrimPoE::Core
         const std::unordered_set<std::string>& itemTags,
         const ItemData& data)
     {
+        // 5단계(결정 164): 고유 장비에는 신성한 오브(Divine)만 허용, 그 외 모든 오브 차단
+        if (item.rarity == ItemRarity::Unique && orb != CurrencyKind::Divine) {
+            return { CraftResultCode::InvalidRarity, "고유 장비에는 신성한 오브만 사용할 수 있습니다." };
+        }
+
+        const std::size_t rareMaxPerSide = (item.slotGroup == TokenSlotGroup::Jewel) ? 2 : 3;
         const auto counts = CountAffixes(item, data);
         const std::unordered_set<std::string> emptyGroups;
         auto hasAnyFreshCandidate = [&]() {
@@ -259,7 +351,7 @@ namespace SkyrimPoE::Core
                 if (item.rarity != ItemRarity::Magic) {
                     return { CraftResultCode::InvalidRarity, "제왕의 오브는 매직 장비에만 사용할 수 있습니다." };
                 }
-                if (!hasAnyAdditionalCandidate(3, 3)) {
+                if (!hasAnyAdditionalCandidate(rareMaxPerSide, rareMaxPerSide)) {
                     return { CraftResultCode::NoEligibleAffix, "이 장비에 추가로 부여할 수 있는 어픽스가 없습니다." };
                 }
                 return { CraftResultCode::Ok, "" };
@@ -286,10 +378,13 @@ namespace SkyrimPoE::Core
                 if (item.rarity != ItemRarity::Rare) {
                     return { CraftResultCode::InvalidRarity, "엑잘티드 오브는 희귀 장비에만 사용할 수 있습니다." };
                 }
-                if (counts.prefixes >= 3 && counts.suffixes >= 3) {
-                    return { CraftResultCode::AffixLimitReached, "희귀 장비의 접두 3·접미 3 자리가 모두 가득 찼습니다." };
+                if (counts.prefixes >= rareMaxPerSide && counts.suffixes >= rareMaxPerSide) {
+                    return { CraftResultCode::AffixLimitReached,
+                             item.slotGroup == TokenSlotGroup::Jewel
+                                 ? "희귀 주얼의 접두 2·접미 2 자리가 모두 가득 찼습니다."
+                                 : "희귀 장비의 접두 3·접미 3 자리가 모두 가득 찼습니다." };
                 }
-                if (!hasAnyAdditionalCandidate(3, 3)) {
+                if (!hasAnyAdditionalCandidate(rareMaxPerSide, rareMaxPerSide)) {
                     return { CraftResultCode::NoEligibleAffix, "이 장비에 추가로 부여할 수 있는 어픽스가 없습니다." };
                 }
                 return { CraftResultCode::Ok, "" };
@@ -324,6 +419,7 @@ namespace SkyrimPoE::Core
             return check;
         }
 
+        const std::size_t rareMaxPerSide = (item.slotGroup == TokenSlotGroup::Jewel) ? 2 : 3;
         PoEItemRecord working = item;
         switch (orb) {
             case CurrencyKind::Transmutation:
@@ -349,7 +445,7 @@ namespace SkyrimPoE::Core
 
             case CurrencyKind::Regal:
                 working.rarity = ItemRarity::Rare;
-                if (!TryAddOneAffix(working, 3, 3, itemTags, data, rng)) {
+                if (!TryAddOneAffix(working, rareMaxPerSide, rareMaxPerSide, itemTags, data, rng)) {
                     return { CraftResultCode::NoEligibleAffix, "추가할 수 있는 어픽스가 없습니다." };
                 }
                 item = std::move(working);
@@ -370,14 +466,14 @@ namespace SkyrimPoE::Core
                 return { CraftResultCode::Ok, "희귀 장비의 어픽스를 모두 다시 부여했습니다." };
 
             case CurrencyKind::Exalted:
-                if (!TryAddOneAffix(working, 3, 3, itemTags, data, rng)) {
+                if (!TryAddOneAffix(working, rareMaxPerSide, rareMaxPerSide, itemTags, data, rng)) {
                     return { CraftResultCode::NoEligibleAffix, "추가할 수 있는 어픽스가 없습니다." };
                 }
                 item = std::move(working);
                 return { CraftResultCode::Ok, "희귀 장비에 새 어픽스를 추가했습니다." };
 
             case CurrencyKind::Scouring:
-                // 검수 M1: 어픽스만 제거하고 itemLevel / slotGroup / defenseSubtype은 절대 보존
+                // 검수 M1 + 5단계 임플리싯 보존: 어픽스만 제거하고 itemLevel / slotGroup / defenseSubtype / implicitAffixes 보존
                 working.rarity = ItemRarity::Normal;
                 working.affixes.clear();
                 item = std::move(working);
@@ -399,8 +495,9 @@ namespace SkyrimPoE::Core
 
     CraftOutcome ItemCrafting::ApplyJewellerToGem(GemInstance& gem, GemKind gemKind)
     {
-        if (gemKind == GemKind::Support || gemKind == GemKind::Unknown) {
-            return { CraftResultCode::UnsupportedTarget, "보조 젬에는 쥬얼러의 오브를 사용할 수 없습니다." };
+        if (gemKind == GemKind::Support || gemKind == GemKind::Aura ||
+            gemKind == GemKind::Herald || gemKind == GemKind::Unknown) {
+            return { CraftResultCode::UnsupportedTarget, "보조·오라·전령 젬에는 쥬얼러의 오브를 사용할 수 없습니다." };
         }
         if (gem.socketCount >= kMaxGemSockets) {
             return { CraftResultCode::AlreadyMaxSockets, "이미 최대 보조 소켓(5칸)에 도달한 젬입니다." };

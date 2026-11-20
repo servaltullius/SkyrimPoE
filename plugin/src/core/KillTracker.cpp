@@ -37,17 +37,24 @@ namespace SkyrimPoE::Core
         }
     }
 
-    void KillTracker::RecordFirstHitHostility(std::uint32_t actorFormId, bool wasHostileToPlayer)
+    void KillTracker::RecordFirstHitHostility(std::uint32_t actorFormId, bool wasHostileToPlayer, bool actorAliveForNewLife)
     {
         if (actorFormId == 0) {
             return;
         }
         std::scoped_lock lock(mutex_);
         auto& rec = records_[actorFormId];
+        // C-12: 보상 종료된 기록에 살아 있는 액터가 다시 피격되면 새 삶(부활/FF FormID 재사용)으로 lifeGeneration 갱신
+        if (rec.rewardClaimed && actorAliveForNewLife) {
+            const auto nextGen = rec.lifeGeneration + 1;
+            rec = ActorLifeRecord{};
+            rec.lifeGeneration = nextGen;
+        }
         // 사망 시작/확정 이후(시체 타격 등)에는 첫 적대나 기여를 새로 기록하지 않는다.
         if (rec.deathStarted || rec.rewardClaimed) {
             return;
         }
+        rec.lastTouchedSeq = ++seqCounter_;
         if (!rec.firstHostilityRecorded) {
             rec.firstHostilityRecorded = true;
             rec.wasHostileOnFirstHit = wasHostileToPlayer;
@@ -61,9 +68,14 @@ namespace SkyrimPoE::Core
         }
         std::scoped_lock lock(mutex_);
         auto& rec = records_[actorFormId];
-        if (rec.deathStarted || rec.rewardClaimed) {
+        if (rec.rewardClaimed) {
             return;
         }
+        // Q-2: 한 방 처치로 deathStarted가 먼저 켜졌더라도 직전 첫 피격 적대가 이미 기록된 동일 타격이면 기여 확정 허용
+        if (rec.deathStarted && !rec.firstHostilityRecorded) {
+            return;
+        }
+        rec.lastTouchedSeq = ++seqCounter_;
         rec.playerContributed = true;
     }
 
@@ -73,13 +85,15 @@ namespace SkyrimPoE::Core
             return;
         }
         std::scoped_lock lock(mutex_);
-        // 플레이어가 건드린 기록이 없는 무관한 NPC 사망은 장기 메모리 누적을 피하기 위해 상한 관리
+        // C-12: 이미 보상이 끝난 오래된 기록(기여 여부 무관)을 상한 관리로 정리해 메모리 누적 및 FF 재사용 충돌을 줄인다.
         if (records_.size() > 2048) {
-            std::erase_if(records_, [](const auto& kv) {
-                return kv.second.rewardClaimed && !kv.second.playerContributed;
+            const std::uint64_t cutoff = (seqCounter_ > 1024) ? (seqCounter_ - 1024) : 0;
+            std::erase_if(records_, [cutoff](const auto& kv) {
+                return kv.second.rewardClaimed && kv.second.lastTouchedSeq <= cutoff;
             });
         }
         auto& rec = records_[actorFormId];
+        rec.lastTouchedSeq = ++seqCounter_;
         if (!rec.deathStarted) {
             rec.deathStarted = true;
             rec.deathExcluded = (isSummoned || isReanimated || isCommanded);
@@ -186,6 +200,7 @@ namespace SkyrimPoE::Core
         snap.playerContributed = it->second.playerContributed;
         snap.deathStarted = it->second.deathStarted;
         snap.rewardClaimed = it->second.rewardClaimed;
+        snap.lifeGeneration = it->second.lifeGeneration;
         return snap;
     }
 

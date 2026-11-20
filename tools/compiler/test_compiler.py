@@ -68,8 +68,33 @@ class TestStage2Compiler(unittest.TestCase):
             "SupportBrutality",
             "SupportIncreasedAreaOfEffect",
             "SupportConcentratedEffect",
+            "Fireball",
+            "FreezingPulse",
+            "Arc",
+            "Spark",
+            "MoltenShell",
+            "Determination",
+            "Grace",
+            "Discipline",
+            "Hatred",
+            "Wrath",
+            "Anger",
+            "PurityOfElements",
+            "HeraldOfIce",
+            "HeraldOfAsh",
+            "SupportGreaterMultipleProjectiles",
+            "SupportChain",
+            "SupportFork",
+            "SupportPierce",
+            "SupportSpellEcho",
         }
         self.assertEqual(set(self.pack["gems"].keys()), expected_ids)
+        # 5단계 정신력 비용 검증 (결정 161, PoB 2.68.1 대조)
+        self.assertEqual(self.pack["gems"]["Determination"]["spiritCost"], 50)
+        self.assertEqual(self.pack["gems"]["Discipline"]["spiritCost"], 35)
+        self.assertEqual(self.pack["gems"]["HeraldOfIce"]["spiritCost"], 25)
+        self.assertEqual(self.pack["gems"]["HeraldOfAsh"]["spiritCost"], 25)
+        self.assertEqual(self.pack["gems"]["Fireball"]["spiritCost"], 0)
 
         # Cyclone lv1/lv20 확인
         cyc = self.pack["gems"]["Cyclone"]

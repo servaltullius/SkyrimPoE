@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/KillTracker.h"
+#include "core/StatEngine.h"
+#include "core/Types.h"
 
 #include <cstdint>
 #include <vector>
@@ -14,13 +16,18 @@ namespace SkyrimPoE::Runtime
     public:
         static constexpr float kVerticalHeightLimit = 150.0f;
 
-        static void Initialize(Core::KillTracker* killTracker);
+        static void Initialize(Core::KillTracker* killTracker, Core::StatEngine* statEngine = nullptr);
 
         // 현재 스레드가 우리 DLL의 DoDamage 직접 피해 호출 안에 있는지 여부(재귀 방지)
         [[nodiscard]] static bool IsInPluginDirectDamage() noexcept;
 
         // 결정 52: 플레이어 본인, 동료, 플레이어 소환수/지배 대상은 아군으로 제외
         [[nodiscard]] static bool IsAllyOfPlayer(const RE::PlayerCharacter* player, const RE::Actor* actor) noexcept;
+
+        // U3 확정(2026-11-20): 전 모듈 단일 보스 판정 기준(ActorTypeDragon 키워드 또는 LocTypeBoss 참조 타입)
+        [[nodiscard]] static bool IsDragonActor(const RE::Actor* actor) noexcept;
+        [[nodiscard]] static bool HasLocationBossRefType(const RE::Actor* actor) noexcept;
+        [[nodiscard]] static bool IsBossOrDragon(const RE::Actor* actor) noexcept;
 
         // 결정 109, 133, 139, 148: 번지는 피해(isDirectHit=false)는 현재 적대(IsHostileToActor) 필수,
         // 직격(isDirectHit=true)은 비적대 대상도 허용(아군은 항상 제외).
@@ -44,6 +51,18 @@ namespace SkyrimPoE::Runtime
             const RE::NiPoint3& origin,
             float radius,
             double skyrimDamage,
-            RE::FormID vfxExplosionLocalId);
+            RE::FormID vfxExplosionLocalId,
+            Core::DamageType dominantType = Core::DamageType::Cold);
+
+        // 5단계: 고정 좌표에 무해 EXPL 연출만 스폰(주 갱신 스레드 전용)
+        static void SpawnHarmlessVfx(const RE::NiPoint3& origin, RE::FormID vfxExplosionLocalId);
+
+        // 5단계: 단일 대상 DLL 직접 피해(감전 증폭 + 몬스터 저항/적 ES + KillTracker 100% ES 흡수 기여 보장 + DoDamage)
+        static bool DealDirectSkillDamage(
+            RE::Actor* target,
+            double rawSkyrimDamage,
+            Core::DamageType dominantType,
+            bool isDirectHit,
+            bool bypassesMonsterEs = false);
     };
 }

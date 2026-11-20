@@ -26,6 +26,16 @@ namespace SkyrimPoE::Core
         std::uint32_t bossKillCount = 0;
         std::uint32_t dragonKillCount = 0;
         std::uint32_t ascendancyMilestonesBitmask = 0;  // bit 0..2 = 1~3차 보스 이정표(각 +2점)
+
+        [[nodiscard]] bool IsAllocated(std::uint32_t nodeId) const noexcept
+        {
+            for (const auto id : allocatedNodes) {
+                if (id == nodeId) {
+                    return true;
+                }
+            }
+            return false;
+        }
     };
 
     enum class DamageType : std::uint8_t
@@ -44,8 +54,72 @@ namespace SkyrimPoE::Core
         AttackChannel = 1,
         Trigger = 2,
         Spell = 3,
-        Support = 4
+        Support = 4,
+        Aura = 5,
+        Herald = 6,
+        Guard = 7
     };
+
+    // 5단계(결정 162): 벨트 참 6종(자동 발동, 최대 3칸)
+    enum class CharmKind : std::uint8_t
+    {
+        Ruby = 0,
+        Sapphire = 1,
+        Topaz = 2,
+        Amethyst = 3,
+        Purifying = 4,
+        Bastion = 5,
+        Count = 6
+    };
+
+    inline constexpr std::size_t kCharmKindCount = static_cast<std::size_t>(CharmKind::Count);
+    inline constexpr std::size_t kMaxCharmSlots = 3;
+
+    struct CharmSlotState
+    {
+        bool occupied = false;
+        CharmKind kind = CharmKind::Ruby;
+        double charges = 40.0;
+    };
+
+    // 5단계(결정 163): 핵심 상태이상 5종(출혈·중독 분리 포함 6상태)
+    enum class AilmentKind : std::uint8_t
+    {
+        Ignite = 0,
+        Chill = 1,
+        Freeze = 2,
+        Shock = 3,
+        Bleed = 4,
+        Poison = 5,
+        Count = 6
+    };
+
+    // 5단계(결정 164): 매직·레어 몬스터 런타임 승격
+    enum class MonsterRarity : std::uint8_t
+    {
+        Normal = 0,
+        Magic = 1,
+        Rare = 2
+    };
+
+    enum class MonsterModKind : std::uint8_t
+    {
+        Hasted = 0,
+        Armoured = 1,
+        FireResistant = 2,
+        ColdResistant = 3,
+        LightningResistant = 4,
+        ChaosResistant = 5,
+        EnergyShielded = 6,
+        ExtraPhysical = 7,
+        ExtraFire = 8,
+        ExtraCold = 9,
+        ExtraLightning = 10,
+        Deadly = 11,
+        Count = 12
+    };
+
+    inline constexpr std::size_t kMonsterModCount = static_cast<std::size_t>(MonsterModKind::Count);
 
     struct DamageRange
     {
@@ -139,8 +213,8 @@ namespace SkyrimPoE::Core
         double minChannelSeconds = 0.6;
         double channelIgnoreStagger = 0.5;
 
-        // [PassiveTree] (3단계: 결정 151~155)
-        std::uint32_t treePanelKey = 0x19;  // P
+        // [PassiveTree] (3단계: 결정 151~155, U1 실게임 충돌 확인 후 비충돌 L=0x26 적용)
+        std::uint32_t treePanelKey = 0x26;  // L (0x19 P는 바닐라 Quick Magic과 충돌 실측)
         bool freePassiveRefund = true;      // C++ 기본값은 단위 테스트 호환을 위해 true 유지; 배포 INI 기본값은 false(결정 152·158)
         std::string simpleImeMode = "auto";  // auto | on | off
         std::int32_t bonusPassivePoints = 0;
@@ -149,7 +223,7 @@ namespace SkyrimPoE::Core
         // [Items] (4단계: 결정 156~160)
         std::uint32_t gearPanelKey = 0x18;  // O
         bool giveStarterCurrency = true;
-        bool enforceGemRequirements = false;  // 4단계 9개 스타터 젬(Cyclone Lv28 등) Lv1 호환 유지; 5단계 전 젬 풀 시 true
+        bool enforceGemRequirements = true;  // U2 확정(2026-11-20): 기본 true (AutoTest는 실행 중 임시 우회 후 원복)
         bool includeModdedBasesInTokenPool = false;
         std::uint32_t ascendancyRefundCost = 5;  // 전직 노드 1개 회수 시 후회의 오브 비용(PoE1 표준 5)
 
@@ -165,5 +239,19 @@ namespace SkyrimPoE::Core
         double worldDropReturnSeconds = 120.0;
         bool lootBeamEnabled = true;
         bool lootSoundEnabled = true;
+
+        // [Spirit] (5단계: 결정 161)
+        std::uint32_t spiritBase = 100;
+        std::uint32_t spiritPerMilestone = 30;
+
+        // [Charms] (5단계: 결정 162)
+        bool enableCharms = true;
+
+        // [Monsters] (5단계: 결정 164)
+        bool enableMonsterPromotion = true;
+        double magicMonsterChance = 0.12;
+        double rareMonsterChance = 0.04;
+        double uniqueDropChance = 0.04;
+        double monsterEsRatio = 0.35;
     };
 }

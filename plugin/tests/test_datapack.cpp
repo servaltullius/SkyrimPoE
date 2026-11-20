@@ -22,7 +22,7 @@ namespace
     }
 }
 
-POE_TEST("DataPack: loads core_3_30.json constants, classes, tables, and 9 gems")
+POE_TEST("DataPack: loads core_3_30.json constants, classes, tables, and 28 gems")
 {
     const DataPack pack = LoadStage2Pack();
     POE_CHECK(pack.IsLoaded());
@@ -33,7 +33,7 @@ POE_TEST("DataPack: loads core_3_30.json constants, classes, tables, and 9 gems"
     POE_CHECK_NEAR(pack.Constants().resistCap, 75.0, 1e-6);
     POE_CHECK_NEAR(pack.Constants().esRechargeDelay, 2.0, 1e-6);
 
-    POE_CHECK(pack.AllGems().size() == 9);
+    POE_CHECK(pack.AllGems().size() == 28);
     POE_CHECK(pack.FindGem("Cyclone") != nullptr);
     POE_CHECK(pack.FindGem("SupportCastOnCriticalStrike") != nullptr);
     POE_CHECK(pack.FindGem("IceNova") != nullptr);
@@ -43,6 +43,14 @@ POE_TEST("DataPack: loads core_3_30.json constants, classes, tables, and 9 gems"
     POE_CHECK(pack.FindGem("SupportBrutality") != nullptr);
     POE_CHECK(pack.FindGem("SupportIncreasedAreaOfEffect") != nullptr);
     POE_CHECK(pack.FindGem("SupportConcentratedEffect") != nullptr);
+    POE_CHECK(pack.FindGem("Fireball") != nullptr);
+    POE_CHECK(pack.FindGem("FreezingPulse") != nullptr);
+    POE_CHECK(pack.FindGem("Arc") != nullptr);
+    POE_CHECK(pack.FindGem("Spark") != nullptr);
+    POE_CHECK(pack.FindGem("Determination") != nullptr && pack.FindGem("Determination")->kind == GemKind::Aura && pack.FindGem("Determination")->spiritCost == 50);
+    POE_CHECK(pack.FindGem("Discipline") != nullptr && pack.FindGem("Discipline")->spiritCost == 35);
+    POE_CHECK(pack.FindGem("HeraldOfIce") != nullptr && pack.FindGem("HeraldOfIce")->kind == GemKind::Herald && pack.FindGem("HeraldOfIce")->spiritCost == 25);
+    POE_CHECK(pack.FindGem("MoltenShell") != nullptr && pack.FindGem("MoltenShell")->kind == GemKind::Guard);
 
     const auto* scion = pack.FindClass("Scion");
     POE_CHECK(scion != nullptr);

@@ -1,5 +1,6 @@
 #include "PCH.h"
 
+#include "core/CharmSystem.h"
 #include "core/CommandQueue.h"
 #include "core/Config.h"
 #include "core/DataPack.h"
@@ -10,6 +11,7 @@
 #include "core/SkillSystem.h"
 #include "core/StatEngine.h"
 #include "runtime/Addresses.h"
+#include "runtime/AilmentRuntime.h"
 #include "runtime/AutoTest.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/CraftingRuntime.h"
@@ -20,6 +22,9 @@
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/MainUpdateHook.h"
+#include "runtime/MonsterRuntime.h"
+#include "runtime/ProjectileRuntime.h"
+#include "runtime/ProxySpellRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 #include "runtime/UiBridge.h"
@@ -45,6 +50,7 @@ namespace
     Core::StatEngine g_statEngine;
     Core::EnergyShieldPool g_energyShield;
     Core::SkillSystem g_skillSystem;
+    Core::CharmSystem g_charmSystem;
     Core::KillTracker g_killTracker;
 
     void SetupLogging()
@@ -118,6 +124,33 @@ namespace
         check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamCurrency),
             "SPOE_LootBeam_Currency", Runtime::FormIds::kLootBeamCurrency);
 
+        // 5단계 폼(벨트 5 + 벨트 토큰 10 + 주얼 3 + 참 6 + 투사체 3 + 폭발 VFX 1 + 고유 토큰 1 + 고유 빛기둥 1)
+        for (const auto fid : Runtime::FormIds::kBeltBaseForms) {
+            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Belt", fid);
+        }
+        for (std::size_t off = 0; off < Runtime::FormIds::kBeltTokenCount; ++off) {
+            const auto fid = Runtime::FormIds::kBeltTokenBase + static_cast<RE::FormID>(off);
+            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Tok_Belt", fid);
+        }
+        for (const auto fid : Runtime::FormIds::kJewelBaseForms) {
+            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Jewel", fid);
+        }
+        for (const auto fid : Runtime::FormIds::kCharmForms) {
+            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Charm", fid);
+        }
+        check(Runtime::FormIds::Lookup<RE::BGSProjectile>(Runtime::FormIds::kProjFireball),
+            "SPOE_Proj_Fireball", Runtime::FormIds::kProjFireball);
+        check(Runtime::FormIds::Lookup<RE::BGSProjectile>(Runtime::FormIds::kProjFreezingPulse),
+            "SPOE_Proj_FreezingPulse", Runtime::FormIds::kProjFreezingPulse);
+        check(Runtime::FormIds::Lookup<RE::BGSProjectile>(Runtime::FormIds::kProjSpark),
+            "SPOE_Proj_Spark", Runtime::FormIds::kProjSpark);
+        check(Runtime::FormIds::Lookup<RE::BGSExplosion>(Runtime::FormIds::kVfxFireBurst),
+            "SPOE_Vfx_FireBurst", Runtime::FormIds::kVfxFireBurst);
+        check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(Runtime::FormIds::kUniqueSealedToken),
+            "SPOE_Tok_Unique", Runtime::FormIds::kUniqueSealedToken);
+        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamUnique),
+            "SPOE_LootBeam_Unique", Runtime::FormIds::kLootBeamUnique);
+
         SKSE::log::info("SkyrimPoE.esp form verification: {} found, {} missing.", found, missing);
     }
 
@@ -153,11 +186,13 @@ namespace
                 kTreePackPath, treeError);
         }
 
-        // 2c. 4단계 아이템·어픽스·화폐 데이터 로드
+        // 2c. 4~5단계 아이템·어픽스·화폐·벨트·참·몬스터 속성·고유 데이터 로드
         std::string itemsError;
         if (g_itemData.LoadFromFile(kItemsPackPath, &itemsError)) {
-            SKSE::log::info("ItemData loaded: affixes={}, currencies={}.",
-                g_itemData.AllAffixes().size(), g_itemData.AllCurrencies().size());
+            SKSE::log::info("ItemData loaded: affixes={}, currencies={}, belts={}, charms={}, monsterMods={}, uniques={}.",
+                g_itemData.AllAffixes().size(), g_itemData.AllCurrencies().size(),
+                g_itemData.AllBelts().size(), g_itemData.AllCharms().size(),
+                g_itemData.AllMonsterMods().size(), g_itemData.AllUniques().size());
         } else {
             SKSE::log::error("ItemData load failed ('{}'): {}. Item crafting disabled.",
                 kItemsPackPath, itemsError);
@@ -172,30 +207,49 @@ namespace
             return;
         }
 
-        Runtime::SkillExecution::Initialize(&g_killTracker);
-        Runtime::EquipmentSync::Initialize(&g_itemData);
-        Runtime::CraftingRuntime::Initialize(&g_itemData, &g_dataPack, &g_treeData, &g_config);
+        Runtime::SkillExecution::Initialize(&g_killTracker, &g_statEngine);
+        Runtime::EquipmentSync::Initialize(&g_itemData, &g_charmSystem);
+        Runtime::CraftingRuntime::Initialize(&g_itemData, &g_dataPack, &g_treeData, &g_config, &g_charmSystem, &g_statEngine);
         Runtime::WorldDropTracker::Initialize(&g_itemData, &g_config);
+        Runtime::MonsterRuntime::Initialize(&g_statEngine, &g_itemData, &g_config);
+        Runtime::AilmentRuntime::Initialize(&g_statEngine, &g_charmSystem, &g_dataPack, &g_config);
         (void)Runtime::GemInventory::Install(&g_commandQueue);
         (void)Runtime::ItemTracker::Install(&g_commandQueue, []() {
             Runtime::EquipmentSync::MarkDirty();
         });
-        (void)Runtime::DeathListener::Install(&g_killTracker, &g_commandQueue, &g_config);
+        (void)Runtime::DeathListener::Install(&g_killTracker, &g_commandQueue, &g_config, &g_statEngine, &g_charmSystem);
         (void)Runtime::CombatHooks::Install(
-            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_config);
+            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_config, &g_skillSystem, &g_charmSystem);
         (void)Runtime::CycloneRuntime::Install(
             &g_commandQueue, &g_statEngine, &g_skillSystem, &g_dataPack, &g_config);
+        (void)Runtime::ProjectileRuntime::Install(
+            &g_commandQueue, &g_statEngine, &g_skillSystem, &g_dataPack, &g_config);
+        (void)Runtime::ProxySpellRuntime::Install(
+            &g_commandQueue, &g_statEngine, &g_skillSystem, &g_dataPack, &g_config);
         (void)Runtime::UiBridge::Install(
-            &g_commandQueue, &g_statEngine, &g_energyShield, &g_dataPack, &g_treeData, &g_itemData, &g_config);
+            &g_commandQueue, &g_statEngine, &g_energyShield, &g_dataPack, &g_treeData, &g_itemData, &g_config,
+            &g_skillSystem, &g_charmSystem);
         Runtime::AutoTest::Install(
-            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_treeData, &g_itemData, &g_config);
+            &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_treeData, &g_itemData, &g_config,
+            &g_skillSystem, &g_charmSystem);
 
-        // 주 갱신 스레드 프레임 콜백 등록: 장비 동기화 + 바닥 드랍/빛기둥 + 풀/ES + 사이클론·CoC + HUD/UI + 자동 시험
+        Runtime::SaveLoad::AddRevertCallback([]() {
+            Runtime::MonsterRuntime::ResetOnRevert();
+            Runtime::AilmentRuntime::ResetOnRevert();
+            Runtime::ProjectileRuntime::ResetOnRevert();
+            Runtime::ProxySpellRuntime::ResetOnRevert();
+        });
+
+        // 주 갱신 스레드 프레임 콜백 등록: 장비 동기화 + 바닥 드랍/빛기둥 + 몬스터/상태이상/투사체/대리주문 + 풀/ES/참 + 사이클론·CoC + HUD/UI + 자동 시험
         Runtime::MainUpdateHook::AddFrameCallback([](RE::Main* main, double dt) {
             auto* ui = RE::UI::GetSingleton();
             const bool paused = ui && ui->GameIsPaused();
             Runtime::EquipmentSync::FlushIfDirty();
             Runtime::WorldDropTracker::Tick(dt, paused);
+            Runtime::MonsterRuntime::Tick(dt, paused);
+            Runtime::AilmentRuntime::Tick(dt, paused);
+            Runtime::ProjectileRuntime::Tick(dt, paused);
+            Runtime::ProxySpellRuntime::Tick(dt, paused);
             Runtime::CombatHooks::TickPlayerPools(dt, paused);
             Runtime::CycloneRuntime::Tick(dt, paused);
             Runtime::UiBridge::Tick(main);
@@ -203,7 +257,7 @@ namespace
         });
 
         Runtime::SaveLoad::SyncStateToStatEngine();
-        SKSE::log::info("SkyrimPoE Stage 4 runtime initialization complete.");
+        SKSE::log::info("SkyrimPoE Stage 5 runtime initialization complete.");
     }
 
     void OnSkseMessage(SKSE::MessagingInterface::Message* msg)
@@ -276,7 +330,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
         }
 
         // SKSE 직렬화 콜백은 SKSEPluginLoad 단계에서 등록한다.
-        (void)Runtime::SaveLoad::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_treeData, &g_config);
+        (void)Runtime::SaveLoad::Install(
+            &g_commandQueue, &g_statEngine, &g_dataPack, &g_treeData, &g_config, &g_itemData, &g_charmSystem);
     } catch (const std::exception& e) {
         SKSE::log::error("SkyrimPoE startup exception: {}", e.what());
     } catch (...) {

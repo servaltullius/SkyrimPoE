@@ -47,7 +47,29 @@ namespace SkyrimPoE::Core
             std::uint32_t baseFormId,
             std::uint32_t exileLevel,
             const ItemData& data,
+            std::mt19937_64& rng,
+            std::string_view implicitAffixId = {},
+            std::uint8_t jewelColor = 0);
+
+        // 5단계(결정 164): PoE1 고유 아이템 16종 중 1종을 스펙대로 생성한다(임플리싯·명시 어픽스 롤 포함).
+        [[nodiscard]] static PoEItemRecord RollUniqueItem(
+            const UniqueDefinition& def,
+            std::uint32_t resolvedBaseFormId,
+            std::uint32_t itemLevel,
+            const ItemData& data,
             std::mt19937_64& rng);
+
+        // 5단계(결정 162): 벨트 베이스의 고정 임플리싯 어픽스를 1회 추첨한다.
+        [[nodiscard]] static std::vector<RolledAffix> RollBeltImplicits(
+            const BeltBaseDef& belt,
+            const ItemData& data,
+            std::mt19937_64& rng);
+
+        // 5단계(결정 162): 장착 중인 벨트의 티어/희귀도/Stygian/고유 여부에 따라 개방 참 슬롯 수(0~3)를 계산한다.
+        [[nodiscard]] static std::uint8_t ComputeBeltCharmSlots(
+            bool beltEquipped,
+            const PoEItemRecord* beltRec,
+            bool isStygianVise) noexcept;
 
         // 장비 대상 제작 오브 9종 적용(Transmutation, Augmentation, Alteration, Regal, Alchemy, Chaos, Exalted, Scouring, Divine).
         // 실패(code != Ok) 시 item은 수정되지 않으며 호출자는 오브를 차감하지 않는다.

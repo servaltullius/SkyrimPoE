@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/CharmSystem.h"
 #include "core/DataPack.h"
 #include "core/ItemTypes.h"
 #include "core/PassiveStatParser.h"
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace SkyrimPoE::Core
 {
@@ -53,11 +55,16 @@ namespace SkyrimPoE::Core
         // 3단계: 패시브 트리 전체에서 집계된 정적 스탯·키스톤 합산치
         PassiveStatTotals passives{};
 
-        // 4단계(결정 156): 논리 8칸 장착 장비 입력
+        // 4~5단계(결정 156, 162): 논리 10칸 장착 장비 입력(8 물리 + 가상 반지2·벨트)
         std::array<EquippedSlotInput, kEquipSlotCount> equippedGear{};
+
+        // 5단계(결정 161, 164): 패시브 주얼 소켓(고정점 루프 진입 전 선합산), 오라 토글, 보스 이정표 달성 수
+        std::vector<ItemStatTotals> socketedJewelStats;
+        std::uint16_t activeAuraMask = 0;         // bit i = 스킬 칸 i의 오라/전령 ON 요청
+        std::uint8_t completedMilestoneCount = 0; // 0..3 (보스 이정표 1~3차 각 +30 정신력)
     };
 
-    // 층 ②: 충전·버프·이동·생명력 비율 등 동적 상태 입력(결정 117)
+    // 층 ②: 충전·버프·이동·생명력 비율·참·헤드헌터·가드 등 동적 상태 입력(결정 117)
     struct Layer2Input
     {
         bool moving = false;
@@ -66,6 +73,11 @@ namespace SkyrimPoE::Core
         std::uint8_t enduranceCharges = 0;
         std::uint8_t frenzyCharges = 0;
         std::uint8_t powerCharges = 0;
+
+        // 5단계 동적 버프
+        CharmActiveBonuses charmBonuses{};
+        std::uint16_t headhunterModMask = 0;   // 레어 몬스터로부터 훔친 속성 비트마스크(최대 60초)
+        double moltenShellBonusArmour = 0.0;   // 용암 방패 활성 중 고정 방어도 보너스
     };
 
     // 사전 계산된 스킬 1건의 집계 스탯(불변 사본 내부)
@@ -79,7 +91,7 @@ namespace SkyrimPoE::Core
 
         DamagePacket baseHitDamage;
         double attackSpeedMult = 1.0;        // 사이클론 기본 3.0 × 보조/충전 배율
-        double castSpeedMult = 1.0;          // 주문 시전 속도 배율(패시브 시전 속도 + 격분 충전)
+        double castSpeedMult = 1.0;          // 주문 시전 속도 배율(패시브 시전 속도 + 격분 충전 + 주문 메아리)
         double baseCritChancePct = 5.0;      // 무기 또는 주문 기본 치명타 + 추가 기본 치명타
         double critChanceIncPct = 0.0;       // 치명타 확률 증가 합
         double critMultiplierPct = 150.0;    // 치명타 피해 배율(%)
@@ -89,6 +101,23 @@ namespace SkyrimPoE::Core
         bool dealNoElemental = false;
         bool dealNoChaos = false;
         bool requirementMet = true;  // 4단계: 젬 레벨·능력치 요구치 충족 여부(검수 C3)
+
+        // 5단계: 정신력·투사체·연쇄·분기·관통·반복·상태이상·가드 필드
+        std::uint32_t spiritCost = 0;
+        bool auraActive = false;
+        std::uint8_t projectileCount = 1;
+        std::uint8_t chainCount = 0;
+        bool forkEnabled = false;
+        std::uint8_t pierceCount = 0;
+        bool alwaysPierce = false;
+        std::uint8_t spellRepeatCount = 0;
+        double igniteChancePct = 0.0;
+        double arcRemainingChainMorePct = 0.0;
+        double moltenShellFlatArmour = 0.0;
+        double moltenShellAbsorbPct = 75.0;
+        double moltenShellAbsorbCapPoe = 0.0;
+        double moltenShellDurationSec = 3.0;
+        double moltenShellReflectPct = 100.0;
 
         [[nodiscard]] double EffectiveCritChancePct() const noexcept
         {
@@ -143,7 +172,40 @@ namespace SkyrimPoE::Core
         std::uint8_t maxFrenzyCharges = 3;
         std::uint8_t maxPowerCharges = 3;
 
-        // 4단계(결정 156, 통합 설계서 17장): 고정점 수렴 후 8칸 장비 활성 및 요구치 미달 상태
+        // 5단계(결정 161~164): 정신력·오라·전령·고유 특수 효과·참 면역
+        std::uint32_t maxSpirit = 100;
+        std::uint32_t reservedSpirit = 0;
+        std::uint16_t effectiveActiveAuraMask = 0;
+        bool heraldOfIceActive = false;
+        double heraldOfIceExplosionMin = 0.0;
+        double heraldOfIceExplosionMax = 0.0;
+        bool heraldOfAshActive = false;
+        double heraldOfAshOverkillPct = 0.0;
+
+        bool elementalAilmentImmune = false;  // Purity of Elements
+        bool cannotBeFrozen = false;          // Wanderlust / 정화의 참 / Purity of Elements
+        bool bleedImmune = false;             // 정화의 참
+        std::uint8_t activeCharmMask = 0;     // 이 스냅샷에 이미 반영된 참 비트마스크(같은 프레임 연속 피격 보정용)
+        bool shavronneChaosEs = false;        // Shavronne's Wrappings
+        bool starforgeShock = false;          // Starforge
+        bool dealNoElemental = false;         // Starforge 전역 패널티
+        bool berekProlif = false;             // Berek's Respite
+        bool headhunter = false;              // Headhunter
+        double flatManaCostDelta = 0.0;       // Praxis 등
+        double manaRegenPerSec = 0.0;
+        double esRecoupPct = 0.0;
+        double incDamageVsRarePct = 0.0;
+        double itemRarityPct = 0.0;
+        double flatPhysTakenFromAttacksDelta = 0.0;  // U5: Astramentis 등 공격 물리 피해 고정 증감(PoE 단위)
+
+        // 5단계(N-1): 전역 상태이상 유발 확률(%)
+        double igniteChancePct = 0.0;
+        double freezeChancePct = 0.0;
+        double shockChancePct = 0.0;
+        double bleedChancePct = 0.0;
+        double poisonChancePct = 0.0;
+
+        // 4~5단계(결정 156, 162): 고정점 수렴 후 10칸 장비 활성 및 요구치 미달 상태
         std::array<bool, kEquipSlotCount> gearSlotActive{};
         std::array<bool, kEquipSlotCount> gearSlotReqFailed{};
 

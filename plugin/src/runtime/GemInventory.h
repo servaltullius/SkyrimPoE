@@ -17,6 +17,8 @@ namespace SkyrimPoE::Runtime
         Core::InventoryItemKey key;
         bool isWorld = false;
         Core::GemInstance gem;
+        // C-35: TESUniqueIDChangeEvent 싱크에서 폼 조회 없이 event->objectID를 대조하기 위한 런타임 베이스 폼 ID 캐시
+        RE::FormID baseFormId = 0;
     };
 
     struct PlayerGemInventorySnapshot
@@ -30,18 +32,27 @@ namespace SkyrimPoE::Runtime
         std::vector<PlainStack> plainStacks;
     };
 
-    // 결정 59·105~108: 데이터 젬의 (소유자 FormID, ExtraUniqueID) 추적과 인벤토리 반환·회수.
-    // TESUniqueIDChangeEvent는 내부 뮤텍스 보호 메모리 갱신만 수행하고, 엔진 변경은 주 갱신 큐로 넘긴다.
+    // 결정 59·105~108·123: 데이터 젬의 (소유자 FormID, ExtraUniqueID) 추적과 인벤토리 반환·회수.
+    // - TESUniqueIDChangeEvent는 내부 뮤텍스 보호 메모리 갱신만 수행(예외: 버릴 때 바닥 참조에 스탬프 남기기).
+    // - TESContainerChangedEvent(바닥 → 컨테이너)는 스탬프를 대조만 하고, 다시 잇기는 주 갱신 큐로 예약한다.
     class GemInventory
     {
     public:
         static bool Install(Core::CommandQueue* queue);
 
-        // 주 갱신 스레드 전용: 2단계 9종 젬을 플레이어 인벤토리에 1개씩 순정 지급한다.
+        // 주 갱신 스레드 전용: 전체 28종 젬을 플레이어 인벤토리에 1개씩 순정 지급한다.
         static std::size_t GiveStarterGems(RE::PlayerCharacter* player);
+
+        // 주 갱신 스레드 전용: 기존 4단계 세이브 업그레이드용으로 5단계 신규 19종 젬만 1개씩 지급한다.
+        static std::size_t GiveStage5StarterGems(RE::PlayerCharacter* player);
 
         // 주 갱신 스레드 전용: UI 표시용으로 플레이어 인벤토리의 데이터 젬 + 순정 젬 수량을 조회한다.
         [[nodiscard]] static PlayerGemInventorySnapshot ListPlayerGems(RE::PlayerCharacter* player);
+
+        // 주 갱신 스레드 전용(계약: g_txMutex 미보유 상태에서만 호출):
+        // owner 인벤토리에 (바닥 참조, 스탬프) 묶음으로 남아 있는 추적 젬을 owner의 새 인벤토리 번호로 다시 잇는다.
+        // 줍기 예약이 실행되지 못한 경우(예약 전 저장·로드, 로드 세대 폐기)의 보완 경로이기도 하다.
+        static std::size_t RelinkPickedUpGems(RE::TESObjectREFR* owner, bool postLoadOwnerNormalized = false);
 
         // 주 갱신 스레드 전용: 탈착·보관된 데이터 젬을 ExtraUniqueID와 함께 플레이어 인벤토리에 넣는다.
         static std::optional<Core::InventoryItemKey> ReturnGemToPlayerInventory(

@@ -350,6 +350,25 @@ namespace SkyrimPoE::Core
             out.spellCostEfficiencyPct += val; return true;
         }
 
+        // 5단계(N-1): 상태이상 유발 확률 (PoB 3.30 원문 패턴)
+        if (rest == "chance to ignite") { out.igniteChancePct += val; return true; }
+        if (rest == "chance to freeze") { out.freezeChancePct += val; return true; }
+        if (rest == "chance to shock") { out.shockChancePct += val; return true; }
+        if (rest == "chance to freeze, shock and ignite") {
+            out.freezeChancePct += val;
+            out.shockChancePct += val;
+            out.igniteChancePct += val;
+            return true;
+        }
+        if (rest == "chance to cause bleeding" || rest == "chance to bleed" ||
+            rest == "chance to cause bleeding with attacks") {
+            out.bleedChancePct += val; return true;
+        }
+        if (rest == "chance to poison on hit" || rest == "chance to poison" ||
+            rest == "chance to poison on hit with attacks") {
+            out.poisonChancePct += val; return true;
+        }
+
         return false;
     }
 

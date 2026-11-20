@@ -222,8 +222,9 @@ POE_TEST("StatEngine: 2-pass attribute convergence, Iron Reflexes, Blood Magic, 
     POE_CHECK(snap->dex == 100);
     POE_CHECK_NEAR(snap->evasion, 0.0, 1e-9);
     // Iron Reflexes: Dex evasion bonus suppressed (0%).
-    // flatArmour(100) * (1 + 0.5) = 150, flatEvasion(200) * (1 + 0.5 + 0.5) = 400 -> total 550!
-    POE_CHECK_NEAR(snap->armour, 550.0, 1e-9);
+    // C-11: PoB Data/Misc.lua base_evasion_rating = 15 반영 ->
+    // flatArmour(100) * (1 + 0.5) = 150, flatEvasion(15 + 200) * (1 + 0.5 + 0.5) = 430 -> total 580!
+    POE_CHECK_NEAR(snap->armour, 580.0, 1e-9);
     POE_CHECK_NEAR(snap->maxFireResist, 78.0, 1e-9);
     POE_CHECK_NEAR(snap->maxColdResist, 90.0, 1e-9);
 
@@ -374,7 +375,7 @@ POE_TEST("Config: parses [PassiveTree] section from SkyrimPoE.ini")
     const auto loaded = LoadConfigFromFile(iniPath);
     POE_CHECK(loaded.fileFound);
     const auto& cfg = loaded.config;
-    POE_CHECK(cfg.treePanelKey == 0x19);
+    POE_CHECK(cfg.treePanelKey == 0x26);
     POE_CHECK(!cfg.freePassiveRefund);
     POE_CHECK(cfg.simpleImeMode == "auto");
     POE_CHECK(cfg.gearPanelKey == 0x18);

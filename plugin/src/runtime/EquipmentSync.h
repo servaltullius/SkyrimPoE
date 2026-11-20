@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/CharmSystem.h"
 #include "core/ItemData.h"
 #include "core/ItemTypes.h"
 #include "core/Types.h"
@@ -25,13 +26,13 @@ namespace SkyrimPoE::Runtime
         Core::PoEItemRecord record{};
     };
 
-    // 결정 156, 검수 C5/M3:
-    // 플레이어가 착용한 WEAP/ARMO를 ExtraWorn/ExtraWornLeft로 직접 스캔해 논리 8칸으로 단일 귀속한다.
+    // 결정 156, 162, 검수 C5/M3:
+    // 플레이어가 착용한 WEAP/ARMO(물리 8칸)와 가상 반지2·벨트(논리 2칸)를 논리 10칸으로 단일 귀속한다.
     // SaveLoad::SyncStateToStatEngine()이 GetCurrentGearSnapshot()을 병합하는 단일 조합 지점을 사용한다.
     class EquipmentSync
     {
     public:
-        static void Initialize(const Core::ItemData* itemData);
+        static void Initialize(const Core::ItemData* itemData, Core::CharmSystem* charmSystem = nullptr);
 
         // 방어구·무기 분류 공용 헬퍼(UiBridge·CraftingRuntime 공용)
         [[nodiscard]] static std::optional<Core::EquipSlot> ClassifyArmorEquipSlot(const RE::TESObjectARMO* armor) noexcept;

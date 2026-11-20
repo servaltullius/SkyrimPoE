@@ -3,8 +3,23 @@
 
   const TREE = window.POE_TREE || null;
   if (!TREE || !Array.isArray(TREE.nodes)) {
+    const showMissingTreeError = () => {
+      const wrap = document.getElementById("tree-canvas-wrap");
+      if (wrap && !wrap.querySelector(".tree-error-banner")) {
+        const msg = document.createElement("div");
+        msg.className = "tree-error-banner";
+        msg.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#f5c06f;font-size:15px;padding:24px;text-align:center;";
+        msg.textContent = "패시브 트리 데이터(tree_data.js)를 불러오지 못했습니다. 모드 설치 파일을 확인해 주세요.";
+        wrap.appendChild(msg);
+      }
+      if (window.poeShowToast) {
+        window.poeShowToast(false, "패시브 트리 데이터가 로드되지 않았습니다.");
+      }
+    };
     window.poeTreeModule = {
-      setActive() {},
+      setActive(active) {
+        if (active) showMissingTreeError();
+      },
       updateState() {},
       onImeText() {},
       onImeKey() {},
@@ -45,6 +60,13 @@
   const masteryList = document.getElementById("tree-mastery-list");
   const btnMasteryClose = document.getElementById("btn-mastery-modal-close");
   const btnMasteryRefund = document.getElementById("btn-mastery-refund");
+
+  const jewelModal = document.getElementById("tree-jewel-modal");
+  const jewelTitle = document.getElementById("tree-jewel-title");
+  const jewelCurrent = document.getElementById("tree-jewel-current");
+  const jewelBagList = document.getElementById("tree-jewel-bag-list");
+  const btnJewelClose = document.getElementById("btn-jewel-modal-close");
+  let openJewelNodeId = 0;
 
   const treeStatsGrid = document.getElementById("tree-stats-grid");
   const treeKeystonesBox = document.getElementById("tree-keystones-box");
@@ -835,6 +857,7 @@
 
     // 2b. 동적 노드 상태 (할당됨 / 마스터리 해금 / 호버 경로 / 검색 일치 / 호버 강조)
     const mSel = treeState.masterySelections || {};
+    const jSel = treeState.socketedJewels || {};
     for (let cx = cMinX; cx <= cMaxX; cx++) {
       for (let cy = cMinY; cy <= cMaxY; cy++) {
         const bucket = spatialGrid.get(cellKey(cx, cy));
@@ -846,15 +869,30 @@
           const isStart = activeStartIds.has(n.id);
           const isMasteryAlloc = n.k === KIND_MASTERY && mSel[String(n.id)] !== undefined;
           const isMasteryOpen = n.k === KIND_MASTERY && !isMasteryAlloc && isMasteryUnlocked(n);
+          const socketedJ = n.k === KIND_SOCKET ? jSel[String(n.id)] : undefined;
           const isPreview = hoverPathSet.has(n.id);
           const isMatch = searchMatchSet.has(n.id);
           const isHubOpen = n.mc && isHubUnlocked(n.id);
 
           if (isAlloc || isStart || isMasteryAlloc || isHubOpen) {
             const fill = isStart ? "#3d2c14" : "#2e2313";
-            const stroke = isMasteryAlloc ? "#7ce8ff" : "#ffd369";
+            const stroke = isMasteryAlloc ? "#7ce8ff" : (socketedJ ? "#6ee7b7" : "#ffd369");
             drawNodeShape(ctx, n, r, fill, stroke, n.k === KIND_NORMAL ? 7 : 10);
-            if (effZoom >= 0.08) {
+            if (socketedJ) {
+              const jr = r * 0.56;
+              const jc = socketedJ.jewelColor;
+              const jColor = (jc === 0 || jc === "crimson") ? "#f87171"
+                : (jc === 1 || jc === "viridian") ? "#4ade80"
+                : (jc === 2 || jc === "cobalt") ? "#60a5fa" : "#facc15";
+              ctx.beginPath();
+              ctx.moveTo(n.x, n.y - jr);
+              ctx.lineTo(n.x + jr, n.y);
+              ctx.lineTo(n.x, n.y + jr);
+              ctx.lineTo(n.x - jr, n.y);
+              ctx.closePath();
+              ctx.fillStyle = jColor;
+              ctx.fill();
+            } else if (effZoom >= 0.08) {
               drawCategoryGlyph(ctx, n.x, n.y, r, n.cat, catAccentColor(n.cat));
             }
           } else if (isPreview) {
@@ -933,7 +971,9 @@
 
   // ---- 툴팁 렌더링 ----
   function updateTooltip() {
-    if (!hoveredNode || !isActive || !classModal.classList.contains("hidden") || !masteryModal.classList.contains("hidden")) {
+    if (!hoveredNode || !isActive || !classModal.classList.contains("hidden") ||
+        !masteryModal.classList.contains("hidden") ||
+        (jewelModal && !jewelModal.classList.contains("hidden"))) {
       tooltipEl.classList.add("hidden");
       return;
     }
@@ -946,7 +986,7 @@
     title.className = "tt-title";
     title.textContent = n.nameKo || n.name;
     head.appendChild(title);
-    if (n.deferred) {
+    if (n.deferred && n.k !== KIND_SOCKET) {
       const tag = document.createElement("span");
       tag.className = "tt-deferred";
       tag.textContent = "추후 적용";
@@ -987,6 +1027,23 @@
         lineEl.textContent = s;
         tooltipEl.appendChild(lineEl);
       }
+      if (n.k === KIND_SOCKET) {
+        const sockJ = ((treeState && treeState.socketedJewels) || {})[String(n.id)];
+        if (sockJ) {
+          const jHead = document.createElement("div");
+          jHead.className = "tt-stat";
+          jHead.textContent = `◆ 장착된 주얼: ${sockJ.title || "주얼"}`;
+          tooltipEl.appendChild(jHead);
+          if (sockJ.card && Array.isArray(sockJ.card.affixLines)) {
+            for (const af of sockJ.card.affixLines) {
+              const ln = document.createElement("div");
+              ln.className = "tt-stat";
+              ln.textContent = `  ${af.textKo || ""}`;
+              tooltipEl.appendChild(ln);
+            }
+          }
+        }
+      }
       if (n.mc) {
         const note = document.createElement("div");
         note.className = "tt-note";
@@ -995,7 +1052,13 @@
       } else if (allocatedSet.has(n.id)) {
         const note = document.createElement("div");
         note.className = "tt-note";
-        note.textContent = "할당됨 · 우클릭으로 회수";
+        const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
+        const ascCost = Number((treeState && treeState.ascendancyRefundCost) || 5);
+        const nodeCost = freeRefund ? 0 : (n.asc ? ascCost : 1);
+        const costSuffix = nodeCost > 0 ? ` (후회의 오브 ${nodeCost}개)` : " (무료)";
+        note.textContent = n.k === KIND_SOCKET
+          ? `할당됨 · 좌클릭: 주얼 장착/회수 · 우클릭: 소켓 회수${costSuffix}`
+          : `할당됨 · 우클릭으로 회수${costSuffix}`;
         tooltipEl.appendChild(note);
       } else if (hoverPath.length > 0) {
         const note = document.createElement("div");
@@ -1122,6 +1185,8 @@
     }
 
     btnMasteryRefund.classList.toggle("hidden", currentEff === undefined);
+    const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
+    btnMasteryRefund.textContent = freeRefund ? "회수" : "회수 (후회 1)";
     masteryModal.classList.remove("hidden");
     tooltipEl.classList.add("hidden");
   }
@@ -1176,14 +1241,67 @@
     runSearch("");
   };
 
+  // ---- C-27: 후회의 오브 소모 회수 2단계 확인 상태(3초 유효) ----
+  let pendingRefundConfirm = null; // { key: string, expiresAt: number }
+
+  function confirmOrProceedRefund(confirmKey, cost, label, onConfirm) {
+    const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
+    if (freeRefund || !cost || cost <= 0) {
+      pendingRefundConfirm = null;
+      onConfirm();
+      return;
+    }
+    const now = Date.now();
+    if (pendingRefundConfirm && pendingRefundConfirm.key === confirmKey && now <= pendingRefundConfirm.expiresAt) {
+      pendingRefundConfirm = null;
+      onConfirm();
+      return;
+    }
+    pendingRefundConfirm = { key: confirmKey, expiresAt: now + 3500 };
+    if (window.poeShowToast) {
+      window.poeShowToast(false, `[확인] ${label}: 후회의 오브 ${cost}개 소모 — 3초 내 다시 클릭하면 확정합니다.`);
+    }
+  }
+
   // ---- 툴바·사이드바 갱신 ----
   function renderToolbarAndSidebar() {
-    ptsNormalEl.textContent = String(treeState.availableNormalPoints ?? 0);
-    ptsAscEl.textContent = `${treeState.availableAscendancyPoints ?? 0} / ${treeState.earnedAscendancyPoints ?? 0}`;
+    // C-31: INI 보너스 하향 등으로 포인트 초과(음수) 시 0과 초과 경고를 명확히 표시
+    const rawAvailN = Number(treeState.availableNormalPoints ?? 0);
+    const rawAvailA = Number(treeState.availableAscendancyPoints ?? 0);
+    ptsNormalEl.textContent = rawAvailN < 0 ? `0 (초과 ${-rawAvailN})` : String(rawAvailN);
+    ptsAscEl.textContent = rawAvailA < 0
+      ? `0 (초과 ${-rawAvailA}) / ${treeState.earnedAscendancyPoints ?? 0}`
+      : `${rawAvailA} / ${treeState.earnedAscendancyPoints ?? 0}`;
+
+    const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
     if (regretPillEl && regretCountEl) {
-      const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
       regretPillEl.classList.toggle("hidden", freeRefund);
       regretCountEl.textContent = String(treeState.regretOrbCount ?? 0);
+    }
+
+    // C-27: 회수 버튼에 실제 소모될 후회의 오브 수량 표시
+    const refundAscCost = Number(treeState.refundAscCost ?? 0);
+    const refundAllCost = Number(treeState.refundAllCost ?? 0);
+    btnRefundAsc.textContent = (!freeRefund && refundAscCost > 0)
+      ? `전직 회수 (후회 ${refundAscCost})`
+      : "전직 회수";
+    btnRefundAll.textContent = (!freeRefund && refundAllCost > 0)
+      ? `전체 회수 (후회 ${refundAllCost})`
+      : "전체 회수";
+
+    // C-31: 서버 측 트리 데이터 미로드 시 오류 배너 표시
+    const treeNotLoaded = treeState && treeState.loaded === false;
+    let errBanner = canvasWrap ? canvasWrap.querySelector(".tree-error-banner") : null;
+    if (treeNotLoaded && canvasWrap) {
+      if (!errBanner) {
+        errBanner = document.createElement("div");
+        errBanner.className = "tree-error-banner";
+        errBanner.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(12,10,14,0.82);color:#f5c06f;font-size:15px;padding:24px;text-align:center;z-index:20;";
+        errBanner.textContent = "서버 패시브 트리 데이터(tree_3_30.json)를 불러오지 못했습니다.";
+        canvasWrap.appendChild(errBanner);
+      }
+    } else if (errBanner) {
+      errBanner.remove();
     }
 
     const cls = treeState.classSelected ? classById.get(treeState.classId) : null;
@@ -1276,9 +1394,9 @@
     const bKills = treeState.bossKillCount || 0;
     const dKills = treeState.dragonKillCount || 0;
     const tiers = [
-      { bit: 1, label: "1차 (+2P): 드래곤 1 / 보스 5", cur: `용 ${dKills}/1 · 보스 ${bKills}/5` },
-      { bit: 2, label: "2차 (+2P): 드래곤 3 / 보스 15", cur: `용 ${dKills}/3 · 보스 ${bKills}/15` },
-      { bit: 4, label: "3차 (+2P): 드래곤 6 / 보스 30", cur: `용 ${dKills}/6 · 보스 ${bKills}/30` },
+      { bit: 1, label: "1차 (+2P · +30 정신력): 드래곤 1 / 보스 5", cur: `용 ${dKills}/1 · 보스 ${bKills}/5` },
+      { bit: 2, label: "2차 (+2P · +30 정신력): 드래곤 3 / 보스 15", cur: `용 ${dKills}/3 · 보스 ${bKills}/15` },
+      { bit: 4, label: "3차 (+2P · +30 정신력): 드래곤 6 / 보스 30", cur: `용 ${dKills}/6 · 보스 ${bKills}/30` },
     ];
     for (const t of tiers) {
       const row = document.createElement("div");
@@ -1316,25 +1434,121 @@
   btnCenter.onclick = () => centerOnClassStart();
   btnChangeClass.onclick = () => openClassModal();
   btnRefundAsc.onclick = () => {
-    window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: true });
+    const cost = Number(treeState.refundAscCost ?? 0);
+    confirmOrProceedRefund("refundAsc", cost, "전직 전체 회수", () => {
+      window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: true });
+    });
   };
   btnRefundAll.onclick = () => {
-    window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: false });
+    const cost = Number(treeState.refundAllCost ?? 0);
+    confirmOrProceedRefund("refundAll", cost, "패시브 전체 회수", () => {
+      window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: false });
+    });
   };
   btnClassModalClose.onclick = () => {
     classModalDismissed = true;
     classModal.classList.add("hidden");
   };
   btnMasteryClose.onclick = () => masteryModal.classList.add("hidden");
+  if (btnJewelClose && jewelModal) {
+    btnJewelClose.onclick = () => {
+      openJewelNodeId = 0;
+      jewelModal.classList.add("hidden");
+    };
+  }
+
+  function openJewelModal(node) {
+    if (!jewelModal || !jewelTitle || !jewelCurrent || !jewelBagList) return;
+    openJewelNodeId = node.id;
+    jewelTitle.textContent = `패시브 주얼 소켓 (#${node.id})`;
+    jewelCurrent.textContent = "";
+
+    const sockMap = (treeState && treeState.socketedJewels) || {};
+    const curJ = sockMap[String(node.id)];
+    if (curJ) {
+      const head = document.createElement("div");
+      head.className = "slot-top";
+      const nm = document.createElement("span");
+      nm.className = `gear-item-name rarity-${curJ.rarity || "normal"}`;
+      nm.textContent = curJ.title || "장착된 주얼";
+      const btnUnsock = document.createElement("button");
+      btnUnsock.type = "button";
+      btnUnsock.className = "btn btn-danger";
+      btnUnsock.textContent = "가방으로 회수";
+      btnUnsock.onclick = () => {
+        window.poeSendCommand({
+          op: "treeUnsocketJewel",
+          reqId: window.poeNextReqId(),
+          nodeId: node.id,
+        });
+        openJewelNodeId = 0;
+        jewelModal.classList.add("hidden");
+      };
+      head.appendChild(nm);
+      head.appendChild(btnUnsock);
+      jewelCurrent.appendChild(head);
+      if (curJ.card && Array.isArray(curJ.card.affixLines)) {
+        for (const af of curJ.card.affixLines) {
+          const ln = document.createElement("div");
+          ln.className = "gear-affix-line";
+          ln.textContent = `${af.tierBadge || ""} ${af.textKo || ""}`;
+          jewelCurrent.appendChild(ln);
+        }
+      }
+    } else {
+      jewelCurrent.textContent = "현재 장착된 주얼이 없습니다.";
+    }
+
+    jewelBagList.textContent = "";
+    const bagItems = (panelData && panelData.gear && panelData.gear.bagItems) || [];
+    const jewels = bagItems.filter((b) => Boolean(b.isJewel));
+    if (jewels.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "section-sub";
+      empty.textContent = "가방에 보유 중인 주얼이 없습니다.";
+      jewelBagList.appendChild(empty);
+    } else {
+      for (const jw of jewels) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "mastery-opt-btn";
+        const affSummary = (jw.card && Array.isArray(jw.card.affixLines) && jw.card.affixLines.length > 0)
+          ? jw.card.affixLines.map((a) => a.textKo).join(" / ")
+          : "어픽스 없음(장비·제작 탭에서 오브 제작 가능)";
+        const rarityTag = (jw.card && jw.card.rarityBadge) ? jw.card.rarityBadge : "[일반]";
+        btn.textContent = `${rarityTag} ${jw.card ? jw.card.title : jw.displayName} — ${affSummary}`;
+        btn.onclick = () => {
+          window.poeSendCommand({
+            op: "treeSocketJewel",
+            reqId: window.poeNextReqId(),
+            nodeId: node.id,
+            baseFormId: jw.baseFormId,
+            uniqueId: jw.uniqueId || 0,
+          });
+          openJewelNodeId = 0;
+          jewelModal.classList.add("hidden");
+        };
+        jewelBagList.appendChild(btn);
+      }
+    }
+
+    jewelModal.classList.remove("hidden");
+    tooltipEl.classList.add("hidden");
+  }
   btnMasteryRefund.onclick = () => {
     if (openMasteryNodeId > 0) {
-      window.poeSendCommand({
-        op: "treeRefundNode",
-        reqId: window.poeNextReqId(),
-        nodeId: openMasteryNodeId,
+      const targetId = openMasteryNodeId;
+      confirmOrProceedRefund(`mastery:${targetId}`, 1, "마스터리 회수", () => {
+        window.poeSendCommand({
+          op: "treeRefundNode",
+          reqId: window.poeNextReqId(),
+          nodeId: targetId,
+        });
+        masteryModal.classList.add("hidden");
       });
+    } else {
+      masteryModal.classList.add("hidden");
     }
-    masteryModal.classList.add("hidden");
   };
 
   // ---- 캔버스 마우스 입력 ----
@@ -1369,7 +1583,11 @@
     }
 
     // 검수 Minor #4: 모달이 열려 있을 때는 뒤쪽 캔버스 히트 테스트·BFS·리드로우를 건너뛴다.
-    if (!classModal.classList.contains("hidden") || !masteryModal.classList.contains("hidden")) {
+    if (
+      !classModal.classList.contains("hidden") ||
+      !masteryModal.classList.contains("hidden") ||
+      (jewelModal && !jewelModal.classList.contains("hidden"))
+    ) {
       return;
     }
 
@@ -1418,6 +1636,10 @@
       }
       return;
     }
+    if (hit.k === KIND_SOCKET && allocatedSet.has(hit.id)) {
+      openJewelModal(hit);
+      return;
+    }
     const path = computeShortestPath(hit.id);
     if (path.length > 0) {
       window.poeSendCommand({
@@ -1438,10 +1660,15 @@
 
     const hasMastery = hit.k === KIND_MASTERY && (treeState.masterySelections || {})[String(hit.id)] !== undefined;
     if (allocatedSet.has(hit.id) || hasMastery) {
-      window.poeSendCommand({
-        op: "treeRefundNode",
-        reqId: window.poeNextReqId(),
-        nodeId: hit.id,
+      const ascCost = Number((treeState && treeState.ascendancyRefundCost) || 5);
+      const cost = hit.asc ? ascCost : 1;
+      const label = `${hit.nameKo || hit.name || ("#" + hit.id)} 회수`;
+      confirmOrProceedRefund(`node:${hit.id}`, cost, label, () => {
+        window.poeSendCommand({
+          op: "treeRefundNode",
+          reqId: window.poeNextReqId(),
+          nodeId: hit.id,
+        });
       });
     }
   });
@@ -1484,6 +1711,10 @@
         tooltipEl.classList.add("hidden");
         classModal.classList.add("hidden");
         masteryModal.classList.add("hidden");
+        if (jewelModal) {
+          openJewelNodeId = 0;
+          jewelModal.classList.add("hidden");
+        }
         if (document.activeElement === searchInput) {
           searchInput.blur();
         }

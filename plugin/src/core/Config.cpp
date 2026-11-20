@@ -151,9 +151,9 @@ namespace SkyrimPoE::Core
                 } else if (key == "BaseHitRate") {
                     if (ParseDouble(val, d) && d > 0.0) c.baseHitRate = d; else warnInvalid();
                 } else if (key == "OffenseRollback") {
-                    if (ParseDouble(val, d) && d >= 0.0 && d <= 2.0) c.offenseRollback = d; else warnInvalid();
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.offenseRollback = d; else warnInvalid();
                 } else if (key == "DefenseRollback") {
-                    if (ParseDouble(val, d) && d >= 0.0 && d <= 2.0) c.defenseRollback = d; else warnInvalid();
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.defenseRollback = d; else warnInvalid();
                 } else if (key == "DefenseDref") {
                     if (ParseDouble(val, d) && d > 0.0) c.defenseDref = d; else warnInvalid();
                 } else if (key == "ExpectedArmorIncrease") {
@@ -279,6 +279,39 @@ namespace SkyrimPoE::Core
                 } else {
                     warnInvalid();
                 }
+            } else if (section == "Spirit") {
+                std::uint32_t u = 0;
+                if (key == "SpiritBase") {
+                    if (ParseUint(val, u) && u <= 2000) c.spiritBase = u; else warnInvalid();
+                } else if (key == "SpiritPerMilestone") {
+                    if (ParseUint(val, u) && u <= 500) c.spiritPerMilestone = u; else warnInvalid();
+                } else {
+                    warnInvalid();
+                }
+            } else if (section == "Charms") {
+                if (key == "EnableCharms") {
+                    if (!ParseBool(val, c.enableCharms)) warnInvalid();
+                } else {
+                    warnInvalid();
+                }
+            } else if (section == "Monsters") {
+                double d = 0.0;
+                if (key == "EnableMonsterPromotion") {
+                    if (!ParseBool(val, c.enableMonsterPromotion)) warnInvalid();
+                } else if (key == "MagicMonsterChance") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.magicMonsterChance = d; else warnInvalid();
+                } else if (key == "RareMonsterChance") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.rareMonsterChance = d; else warnInvalid();
+                } else if (key == "UniqueDropChance") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.uniqueDropChance = d; else warnInvalid();
+                } else if (key == "MonsterEsRatio") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 2.0) c.monsterEsRatio = d; else warnInvalid();
+                } else {
+                    warnInvalid();
+                }
+            } else {
+                // C-11: 알 수 없는 INI 섹션(오타 등)은 조용히 무시하지 않고 경고를 남긴다.
+                result.warnings.emplace_back("Unknown INI section [" + section + "] for key " + std::string(key));
             }
         }
 

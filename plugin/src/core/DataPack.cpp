@@ -16,6 +16,9 @@ namespace SkyrimPoE::Core
             if (s == "trigger") return GemKind::Trigger;
             if (s == "spell") return GemKind::Spell;
             if (s == "support") return GemKind::Support;
+            if (s == "aura") return GemKind::Aura;
+            if (s == "herald") return GemKind::Herald;
+            if (s == "guard") return GemKind::Guard;
             return GemKind::Unknown;
         }
 
@@ -34,6 +37,7 @@ namespace SkyrimPoE::Core
             d.damageEffectiveness = j.value("damageEffectiveness", 1.0);
             d.critChance = j.value("critChance", 0.0);
             d.cooldown = j.value("cooldown", 0.0);
+            d.spiritCost = j.value("spiritCost", 0u);
             if (j.contains("stats") && j["stats"].is_object()) {
                 for (const auto& [k, v] : j["stats"].items()) {
                     if (v.is_number()) {
@@ -220,6 +224,7 @@ namespace SkyrimPoE::Core
                 def.isSupport = g.value("support", false);
                 def.kind = ParseGemKind(g.value("kind", ""));
                 def.castTime = g.value("castTime", 0.0);
+                def.spiritCost = g.value("spiritCost", 0u);
                 if (g.contains("skillTypes")) {
                     for (const auto& st : g["skillTypes"]) def.skillTypes.insert(st.get<std::string>());
                 }

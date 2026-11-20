@@ -7,7 +7,7 @@
 
 namespace SkyrimPoE::Core
 {
-    // 결정 156: PoE 어픽스가 적용되는 논리 8칸 고정 (반지2·벨트·주얼은 5단계)
+    // 결정 156, 162: PoE 어픽스가 적용되는 논리 10칸(8 물리 + 가상 반지2·벨트)
     enum class EquipSlot : std::uint8_t
     {
         MainHand = 0,
@@ -18,7 +18,9 @@ namespace SkyrimPoE::Core
         Boots = 5,
         Amulet = 6,
         Ring1 = 7,
-        Count = 8
+        Ring2 = 8,
+        Belt = 9,
+        Count = 10
     };
 
     inline constexpr std::size_t kEquipSlotCount = static_cast<std::size_t>(EquipSlot::Count);
@@ -27,7 +29,8 @@ namespace SkyrimPoE::Core
     {
         Normal = 0,
         Magic = 1,
-        Rare = 2
+        Rare = 2,
+        Unique = 3
     };
 
     // 결정 158: 핵심 화폐 오브 12종
@@ -50,7 +53,7 @@ namespace SkyrimPoE::Core
 
     inline constexpr std::size_t kCurrencyKindCount = static_cast<std::size_t>(CurrencyKind::Count);
 
-    // 결정 157: 5티어 무상태 봉인 토큰의 8개 부위군
+    // 결정 157, 162, 164: 5티어 무상태 봉인 토큰 부위군(0..7 4단계 + 8 벨트 + 9 주얼)
     enum class TokenSlotGroup : std::uint8_t
     {
         OneHandWeapon = 0,
@@ -61,9 +64,13 @@ namespace SkyrimPoE::Core
         Gloves = 5,
         Boots = 6,
         Jewelry = 7,
-        Count = 8
+        Belt = 8,
+        Jewel = 9,
+        Count = 10
     };
 
+    inline constexpr std::size_t kStandardTokenSlotGroupCount = 8;  // 기존 80폼 0x82B..0x87A 공식 불변 유지
+    inline constexpr std::size_t kDroppableTokenSlotGroupCount = 9; // 봉인 토큰 드랍 대상(0..8, Belt 포함)
     inline constexpr std::size_t kTokenSlotGroupCount = static_cast<std::size_t>(TokenSlotGroup::Count);
     inline constexpr std::uint8_t kItemTierCount = 5;
 
@@ -90,7 +97,7 @@ namespace SkyrimPoE::Core
         [[nodiscard]] bool operator==(const RolledAffix&) const noexcept = default;
     };
 
-    // 감정 또는 오브 제작을 거친 개별 PoE 아이템 데이터(코세이브 'ITEM' v1 직렬화 단위)
+    // 감정 또는 오브 제작을 거친 개별 PoE 아이템 데이터(코세이브 'ITEM' v1/v2 직렬화 단위)
     struct PoEItemRecord
     {
         std::uint32_t baseFormId = 0;
@@ -100,6 +107,9 @@ namespace SkyrimPoE::Core
         DefenseSubtype defenseSubtype = DefenseSubtype::None;
         bool isAmulet = false;  // Jewelry일 때 목걸이(true) vs 반지(false) 구분(검수 m6)
         std::string weaponTag;  // "OneHandSword", "TwoHandAxe", "Bow", "Crossbow", "Dagger", "Staff", "Warstaff" 등
+        std::string uniqueId;   // ItemRarity::Unique일 때 고유 아이템 ID(예: "Headhunter", "Starforge")
+        std::uint8_t jewelColor = 0;  // Jewel 전용: 0=Crimson, 1=Viridian, 2=Cobalt
+        std::vector<RolledAffix> implicitAffixes;  // 벨트·고유 아이템 임플리싯(Chaos/Scouring/Alteration 불변 보존)
         std::vector<RolledAffix> affixes;
     };
 
@@ -194,7 +204,38 @@ namespace SkyrimPoE::Core
 
         double lifeRegenPerSec = 0.0;
         double incManaRegenPct = 0.0;
+        double manaRegenPerSec = 0.0;
         double incMovementSpeedPct = 0.0;
+
+        // --- 5단계 추가(정신력·주얼·고유 아이템 전용 스탯 및 플래그) ---
+        double flatSpirit = 0.0;
+        double flatManaCostDelta = 0.0;  // 음수면 스킬 마나 비용 감소(Praxis: -4..-8)
+        double incGenericDamagePct = 0.0;
+        double incMeleeDamagePct = 0.0;
+        double incMeleePhysicalDamagePct = 0.0;
+        double incElementalDamagePct = 0.0;
+        double incAreaDamagePct = 0.0;
+        double incAreaOfEffectPct = 0.0;
+        double incAttackAreaOfEffectPct = 0.0;
+        double incProjectileDamagePct = 0.0;
+        double incChaosDamagePct = 0.0;
+        double spellCritMultiPct = 0.0;
+        double meleeCritMultiplierPct = 0.0;
+        double elementalCritMultiPct = 0.0;
+        double incDamageVsRarePct = 0.0;
+        double esRecoupPct = 0.0;
+        double itemRarityPct = 0.0;
+        // U5 확정(2026-11-20): Starkonja 저체력 단점·회피 및 Astramentis 물리 공격 고정 피해 감소
+        double reducedDamageOnLowLifePct = 0.0;
+        double incEvasionOnLowLifePct = 0.0;
+        double flatPhysTakenFromAttacksDelta = 0.0;  // 음수면 감소(예: Astramentis -4)
+
+        bool cannotBeFrozen = false;
+        bool shavronneChaosEs = false;
+        bool starforgeShock = false;
+        bool dealNoElemental = false;
+        bool berekProlif = false;
+        bool headhunter = false;
     };
 
     // StatEngine Layer1Input에 전달되는 논리 1칸 장비 스냅샷(엔진 포인터 없음)
@@ -257,7 +298,9 @@ namespace SkyrimPoE::Core
             case EquipSlot::Gloves:   return "장갑";
             case EquipSlot::Boots:    return "장화";
             case EquipSlot::Amulet:   return "목걸이";
-            case EquipSlot::Ring1:    return "반지";
+            case EquipSlot::Ring1:    return "반지 1";
+            case EquipSlot::Ring2:    return "반지 2";
+            case EquipSlot::Belt:     return "허리띠";
             default:                  return "알 수 없음";
         }
     }
@@ -268,6 +311,7 @@ namespace SkyrimPoE::Core
             case ItemRarity::Normal: return "일반";
             case ItemRarity::Magic:  return "매직";
             case ItemRarity::Rare:   return "희귀";
+            case ItemRarity::Unique: return "고유";
             default:                 return "일반";
         }
     }

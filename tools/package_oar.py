@@ -28,28 +28,58 @@ LOCOMOTION_CLIPS = [f"{prefix}_{suffix}.hkx" for prefix in ("1hm", "2hm") for su
 LOCOMOTION_CLIPS.append("2hw_idle.hkx")
 
 
-def ensure_pose_clip(repo_root: Path) -> Path:
+def ensure_pose_clip(repo_root: Path, require_clip: bool) -> Path | None:
     pose_clip = repo_root / "prototypes" / "03-cyclone-clip" / "out" / "cyclone_pose.hkx"
     if pose_clip.is_file():
         return pose_clip
 
+    # C-32: 새로 클론한 저장소에는 gitignore된 로컬 에셋(hkxc/스켈레톤 XML)이 없어
+    # gen_cyclone.py --mode static 단독 호출이 필수 인자 누락으로 실패한다.
+    # 로컬 에셋이 모두 있으면 정식 인자로 XML을 생성하고, 없으면 경고를 남기고 config만 패키징한다.
     gen_script = repo_root / "prototypes" / "03-cyclone-clip" / "gen_cyclone.py"
-    if not gen_script.is_file():
-        raise FileNotFoundError(f"cyclone_pose.hkx 및 생성 스크립트를 찾지 못했습니다: {gen_script}")
+    local_assets = repo_root / "prototypes" / "_local-assets"
+    skel_xml = local_assets / "skeleton.xml"
+    base_xml = local_assets / "2hm_idle.xml"
+    if gen_script.is_file() and skel_xml.is_file() and base_xml.is_file():
+        out_xml = pose_clip.with_suffix(".xml")
+        subprocess.run(
+            [
+                sys.executable,
+                str(gen_script),
+                "--skeleton",
+                str(skel_xml),
+                "--base",
+                str(base_xml),
+                "--out",
+                str(out_xml),
+                "--mode",
+                "static",
+            ],
+            cwd=str(gen_script.parent),
+            check=True,
+        )
 
-    subprocess.run(
-        [sys.executable, str(gen_script), "--mode", "static"],
-        cwd=str(gen_script.parent),
-        check=True,
+    if pose_clip.is_file():
+        return pose_clip
+
+    msg = (
+        f"[WARN] cyclone_pose.hkx가 없어 OAR 애니메이션 클립 복사를 건너뜁니다: {pose_clip}\n"
+        "       (로컬 에셋 생성 절차: prototypes/03-cyclone-clip/README.md 참조)"
     )
-    if not pose_clip.is_file():
-        raise FileNotFoundError(f"정지 자세 클립 생성에 실패했습니다: {pose_clip}")
-    return pose_clip
+    if require_clip:
+        raise FileNotFoundError(msg)
+    print(msg, file=sys.stderr)
+    return None
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package-dir", type=Path, required=True)
+    parser.add_argument(
+        "--require-clip",
+        action="store_true",
+        help="cyclone_pose.hkx가 없을 때 경고 후 건너뛰지 않고 오류로 종료",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -63,7 +93,7 @@ def main() -> None:
     if not isinstance(sub_data.get("conditions"), list) or not isinstance(sub_data.get("priority"), int):
         raise ValueError("assets/oar/submod-config.json의 conditions/priority 형식이 올바르지 않습니다.")
 
-    pose_clip = ensure_pose_clip(repo_root)
+    pose_clip = ensure_pose_clip(repo_root, require_clip=args.require_clip)
 
     oar_root = (
         args.package_dir
@@ -84,10 +114,12 @@ def main() -> None:
 
     shutil.copyfile(mod_cfg, oar_root / "config.json")
     shutil.copyfile(sub_cfg, sub_dir / "config.json")
-    for clip_name in LOCOMOTION_CLIPS:
-        shutil.copyfile(pose_clip, sub_dir / clip_name)
-
-    print(f"OAR packaged: {len(LOCOMOTION_CLIPS)} clips -> {sub_dir}")
+    if pose_clip is not None:
+        for clip_name in LOCOMOTION_CLIPS:
+            shutil.copyfile(pose_clip, sub_dir / clip_name)
+        print(f"OAR packaged: {len(LOCOMOTION_CLIPS)} clips -> {sub_dir}")
+    else:
+        print(f"OAR packaged (config only, no local cyclone_pose.hkx) -> {sub_dir}")
 
 
 if __name__ == "__main__":

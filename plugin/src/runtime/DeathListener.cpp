@@ -1,6 +1,10 @@
 #include "PCH.h"
 #include "runtime/DeathListener.h"
+#include "runtime/AilmentRuntime.h"
+#include "runtime/MonsterRuntime.h"
+#include "runtime/ProjectileRuntime.h"
 #include "runtime/SaveLoad.h"
+#include "runtime/SkillExecution.h"
 #include "runtime/WorldDropTracker.h"
 
 namespace SkyrimPoE::Runtime
@@ -13,56 +17,26 @@ namespace SkyrimPoE::Runtime
         Core::KillTracker* g_killTracker = nullptr;
         Core::CommandQueue* g_queue = nullptr;
         const Core::Config* g_config = nullptr;
+        Core::StatEngine* g_statEngine = nullptr;
+        Core::CharmSystem* g_charmSystem = nullptr;
         RE::BGSKeyword* g_dragonKeyword = nullptr;
         bool g_installed = false;
 
         [[nodiscard]] bool IsDragonActor(const RE::Actor* actor)
         {
-            return actor && g_dragonKeyword && actor->HasKeyword(g_dragonKeyword);
+            // U3 확정(2026-11-20): 전 모듈 단일 보스·드래곤 판정(SkillExecution 공용 헬퍼)
+            return SkillExecution::IsDragonActor(actor) || (actor && g_dragonKeyword && actor->HasKeyword(g_dragonKeyword));
         }
 
         [[nodiscard]] bool HasLocationBossRefType(const RE::Actor* actor)
         {
-            if (!actor) {
-                return false;
-            }
-            // 검수 M5: ExtraLocationRefType의 Boss 참조 타입을 우선 검사
-            if (const auto* extraLocRef = actor->extraList.GetByType<RE::ExtraLocationRefType>()) {
-                if (extraLocRef->locRefType) {
-                    const auto edid = extraLocRef->locRefType->GetFormEditorID();
-                    if (edid && std::string_view(edid).find("Boss") != std::string_view::npos) {
-                        return true;
-                    }
-                }
-            }
-            // 현재 로케이션의 specialRefs에서 보스 참조 타입 검사
-            if (auto* loc = actor->GetCurrentLocation()) {
-                for (const auto& ref : loc->specialRefs) {
-                    if (ref.refData.refID == actor->GetFormID() && ref.type) {
-                        const auto edid = ref.type->GetFormEditorID();
-                        if (edid && std::string_view(edid).find("Boss") != std::string_view::npos) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            return false;
+            return SkillExecution::HasLocationBossRefType(actor);
         }
 
         [[nodiscard]] bool IsBossActor(const RE::Actor* actor)
         {
-            if (!actor) {
-                return false;
-            }
-            if (HasLocationBossRefType(actor)) {
-                return true;
-            }
-            if (const auto* base = actor->GetActorBase()) {
-                if (base->IsUnique()) {
-                    return true;
-                }
-            }
-            return false;
+            // U3 확정: 일반 고유 NPC(IsUnique)는 보스로 오판하지 않고 LocTypeBoss 참조 타입만 보스로 판정
+            return SkillExecution::HasLocationBossRefType(actor);
         }
 
         class DeathEventSink final : public RE::BSTEventSink<RE::TESDeathEvent>
@@ -126,20 +100,57 @@ namespace SkyrimPoE::Runtime
                     *g_config,
                     fallbackExcluded);
 
-                // 검수 M5 & 4단계 검수 M2: reward.awarded가 참이면 XP가 0(유배자 Lv.100 등)이어도
-                // 1~3차 보스 이정표 및 전리품 드랍 판정을 항상 수행한다.
-                if (!reward.awarded) {
-                    return RE::BSEventNotifyControl::kContinue;
-                }
-                const bool hasXp = (reward.exileXpGained > 0 || reward.gemXpGained > 0);
                 // 결정 119: 원시 Actor* 대신 ActorHandle을 캡처해 주 갱신에서 유효성 재확인
                 const RE::ActorHandle corpseHandle = actor->GetHandle();
 
-                // 상태 갱신·드랍 판정·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
-                g_queue->Enqueue([reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle]() {
+                // 검수 M5 & 4단계 검수 M2: reward.awarded가 참이면 XP가 0(유배자 Lv.100 등)이어도
+                // 1~3차 보스 이정표 및 전리품 드랍 판정을 항상 수행한다.
+                if (!reward.awarded) {
+                    // 보상 대상이 아닌 사망자도 상태이상(SpeedMult 원복)·승격 테이블에서 정리한다.
+                    g_queue->Enqueue([actorId, corpseHandle]() {
+                        MonsterRuntime::OnActorReset(actorId);
+                        auto corpsePtr = corpseHandle.get();
+                        AilmentRuntime::OnActorKilled(actorId, corpsePtr.get(), false);
+                    });
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                const bool hasXp = (reward.exileXpGained > 0 || reward.gemXpGained > 0);
+
+                // 상태 갱신·드랍 판정·참 충전·전령 폭발·헤드헌터·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
+                g_queue->Enqueue([actorId, reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle]() {
                     if (!g_config) {
                         return;
                     }
+                    auto corpsePtr = corpseHandle.get();
+                    auto* victim = corpsePtr.get();
+                    const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+
+                    // 5단계(결정 163, 164): 처치 시 몬스터 승격 정리(헤드헌터 훔치기), 상태이상 원복(베렉 전파), 전령 폭발, 참 충전
+                    const bool wasChilledOrFrozen =
+                        AilmentRuntime::IsFrozen(actorId) || (AilmentRuntime::ChillSlowRatio(actorId) > 0.0);
+                    const auto killedProf = MonsterRuntime::OnMonsterKilled(actorId, snap && snap->headhunter);
+                    AilmentRuntime::OnActorKilled(actorId, victim, snap && snap->berekProlif);
+
+                    if (victim && snap) {
+                        if (snap->heraldOfIceActive && wasChilledOrFrozen) {
+                            ProjectileRuntime::TriggerHeraldOfIceBurst(victim->GetPosition(), *snap);
+                        }
+                        if (snap->heraldOfAshActive) {
+                            double overkillEst = 25.0;
+                            if (auto* av = victim->AsActorValueOwner()) {
+                                const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
+                                const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
+                                overkillEst = (curHp < 0.0) ? std::max(-curHp, maxHp * 0.20) : (maxHp * 0.20);
+                            }
+                            ProjectileRuntime::TriggerHeraldOfAshBurst(victim->GetPosition(), overkillEst, *snap);
+                        }
+                    }
+
+                    if (g_charmSystem) {
+                        g_charmSystem->OnKillRecharge(killedProf.rarity, isBoss, isDragon);
+                        SaveLoad::PersistCharmSlotsFromSystem();
+                    }
+
                     Core::ExileLevelUpResult exileRes;
                     Core::GemLevelUpSummary gemRes;
                     std::uint32_t unlockedTier = 0;
@@ -181,10 +192,12 @@ namespace SkyrimPoE::Runtime
                         });
                     }
 
-                    // 4단계(결정 16, 157~159): 시체 인벤토리 봉인 토큰·오브 및 고등급 바닥 드랍
-                    WorldDropTracker::OnKillAwarded(corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon);
+                    // 4~5단계(결정 16, 157~159, 164): 시체 인벤토리 및 고등급 바닥 드랍(매직/레어 희귀도 반영)
+                    WorldDropTracker::OnKillAwarded(
+                        corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon, killedProf.rarity);
 
-                    if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0) {
+                    // 5단계(결정 161): 보스 이정표 달성 시 최대 정신력 +30 즉시 반영을 위해 StatEngine 동기화
+                    if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0 || unlockedTier > 0) {
                         SaveLoad::SyncStateToStatEngine();
                     }
 
@@ -202,7 +215,7 @@ namespace SkyrimPoE::Runtime
                             gemRes.gemLevelsGained, reward.gemXpGained);
                     }
                     if (unlockedTier > 0) {
-                        const auto msg = std::format("[SkyrimPoE] {}차 보스 이정표 달성! 전직 포인트 +2 획득!", unlockedTier);
+                        const auto msg = std::format("[SkyrimPoE] {}차 보스 이정표 달성! 전직 포인트 +2, 최대 정신력 +30!", unlockedTier);
                         RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
                         SKSE::log::info("DeathListener: Ascendancy milestone tier {} unlocked (dragons={}, bosses={}).",
                             unlockedTier, dragonCountAfter, bossCountAfter);
@@ -229,8 +242,18 @@ namespace SkyrimPoE::Runtime
                 const RE::TESResetEvent* event,
                 RE::BSTEventSource<RE::TESResetEvent>*) override
             {
-                if (event && event->object && g_killTracker) {
-                    g_killTracker->OnActorReset(event->object->GetFormID());
+                if (event && event->object) {
+                    const auto id = event->object->GetFormID();
+                    if (g_killTracker) {
+                        g_killTracker->OnActorReset(id);
+                    }
+                    if (g_queue) {
+                        // 검수 Major 1: MonsterRuntime::OnActorReset도 Hasted SpeedMult 원복(엔진 API)을 수행하므로 주 갱신 큐로 이연
+                        g_queue->Enqueue([id]() {
+                            MonsterRuntime::OnActorReset(id);
+                            AilmentRuntime::OnActorReset(id);
+                        });
+                    }
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -243,7 +266,9 @@ namespace SkyrimPoE::Runtime
     bool DeathListener::Install(
         Core::KillTracker* killTracker,
         Core::CommandQueue* commandQueue,
-        const Core::Config* config)
+        const Core::Config* config,
+        Core::StatEngine* statEngine,
+        Core::CharmSystem* charmSystem)
     {
         if (g_installed) {
             return true;
@@ -251,6 +276,8 @@ namespace SkyrimPoE::Runtime
         g_killTracker = killTracker;
         g_queue = commandQueue;
         g_config = config;
+        g_statEngine = statEngine;
+        g_charmSystem = charmSystem;
         g_dragonKeyword = RE::TESForm::LookupByID<RE::BGSKeyword>(kActorTypeDragonKeywordId);
 
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();

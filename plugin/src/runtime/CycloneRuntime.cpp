@@ -1,8 +1,10 @@
 #include "PCH.h"
 #include "runtime/CycloneRuntime.h"
 #include "runtime/Addresses.h"
+#include "runtime/AilmentRuntime.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/FormIds.h"
+#include "runtime/ProjectileRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 
@@ -78,6 +80,8 @@ namespace SkyrimPoE::Runtime
         float g_spinAngle = 0.0f;
         RE::NiMatrix3 g_spinBase{};
         RE::NiMatrix3 g_spinApplied{};
+        // C-13: 채널링 시작 시점 오른손 무기 FormID 기억(같은 종류 다른 무기로 교체 시 즉시 중단)
+        RE::FormID g_activeRightWeaponId = 0;
 
         thread_local bool t_sendingGraphEvent = false;
         thread_local std::mt19937 t_rng{ std::random_device{}() };
@@ -226,10 +230,10 @@ namespace SkyrimPoE::Runtime
                 return rightFresh || leftFresh;
             }
             if (g_config->powerAttackInput == "leftHand") {
-                return leftFresh && g_lastPressedHand == HeldHand::Left;
+                return leftFresh && !rightFresh && g_lastPressedHand == HeldHand::Left;
             }
-            // 기본 "rightHand": 가장 최근 누른 버튼이 오른손일 때만 허용(우클릭 강공격 오가로채기 방지, 결정 54)
-            return rightFresh && g_lastPressedHand == HeldHand::Right;
+            // 기본 "rightHand": 왼손과 동시 강공격(쌍수 동시 강타, C-13)은 가로채지 않고 오른손 단독 길게 누르기만 허용
+            return rightFresh && !leftFresh && g_lastPressedHand == HeldHand::Right;
         }
 
         [[nodiscard]] bool IsChannelButtonHeldLocked(Clock::time_point now) noexcept
@@ -392,17 +396,21 @@ namespace SkyrimPoE::Runtime
                 const double convertedSkyrimDmg = Core::ConvertOffenseHit(poeHit, snap.exileLevel, *g_dataPack, *g_config);
 
                 const float healthBefore = targetAv->GetActorValue(RE::ActorValue::kHealth);
+                bool absorbedByMonsterEs = false;
                 {
-                    const ScopedCycloneHitContext hitCtx(convertedSkyrimDmg, isCrit, target->GetFormID());
+                    const ScopedCycloneHitContext hitCtx(convertedSkyrimDmg, isCrit, target->GetFormID(), &absorbedByMonsterEs);
                     CallDealDamage(player, target.get(), nullptr, false);
                 }
                 const float healthAfter = targetAv->GetActorValue(RE::ActorValue::kHealth);
-                const bool dealtDamage = target->IsDead() || (healthAfter < healthBefore - 1e-4f);
+                const bool dealtDamage = target->IsDead() || (healthAfter < healthBefore - 1e-4f) || absorbedByMonsterEs;
                 if (dealtDamage) {
                     g_telDealDamageHits.fetch_add(1, std::memory_order_relaxed);
                     if (isCrit) {
                         g_telCritHits.fetch_add(1, std::memory_order_relaxed);
                     }
+                    // 5단계(결정 163): 사이클론 타격 시 원소·출혈·중독 상태이상 적용
+                    (void)AilmentRuntime::ApplyPlayerHitAilments(
+                        target.get(), cycStats.baseHitDamage, isCrit, cycStats.igniteChancePct, snap.starforgeShock);
                 }
 
                 // M7 치명타 시 시전(CoC): 실제 체력 감소 > 0이고 치명타였으면(치명타 처치 포함, 결정 129) 즉시 발동 판정
@@ -430,40 +438,86 @@ namespace SkyrimPoE::Runtime
                                 -static_cast<float>(cast->skyrimMagickaCost));
                         }
 
-                        // 발동 주문의 min~max 피해 롤 및 주문 치명타 판정/배율을 발동 시점에 고정한다(결정 137(나)②).
-                        bool spellCrit = false;
-                        const double spellDmg = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
-                            *cast, *g_dataPack, *g_config, unitDist(t_rng), unitDist(t_rng), spellCrit);
-                        const auto& pkt = cast->poeBaseHitDamage.byType;
-                        const bool hasElemDamage =
-                            pkt[static_cast<std::size_t>(Core::DamageType::Fire)].max > 0.0 ||
-                            pkt[static_cast<std::size_t>(Core::DamageType::Cold)].max > 0.0 ||
-                            pkt[static_cast<std::size_t>(Core::DamageType::Lightning)].max > 0.0;
-                        const bool eoEligibleCrit = spellCrit && hasElemDamage;
-
-                        // 결정 121, 137(나)①②: 실제 범위 피해와 무해 EXPL 연출은 고정된 대상 좌표와 함께 다음 프레임 예약 큐로 넘긴다.
-                        const RE::NiPoint3 origin = target->GetPosition();
-                        const float spellRadius = static_cast<float>(kNovaBaseRadius * std::max(0.25, cast->areaMult));
-                        const RE::FormID vfxId = VfxLocalIdForGem(cast->gemId);
-
-                        g_queue->Enqueue([origin, spellRadius, spellDmg, vfxId, eoEligibleCrit]() {
-                            if (g_skillSystem) {
-                                g_skillSystem->EnterTriggerDepth();
-                            }
-                            try {
-                                const auto hits = SkillExecution::ExecuteAoESpell(origin, spellRadius, spellDmg, vfxId);
-                                g_telCocExecutions.fetch_add(1, std::memory_order_relaxed);
-                                g_telCocTargetsHit.fetch_add(hits, std::memory_order_relaxed);
-                                // 검수 M3: Elemental Overload는 원소 피해 주문이 실제로 1명 이상 적중했을 때만 발동
-                                if (eoEligibleCrit && hits > 0) {
-                                    CombatHooks::NotifyPlayerElementalCrit();
+                        const bool isNovaSpell = (cast->gemId == "IceNova" || cast->gemId == "ShockNova");
+                        if (!isNovaSpell) {
+                            // 5단계(결정 163): CoC 발동 투사체·연쇄 주문(Fireball/FreezingPulse/Arc/Spark)은
+                            // 플레이어→대상 방향으로 ProjectileRuntime으로 발사한다.
+                            auto castCopy = *cast;
+                            const auto targetPos = target->GetPosition();
+                            g_queue->Enqueue([castCopy = std::move(castCopy), targetPos]() {
+                                auto* pl = RE::PlayerCharacter::GetSingleton();
+                                if (!pl || pl->IsDead()) return;
+                                RE::NiPoint3 aimOrigin{};
+                                RE::NiPoint3 aimDir{};
+                                ProjectileRuntime::ComputePlayerAim(pl, aimOrigin, aimDir);
+                                const RE::NiPoint3 toTarget{
+                                    targetPos.x - aimOrigin.x,
+                                    targetPos.y - aimOrigin.y,
+                                    (targetPos.z + 75.0f) - aimOrigin.z
+                                };
+                                const float len = std::sqrt(toTarget.x * toTarget.x + toTarget.y * toTarget.y + toTarget.z * toTarget.z);
+                                if (len > 1e-3f) {
+                                    aimDir = RE::NiPoint3{ toTarget.x / len, toTarget.y / len, toTarget.z / len };
                                 }
-                            } catch (...) {
-                            }
-                            if (g_skillSystem) {
-                                g_skillSystem->ExitTriggerDepth();
-                            }
-                        });
+                                if (g_skillSystem) g_skillSystem->EnterTriggerDepth();
+                                try {
+                                    if (ProjectileRuntime::LaunchSpellDelivery(castCopy, aimOrigin, aimDir)) {
+                                        g_telCocExecutions.fetch_add(1, std::memory_order_relaxed);
+                                        g_telCocTargetsHit.fetch_add(1, std::memory_order_relaxed);
+                                    }
+                                } catch (...) {
+                                }
+                                if (g_skillSystem) g_skillSystem->ExitTriggerDepth();
+                            });
+                        } else {
+                            // 발동 노바 주문(IceNova/ShockNova): 발동 시점에 피해 롤·치명타를 고정하고 대상 좌표에서 폭발+상태이상 적용
+                            bool spellCrit = false;
+                            const double spellDmg = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
+                                *cast, *g_dataPack, *g_config, unitDist(t_rng), unitDist(t_rng), spellCrit);
+                            const auto& pkt = cast->poeBaseHitDamage.byType;
+                            const bool hasElemDamage =
+                                pkt[static_cast<std::size_t>(Core::DamageType::Fire)].max > 0.0 ||
+                                pkt[static_cast<std::size_t>(Core::DamageType::Cold)].max > 0.0 ||
+                                pkt[static_cast<std::size_t>(Core::DamageType::Lightning)].max > 0.0;
+                            const bool eoEligibleCrit = spellCrit && hasElemDamage;
+
+                            const RE::NiPoint3 origin = target->GetPosition();
+                            const float spellRadius = static_cast<float>(kNovaBaseRadius * std::max(0.25, cast->areaMult));
+                            const RE::FormID vfxId = VfxLocalIdForGem(cast->gemId);
+                            auto castCopy = *cast;
+
+                            g_queue->Enqueue([origin, spellRadius, spellDmg, vfxId, eoEligibleCrit, spellCrit, castCopy = std::move(castCopy)]() {
+                                if (g_skillSystem) {
+                                    g_skillSystem->EnterTriggerDepth();
+                                }
+                                try {
+                                    const auto domType = (castCopy.gemId == "ShockNova")
+                                        ? Core::DamageType::Lightning
+                                        : Core::DamageType::Cold;
+                                    const auto hits = SkillExecution::ExecuteAoESpell(origin, spellRadius, spellDmg, vfxId, domType);
+                                    if (auto* pl = RE::PlayerCharacter::GetSingleton(); pl && hits > 0) {
+                                        const auto targets = SkillExecution::CollectHostileTargets(pl, origin, spellRadius);
+                                        for (const auto& t : targets) {
+                                            if (t && !t->IsDead()) {
+                                                (void)AilmentRuntime::ApplyPlayerHitAilments(
+                                                    t.get(), castCopy.poeBaseHitDamage, spellCrit,
+                                                    castCopy.igniteChancePct, castCopy.starforgeShock);
+                                            }
+                                        }
+                                    }
+                                    g_telCocExecutions.fetch_add(1, std::memory_order_relaxed);
+                                    g_telCocTargetsHit.fetch_add(hits, std::memory_order_relaxed);
+                                    // 검수 M3: Elemental Overload는 원소 피해 주문이 실제로 1명 이상 적중했을 때만 발동
+                                    if (eoEligibleCrit && hits > 0) {
+                                        CombatHooks::NotifyPlayerElementalCrit();
+                                    }
+                                } catch (...) {
+                                }
+                                if (g_skillSystem) {
+                                    g_skillSystem->ExitTriggerDepth();
+                                }
+                            });
+                        }
                     }
                 }
             }
@@ -749,6 +803,7 @@ namespace SkyrimPoE::Runtime
             g_spinRestorePending = g_spinActive;
             g_spinActive = false;
             g_spinAngle = 0.0f;
+            g_activeRightWeaponId = 0;
         });
 
         g_installed = true;
@@ -805,21 +860,30 @@ namespace SkyrimPoE::Runtime
         const bool yielding = g_yieldingToFrenzy.load(std::memory_order_acquire);
         const bool gemReqOk = !(g_config && g_config->enforceGemRequirements) ||
             snap->slotStats[*cycSlot].requirementMet;
-        const bool allowed = !yielding && gemReqOk && IsPlayerAllowedForCyclone(player);
 
         double weaponSpeed = 1.0;
+        RE::FormID currentRightWeaponId = 0;
         if (auto* form = player->GetEquippedObject(false)) {
             if (auto* weap = form->As<RE::TESObjectWEAP>()) {
+                currentRightWeaponId = weap->GetFormID();
                 const float spd = weap->GetSpeed();
                 if (std::isfinite(spd) && spd > 0.0f) {
                     weaponSpeed = static_cast<double>(spd);
                 }
             }
         }
+        // C-13: 채널링 도중 오른손 무기가 다른 FormID로 바뀌면 즉시 종료
+        const bool weaponSwitched = (g_activeRightWeaponId != 0 && currentRightWeaponId != g_activeRightWeaponId);
+        const bool allowed = !yielding && !weaponSwitched && gemReqOk && IsPlayerAllowedForCyclone(player);
 
         auto* avOwner = player->AsActorValueOwner();
         const double curResource = ReadAvailableCycleResource(player, *snap);
         const double cycleCost = ComputeCycleResourceCost(player, *snap, *cycSlot);
+
+        // C-13: 마무리 시간은 0.15초 고정이 아니라 현재 회전 주기의 남은 바퀴(최대 약 1/3초)로 산출
+        const double effectiveRate = std::max(0.25, weaponSpeed * snap->slotStats[*cycSlot].attackSpeedMult);
+        const double cycleSec = 1.0 / effectiveRate;
+        const double computedOutroSec = std::clamp(cycleSec * 0.5, 0.06, 0.33);
 
         Core::CycloneTickInput in;
         in.deltaSec = deltaSec;
@@ -831,7 +895,7 @@ namespace SkyrimPoE::Runtime
         in.currentMagicka = curResource;
         in.cycleMagickaCost = cycleCost;
         in.minChannelSec = g_config->minChannelSeconds;
-        in.outroSec = 0.15;
+        in.outroSec = computedOutroSec;
 
         Core::CycloneTickOutput out;
         {
@@ -840,6 +904,7 @@ namespace SkyrimPoE::Runtime
         }
 
         if (out.startOar) {
+            g_activeRightWeaponId = currentRightWeaponId;
             g_needVisualCleanup.store(false, std::memory_order_release);
             SetOarGate(player, 1.0f);
             // 프로토타입 2 검증: 길게 누르기 직전 먼저 시작된 일반 공격을 즉시 끊어 OAR 이동(사이클론) 자세로 전환한다.
@@ -891,6 +956,7 @@ namespace SkyrimPoE::Runtime
         }
 
         if (out.stopOar || out.ended) {
+            g_activeRightWeaponId = 0;
             SetOarGate(player, 0.0f);
             TryRestoreSpinNode(player);
             if (out.stopOar) {
@@ -910,6 +976,7 @@ namespace SkyrimPoE::Runtime
             g_leftHeld = false;
             g_autoTestHeld = false;
         }
+        g_activeRightWeaponId = 0;
         if (wasActive && player) {
             SetOarGate(player, 0.0f);
             TryRestoreSpinNode(player);

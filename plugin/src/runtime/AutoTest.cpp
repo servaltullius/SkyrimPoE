@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "runtime/AutoTest.h"
+#include "runtime/AilmentRuntime.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/CraftingRuntime.h"
 #include "runtime/CycloneRuntime.h"
@@ -7,17 +8,25 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MonsterRuntime.h"
+#include "runtime/ProjectileRuntime.h"
+#include "runtime/ProxySpellRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SimpleImeBridge.h"
 #include "runtime/SkillExecution.h"
 #include "runtime/UiBridge.h"
+#include "runtime/UniqueIdUtil.h"
 #include "runtime/WorldDropTracker.h"
 
+#include "core/AilmentSystem.h"
 #include "core/DamageConversion.h"
+#include "core/ItemAffixParser.h"
 #include "core/ItemCrafting.h"
+#include "core/ItemFormatter.h"
 #include "core/LootTable.h"
 #include "core/PassiveTree.h"
 #include "core/SkillSystem.h"
+#include "core/WorldStampLink.h"
 
 #include <nlohmann/json.hpp>
 
@@ -119,9 +128,99 @@ namespace SkyrimPoE::Runtime
             ScenarioE_AwaitReload,
             ScenarioE_ReloadSettle,
             ScenarioE_GearTabCloseWait,
+            ScenarioF_Start,
+            ScenarioF_ProjectileWait,
+            ScenarioF_F6TargetWait,
+            ScenarioF_SavePump,
+            ScenarioF_SaveWaitBeforeLoad,
+            ScenarioF_AwaitReload,
+            ScenarioF_ReloadSettle,
+            ScenarioG_Start,
+            ScenarioG_GemDropWait,
+            ScenarioG_GemPickupWait,
+            ScenarioG_GemRedropSetupWait,
+            ScenarioG_GemRedropWait,
+            ScenarioG_GemRedropPickupWait,
+            ScenarioG_SaveBoundaryDropWait,
+            ScenarioG_SavePump,
+            ScenarioG_SaveWaitBeforeLoad,
+            ScenarioG_AwaitReload,
+            ScenarioG_ReloadSettle,
             QuitDelay,
             Done
         };
+
+        const char* PhaseName(Phase p) noexcept
+        {
+            switch (p) {
+            case Phase::Inactive: return "Inactive";
+            case Phase::AwaitMainMenu: return "AwaitMainMenu";
+            case Phase::MenuDelay: return "MenuDelay";
+            case Phase::AwaitBaselineLoad: return "AwaitBaselineLoad";
+            case Phase::BaselineSettle: return "BaselineSettle";
+            case Phase::ScenarioA_Setup: return "ScenarioA_Setup";
+            case Phase::ScenarioA_PanelOpenWait: return "ScenarioA_PanelOpenWait";
+            case Phase::ScenarioA_PanelCloseWait: return "ScenarioA_PanelCloseWait";
+            case Phase::ScenarioA_SavePump: return "ScenarioA_SavePump";
+            case Phase::ScenarioA_SaveWaitBeforeLoad: return "ScenarioA_SaveWaitBeforeLoad";
+            case Phase::ScenarioA_AwaitReload: return "ScenarioA_AwaitReload";
+            case Phase::ScenarioA_ReloadSettle: return "ScenarioA_ReloadSettle";
+            case Phase::ScenarioB_PrepareWeapon: return "ScenarioB_PrepareWeapon";
+            case Phase::ScenarioB_SpawnWait: return "ScenarioB_SpawnWait";
+            case Phase::ScenarioB_Channeling: return "ScenarioB_Channeling";
+            case Phase::ScenarioB_AwaitStop: return "ScenarioB_AwaitStop";
+            case Phase::ScenarioB_KillWait: return "ScenarioB_KillWait";
+            case Phase::ScenarioC_EsTrigger: return "ScenarioC_EsTrigger";
+            case Phase::ScenarioC_EsDelay1s: return "ScenarioC_EsDelay1s";
+            case Phase::ScenarioC_EsRecharge3s: return "ScenarioC_EsRecharge3s";
+            case Phase::ScenarioC_PrepareStagger: return "ScenarioC_PrepareStagger";
+            case Phase::ScenarioC_StaggerWarmup: return "ScenarioC_StaggerWarmup";
+            case Phase::ScenarioC_StaggerCleanupWait: return "ScenarioC_StaggerCleanupWait";
+            case Phase::ScenarioC_NonHostileSpawnWait: return "ScenarioC_NonHostileSpawnWait";
+            case Phase::ScenarioC_NonHostileFinishWait: return "ScenarioC_NonHostileFinishWait";
+            case Phase::ScenarioC_NonHostileXpWait: return "ScenarioC_NonHostileXpWait";
+            case Phase::ScenarioD_BaselineWait: return "ScenarioD_BaselineWait";
+            case Phase::ScenarioD_AllocateAndPoolWait: return "ScenarioD_AllocateAndPoolWait";
+            case Phase::ScenarioD_KeystoneCiVerify: return "ScenarioD_KeystoneCiVerify";
+            case Phase::ScenarioD_SearchFocusWait: return "ScenarioD_SearchFocusWait";
+            case Phase::ScenarioD_TabCloseWait: return "ScenarioD_TabCloseWait";
+            case Phase::ScenarioD_SavePump: return "ScenarioD_SavePump";
+            case Phase::ScenarioD_SaveWaitBeforeLoad: return "ScenarioD_SaveWaitBeforeLoad";
+            case Phase::ScenarioD_AwaitReload: return "ScenarioD_AwaitReload";
+            case Phase::ScenarioD_ReloadSettle: return "ScenarioD_ReloadSettle";
+            case Phase::ScenarioE_Start: return "ScenarioE_Start";
+            case Phase::ScenarioE_EquipPoolWait: return "ScenarioE_EquipPoolWait";
+            case Phase::ScenarioE_DropWait: return "ScenarioE_DropWait";
+            case Phase::ScenarioE_PickupWait: return "ScenarioE_PickupWait";
+            case Phase::ScenarioE_CorpseWait: return "ScenarioE_CorpseWait";
+            case Phase::ScenarioE_SavePump: return "ScenarioE_SavePump";
+            case Phase::ScenarioE_SaveWaitBeforeLoad: return "ScenarioE_SaveWaitBeforeLoad";
+            case Phase::ScenarioE_AwaitReload: return "ScenarioE_AwaitReload";
+            case Phase::ScenarioE_ReloadSettle: return "ScenarioE_ReloadSettle";
+            case Phase::ScenarioE_GearTabCloseWait: return "ScenarioE_GearTabCloseWait";
+            case Phase::ScenarioF_Start: return "ScenarioF_Start";
+            case Phase::ScenarioF_ProjectileWait: return "ScenarioF_ProjectileWait";
+            case Phase::ScenarioF_F6TargetWait: return "ScenarioF_F6TargetWait";
+            case Phase::ScenarioF_SavePump: return "ScenarioF_SavePump";
+            case Phase::ScenarioF_SaveWaitBeforeLoad: return "ScenarioF_SaveWaitBeforeLoad";
+            case Phase::ScenarioF_AwaitReload: return "ScenarioF_AwaitReload";
+            case Phase::ScenarioF_ReloadSettle: return "ScenarioF_ReloadSettle";
+            case Phase::ScenarioG_Start: return "ScenarioG_Start";
+            case Phase::ScenarioG_GemDropWait: return "ScenarioG_GemDropWait";
+            case Phase::ScenarioG_GemPickupWait: return "ScenarioG_GemPickupWait";
+            case Phase::ScenarioG_GemRedropSetupWait: return "ScenarioG_GemRedropSetupWait";
+            case Phase::ScenarioG_GemRedropWait: return "ScenarioG_GemRedropWait";
+            case Phase::ScenarioG_GemRedropPickupWait: return "ScenarioG_GemRedropPickupWait";
+            case Phase::ScenarioG_SaveBoundaryDropWait: return "ScenarioG_SaveBoundaryDropWait";
+            case Phase::ScenarioG_SavePump: return "ScenarioG_SavePump";
+            case Phase::ScenarioG_SaveWaitBeforeLoad: return "ScenarioG_SaveWaitBeforeLoad";
+            case Phase::ScenarioG_AwaitReload: return "ScenarioG_AwaitReload";
+            case Phase::ScenarioG_ReloadSettle: return "ScenarioG_ReloadSettle";
+            case Phase::QuitDelay: return "QuitDelay";
+            case Phase::Done: return "Done";
+            default: return "Unknown";
+            }
+        }
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
@@ -130,7 +229,38 @@ namespace SkyrimPoE::Runtime
         const Core::DataPack* g_dataPack = nullptr;
         const Core::PassiveTreeData* g_treeData = nullptr;
         const Core::ItemData* g_itemData = nullptr;
-        const Core::Config* g_config = nullptr;
+        Core::Config* g_config = nullptr;
+        bool g_savedEnforceGemReq = true;
+        bool g_hasSavedEnforceGemReq = false;
+        Core::SkillSystem* g_skillSystem = nullptr;
+        Core::CharmSystem* g_charmSystem = nullptr;
+
+        // 5단계 시나리오 F 전용 상태
+        std::uint64_t g_fProjLaunchedBefore = 0;
+        std::uint64_t g_fProjImpactsBefore = 0;
+        RE::ActorHandle g_fTargetHandle{};
+        Core::InventoryItemKey g_fStarforgeKey{};
+        std::uint32_t g_fSocketNodeId = 0;
+        std::uint16_t g_fExpectedAuraMask = 0;
+        double g_fExpectedCharmCharges = 28.0;
+        bool g_fGuardAbsorbedOk = false;
+        bool g_fProxySpellsSyncedOk = false;
+        bool g_fUiEquipGemsOk = false;
+
+        // 검수 검증 시나리오 G (C-1 4시나리오 + U1 + Q-1/Q-5/Q-6) 전용 상태
+        std::uint64_t g_gGemInstanceId = 0;
+        std::size_t g_gGemSupportCount = 0;
+        RE::ObjectRefHandle g_gGemDropHandle{};
+        RE::FormID g_gGemFirstDropRefId = 0;
+        std::uint16_t g_gGemFirstDropStamp = 0;
+        bool g_gGemStamped1 = false;
+        bool g_gGemRelinked1 = false;
+        bool g_gGemReequipped1 = false;
+        bool g_gGemRedropStamped = false;
+        bool g_gGemRedropRelinked = false;
+        bool g_gSaveBoundaryWasWorldBeforeSave = false;
+        RE::FormID g_gQ1ActorFormId = 0;
+        float g_gQ1SpeedBeforeSave = 0.0f;
 
         std::atomic_bool g_enabled{ false };
         AutoTestConfig g_cfg;
@@ -294,6 +424,11 @@ namespace SkyrimPoE::Runtime
             }
             UiBridge::ClosePanelOnMainThread();
             RevertTempEnergyShield();
+            // U2 확정(2026-11-20): AutoTest 실행 중 임시 비활성화한 enforceGemRequirements를 원래 INI 값으로 원복
+            if (g_config && g_hasSavedEnforceGemReq) {
+                g_config->enforceGemRequirements = g_savedEnforceGemReq;
+                g_hasSavedEnforceGemReq = false;
+            }
             // 검수 Major #4: 비정상 종료/타임아웃 시에도 임시 키스톤(CI/BM 등) 주입이 남지 않도록 원상태로 복원
             SaveLoad::SyncStateToStatEngine();
             if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
@@ -308,10 +443,12 @@ namespace SkyrimPoE::Runtime
             if (!reason.empty()) {
                 LogInfo(reason);
             }
-            const bool overallOk = (g_failCount == 0 && g_passCount > 0);
+            // T-1: 기대 건수(50건: A~F 45건 + 시나리오 G 5건) 및 WARN=0까지 충족해야 RESULT=PASS 인정
+            constexpr int kExpectedAutoTestChecks = 50;
+            const bool overallOk = (g_failCount == 0 && g_warnCount == 0 && g_passCount == kExpectedAutoTestChecks);
             const auto summary = std::format(
-                "=== SUMMARY: PASS={} FAIL={} WARN={} RESULT={} ===",
-                g_passCount, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL");
+                "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={} ===",
+                g_passCount, kExpectedAutoTestChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL");
             SKSE::log::info("AutoTest {}", summary);
             if (g_report.is_open()) {
                 g_report << summary << '\n';
@@ -385,6 +522,13 @@ namespace SkyrimPoE::Runtime
                     } catch (...) {
                     }
                 }
+            }
+            // T-5: 임시 세이브가 기준 사용자 세이브를 덮어쓰지 못하게 거부
+            if (!out.baselineSave.empty() && !out.tempSave.empty() &&
+                ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave)) {
+                SKSE::log::error("AutoTest: refusing marker where temp_save '{}' equals baseline save '{}' (T-5).",
+                    out.tempSave, out.baselineSave);
+                return false;
             }
             return true;
         }
@@ -881,7 +1025,9 @@ namespace SkyrimPoE::Runtime
         const Core::DataPack* dataPack,
         const Core::PassiveTreeData* treeData,
         const Core::ItemData* itemData,
-        const Core::Config* config)
+        Core::Config* config,
+        Core::SkillSystem* skillSystem,
+        Core::CharmSystem* charmSystem)
     {
         g_queue = queue;
         g_statEngine = statEngine;
@@ -891,6 +1037,8 @@ namespace SkyrimPoE::Runtime
         g_treeData = treeData;
         g_itemData = itemData;
         g_config = config;
+        g_skillSystem = skillSystem;
+        g_charmSystem = charmSystem;
 
         const auto logDir = SKSE::log::log_directory();
         if (!logDir) {
@@ -924,9 +1072,16 @@ namespace SkyrimPoE::Runtime
         g_failCount = 0;
         g_warnCount = 0;
         g_startedAt = Clock::now();
+        // U2 확정(2026-11-20): 출시 기본값 EnforceGemRequirements=true에서 Lv1 기준 세이브의
+        // 스타터 젬(Cyclone Lv28 등) 통합 시험이 가능하도록 AutoTest 실행 중에만 임시 false 적용(종료 시 원복)
+        if (g_config) {
+            g_savedEnforceGemReq = g_config->enforceGemRequirements;
+            g_hasSavedEnforceGemReq = true;
+            g_config->enforceGemRequirements = false;
+        }
         g_enabled.store(true, std::memory_order_release);
 
-        LogInfo(std::format("SkyrimPoE Stage 4 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
+        LogInfo(std::format("SkyrimPoE Stage 5 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
             g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
         if (g_cfg.baselineSave.empty()) {
@@ -997,8 +1152,8 @@ namespace SkyrimPoE::Runtime
 
         const double totalSec = std::chrono::duration<double>(Clock::now() - g_startedAt).count();
         if (totalSec > g_cfg.globalTimeoutSec) {
-            Check("GlobalTimeout", false, std::format("Exceeded {:.0f}s in phase {}",
-                g_cfg.globalTimeoutSec, static_cast<int>(g_phase)));
+            Check("GlobalTimeout", false, std::format("Exceeded {:.0f}s in phase {} ({})",
+                g_cfg.globalTimeoutSec, PhaseName(g_phase), static_cast<int>(g_phase)));
             FinishAndScheduleQuit("Global timeout reached.");
             return;
         }
@@ -1560,7 +1715,22 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             const auto esSnap = g_esPool->Snapshot();
-            if (esSnap.max <= 0.0 && g_unpausedAccumSec < 1.0 && PhaseElapsedSec() < 3.0) {
+            if (esSnap.max <= 0.0 && g_unpausedAccumSec < 1.2 && PhaseElapsedSec() < 3.5) {
+                // 직전 시나리오 B의 지연된 스키버 TESDeathEvent가 SyncStateToStatEngine()으로
+                // 임시 flatEnergyShield=100을 덮어쓸 수 있으므로 미반영 시 재주입한다.
+                if (g_tempEsInjected && g_statEngine && g_dataPack && g_config) {
+                    const auto curSnap = g_statEngine->GetSnapshot();
+                    if (!curSnap || curSnap->poeMaxEnergyShield <= 0.0) {
+                        const auto stNow = SaveLoad::GetStateCopy();
+                        Core::Layer1Input l1;
+                        l1.exileLevel = stNow.exileLevel;
+                        l1.className = stNow.className.empty() ? "Scion" : stNow.className;
+                        l1.slots = stNow.slots;
+                        l1.flatEnergyShield = 100.0;
+                        g_statEngine->SetLayer1(l1);
+                        (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                    }
+                }
                 break;
             }
             g_esMaxForC = esSnap.max;
@@ -2718,7 +2888,7 @@ namespace SkyrimPoE::Runtime
             } else {
                 Check("E8_ItemCosaveRoundTripAndGearUi", g_e8CosaveOk && g_e8PayloadOk,
                     std::format("{}, uiTabSkipped(gameActive={}, domReady={})", g_e8Detail, gameActive, UiBridge::IsDomReady()));
-                FinishAndScheduleQuit("All Stage 4 AutoTest scenarios (A, B, C, D, E) completed.");
+                EnterPhase(Phase::ScenarioF_Start);
             }
             break;
         }
@@ -2731,7 +2901,1137 @@ namespace SkyrimPoE::Runtime
             const bool closedClean = !UiBridge::IsPanelOpen() && UiBridge::IsHudShown();
             Check("E8_ItemCosaveRoundTripAndGearUi", g_e8CosaveOk && g_e8PayloadOk && g_e8OpenedGearTab && closedClean,
                 std::format("{}, openGearTab={}, closedClean={}", g_e8Detail, g_e8OpenedGearTab, closedClean));
-            FinishAndScheduleQuit("All Stage 4 AutoTest scenarios (A, B, C, D, E) completed.");
+            EnterPhase(Phase::ScenarioF_Start);
+            break;
+        }
+
+        // ================= SCENARIO F (5단계 통합 검증: F1~F8) =================
+        case Phase::ScenarioF_Start: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !g_dataPack || !g_itemData || !g_treeData || !g_statEngine || !g_config) {
+                Check("F1_Stage5DataPackAnd174EspForms", false, "Core singletons unavailable.");
+                FinishAndScheduleQuit("Scenario F aborted: missing singletons.");
+                break;
+            }
+
+            // ---- F1: 28종 젬 + ItemData v2 + 174개 ESP 폼 전수 검증 ----
+            std::size_t espFound = 0;
+            auto countForm = [&](auto* p) { if (p) ++espFound; };
+            countForm(FormIds::Lookup<RE::EffectSetting>(FormIds::kProxySpellEffect));
+            countForm(FormIds::Lookup<RE::EffectSetting>(FormIds::kProxyPowerEffect));
+            for (const auto fid : FormIds::kProxySpells) countForm(FormIds::Lookup<RE::SpellItem>(fid));
+            for (const auto fid : FormIds::kProxyPowers) countForm(FormIds::Lookup<RE::SpellItem>(fid));
+            for (const auto& e : FormIds::kAllGemForms) countForm(FormIds::Lookup<RE::TESObjectMISC>(e.localFormId));
+            countForm(FormIds::Lookup<RE::BGSExplosion>(FormIds::kVfxIceNova));
+            countForm(FormIds::Lookup<RE::BGSExplosion>(FormIds::kVfxShockNova));
+            for (const auto fid : FormIds::kCurrencyOrbForms) countForm(FormIds::Lookup<RE::TESObjectMISC>(fid));
+            for (std::size_t off = 0; off < FormIds::kSealedTokenCount; ++off) {
+                countForm(FormIds::Lookup<RE::TESObjectMISC>(FormIds::kSealedTokenBase + static_cast<RE::FormID>(off)));
+            }
+            countForm(FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamRare));
+            countForm(FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamCurrency));
+            for (const auto fid : FormIds::kBeltBaseForms) countForm(FormIds::Lookup<RE::TESObjectMISC>(fid));
+            for (std::size_t off = 0; off < FormIds::kBeltTokenCount; ++off) {
+                countForm(FormIds::Lookup<RE::TESObjectMISC>(FormIds::kBeltTokenBase + static_cast<RE::FormID>(off)));
+            }
+            for (const auto fid : FormIds::kJewelBaseForms) countForm(FormIds::Lookup<RE::TESObjectMISC>(fid));
+            for (const auto fid : FormIds::kCharmForms) countForm(FormIds::Lookup<RE::TESObjectMISC>(fid));
+            countForm(FormIds::Lookup<RE::BGSProjectile>(FormIds::kProjFireball));
+            countForm(FormIds::Lookup<RE::BGSProjectile>(FormIds::kProjFreezingPulse));
+            countForm(FormIds::Lookup<RE::BGSProjectile>(FormIds::kProjSpark));
+            countForm(FormIds::Lookup<RE::BGSExplosion>(FormIds::kVfxFireBurst));
+            countForm(FormIds::Lookup<RE::TESObjectMISC>(FormIds::kUniqueSealedToken));
+            countForm(FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamUnique));
+
+            const bool f1Ok = (g_dataPack->AllGems().size() == 28) &&
+                (g_itemData->AllBelts().size() == 5) &&
+                (g_itemData->AllCharms().size() == 6) &&
+                (g_itemData->AllMonsterMods().size() == 12) &&
+                (g_itemData->AllUniques().size() == 16) &&
+                (espFound == 174);
+            Check("F1_Stage5DataPackAnd174EspForms", f1Ok,
+                std::format("gems={}, belts={}, charms={}, mods={}, uniques={}, espForms={}/174",
+                    g_dataPack->AllGems().size(), g_itemData->AllBelts().size(),
+                    g_itemData->AllCharms().size(), g_itemData->AllMonsterMods().size(),
+                    g_itemData->AllUniques().size(), espFound));
+
+            // ---- F2: 논리 10칸 가상 반지2·벨트 장착 + 패시브 주얼 소켓 힘 선합산/회수 ----
+            constexpr RE::FormID kSilverRingId = 0x0003B97C;
+            auto* ringForm = RE::TESForm::LookupByID<RE::TESObjectARMO>(kSilverRingId);
+            if (ringForm) {
+                player->AddObjectToContainer(ringForm, nullptr, 2, nullptr);
+            }
+            const auto eqR2 = CraftingRuntime::EquipVirtualRing2(kSilverRingId, 0);
+
+            (void)CraftingRuntime::GrantBeltBase(player, FormIds::kBeltBaseForms[4], 1);  // Stygian Vise
+            auto* stygianMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kBeltBaseForms[4]);
+            const auto eqBelt = stygianMisc
+                ? CraftingRuntime::EquipVirtualBelt(stygianMisc->GetFormID(), 0)
+                : CraftActionResult{};
+            // Stygian Vise에 연금술의 오브를 발라 희귀(3참 슬롯 개방)로 업그레이드
+            if (eqBelt.ok && eqBelt.resultKey.IsValid()) {
+                (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Alchemy, 1);
+                (void)CraftingRuntime::ApplyOrbToItem(
+                    Core::CurrencyKind::Alchemy, stygianMisc->GetFormID(), eqBelt.resultKey.uniqueId, true);
+            }
+            EquipmentSync::RefreshFromPlayerNow();
+            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+
+            const auto gearMetaF2 = EquipmentSync::GetCurrentGearMeta();
+            const auto bagF2 = CraftingRuntime::ListPlayerCraftableItems(player);
+            bool ringInBagF2 = false;
+            for (const auto& bi : bagF2) {
+                if (bi.baseFormId == kSilverRingId) {
+                    ringInBagF2 = true;
+                    break;
+                }
+            }
+            const bool r2Ok = eqR2.ok && ringInBagF2 && gearMetaF2[static_cast<std::size_t>(Core::EquipSlot::Ring2)].occupied;
+            const bool beltOk = eqBelt.ok && gearMetaF2[static_cast<std::size_t>(Core::EquipSlot::Belt)].occupied;
+            const std::uint8_t unlockedCharmsF2 = g_charmSystem ? g_charmSystem->UnlockedSlots() : 0;
+
+            // 가장 가까운 PassiveNodeKind::Socket 노드를 BFS로 찾아 할당 후 힘 주얼 장착/회수/재장착 검증
+            g_fSocketNodeId = 0;
+            bool jewelStrOk = false;
+            bool jewelUnsockOk = false;
+            {
+                SaveLoad::UpdateState([](PersistentState& st) {
+                    if (st.exileLevel < 60) {
+                        st.exileLevel = 60;
+                    }
+                    if (!st.tree.classSelected && g_treeData->IsLoaded()) {
+                        (void)Core::PassiveTree::SelectClass(*g_treeData, st.tree, 1);
+                    }
+                });
+                const auto stTree = SaveLoad::GetStateCopy();
+                // BFS로 현재 할당 노드/클래스 시작점에서 가장 가까운 주얼 소켓 탐색
+                std::unordered_map<std::uint32_t, std::uint32_t> parent;
+                std::vector<std::uint32_t> bfs;
+                if (const auto* cls = g_treeData->FindClass(stTree.tree.classId)) {
+                    for (const auto nb : cls->startNeighbors) {
+                        if (!parent.contains(nb)) {
+                            bfs.push_back(nb);
+                            parent[nb] = 0;
+                        }
+                    }
+                }
+                for (const auto nid : stTree.tree.allocatedNodes) {
+                    if (!parent.contains(nid)) {
+                        bfs.push_back(nid);
+                        parent[nid] = 0;
+                    }
+                }
+                std::uint32_t foundSocket = 0;
+                for (std::size_t qi = 0; qi < bfs.size() && foundSocket == 0; ++qi) {
+                    const std::uint32_t cur = bfs[qi];
+                    const auto* n = g_treeData->FindNode(cur);
+                    if (!n) continue;
+                    if (n->kind == Core::PassiveNodeKind::Socket && n->ascendancyId.empty()) {
+                        foundSocket = cur;
+                        break;
+                    }
+                    for (const auto nb : n->adjacency) {
+                        if (parent.contains(nb)) continue;
+                        const auto* nbn = g_treeData->FindNode(nb);
+                        if (!nbn || !nbn->ascendancyId.empty() ||
+                            nbn->isMultipleChoice ||
+                            nbn->kind == Core::PassiveNodeKind::ClassStart ||
+                            nbn->kind == Core::PassiveNodeKind::AscendancyStart ||
+                            nbn->kind == Core::PassiveNodeKind::Mastery) {
+                            continue;
+                        }
+                        parent[nb] = cur;
+                        bfs.push_back(nb);
+                    }
+                }
+
+                if (foundSocket != 0) {
+                    std::vector<std::uint32_t> path;
+                    for (std::uint32_t cur = foundSocket; cur != 0; cur = parent[cur]) {
+                        if (!stTree.tree.IsAllocated(cur)) {
+                            path.push_back(cur);
+                        }
+                    }
+                    std::reverse(path.begin(), path.end());
+                    bool allocOk = stTree.tree.IsAllocated(foundSocket);
+                    if (!allocOk && !path.empty()) {
+                        SaveLoad::UpdateState([&](PersistentState& st) {
+                            const auto ar = Core::PassiveTree::AllocatePath(*g_treeData, st.tree, path, st.exileLevel, *g_config);
+                            allocOk = ar.ok || st.tree.IsAllocated(foundSocket);
+                        });
+                    }
+                    if (allocOk) {
+                        g_fSocketNodeId = foundSocket;
+                        SaveLoad::SyncStateToStatEngine();
+                        (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                        const std::uint32_t strBefore = g_statEngine->GetSnapshot() ? g_statEngine->GetSnapshot()->str : 0;
+
+                        // 결정적 +힘 주얼 1개 생성해 가방에 등록 후 소켓 장착
+                        (void)CraftingRuntime::GrantJewel(player, 0, 1);
+                        auto* crimsonMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::JewelLocalFormId(0));
+                        if (crimsonMisc) {
+                            const auto jKey = ItemTracker::EnsureUniqueId(player, crimsonMisc, nullptr);
+                            if (jKey.IsValid()) {
+                                Core::PoEItemRecord jRec;
+                                jRec.baseFormId = crimsonMisc->GetFormID();
+                                jRec.rarity = Core::ItemRarity::Magic;
+                                jRec.itemLevel = 50;
+                                jRec.slotGroup = Core::TokenSlotGroup::Jewel;
+                                jRec.jewelColor = 0;
+                                // items_3_30.json의 힘 주얼 어픽스(StrengthJewel) 탐색
+                                for (const auto& af : g_itemData->AllAffixes()) {
+                                    if (!af.lines.empty() && af.lines[0].templateEn.find("to Strength") != std::string::npos &&
+                                        af.id.find("Jewel") != std::string::npos) {
+                                        Core::RolledAffix ra;
+                                        ra.affixId = af.id;
+                                        for (const auto& ln : af.lines) {
+                                            for (const auto& rg : ln.ranges) ra.values.push_back(rg.maxVal);
+                                        }
+                                        jRec.affixes.push_back(std::move(ra));
+                                        break;
+                                    }
+                                }
+                                ItemTracker::Upsert(jKey, jRec, false);
+                                const auto sockRes = CraftingRuntime::SocketPassiveJewel(
+                                    foundSocket, crimsonMisc->GetFormID(), jKey.uniqueId);
+                                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                                const std::uint32_t strAfter = g_statEngine->GetSnapshot() ? g_statEngine->GetSnapshot()->str : 0;
+                                jewelStrOk = sockRes.ok && (strAfter > strBefore);
+
+                                // 회수 후 가방 복귀 검증 → F8 코세이브 왕복 검증을 위해 다시 장착
+                                const auto unsockRes = CraftingRuntime::UnsocketPassiveJewel(foundSocket);
+                                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                                const std::uint32_t strAfterUnsock = g_statEngine->GetSnapshot() ? g_statEngine->GetSnapshot()->str : 0;
+                                jewelUnsockOk = unsockRes.ok && unsockRes.resultKey.IsValid() && (strAfterUnsock == strBefore);
+                                if (jewelUnsockOk) {
+                                    (void)CraftingRuntime::SocketPassiveJewel(
+                                        foundSocket, unsockRes.resultBaseFormId, unsockRes.resultKey.uniqueId);
+                                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Check("F2_TenSlotsVirtualGearAndJewelSocket",
+                r2Ok && beltOk && (unlockedCharmsF2 >= 2) && jewelStrOk && jewelUnsockOk,
+                std::format("ring2={}, belt={}, charmsUnlocked={}, socketNode={}, jewelStr={}, unsock={}",
+                    r2Ok, beltOk, unlockedCharmsF2, g_fSocketNodeId, jewelStrOk, jewelUnsockOk));
+
+            // ---- F3: 실제 UiBridge JSON 경로로 5단계 오라/전령 젬 장착 + 정신력 토글 + 한도 초과 차단 + 이정표 확장 ----
+            auto equipGemF = [&](std::uint8_t slot, std::string_view gemId) {
+                const auto k = FindCleanGemKeyInPlayerInventory(player, gemId);
+                SendUiCmd(json{
+                    { "op", "equip" }, { "slot", slot },
+                    { "ownerFormId", k.ownerFormId }, { "uniqueId", k.uniqueId },
+                    { "gemId", gemId }
+                });
+            };
+            auto socketGemF = [&](std::uint8_t slot, std::int32_t spellIdx, std::string_view gemId) {
+                const auto k = FindCleanGemKeyInPlayerInventory(player, gemId);
+                SendUiCmd(json{
+                    { "op", "socket" }, { "slot", slot }, { "spellIdx", spellIdx },
+                    { "ownerFormId", k.ownerFormId }, { "uniqueId", k.uniqueId },
+                    { "gemId", gemId }
+                });
+            };
+
+            {
+                for (std::uint8_t si : { std::uint8_t{ 3 }, std::uint8_t{ 4 }, std::uint8_t{ 5 },
+                                         std::uint8_t{ 6 }, std::uint8_t{ 7 }, std::uint8_t{ 8 } }) {
+                    if (SaveLoad::GetStateCopy().slots[si].occupied) {
+                        SendUiCmd(json{ { "op", "unequip" }, { "slot", si } });
+                    }
+                }
+                equipGemF(3, "Determination");  // 50
+                equipGemF(4, "Grace");          // 50
+                equipGemF(5, "HeraldOfIce");    // 25
+                equipGemF(8, "Hatred");         // 50
+
+                const auto stF3 = SaveLoad::GetStateCopy();
+                const bool uiAuraEquipOk =
+                    stF3.slots[3].occupied && stF3.slots[3].gem.gemId == "Determination" && stF3.slots[3].gem.socketCount == 0 &&
+                    stF3.slots[4].occupied && stF3.slots[4].gem.gemId == "Grace" && stF3.slots[4].gem.socketCount == 0 &&
+                    stF3.slots[5].occupied && stF3.slots[5].gem.gemId == "HeraldOfIce" && stF3.slots[5].gem.socketCount == 0 &&
+                    stF3.slots[8].occupied && stF3.slots[8].gem.gemId == "Hatred" && stF3.slots[8].gem.socketCount == 0;
+
+                SaveLoad::SyncStateToStatEngine();
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+
+                const auto snapInit = g_statEngine->GetSnapshot();
+                const std::uint32_t maxBefore = snapInit ? snapInit->maxSpirit : 0;  // D8에서 1차 이정표 달성 -> 130
+                const double armourBeforeAura = snapInit ? snapInit->armour : 0.0;
+
+                const auto onDet = CraftingRuntime::ToggleAuraSlot(3);
+                const auto onGra = CraftingRuntime::ToggleAuraSlot(4);
+                const auto onHoi = CraftingRuntime::ToggleAuraSlot(5);
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                const auto snapMid = g_statEngine->GetSnapshot();
+                // 125/130 상태에서 Hatred(50)는 초과 거절돼야 함
+                const auto overHatred = CraftingRuntime::ToggleAuraSlot(8);
+
+                // 2·3차 보스 이정표 해제 -> 최대 정신력 190
+                SaveLoad::UpdateState([](PersistentState& st) {
+                    st.tree.ascendancyMilestonesBitmask |= 0x7u;
+                });
+                SaveLoad::SyncStateToStatEngine();
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                const auto snapCapUp = g_statEngine->GetSnapshot();
+                const auto onHatredAfter = CraftingRuntime::ToggleAuraSlot(8);
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                const auto snapFinal = g_statEngine->GetSnapshot();
+                g_fExpectedAuraMask = SaveLoad::GetStateCopy().activeAuraMask;
+
+                const bool f3Ok = uiAuraEquipOk && onDet.ok && onGra.ok && onHoi.ok &&
+                    !overHatred.ok &&
+                    snapMid && snapMid->reservedSpirit == 125 && snapMid->armour > armourBeforeAura &&
+                    snapCapUp && snapCapUp->maxSpirit >= maxBefore + 60 &&
+                    onHatredAfter.ok &&
+                    snapFinal && snapFinal->reservedSpirit == 175 && snapFinal->heraldOfIceActive;
+                Check("F3_SpiritAurasAndMilestoneCap", f3Ok,
+                    std::format("uiEquip={}, maxBefore={}, midRes={}, overRej={}, capUp={}, finalRes={}, hoi={}",
+                        uiAuraEquipOk,
+                        maxBefore,
+                        snapMid ? snapMid->reservedSpirit : 0,
+                        !overHatred.ok,
+                        snapCapUp ? snapCapUp->maxSpirit : 0,
+                        snapFinal ? snapFinal->reservedSpirit : 0,
+                        snapFinal ? snapFinal->heraldOfIceActive : false));
+            }
+
+            // ---- F4: 참 장착(U4: 신규 장착 시 0 충전 검증) + 충전 후 화염 피격 루비 참 자동 발동 + 처치 충전 ----
+            {
+                (void)CraftingRuntime::GrantCharm(player, Core::CharmKind::Ruby, 1);
+                const auto eqCh = CraftingRuntime::EquipCharm(0, Core::CharmKind::Ruby);
+                const double chOnEquip = g_charmSystem ? g_charmSystem->Slots()[0].charges : -1.0;
+                // U4 검증 후 자동 발동 시나리오를 위해 테스트용 최대 충전(40) 주입
+                if (g_charmSystem) {
+                    auto sl0 = g_charmSystem->Slots()[0];
+                    sl0.charges = Core::CharmSystem::kMaxCharges;
+                    g_charmSystem->SetSlot(0, sl0);
+                }
+                const double chBefore = g_charmSystem ? g_charmSystem->Slots()[0].charges : 0.0;
+                const bool trigFire = g_charmSystem && g_charmSystem->TryTriggerOnIncomingDamage(Core::DamageType::Fire, true);
+                const double chAfterTrig = g_charmSystem ? g_charmSystem->Slots()[0].charges : 0.0;
+                const auto bon = g_charmSystem ? g_charmSystem->ComputeActiveBonuses() : Core::CharmActiveBonuses{};
+                if (g_charmSystem) {
+                    g_charmSystem->OnKillRecharge(Core::MonsterRarity::Rare, false, false);
+                    SaveLoad::PersistCharmSlotsFromSystem();
+                }
+                const double chAfterKill = g_charmSystem ? g_charmSystem->Slots()[0].charges : 0.0;
+                g_fExpectedCharmCharges = chAfterKill;
+                const bool f4Ok = eqCh.ok && (chOnEquip >= 0.0 && chOnEquip < 0.01) && trigFire &&
+                    (chBefore >= 39.9) && (std::abs(chAfterTrig - 20.0) < 0.1) &&
+                    (bon.fireResist >= 24.9) && (bon.maxFireResist >= 1.9) &&
+                    (std::abs(chAfterKill - 28.0) < 0.1);
+                Check("F4_CharmsAutoTriggerAndKillRecharge", f4Ok,
+                    std::format("eq={}, onEquip={:.0f}, trig={}, charges={:.0f}->{:.0f}->{:.0f}, fireRes=+{:.0f}/+{:.0f}",
+                        eqCh.ok, chOnEquip, trigFire, chBefore, chAfterTrig, chAfterKill, bon.fireResist, bon.maxFireResist));
+            }
+
+            // ---- F5 준비: 실제 UiBridge JSON 경로로 Fireball + GMP/Pierce/Chain + MoltenShell 장착 & 발동 ----
+            {
+                equipGemF(6, "Fireball");
+                socketGemF(6, -1, "SupportGreaterMultipleProjectiles");
+                socketGemF(6, -1, "SupportPierce");
+                socketGemF(6, -1, "SupportChain");
+                equipGemF(7, "MoltenShell");
+
+                const auto stF5 = SaveLoad::GetStateCopy();
+                g_fUiEquipGemsOk =
+                    stF5.slots[6].occupied && stF5.slots[6].gem.gemId == "Fireball" &&
+                    stF5.slots[6].gem.socketedGems.size() == 3 &&
+                    stF5.slots[7].occupied && stF5.slots[7].gem.gemId == "MoltenShell";
+
+                SaveLoad::SyncStateToStatEngine();
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                ProxySpellRuntime::SyncProxySpellsFromState();
+
+                auto* sp7 = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[6]);
+                auto* pw8 = FormIds::Lookup<RE::SpellItem>(FormIds::kProxyPowers[7]);
+                g_fProxySpellsSyncedOk = g_fUiEquipGemsOk && sp7 && pw8 && player->HasSpell(sp7) && player->HasSpell(pw8);
+
+                RestorePlayerVitals(player, true, true);
+                g_fProjLaunchedBefore = ProjectileRuntime::TotalLaunchedCount();
+                g_fProjImpactsBefore = ProjectileRuntime::TotalImpactCount();
+
+                // 검수 Major #1: 고체력(+2500) 표적 스키버를 소환해 화염구 5발에 즉사하지 않도록 보호
+                g_fTargetHandle = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 260.0f, 0.0f, 2500.0f, true);
+                (void)ProxySpellRuntime::ExecuteHandCastSlot(6, true);
+
+                const bool msActivated = ProxySpellRuntime::ExecuteGuardPowerSlot(7);
+                const auto gsBefore = g_skillSystem ? g_skillSystem->GuardSnapshot() : Core::GuardShieldSnapshot{};
+                const auto guardAbs = g_skillSystem
+                    ? g_skillSystem->AbsorbWithGuardShield(20.0, 1.0, false)
+                    : Core::GuardAbsorbResult{};
+                g_fGuardAbsorbedOk = msActivated && gsBefore.active && gsBefore.maxShieldSkyrim > 0.0 &&
+                    guardAbs.absorbedEffective > 0.0;
+            }
+
+            EnterPhase(Phase::ScenarioF_ProjectileWait);
+            break;
+        }
+
+        case Phase::ScenarioF_ProjectileWait: {
+            if (g_unpausedAccumSec < 0.6 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto launchedDelta = ProjectileRuntime::TotalLaunchedCount() - g_fProjLaunchedBefore;
+            const auto impactsDelta = ProjectileRuntime::TotalImpactCount() - g_fProjImpactsBefore;
+            Check("F5_ProxySpellHandCastAndMoltenShell",
+                g_fProxySpellsSyncedOk && (launchedDelta >= 3) && g_fGuardAbsorbedOk,
+                std::format("uiEquip={}, proxySynced={}, launched={}, impacts={}, guardAbsOk={}",
+                    g_fUiEquipGemsOk, g_fProxySpellsSyncedOk, launchedDelta, impactsDelta, g_fGuardAbsorbedOk));
+
+            if (player) {
+                auto targetPtr = g_fTargetHandle.get();
+                if (!targetPtr || targetPtr->IsDead()) {
+                    g_fTargetHandle = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 160.0f, 0.0f, 2500.0f, true);
+                }
+            }
+            EnterPhase(Phase::ScenarioF_F6TargetWait);
+            break;
+        }
+
+        case Phase::ScenarioF_F6TargetWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto targetPtr = g_fTargetHandle.get();
+            if (targetPtr && !targetPtr->Is3DLoaded() && PhaseElapsedSec() < 2.0) {
+                break;
+            }
+
+            // ---- F6: 5종 상태이상 + 매직/레어 승격 + 적 ES 100% 흡수 KillTracker 기여 + 헤드헌터 60초 훔치기 ----
+            bool f6EsOk = false;
+            bool f6AilOk = false;
+            bool f6BossCapOk = false;
+            bool f6HhOk = false;
+            std::string f6AilDetail;
+            if (player && targetPtr && !targetPtr->IsDead()) {
+                if (auto* target = targetPtr.get()) {
+                    const auto tid = target->GetFormID();
+                    const std::uint16_t rareMask =
+                        static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::EnergyShielded)) |
+                        static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted)) |
+                        static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::ExtraFire));
+                    MonsterRuntime::ForcePromoteForTest(target, Core::MonsterRarity::Rare, rareMask, 80.0);
+
+                    // 30 피해는 적 ES 80에 100% 흡수되며, 동시에 5종 상태이상(점화·냉각/빙결·감전·출혈·중독) 적용
+                    const bool directHitOk = SkillExecution::DealDirectSkillDamage(
+                        target, 30.0, Core::DamageType::Cold, true, false);
+                    const auto profAfter = MonsterRuntime::GetProfileCopy(tid);
+                    f6EsOk = directHitOk && profAfter.has_value() && profAfter->currentEsSkyrim < 79.0;
+
+                    Core::DamagePacket ailPkt{};
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Fire)] = { 120.0, 120.0 };
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Cold)] = { 120.0, 120.0 };
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Lightning)] = { 120.0, 120.0 };
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { 100.0, 100.0 };
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Chaos)] = { 100.0, 100.0 };
+                    (void)AilmentRuntime::ApplyPlayerHitAilments(target, ailPkt, true, 100.0, false, 100.0, 100.0);
+
+                    const double shockMult = AilmentRuntime::ShockDamageMultiplier(tid);
+                    const auto stAil = AilmentRuntime::GetStateCopy(tid);
+                    const bool hasIgnite = stAil && stAil->igniteRemaining > 0.0;
+                    const bool hasChillOrFreeze = stAil && (stAil->chillRemaining > 0.0 || stAil->freezeRemaining > 0.0);
+                    const bool hasShock = stAil && (stAil->shockRemaining > 0.0) && (shockMult > 1.0);
+                    const bool hasBleed = stAil && stAil->bleedRemaining > 0.0;
+                    const bool hasPoison = stAil && !stAil->poisonStacks.empty();
+                    f6AilOk = hasIgnite && hasChillOrFreeze && hasShock && hasBleed && hasPoison;
+                    f6AilDetail = std::format("ig={},cf={},sh={},bl={},po={}",
+                        hasIgnite, hasChillOrFreeze, hasShock, hasBleed, hasPoison);
+
+                    // 보스 빙결→30% 냉각 상한 코어 검증
+                    Core::AilmentSystem bossAil;
+                    Core::HitAilmentInput bossIn{};
+                    bossIn.coldHitPoe = 5000.0;
+                    bossIn.targetAilmentThresholdPoe = 1000.0;
+                    bossIn.isCrit = true;
+                    bossIn.isBossOrDragon = true;
+                    (void)bossAil.ApplyHitAilments(999999u, bossIn);
+                    f6BossCapOk = !bossAil.IsFrozen(999999u) && bossAil.ChillSlowRatio(999999u) <= 0.3001 &&
+                        bossAil.ChillSlowRatio(999999u) > 0.0;
+
+                    // 헤드헌터 훔치기 + 상태이상 원복 및 테스트 스키버 정리
+                    // 검수 Critical #2: KillTracker 기여를 제거해 지연 TESDeathEvent가 참 충전을 변경하지 않도록 차단
+                    const auto killedProf = MonsterRuntime::OnMonsterKilled(tid, true);
+                    f6HhOk = (killedProf.rarity == Core::MonsterRarity::Rare) &&
+                        (MonsterRuntime::ActiveHeadhunterStackCount() >= 1) &&
+                        (MonsterRuntime::ActiveHeadhunterModMask() != 0);
+                    if (g_killTracker) {
+                        g_killTracker->OnActorReset(tid);
+                    }
+                    AilmentRuntime::OnActorKilled(tid, target, false);
+                    (void)target->DoDamage(5000.0f, nullptr, true);
+                }
+            }
+            Check("F6_AilmentsMonsterPromotionAndHeadhunter",
+                f6EsOk && f6AilOk && f6BossCapOk && f6HhOk,
+                std::format("enemyEs={}, ailments={}({}), bossChillCap={}, hhSteal={}(stacks={})",
+                    f6EsOk, f6AilOk, f6AilDetail, f6BossCapOk, f6HhOk, MonsterRuntime::ActiveHeadhunterStackCount()));
+
+            // ---- F7: 고유 토큰 감정 + [고유] 배지 + Divine 전용 가드 + 특수 효과 파싱 ----
+            bool f7IdentOk = false;
+            bool f7BadgeOk = false;
+            bool f7ChaosBlockedOk = false;
+            bool f7DivineOk = false;
+            bool f7EffectsOk = false;
+            g_fStarforgeKey = {};
+            if (player) {
+                (void)CraftingRuntime::GrantUniqueToken(player, 2);
+                (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::ScrollOfWisdom, 2);
+                (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Chaos, 1);
+                (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Divine, 1);
+
+                const auto sfRes = CraftingRuntime::IdentifyUniqueToken("Starforge");
+                const auto shavRes = CraftingRuntime::IdentifyUniqueToken("ShavronnesWrappings");
+                f7IdentOk = sfRes.ok && shavRes.ok &&
+                    sfRes.resultRecord.rarity == Core::ItemRarity::Unique &&
+                    shavRes.resultRecord.rarity == Core::ItemRarity::Unique;
+                if (sfRes.ok) {
+                    g_fStarforgeKey = sfRes.resultKey;
+                    const Core::EquippedSlotInput dummy{};
+                    const auto card = Core::ItemFormatter::FormatItem(
+                        &sfRes.resultRecord, "Starforge", Core::EquipSlot::MainHand, dummy, true, *g_itemData);
+                    f7BadgeOk = (card.rarityBadge == "[고유]");
+
+                    const auto chaosBefore = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Chaos);
+                    const auto chaosTry = CraftingRuntime::ApplyOrbToItem(
+                        Core::CurrencyKind::Chaos, sfRes.resultBaseFormId, sfRes.resultKey.uniqueId, false);
+                    const auto chaosAfter = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Chaos);
+                    f7ChaosBlockedOk = !chaosTry.ok && (chaosAfter == chaosBefore);
+
+                    const auto divTry = CraftingRuntime::ApplyOrbToItem(
+                        Core::CurrencyKind::Divine, sfRes.resultBaseFormId, sfRes.resultKey.uniqueId, false);
+                    f7DivineOk = divTry.ok && (divTry.resultRecord.rarity == Core::ItemRarity::Unique);
+
+                    const auto sfStats = Core::ItemAffixParser::ParseItem(divTry.ok ? divTry.resultRecord : sfRes.resultRecord, *g_itemData);
+                    const auto shavStats = Core::ItemAffixParser::ParseItem(shavRes.resultRecord, *g_itemData);
+                    f7EffectsOk = sfStats.starforgeShock && sfStats.dealNoElemental && shavStats.shavronneChaosEs;
+                }
+            }
+            Check("F7_UniqueIdentifyDivineGuardAndEffects",
+                f7IdentOk && f7BadgeOk && f7ChaosBlockedOk && f7DivineOk && f7EffectsOk,
+                std::format("ident={}, badge={}, chaosBlocked={}, divine={}, effects={}",
+                    f7IdentOk, f7BadgeOk, f7ChaosBlockedOk, f7DivineOk, f7EffectsOk));
+
+            // ---- F8 준비: SPRT + GEAR + ITEM v2 코세이브 저장 및 재로드 왕복 ----
+            SaveLoad::PersistCharmSlotsFromSystem();
+            g_fExpectedCharmCharges = g_charmSystem ? g_charmSystem->Slots()[0].charges : 28.0;
+            g_saveAttempts = 0;
+            g_nextSaveRetryAt = Clock::now();
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = g_cfg.tempSave;
+                g_saveMatched = false;
+            }
+            EnterPhase(Phase::ScenarioF_SavePump);
+            break;
+        }
+
+        case Phase::ScenarioF_SavePump: {
+            bool matched = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                matched = g_saveMatched;
+            }
+            if (matched) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                g_fExpectedCharmCharges = g_charmSystem ? g_charmSystem->Slots()[0].charges : g_fExpectedCharmCharges;
+                LogInfo(std::format("Scenario F temp save '{}' confirmed by kSaveGame (attempts={}, charmCharges={:.1f}).",
+                    g_cfg.tempSave, g_saveAttempts, g_fExpectedCharmCharges));
+                EnterPhase(Phase::ScenarioF_SaveWaitBeforeLoad);
+                break;
+            }
+            if (PhaseElapsedSec() > 25.0) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                Check("F8_Stage5CosaveRoundTripAndUiPayload", false, "Timed out waiting for Scenario F kSaveGame.");
+                FinishAndScheduleQuit("Scenario F save timeout.");
+                break;
+            }
+            const auto now = Clock::now();
+            if (now >= g_nextSaveRetryAt) {
+                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    ++g_saveAttempts;
+                    mgr->Save(g_cfg.tempSave.c_str());
+                }
+                g_nextSaveRetryAt = now + std::chrono::seconds(2);
+            }
+            break;
+        }
+
+        case Phase::ScenarioF_SaveWaitBeforeLoad: {
+            if (PhaseElapsedSec() < 1.0) {
+                break;
+            }
+            LogInfo(std::format("Reloading temp save '{}' to verify SPRT + GEAR + ITEM v2 co-save round-trip...", g_cfg.tempSave));
+            if (!RequestLoadSave(g_cfg.tempSave)) {
+                Check("F8_Stage5CosaveRoundTripAndUiPayload", false, "BGSSaveLoadManager singleton unavailable.");
+                FinishAndScheduleQuit("Scenario F reload request failed.");
+                break;
+            }
+            EnterPhase(Phase::ScenarioF_AwaitReload);
+            break;
+        }
+
+        case Phase::ScenarioF_AwaitReload: {
+            bool signaled = false;
+            bool ok = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                signaled = g_postLoadSignaled;
+                ok = g_postLoadSucceeded;
+            }
+            if (signaled && !ok) {
+                Check("F8_Stage5CosaveRoundTripAndUiPayload", false, "kPostLoadGame reported failure on Scenario F reload.");
+                FinishAndScheduleQuit("Scenario F reload failed.");
+                return;
+            }
+            if (signaled && ok && IsPlayerReadyInWorld()) {
+                EnterPhase(Phase::ScenarioF_ReloadSettle);
+            } else if (PhaseElapsedSec() > 90.0) {
+                Check("F8_Stage5CosaveRoundTripAndUiPayload", false, "Timed out waiting for Scenario F reload.");
+                FinishAndScheduleQuit("Scenario F reload timeout.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioF_ReloadSettle: {
+            if (g_unpausedAccumSec < 2.0 && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            const auto st = SaveLoad::GetStateCopy();
+            const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const auto sfRestored = g_fStarforgeKey.IsValid() ? ItemTracker::FindByKey(g_fStarforgeKey) : std::nullopt;
+
+            const bool sprtOk = (st.activeAuraMask == g_fExpectedAuraMask) && (st.activeAuraMask != 0) &&
+                snap && (snap->maxSpirit >= 190) && (snap->reservedSpirit == 175);
+            const bool gearOk = (st.virtualRing2BaseFormId != 0) && (st.virtualBeltBaseFormId != 0) &&
+                st.charmSlots[0].occupied && (st.charmSlots[0].kind == Core::CharmKind::Ruby) &&
+                (g_fExpectedCharmCharges >= 27.5) &&
+                (std::abs(st.charmSlots[0].charges - g_fExpectedCharmCharges) < 0.5) &&
+                (g_fSocketNodeId != 0 && st.socketedJewels.contains(g_fSocketNodeId));
+            const bool itemV2Ok = sfRestored.has_value() &&
+                sfRestored->rarity == Core::ItemRarity::Unique &&
+                sfRestored->uniqueId == "Starforge";
+
+            bool uiPayloadOk = false;
+            try {
+                const auto pj = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread());
+                const bool statsOk = pj.contains("stats") && pj["stats"].value("spiritMax", 0) >= 190 &&
+                    pj["stats"].value("spiritReserved", 0) == 175;
+                const bool tenSlots = pj.contains("gear") && pj["gear"].contains("equippedSlots") &&
+                    pj["gear"]["equippedSlots"].size() == Core::kEquipSlotCount;
+                const bool charmsOk = pj.contains("gear") && pj["gear"].contains("charms") &&
+                    pj["gear"]["charms"].value("unlockedSlots", 0) >= 2;
+                const bool jewelsOk = pj.contains("tree") && pj["tree"].contains("socketedJewels") &&
+                    (g_fSocketNodeId != 0 && !pj["tree"]["socketedJewels"].empty());
+                uiPayloadOk = statsOk && tenSlots && charmsOk && jewelsOk;
+            } catch (...) {
+                uiPayloadOk = false;
+            }
+
+            Check("F8_Stage5CosaveRoundTripAndUiPayload",
+                sprtOk && gearOk && itemV2Ok && uiPayloadOk,
+                std::format("sprt={}, gear={}, itemV2={}, uiPayload={}, spirit={}/{}",
+                    sprtOk, gearOk, itemV2Ok, uiPayloadOk,
+                    snap ? snap->reservedSpirit : 0, snap ? snap->maxSpirit : 0));
+
+            EnterPhase(Phase::ScenarioG_Start);
+            break;
+        }
+
+        // ---- 시나리오 G: C-1 실게임 4시나리오 + U1 키 충돌 조회 + Q-1/Q-5/Q-6 실측 ----
+        case Phase::ScenarioG_Start: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                FinishAndScheduleQuit("Scenario G aborted: null player.");
+                break;
+            }
+
+            // G3: U1 ControlMap 바닐라 키 비충돌 검증 (0x26 = L vs QuickMagic 0x19 등)
+            {
+                std::uint32_t quickMagicKey = RE::ControlMap::kInvalid;
+                std::uint32_t quickInvKey = RE::ControlMap::kInvalid;
+                std::uint32_t quickMapKey = RE::ControlMap::kInvalid;
+                std::uint32_t journalKey = RE::ControlMap::kInvalid;
+                std::uint32_t treeKey = g_config ? g_config->treePanelKey : 0x26u;
+                if (auto* cm = RE::ControlMap::GetSingleton()) {
+                    if (auto* ue = RE::UserEvents::GetSingleton()) {
+                        quickMagicKey = cm->GetMappedKey(ue->quickMagic, RE::INPUT_DEVICE::kKeyboard);
+                        quickInvKey = cm->GetMappedKey(ue->quickInventory, RE::INPUT_DEVICE::kKeyboard);
+                        quickMapKey = cm->GetMappedKey(ue->quickMap, RE::INPUT_DEVICE::kKeyboard);
+                        journalKey = cm->GetMappedKey(ue->journal, RE::INPUT_DEVICE::kKeyboard);
+                    }
+                    if (quickMagicKey == RE::ControlMap::kInvalid) {
+                        quickMagicKey = cm->GetMappedKey("Quick Magic", RE::INPUT_DEVICE::kKeyboard);
+                    }
+                }
+                const bool collides =
+                    (quickMagicKey != RE::ControlMap::kInvalid && quickMagicKey == treeKey) ||
+                    (quickInvKey != RE::ControlMap::kInvalid && quickInvKey == treeKey) ||
+                    (quickMapKey != RE::ControlMap::kInvalid && quickMapKey == treeKey) ||
+                    (journalKey != RE::ControlMap::kInvalid && journalKey == treeKey);
+                Check("G3_U1ControlMapKeyCollisionCheck", !collides && treeKey != 0x19u,
+                    std::format("treePanelKey=0x{:02X}, quickMagicKey=0x{:02X}, collides={}",
+                        treeKey, quickMagicKey, collides));
+            }
+
+            // G4: Q-5(바닥 드랍 PickUpObject 직후 플래그 실측) + Q-6(RemovePlainItem 추적품 보호 검증)
+            {
+                bool q5Deleted = false;
+                bool q5Disabled = false;
+                bool q5NoCell = false;
+                if (auto* dagger = RE::TESForm::LookupByID<RE::TESObjectWEAP>(kIronDaggerId)) {
+                    player->AddObjectToContainer(dagger, nullptr, 1, nullptr);
+                    const auto dropH = player->DropObject(dagger, nullptr, 1);
+                    if (auto dropPtr = dropH.get()) {
+                        player->PickUpObject(dropPtr.get(), 1, false, false);
+                        q5Deleted = dropPtr->IsDeleted();
+                        q5Disabled = dropPtr->IsDisabled();
+                        q5NoCell = (dropPtr->GetParentCell() == nullptr);
+                    }
+                }
+
+                // Q-6: IronDagger 일반+추적 공존 상태에서 UniqueIdUtil::RemovePlainItem(1)이 추적품을 살리고 일반만 1개 제거하는지 검증
+                bool q6TrackedCrafted = false;
+                bool q6RemoveOk = false;
+                bool q6TrackedSurvived = false;
+                std::int32_t q6CountBefore = 0;
+                std::int32_t q6CountAfter = 0;
+                std::size_t q6ExtraBefore = 0;
+                std::size_t q6ExtraAfter = 0;
+                auto countDagger = [&](std::int32_t& outTotal, std::size_t& outExtraNodes) {
+                    outTotal = 0;
+                    outExtraNodes = 0;
+                    if (auto* changes = player->GetInventoryChanges(true); changes && changes->entryList) {
+                        for (auto* entry : *changes->entryList) {
+                            if (entry && entry->object && entry->object->GetFormID() == kIronDaggerId) {
+                                outTotal = entry->countDelta;
+                                if (entry->extraLists) {
+                                    for (auto* ex : *entry->extraLists) {
+                                        if (ex) ++outExtraNodes;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                };
+                if (auto* dagger = RE::TESForm::LookupByID<RE::TESObjectWEAP>(kIronDaggerId)) {
+                    player->AddObjectToContainer(dagger, nullptr, 2, nullptr);
+                    (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Transmutation, 1);
+                    const auto craftDag = CraftingRuntime::ApplyOrbToItem(Core::CurrencyKind::Transmutation, kIronDaggerId, 0, false);
+                    if (craftDag.ok && craftDag.resultKey.IsValid()) {
+                        q6TrackedCrafted = true;
+                        countDagger(q6CountBefore, q6ExtraBefore);
+                        q6RemoveOk = UniqueIdUtil::RemovePlainItem(player, dagger, 1);
+                        countDagger(q6CountAfter, q6ExtraAfter);
+                        q6TrackedSurvived =
+                            (ItemTracker::FindExtraListByKey(player, dagger, craftDag.resultKey) != nullptr);
+                    }
+                }
+                const bool g4Ok = q5NoCell && q6TrackedCrafted && q6RemoveOk && q6TrackedSurvived &&
+                    (q6CountAfter == q6CountBefore - 1) && (q6ExtraAfter <= q6ExtraBefore);
+                Check("G4_Q5PickupFlagsAndQ6NullRemoveProbe", g4Ok,
+                    std::format("Q5(del={}, dis={}, noCell={}), Q6(crafted={}, rmOk={}, survived={}, cnt={}->{}, extras={}->{})",
+                        q5Deleted, q5Disabled, q5NoCell, q6TrackedCrafted, q6RemoveOk, q6TrackedSurvived,
+                        q6CountBefore, q6CountAfter, q6ExtraBefore, q6ExtraAfter));
+            }
+
+            // G1 시작: 슬롯 6(Fireball + 보조 젬 3개)을 해제해 인벤토리 데이터 젬 생성 후 바닥 드랍
+            g_gGemInstanceId = 0;
+            g_gGemSupportCount = 0;
+            g_gGemDropHandle = {};
+            g_gGemFirstDropRefId = 0;
+            g_gGemFirstDropStamp = 0;
+            g_gGemStamped1 = false;
+            g_gGemRelinked1 = false;
+            g_gGemReequipped1 = false;
+            g_gGemRedropStamped = false;
+            g_gGemRedropRelinked = false;
+            g_gSaveBoundaryWasWorldBeforeSave = false;
+
+            const auto stBefore = SaveLoad::GetStateCopy();
+            if (stBefore.slots[6].occupied && stBefore.slots[6].gem.gemId == "Fireball") {
+                g_gGemInstanceId = stBefore.slots[6].gem.instanceId;
+                g_gGemSupportCount = stBefore.slots[6].gem.socketedGems.size();
+                SendUiCmd(json{ { "op", "unequip" }, { "slot", 6 } });
+                const auto inv = GemInventory::ListPlayerGems(player);
+                auto* fbMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::FindLocalFormIdForGem("Fireball"));
+                for (const auto& t : inv.trackedGems) {
+                    if (t.gem.instanceId == g_gGemInstanceId && fbMisc) {
+                        if (auto* extra = ItemTracker::FindExtraListByKey(player, fbMisc, t.key)) {
+                            g_gGemDropHandle = player->DropObject(fbMisc, extra, 1);
+                        }
+                        break;
+                    }
+                }
+            }
+            EnterPhase(Phase::ScenarioG_GemDropWait);
+            break;
+        }
+
+        case Phase::ScenarioG_GemDropWait: {
+            if (g_unpausedAccumSec < 0.30 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto dropPtr = g_gGemDropHandle.get();
+            if (player && dropPtr && g_gGemInstanceId != 0) {
+                const auto* xUid = dropPtr->extraList.GetByType<RE::ExtraUniqueID>();
+                const RE::FormID groundId = dropPtr->GetFormID();
+                constexpr Core::WorldStampLink::StampBand kGemBand{
+                    UniqueIdUtil::kGemWorldStampMin, UniqueIdUtil::kGemWorldStampMax };
+                if (xUid && xUid->baseID == groundId && kGemBand.Contains(xUid->uniqueID)) {
+                    for (const auto& e : GemInventory::TakeSnapshotForSave()) {
+                        if (e.isWorld && e.gem.instanceId == g_gGemInstanceId &&
+                            e.key.ownerFormId == groundId && e.key.uniqueId == xUid->uniqueID) {
+                            g_gGemStamped1 = true;
+                            break;
+                        }
+                    }
+                }
+                player->PickUpObject(dropPtr.get(), 1, false, false);
+            }
+            EnterPhase(Phase::ScenarioG_GemPickupWait);
+            break;
+        }
+
+        case Phase::ScenarioG_GemPickupWait: {
+            if (g_unpausedAccumSec < 0.45 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player && g_gGemInstanceId != 0) {
+                const auto inv = GemInventory::ListPlayerGems(player);
+                for (const auto& t : inv.trackedGems) {
+                    if (t.gem.instanceId == g_gGemInstanceId && !t.isWorld &&
+                        t.gem.socketedGems.size() == g_gGemSupportCount) {
+                        g_gGemRelinked1 = true;
+                        SendUiCmd(json{
+                            { "op", "equip" },
+                            { "slot", 6 },
+                            { "gemId", "Fireball" },
+                            { "ownerFormId", t.key.ownerFormId },
+                            { "uniqueId", t.key.uniqueId }
+                        });
+                        break;
+                    }
+                }
+                const auto stAfter = SaveLoad::GetStateCopy();
+                g_gGemReequipped1 = stAfter.slots[6].occupied &&
+                    stAfter.slots[6].gem.instanceId == g_gGemInstanceId &&
+                    stAfter.slots[6].gem.socketedGems.size() == g_gGemSupportCount;
+
+                // 재드랍 시험(C-1 시나리오 #4): 다시 해제 -> 1차 바닥 드랍
+                g_gGemDropHandle = {};
+                if (g_gGemReequipped1) {
+                    SendUiCmd(json{ { "op", "unequip" }, { "slot", 6 } });
+                    const auto inv2 = GemInventory::ListPlayerGems(player);
+                    auto* fbMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::FindLocalFormIdForGem("Fireball"));
+                    for (const auto& t : inv2.trackedGems) {
+                        if (t.gem.instanceId == g_gGemInstanceId && fbMisc) {
+                            if (auto* extra = ItemTracker::FindExtraListByKey(player, fbMisc, t.key)) {
+                                g_gGemDropHandle = player->DropObject(fbMisc, extra, 1);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            EnterPhase(Phase::ScenarioG_GemRedropSetupWait);
+            break;
+        }
+
+        case Phase::ScenarioG_GemRedropSetupWait: {
+            if (g_unpausedAccumSec < 0.30 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto dropPtr1 = g_gGemDropHandle.get();
+            g_gGemDropHandle = {};
+            if (player && dropPtr1 && g_gGemInstanceId != 0) {
+                const RE::FormID groundId1 = dropPtr1->GetFormID();
+                g_gGemFirstDropRefId = groundId1;
+                const auto* xUid1 = dropPtr1->extraList.GetByType<RE::ExtraUniqueID>();
+                const std::uint16_t stamp1 = xUid1 ? xUid1->uniqueID : 0;
+                g_gGemFirstDropStamp = stamp1;
+                // 주운 직후(재연결 람다가 돌기 전 같은 프레임에서!) 바로 인벤토리에서 (groundId1, stamp1) 묶음을 찾아 재드랍
+                player->PickUpObject(dropPtr1.get(), 1, false, false);
+                auto* fbMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::FindLocalFormIdForGem("Fireball"));
+                constexpr Core::WorldStampLink::StampBand kGemBand{
+                    UniqueIdUtil::kGemWorldStampMin, UniqueIdUtil::kGemWorldStampMax };
+                if (fbMisc && kGemBand.Contains(stamp1)) {
+                    if (auto* pickedExtra = ItemTracker::FindExtraListByKey(
+                            player, fbMisc, Core::InventoryItemKey{ groundId1, stamp1 })) {
+                        g_gGemDropHandle = player->DropObject(fbMisc, pickedExtra, 1);
+                    }
+                }
+            }
+            EnterPhase(Phase::ScenarioG_GemRedropWait);
+            break;
+        }
+
+        case Phase::ScenarioG_GemRedropWait: {
+            if (g_unpausedAccumSec < 0.30 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto dropPtr2 = g_gGemDropHandle.get();
+            if (player && dropPtr2 && g_gGemInstanceId != 0) {
+                const RE::FormID groundId2 = dropPtr2->GetFormID();
+                const auto* xUid2 = dropPtr2->extraList.GetByType<RE::ExtraUniqueID>();
+                constexpr Core::WorldStampLink::StampBand kGemBand{
+                    UniqueIdUtil::kGemWorldStampMin, UniqueIdUtil::kGemWorldStampMax };
+                // 같은 프레임 재드랍 시 엔진이 삭제된 동적 FF FormID를 재사용할 수 있으므로 (FormID 변경 또는 새 스탬프 부여)로 판정
+                if (xUid2 && xUid2->baseID == groundId2 && kGemBand.Contains(xUid2->uniqueID) &&
+                    (groundId2 != g_gGemFirstDropRefId || xUid2->uniqueID != g_gGemFirstDropStamp)) {
+                    for (const auto& e : GemInventory::TakeSnapshotForSave()) {
+                        if (e.isWorld && e.gem.instanceId == g_gGemInstanceId &&
+                            e.key.ownerFormId == groundId2 && e.key.uniqueId == xUid2->uniqueID) {
+                            g_gGemRedropStamped = true;
+                            break;
+                        }
+                    }
+                }
+                player->PickUpObject(dropPtr2.get(), 1, false, false);
+            }
+            EnterPhase(Phase::ScenarioG_GemRedropPickupWait);
+            break;
+        }
+
+        case Phase::ScenarioG_GemRedropPickupWait: {
+            if (g_unpausedAccumSec < 0.45 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player && g_gGemInstanceId != 0) {
+                const auto inv = GemInventory::ListPlayerGems(player);
+                for (const auto& t : inv.trackedGems) {
+                    if (t.gem.instanceId == g_gGemInstanceId && !t.isWorld &&
+                        t.gem.socketedGems.size() == g_gGemSupportCount) {
+                        g_gGemRedropRelinked = true;
+                        break;
+                    }
+                }
+            }
+            Check("G1_C1GemDropPickupReequipAndRedrop",
+                g_gGemStamped1 && g_gGemRelinked1 && g_gGemReequipped1 && g_gGemRedropStamped && g_gGemRedropRelinked,
+                std::format("stamp1={}, relink1={}, reequip1={}, redropStamp={}, redropRelink={}, supports={}",
+                    g_gGemStamped1, g_gGemRelinked1, g_gGemReequipped1, g_gGemRedropStamped, g_gGemRedropRelinked, g_gGemSupportCount));
+
+            // G2(저장 경계 보완 재연결) + G5(Q-1 감속 세이브 잔존 실측) 동시 준비
+            g_gGemDropHandle = {};
+            g_gQ1ActorFormId = 0;
+            g_gQ1SpeedBeforeSave = 0.0f;
+            if (player && g_gGemInstanceId != 0) {
+                const auto inv = GemInventory::ListPlayerGems(player);
+                auto* fbMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::FindLocalFormIdForGem("Fireball"));
+                for (const auto& t : inv.trackedGems) {
+                    if (t.gem.instanceId == g_gGemInstanceId && fbMisc) {
+                        if (auto* extra = ItemTracker::FindExtraListByKey(player, fbMisc, t.key)) {
+                            g_gGemDropHandle = player->DropObject(fbMisc, extra, 1);
+                        }
+                        break;
+                    }
+                }
+
+                // Q-1 실측용 스키버 소환 + 냉각(Chill) 감속 적용
+                const auto mobHandle = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 160.0f, 0.0f, 500.0f, false);
+                if (auto mobPtr = mobHandle.get()) {
+                    if (auto* mob = mobPtr.get()) {
+                        mob->EnableAI(false);
+                        Core::DamagePacket coldPkt{};
+                        coldPkt.byType[static_cast<std::size_t>(Core::DamageType::Cold)] = { 5000.0, 5000.0 };
+                        (void)AilmentRuntime::ApplyPlayerHitAilments(mob, coldPkt, true, 0.0, false);
+                        g_gQ1ActorFormId = mob->GetFormID();
+                        g_gQ1SpeedBeforeSave = mob->GetActorValueModifier(
+                            RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);
+                    }
+                }
+            }
+            EnterPhase(Phase::ScenarioG_SaveBoundaryDropWait);
+            break;
+        }
+
+        case Phase::ScenarioG_SaveBoundaryDropWait: {
+            if (g_unpausedAccumSec < 0.30 && PhaseElapsedSec() < 3.0) {
+                break;
+            }
+            auto* pl = RE::PlayerCharacter::GetSingleton();
+            auto dropPtr3 = g_gGemDropHandle.get();
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = g_cfg.tempSave;
+                g_saveMatched = false;
+            }
+            if (pl && dropPtr3 && g_gGemInstanceId != 0) {
+                // 주운 직후 같은 프레임에서 즉시 저장을 요청해(재연결 람다 미실행 상태) 저장 경계 보완 경로를 검증!
+                pl->PickUpObject(dropPtr3.get(), 1, false, false);
+                for (const auto& e : GemInventory::TakeSnapshotForSave()) {
+                    if (e.gem.instanceId == g_gGemInstanceId && e.isWorld) {
+                        g_gSaveBoundaryWasWorldBeforeSave = true;
+                        break;
+                    }
+                }
+                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    mgr->Save(g_cfg.tempSave.c_str());
+                }
+            }
+            g_saveAttempts = 1;
+            g_nextSaveRetryAt = Clock::now() + std::chrono::seconds(2);
+            EnterPhase(Phase::ScenarioG_SavePump);
+            break;
+        }
+
+        case Phase::ScenarioG_SavePump: {
+            bool matched = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                matched = g_saveMatched;
+            }
+            if (matched) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                EnterPhase(Phase::ScenarioG_SaveWaitBeforeLoad);
+                break;
+            }
+            if (Clock::now() >= g_nextSaveRetryAt) {
+                ++g_saveAttempts;
+                LogInfo(std::format("Requesting Scenario G save '{}' (attempt #{})...", g_cfg.tempSave, g_saveAttempts));
+                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    mgr->Save(g_cfg.tempSave.c_str());
+                } else {
+                    Check("G2_C1SaveBoundaryFallbackRelink", false, "BGSSaveLoadManager singleton unavailable.");
+                    Check("G5_Q1SaveTempSpeedMultProbe", false, "Save failed.");
+                    FinishAndScheduleQuit("Scenario G save request failed.");
+                    break;
+                }
+                g_nextSaveRetryAt = Clock::now() + std::chrono::seconds(2);
+            }
+            if (PhaseElapsedSec() > 25.0) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                Check("G2_C1SaveBoundaryFallbackRelink", false, "Timed out waiting for Scenario G kSaveGame.");
+                Check("G5_Q1SaveTempSpeedMultProbe", false, "Save timeout.");
+                FinishAndScheduleQuit("Scenario G save timeout.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioG_SaveWaitBeforeLoad: {
+            if (PhaseElapsedSec() < 1.0) {
+                break;
+            }
+            if (!RequestLoadSave(g_cfg.tempSave)) {
+                Check("G2_C1SaveBoundaryFallbackRelink", false, "Scenario G reload request failed.");
+                Check("G5_Q1SaveTempSpeedMultProbe", false, "Reload failed.");
+                FinishAndScheduleQuit("Scenario G reload request failed.");
+                break;
+            }
+            EnterPhase(Phase::ScenarioG_AwaitReload);
+            break;
+        }
+
+        case Phase::ScenarioG_AwaitReload: {
+            bool signaled = false;
+            bool ok = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                signaled = g_postLoadSignaled;
+                ok = g_postLoadSucceeded;
+            }
+            if (signaled && !ok) {
+                Check("G2_C1SaveBoundaryFallbackRelink", false, "kPostLoadGame failed on Scenario G reload.");
+                Check("G5_Q1SaveTempSpeedMultProbe", false, "Reload failed.");
+                FinishAndScheduleQuit("Scenario G reload failed.");
+                return;
+            }
+            if (signaled && ok && IsPlayerReadyInWorld()) {
+                EnterPhase(Phase::ScenarioG_ReloadSettle);
+            } else if (PhaseElapsedSec() > 90.0) {
+                Check("G2_C1SaveBoundaryFallbackRelink", false, "Timed out waiting for Scenario G reload.");
+                Check("G5_Q1SaveTempSpeedMultProbe", false, "Reload timeout.");
+                FinishAndScheduleQuit("Scenario G reload timeout.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioG_ReloadSettle: {
+            if (g_unpausedAccumSec < 2.0 && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            auto* pl = RE::PlayerCharacter::GetSingleton();
+            bool g2Restored = false;
+            if (pl && g_gGemInstanceId != 0) {
+                const auto inv = GemInventory::ListPlayerGems(pl);
+                for (const auto& t : inv.trackedGems) {
+                    if (t.gem.instanceId == g_gGemInstanceId && !t.isWorld &&
+                        t.gem.socketedGems.size() == g_gGemSupportCount) {
+                        g2Restored = true;
+                        break;
+                    }
+                }
+                if (!g2Restored) {
+                    // G2 진단: 재로드 직후 Fireball 인벤토리 ExtraUniqueID와 GemInventory 스냅샷 덤프
+                    std::string diag = "invExtras=[";
+                    auto* fbMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::FindLocalFormIdForGem("Fireball"));
+                    if (fbMisc) {
+                        if (auto* changes = pl->GetInventoryChanges(true); changes && changes->entryList) {
+                            for (auto* entry : *changes->entryList) {
+                                if (!entry || entry->object != fbMisc) continue;
+                                diag += std::format("cntDelta={}", entry->countDelta);
+                                if (entry->extraLists) {
+                                    for (auto* ex : *entry->extraLists) {
+                                        if (!ex) continue;
+                                        const auto* u = ex->GetByType<RE::ExtraUniqueID>();
+                                        diag += std::format("({:08X}:{:04X},cnt={})",
+                                            u ? u->baseID : 0u, u ? u->uniqueID : 0u, ex->GetCount());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    diag += "] ledger=[";
+                    for (const auto& e : GemInventory::TakeSnapshotForSave()) {
+                        diag += std::format("(inst={},key={:08X}:{:04X},w={},id={})",
+                            e.gem.instanceId, e.key.ownerFormId, e.key.uniqueId, e.isWorld, e.gem.gemId);
+                    }
+                    diag += "]";
+                    LogInfo(std::format("G2 diag: {}", diag));
+                }
+            }
+            Check("G2_C1SaveBoundaryFallbackRelink", g_gSaveBoundaryWasWorldBeforeSave && g2Restored,
+                std::format("wasWorldBeforeSave={}, restoredAfterReload={}, supports={}",
+                    g_gSaveBoundaryWasWorldBeforeSave, g2Restored, g_gGemSupportCount));
+
+            // G5: Q-1 세이브->재로드 후 SPDM 코세이브 기반 임시 SpeedMult 원복 검증
+            bool q1FoundActor = false;
+            float q1SpeedAfter = 0.0f;
+            if (g_gQ1ActorFormId != 0) {
+                if (auto* mob = RE::TESForm::LookupByID<RE::Actor>(g_gQ1ActorFormId)) {
+                    q1FoundActor = true;
+                    q1SpeedAfter = mob->GetActorValueModifier(
+                        RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);
+                }
+            }
+            Check("G5_Q1SaveTempSpeedMultProbe",
+                q1FoundActor && (g_gQ1SpeedBeforeSave < -5.0f) && (std::abs(q1SpeedAfter) < 0.5f),
+                std::format("actor=0x{:08X}, found={}, tempSpeedMultBefore={:.1f}, tempSpeedMultAfterReload={:.1f}",
+                    g_gQ1ActorFormId, q1FoundActor, g_gQ1SpeedBeforeSave, q1SpeedAfter));
+
+            FinishAndScheduleQuit("All Stage 5 + Review Scenario G AutoTest scenarios (A-G) completed.");
             break;
         }
 

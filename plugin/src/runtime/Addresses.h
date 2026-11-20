@@ -35,7 +35,8 @@ namespace SkyrimPoE::Runtime::Addresses
         std::ptrdiff_t offset;
     };
 
-    // HitData 적용(38586) 호출 자리 7곳 + 작업 큐 1곳 (프로토타입 8·9 검증)
+    // HitData 적용(38586) 호출 자리 7곳 + 작업 큐 1곳
+    // (C-14: melee·explosion·task_queue 등 주요 경로는 프로토타입 8·9 실게임 확인, 나머지 5곳은 Ghidra/IDA 대조·실게임 미확인)
     inline constexpr std::array<CallSiteSpec, 8> kAeApplyHitSites = {{
         { "melee",          38627, 0x4A8 },
         { "explosion",      43849, 0x412 },

@@ -24,6 +24,7 @@ DEFENSE_TYPES = {
 }
 
 STAGE2_GEMS: list[dict[str, Any]] = [
+    # 2단계 기본 9종
     {"id": "Cyclone", "file": "act_dex.lua", "kind": "attack_channel"},
     {
         "id": "SupportCastOnCriticalStrike",
@@ -38,6 +39,29 @@ STAGE2_GEMS: list[dict[str, Any]] = [
     {"id": "SupportBrutality", "file": "sup_str.lua", "kind": "support"},
     {"id": "SupportIncreasedAreaOfEffect", "file": "sup_int.lua", "kind": "support"},
     {"id": "SupportConcentratedEffect", "file": "sup_int.lua", "kind": "support"},
+    # 5단계 투사체·주문 확장 4종 (결정 163)
+    {"id": "Fireball", "file": "act_int.lua", "kind": "spell"},
+    {"id": "FreezingPulse", "file": "act_int.lua", "kind": "spell"},
+    {"id": "Arc", "file": "act_int.lua", "kind": "spell"},
+    {"id": "Spark", "file": "act_int.lua", "kind": "spell"},
+    # 5단계 즉발 가드 파워 1종 (결정 163)
+    {"id": "MoltenShell", "file": "act_str.lua", "kind": "guard"},
+    # 5단계 지속 버프(오라 7종 + 전령 2종, 결정 161·163)
+    {"id": "Determination", "file": "act_str.lua", "kind": "aura"},
+    {"id": "Grace", "file": "act_dex.lua", "kind": "aura"},
+    {"id": "Discipline", "file": "act_int.lua", "kind": "aura"},
+    {"id": "Hatred", "file": "act_dex.lua", "kind": "aura"},
+    {"id": "Wrath", "file": "act_int.lua", "kind": "aura"},
+    {"id": "Anger", "file": "act_str.lua", "kind": "aura"},
+    {"id": "PurityOfElements", "file": "act_int.lua", "kind": "aura"},
+    {"id": "HeraldOfIce", "file": "act_dex.lua", "kind": "herald"},
+    {"id": "HeraldOfAsh", "file": "act_str.lua", "kind": "herald"},
+    # 5단계 투사체·주문 보조 5종 (결정 163)
+    {"id": "SupportGreaterMultipleProjectiles", "file": "sup_dex.lua", "kind": "support"},
+    {"id": "SupportChain", "file": "sup_dex.lua", "kind": "support"},
+    {"id": "SupportFork", "file": "sup_dex.lua", "kind": "support"},
+    {"id": "SupportPierce", "file": "sup_dex.lua", "kind": "support"},
+    {"id": "SupportSpellEcho", "file": "sup_int.lua", "kind": "support"},
 ]
 
 
@@ -309,6 +333,7 @@ def parse_skill_block(
     cast_time = scalar_num("castTime", 0.0)
     color = int(scalar_num("color", 0))
     is_support = bool(re.search(r"\n\tsupport\s*=\s*true", block))
+    top_res_pct = scalar_num("manaReservationPercent", 0.0)
 
     skill_types = parse_skill_type_set(extract_field_block(block, "skillTypes"))
     req_types = parse_skill_type_list(extract_field_block(block, "requireSkillTypes"))
@@ -366,6 +391,7 @@ def parse_skill_block(
                 val = raw_val
             resolved_stats[sname] = resolved_stats.get(sname, 0.0) + val
 
+        res_pct = lv_scalar("manaReservationPercent", top_res_pct)
         levels[str(lv_num)] = {
             "level": lv_num,
             "levelRequirement": level_req,
@@ -373,6 +399,7 @@ def parse_skill_block(
             "reqDex": gem_stat_requirement(level_req, is_support, req_mult[1]),
             "reqInt": gem_stat_requirement(level_req, is_support, req_mult[2]),
             "manaCost": mana_cost,
+            "spiritCost": int(poe_round(res_pct)),
             "manaMultiplier": lv_scalar("manaMultiplier", 0.0),
             "attackSpeedMultiplier": lv_scalar("attackSpeedMultiplier", 0.0),
             "baseMultiplier": lv_scalar("baseMultiplier", 1.0),
@@ -385,12 +412,14 @@ def parse_skill_block(
     if len(levels) < 20:
         raise ValueError(f"스킬 '{skill_id}'의 레벨 1~20이 부족합니다: {len(levels)}")
 
+    spirit_cost_default = levels["1"]["spiritCost"]
     return {
         "id": skill_id,
         "name": scalar_str("name", skill_id),
         "color": color,
         "support": is_support,
         "castTime": cast_time,
+        "spiritCost": spirit_cost_default,
         "skillTypes": skill_types,
         "requireSkillTypes": req_types,
         "excludeSkillTypes": exc_types,
@@ -433,6 +462,28 @@ def build_lang_packs() -> tuple[dict[str, Any], dict[str, Any]]:
                 "name": "집중 효과",
                 "short": "범위 피해 증폭, 효과 범위 감폭",
             },
+            "Fireball": {"name": "화염구", "short": "적중 시 폭발하는 화염 투사체 주문 (점화 확률 25%)"},
+            "FreezingPulse": {"name": "동결 파동", "short": "모든 적을 관통하는 냉기 파동 투사체 주문"},
+            "Arc": {"name": "연쇄 번개", "short": "적 사이를 연쇄 도약하는 즉발 번개 주문"},
+            "Spark": {"name": "전기불꽃", "short": "여러 발의 번개 투사체를 부채꼴로 발사하는 주문"},
+            "MoltenShell": {"name": "용암 방패", "short": "방어도 비례 보호막으로 타격 피해 75% 흡수 후 화염 반사 폭발"},
+            "Determination": {"name": "결의", "short": "[정신력 50] 고정 방어도 및 방어도 증폭 오라"},
+            "Grace": {"name": "은총", "short": "[정신력 50] 고정 회피 및 회피 증폭 오라"},
+            "Discipline": {"name": "단련", "short": "[정신력 35] 최대 에너지 실드 및 ES 재충전 속도 증가 오라"},
+            "Hatred": {"name": "증오", "short": "[정신력 50] 물리 피해의 일정 비율을 추가 냉기 피해로 부여"},
+            "Wrath": {"name": "진노", "short": "[정신력 50] 공격 번개 피해 추가 및 주문 번개 피해 증폭"},
+            "Anger": {"name": "분노", "short": "[정신력 50] 공격 및 주문에 화염 피해 추가"},
+            "PurityOfElements": {"name": "원소의 순수함", "short": "[정신력 50] 모든 원소 저항 증가 및 원소 상태이상 면역"},
+            "HeraldOfIce": {"name": "얼음의 전령", "short": "[정신력 25] 냉기 피해 추가 및 냉각·빙결 적 처치 시 냉기 폭발"},
+            "HeraldOfAsh": {"name": "재의 전령", "short": "[정신력 25] 물리→화염 추가 피해 및 처치 시 과잉 피해 화염 폭발"},
+            "SupportGreaterMultipleProjectiles": {
+                "name": "상위 다중 투사체",
+                "short": "투사체 +4발 추가 발사, 투사체 피해 감폭",
+            },
+            "SupportChain": {"name": "연쇄", "short": "투사체·스킬 연쇄 +2회 추가, 적중 피해 소폭 감폭"},
+            "SupportFork": {"name": "갈래", "short": "투사체 최초 적중 시 양옆 2갈래로 분기"},
+            "SupportPierce": {"name": "관통", "short": "투사체 관통 +2회 및 투사체 피해 증폭"},
+            "SupportSpellEcho": {"name": "주문 메아리", "short": "주문 시전 속도 대폭 증폭 및 2연속 시전"},
         },
         "classes": {
             "Scion": "사이온",
@@ -485,6 +536,28 @@ def build_lang_packs() -> tuple[dict[str, Any], dict[str, Any]]:
                 "name": "Concentrated Effect",
                 "short": "More area damage, less area of effect",
             },
+            "Fireball": {"name": "Fireball", "short": "Exploding fire projectile spell (25% chance to Ignite)"},
+            "FreezingPulse": {"name": "Freezing Pulse", "short": "Always-piercing cold projectile spell"},
+            "Arc": {"name": "Arc", "short": "Instant chaining lightning spell"},
+            "Spark": {"name": "Spark", "short": "Multi-projectile lightning spell"},
+            "MoltenShell": {"name": "Molten Shell", "short": "Armour-scaled guard shield absorbing 75% of hit damage"},
+            "Determination": {"name": "Determination", "short": "[50 Spirit] Grants flat and more Armour"},
+            "Grace": {"name": "Grace", "short": "[50 Spirit] Grants flat and more Evasion"},
+            "Discipline": {"name": "Discipline", "short": "[35 Spirit] Grants flat Energy Shield and ES Recharge Rate"},
+            "Hatred": {"name": "Hatred", "short": "[50 Spirit] Gain Physical Damage as Extra Cold Damage"},
+            "Wrath": {"name": "Wrath", "short": "[50 Spirit] Adds Attack Lightning Damage and More Spell Lightning Damage"},
+            "Anger": {"name": "Anger", "short": "[50 Spirit] Adds Fire Damage to Attacks and Spells"},
+            "PurityOfElements": {"name": "Purity of Elements", "short": "[50 Spirit] Grants All Elemental Resistances and Elemental Ailment Immunity"},
+            "HeraldOfIce": {"name": "Herald of Ice", "short": "[25 Spirit] Adds Cold Damage and shatters Chilled/Frozen enemies on kill"},
+            "HeraldOfAsh": {"name": "Herald of Ash", "short": "[25 Spirit] Gain Physical as Extra Fire and overkill fire burst on kill"},
+            "SupportGreaterMultipleProjectiles": {
+                "name": "Greater Multiple Projectiles",
+                "short": "Fires 4 additional projectiles with less projectile damage",
+            },
+            "SupportChain": {"name": "Chain", "short": "Chains +2 times with slightly less hit damage"},
+            "SupportFork": {"name": "Fork", "short": "Projectiles fork into 2 on first hit"},
+            "SupportPierce": {"name": "Pierce", "short": "Projectiles pierce +2 targets with more projectile damage"},
+            "SupportSpellEcho": {"name": "Spell Echo", "short": "More cast speed and repeats supported spell once"},
         },
         "classes": {
             "Scion": "Scion",

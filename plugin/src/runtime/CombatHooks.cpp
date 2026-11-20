@@ -1,6 +1,9 @@
 #include "PCH.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/Addresses.h"
+#include "runtime/AilmentRuntime.h"
+#include "runtime/FormIds.h"
+#include "runtime/MonsterRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 
@@ -14,6 +17,8 @@ namespace SkyrimPoE::Runtime
         Core::StatEngine* g_statEngine = nullptr;
         Core::EnergyShieldPool* g_esPool = nullptr;
         Core::KillTracker* g_killTracker = nullptr;
+        Core::SkillSystem* g_skillSystem = nullptr;
+        Core::CharmSystem* g_charmSystem = nullptr;
         const Core::DataPack* g_dataPack = nullptr;
         const Core::Config* g_config = nullptr;
         bool g_installed = false;
@@ -117,7 +122,7 @@ namespace SkyrimPoE::Runtime
             return addr >= begin && addr <= end && size <= (end - addr);
         }
 
-        bool ReadRel32Target(std::uintptr_t site, std::uintptr_t& outTarget) noexcept
+        bool ReadRel32Target(std::uintptr_t site, std::uintptr_t expectedTarget, std::uintptr_t& outTarget) noexcept
         {
             const auto textSeg = REL::Module::get().segment(REL::Segment::textx);
             if (!ContainsAddress(textSeg, site, 5)) {
@@ -131,7 +136,110 @@ namespace SkyrimPoE::Runtime
             std::memcpy(&rel32, bytes + 1, sizeof(rel32));
             outTarget = static_cast<std::uintptr_t>(
                 static_cast<std::intptr_t>(site + 5) + static_cast<std::intptr_t>(rel32));
+            // C-14: 대상이 엔진 .text 내부이면 기대한 AE ID 주소와 정확히 일치하는지 대조한다.
+            // (.text 밖이면 타 SKSE 모드의 트램펄린 체인으로 간주하고 연쇄 훅을 허용한다.)
+            if (expectedTarget != 0 && ContainsAddress(textSeg, outTarget, 1) && outTarget != expectedTarget) {
+                return false;
+            }
             return true;
+        }
+
+        void EnqueueCharmBonusSync(const char* toastMsg)
+        {
+            if (!g_queue) {
+                return;
+            }
+            std::string msg = toastMsg ? toastMsg : "";
+            g_queue->Enqueue([msg = std::move(msg)]() {
+                if (g_statEngine && g_charmSystem) {
+                    const auto bonuses = g_charmSystem->ComputeActiveBonuses();
+                    g_statEngine->UpdateLayer2([bonuses](Core::Layer2Input& l2) {
+                        l2.charmBonuses = bonuses;
+                    });
+                    SaveLoad::PersistCharmSlotsFromSystem();
+                }
+                if (!msg.empty()) {
+                    RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
+                }
+            });
+        }
+
+        // 검수 M6: 같은 프레임 연속 피격에서 Layer2 재빌드 전에 이미 켜진 참 보너스를 즉시 반영한다.
+        void ApplyPendingCharmBonuses(Core::StatSnapshot& effectiveSnap)
+        {
+            if (!g_charmSystem || !g_config || !g_config->enableCharms) {
+                return;
+            }
+            const auto live = g_charmSystem->ComputeActiveBonuses();
+            const std::uint8_t missingMask = static_cast<std::uint8_t>(live.activeMask & ~effectiveSnap.activeCharmMask);
+            if (missingMask == 0) {
+                return;
+            }
+            auto has = [&](Core::CharmKind k) {
+                return (missingMask & static_cast<std::uint8_t>(1u << static_cast<std::uint8_t>(k))) != 0;
+            };
+            if (has(Core::CharmKind::Ruby)) {
+                effectiveSnap.fireResist += 25.0;
+                effectiveSnap.maxFireResist = std::min(90.0, effectiveSnap.maxFireResist + 2.0);
+            }
+            if (has(Core::CharmKind::Sapphire)) {
+                effectiveSnap.coldResist += 25.0;
+                effectiveSnap.maxColdResist = std::min(90.0, effectiveSnap.maxColdResist + 2.0);
+            }
+            if (has(Core::CharmKind::Topaz)) {
+                effectiveSnap.lightningResist += 25.0;
+                effectiveSnap.maxLightningResist = std::min(90.0, effectiveSnap.maxLightningResist + 2.0);
+            }
+            if (has(Core::CharmKind::Amethyst)) {
+                effectiveSnap.chaosResist += 25.0;
+            }
+            if (has(Core::CharmKind::Purifying)) {
+                effectiveSnap.cannotBeFrozen = true;
+                effectiveSnap.bleedImmune = true;
+            }
+            if (has(Core::CharmKind::Bastion)) {
+                effectiveSnap.physDamageReduction = std::min(90.0, effectiveSnap.physDamageReduction + 15.0);
+                effectiveSnap.armour += 600.0;
+            }
+            effectiveSnap.activeCharmMask |= missingMask;
+        }
+
+        void EnqueueMoltenShellBreakEffects(double reflectedFireSkyrim)
+        {
+            if (!g_queue) {
+                return;
+            }
+            g_queue->Enqueue([reflectedFireSkyrim]() {
+                if (g_statEngine) {
+                    g_statEngine->UpdateLayer2([](Core::Layer2Input& l2) {
+                        l2.moltenShellBonusArmour = 0.0;
+                    });
+                }
+                if (reflectedFireSkyrim > 0.0) {
+                    if (auto* pl = RE::PlayerCharacter::GetSingleton()) {
+                        // 검수 M4: 용암 방패 반사는 화염(Fire) 피해 및 만료 폭발과 동일한 320u 반경 적용
+                        (void)SkillExecution::ExecuteAoESpell(
+                            pl->GetPosition(), 320.0f, reflectedFireSkyrim, FormIds::kVfxFireBurst, Core::DamageType::Fire);
+                    }
+                }
+            });
+        }
+
+        void TryTriggerBastionOnProjectedLowLife(RE::PlayerCharacter* player, double remainingRaw, double diffMult)
+        {
+            if (!g_charmSystem || !g_config || !g_config->enableCharms || !player || remainingRaw <= 0.0) {
+                return;
+            }
+            auto* av = player->AsActorValueOwner();
+            if (!av) {
+                return;
+            }
+            const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
+            const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
+            const double projectedRatio = std::max(0.0, (curHp - remainingRaw * diffMult) / maxHp);
+            if (g_charmSystem->TryTriggerOnLowLife(projectedRatio, true)) {
+                EnqueueCharmBonusSync("[참] 수호의 참 자동 발동!");
+            }
         }
 
         // ---- 1. HitData 적용(AE 38586) 8개 호출 자리 ----
@@ -153,8 +261,10 @@ namespace SkyrimPoE::Runtime
             // (A) 플레이어가 적을 공격하는 경로
             if (aggressor && aggressor.get() == player && !target->IsPlayerRef()) {
                 // M8: 모든 타격(사이클론·바닐라 근접·활·작업 큐 지연)에서 피해 전 첫 적대 스냅샷 선기록(결정 134, 140)
-                if (g_killTracker && !hit->flags.any(RE::HitData::Flag::kPredictDamage)) {
-                    g_killTracker->RecordFirstHitHostility(target->GetFormID(), target->IsHostileToActor(player));
+                const bool isRealHit = !hit->flags.any(RE::HitData::Flag::kPredictDamage);
+                if (g_killTracker && isRealHit) {
+                    g_killTracker->RecordFirstHitHostility(
+                        target->GetFormID(), target->IsHostileToActor(player), !target->IsDead());
                 }
 
                 // M6: 사이클론 근접 타격 문맥 활성 시(38627+0x4A8) PoE 피해로 치환(결정 65, 66, 93)
@@ -170,6 +280,55 @@ namespace SkyrimPoE::Runtime
                     const double replaced = std::max(0.0, t_cycloneCtx.convertedSkyrimDamage * engineRatio * sneakMult);
                     hit->totalDamage = static_cast<float>(replaced);
                     hit->flags.set(RE::HitData::Flag::kIgnoreCritical);
+                }
+
+                // 5단계(결정 163, 164) + 검수 C2: task_queue(siteIdx==7) 2중 적용 차단(siteIdx < 7)
+                if (siteIdx < 7 && isRealHit && hit->totalDamage > 0.0f) {
+                    double dmg = static_cast<double>(hit->totalDamage);
+                    dmg *= AilmentRuntime::ShockDamageMultiplier(target->GetFormID());
+                    const auto snap = g_statEngine->GetSnapshot();
+                    if (snap && snap->incDamageVsRarePct > 0.0) {
+                        if (const auto prof = MonsterRuntime::GetProfileCopy(target->GetFormID());
+                            prof && prof->rarity == Core::MonsterRarity::Rare) {
+                            dmg *= (1.0 + snap->incDamageVsRarePct / 100.0);
+                        }
+                    }
+                    const auto monRes = MonsterRuntime::ApplyPlayerHitToMonster(
+                        target->GetFormID(), dmg, Core::DamageType::Physical, false);
+                    hit->totalDamage = static_cast<float>(std::max(0.0, monRes.remainingHealthDamage));
+                    if (monRes.absorbedByEs > 1e-4) {
+                        // 검수 M3: 적 ES가 사이클론 타격을 100% 흡수해도 CoC·상태이상 발동 경로에 적중 전달
+                        if (siteIdx == 0 && t_cycloneCtx.active && t_cycloneCtx.outAbsorbedByMonsterEs) {
+                            *t_cycloneCtx.outAbsorbedByMonsterEs = true;
+                        }
+                        if (monRes.remainingHealthDamage <= 1e-4 && g_killTracker) {
+                            // 적 ES가 100% 흡수해 체력 감소가 0이어도 KillTracker 처치 기여 확정(검수 설계)
+                            g_killTracker->ConfirmDamageContribution(target->GetFormID(), monRes.absorbedByEs);
+                        }
+                    }
+
+                    // N-1: 바닐라 근접·활 타격(사이클론 제외)도 상태이상(출혈·중독·Starforge 감전 등) 경로에 연결
+                    if (!t_cycloneCtx.active && g_queue && snap &&
+                        (snap->bleedChancePct > 0.0 || snap->poisonChancePct > 0.0 ||
+                         snap->igniteChancePct > 0.0 || snap->freezeChancePct > 0.0 ||
+                         snap->shockChancePct > 0.0 || snap->starforgeShock)) {
+                        const bool isHitCrit = hit->flags.any(RE::HitData::Flag::kCritical);
+                        const RE::ActorHandle targetHandle = target->GetHandle();
+                        const double rawHitDmg = dmg;
+                        const std::uint32_t exileLv = snap->exileLevel;
+                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, exileLv]() {
+                            auto ptr = targetHandle.get();
+                            auto* tgt = ptr.get();
+                            if (!tgt || tgt->IsDead() || !g_dataPack) {
+                                return;
+                            }
+                            const double monLife = std::max(20.0, g_dataPack->MonsterLife(exileLv));
+                            const double estPoePhys = rawHitDmg * (monLife / 100.0);
+                            Core::DamagePacket pkt{};
+                            pkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { estPoePhys, estPoePhys };
+                            (void)AilmentRuntime::ApplyPlayerHitAilments(tgt, pkt, isHitCrit);
+                        });
+                    }
                 }
                 return;
             }
@@ -189,10 +348,22 @@ namespace SkyrimPoE::Runtime
                     t_lastExplRatio = 1.0f;
                 }
 
-                const double preBlock = (hit->physicalDamage > 1e-4f)
+                double preBlock = (hit->physicalDamage > 1e-4f)
                     ? static_cast<double>(hit->physicalDamage) * static_cast<double>(explRatio) *
                           std::clamp(1.0 - static_cast<double>(hit->percentBlocked), 0.0, 1.0)
                     : static_cast<double>(hit->totalDamage);
+
+                Core::MonsterOutgoingModifier monOut{};
+                if (aggressor && !aggressor->IsPlayerRef()) {
+                    monOut = MonsterRuntime::GetOutgoingModifier(aggressor->GetFormID());
+                    preBlock *= monOut.damageMultiplier;
+                    // N-2: Deadly(치명) 몬스터는 20% 확률로 1.3배 치명타
+                    if (monOut.isDeadly && RollUnit() < 0.20) {
+                        preBlock *= 1.30;
+                    }
+                }
+                // C-22, N-3: 플레이어가 적 감전 상태면 받는 피해 증폭
+                preBlock *= AilmentRuntime::PlayerShockDamageMultiplier();
 
                 if (!std::isfinite(preBlock) || preBlock <= 0.0) {
                     return;
@@ -221,18 +392,61 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
 
-                // 3) PoE 물리 방어 + 기대 방어 되돌림 환산(결정 68, 69, 94, 142)
-                const double postDefense = Core::ConvertDefensePhysicalHit(
-                    preBlock, snap->exileLevel, *snap, *g_dataPack, *g_config);
+                // 3) PoE 물리 방어 + N-2 승격 적 추가 원소 피해 + 기대 방어 되돌림 환산
+                Core::StatSnapshot effectiveSnap = *snap;
+                ApplyPendingCharmBonuses(effectiveSnap);
+                double postDefense = Core::ConvertDefensePhysicalHit(
+                    preBlock, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                // U5 확정(2026-11-20): Astramentis(-4 Physical Damage taken from Attack Hits) 등 고정 물리 공격 피해 감산
+                if (effectiveSnap.flatPhysTakenFromAttacksDelta < 0.0 && postDefense > 0.0) {
+                    const double monDmg = std::max(1.0, g_dataPack->MonsterDamage(effectiveSnap.exileLevel));
+                    const double flatSkyrimDelta = effectiveSnap.flatPhysTakenFromAttacksDelta * (10.0 / monDmg);
+                    postDefense = std::max(0.0, postDefense + flatSkyrimDelta);
+                }
+                if (monOut.extraFireRatio > 0.0) {
+                    postDefense += Core::ConvertDefenseResistDamage(
+                        preBlock * monOut.extraFireRatio, Core::DamageType::Fire,
+                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                }
+                if (monOut.extraColdRatio > 0.0) {
+                    postDefense += Core::ConvertDefenseResistDamage(
+                        preBlock * monOut.extraColdRatio, Core::DamageType::Cold,
+                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                }
+                if (monOut.extraLightningRatio > 0.0) {
+                    postDefense += Core::ConvertDefenseResistDamage(
+                        preBlock * monOut.extraLightningRatio, Core::DamageType::Lightning,
+                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                }
 
-                // 4) 난이도 배율 보정 에너지 실드 선차감(검수 C2 해법) + Mind Over Matter(ES 이후 잔여분 매지카 흡수)
+                // C-22, N-3: 유효 물리 타격(최대 체력의 5% 이상) 시 20% 확률로 적->플레이어 출혈 판정(정화의 참이 실제 출혈을 차단)
+                if (postDefense > 0.0) {
+                    const auto* pav = player->AsActorValueOwner();
+                    const double pMaxHp = pav ? std::max(50.0, static_cast<double>(pav->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
+                    if (postDefense >= pMaxHp * 0.05 && RollUnit() < 0.20) {
+                        const auto ailOut = AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Bleed, postDefense);
+                        if (ailOut.purifyingCharmTriggered) {
+                            EnqueueCharmBonusSync("[참] 정화의 참 자동 발동! (출혈 해제·면역)");
+                        }
+                    }
+                }
+
+                // 4) 5단계 7단계 방어 순서: ④ 가드(용암 방패) → ⑤ 에너지 실드 → ⑥ MoM → ⑦ 저체력 수호의 참
                 const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
                 double remainingRaw = postDefense;
+                if (g_skillSystem) {
+                    const auto guard = g_skillSystem->AbsorbWithGuardShield(remainingRaw, diffMult, false);
+                    remainingRaw = guard.remainingRawDamage;
+                    if (guard.brokeNow) {
+                        EnqueueMoltenShellBreakEffects(guard.reflectedFireSkyrim);
+                    }
+                }
                 if (g_esPool) {
-                    const auto absorb = g_esPool->AbsorbDamage(postDefense, diffMult, false);
+                    const auto absorb = g_esPool->AbsorbDamage(remainingRaw, diffMult, false);
                     remainingRaw = absorb.remainingRawDamage;
                 }
-                remainingRaw = ApplyMindOverMatterIfActive(remainingRaw, diffMult, *snap, player);
+                remainingRaw = ApplyMindOverMatterIfActive(remainingRaw, diffMult, effectiveSnap, player);
+                TryTriggerBastionOnProjectedLowLife(player, remainingRaw, diffMult);
                 hit->totalDamage = static_cast<float>(std::max(0.0, remainingRaw));
             }
         }
@@ -262,8 +476,8 @@ namespace SkyrimPoE::Runtime
             const auto& spec = Addresses::kAeApplyHitSites[SiteIdx];
             const auto site = REL::ID(spec.id).address() + spec.offset;
             std::uintptr_t preTarget = 0;
-            if (!ReadRel32Target(site, preTarget)) {
-                SKSE::log::warn("CombatHooks: ApplyHit site '{}' (ID {}+0x{:X}) is not a valid E8 call; skipped.",
+            if (!ReadRel32Target(site, REL::ID(Addresses::kAeApplyHitId).address(), preTarget)) {
+                SKSE::log::warn("CombatHooks: ApplyHit site '{}' (ID {}+0x{:X}) target mismatch or invalid E8; skipped.",
                     spec.name, spec.id, spec.offset);
                 return false;
             }
@@ -333,6 +547,13 @@ namespace SkyrimPoE::Runtime
                             fresh.hasSkyrimResist = true;
                             fresh.skyrimResistMult = resMult;
                             g_effectCache[self] = fresh;
+                        } else if (target && !target->IsPlayerRef() && g_killTracker &&
+                            self->effect->baseEffect && self->effect->baseEffect->IsDetrimental()) {
+                            // Q-4: 바닐라 주문·마법부여 첫 피해 적용(35086)보다 앞선 SetEffectiveness에서 사전 적대 선기록
+                            if (const auto caster = self->GetCasterActor(); caster && caster->IsPlayerRef()) {
+                                g_killTracker->RecordFirstHitHostility(
+                                    target->GetFormID(), target->IsHostileToActor(caster.get()), !target->IsDead());
+                            }
                         }
                     }
                 } catch (...) {
@@ -394,11 +615,34 @@ namespace SkyrimPoE::Runtime
                 return value;
             }
 
-            // (A) 플레이어가 적에게 거는 바닐라 주문·마법부여·독: 피해 수정 없이 사전 적대만 선기록(결정 134, 140, 142)
+            // (A) 플레이어가 적에게 거는 바닐라 주문·마법부여·독: 사전 적대 선기록 + C-23 승격 적 ES/감전/희귀 증폭 반영
             if (!actor->IsPlayerRef()) {
-                if (g_killTracker) {
-                    if (const auto caster = self->GetCasterActor(); caster && caster.get() == player) {
-                        g_killTracker->RecordFirstHitHostility(actor->GetFormID(), actor->IsHostileToActor(player));
+                if (const auto caster = self->GetCasterActor(); caster && caster.get() == player) {
+                    const RE::FormID targetId = actor->GetFormID();
+                    if (g_killTracker) {
+                        g_killTracker->RecordFirstHitHostility(targetId, actor->IsHostileToActor(player), !actor->IsDead());
+                    }
+                    if (value < 0.0f && self->effect && self->effect->baseEffect && self->effect->baseEffect->IsDetrimental()) {
+                        const auto mapping = ClassifyMagicDamage(self->effect->baseEffect);
+                        double magDmg = static_cast<double>(-value);
+                        const double shockMult = AilmentRuntime::ShockDamageMultiplier(targetId);
+                        magDmg *= shockMult;
+                        if (g_statEngine) {
+                            if (const auto snap = g_statEngine->GetSnapshot(); snap && snap->incDamageVsRarePct > 0.0) {
+                                if (const auto prof = MonsterRuntime::GetProfileCopy(targetId);
+                                    prof && prof->rarity == Core::MonsterRarity::Rare) {
+                                    magDmg *= (1.0 + snap->incDamageVsRarePct / 100.0);
+                                }
+                            }
+                        }
+                        const bool bypassEs = (mapping.type == Core::DamageType::Chaos);
+                        // 검수 Minor 8: 저항 변수 없는 무속성 마법(체력 흡수 등)은 FireResistant 오적용 방지를 위해 DamageType::Count 전달
+                        const auto monDmgType = mapping.useAverageElemental ? Core::DamageType::Count : mapping.type;
+                        const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(targetId, magDmg, monDmgType, bypassEs);
+                        if (hitRes.absorbedByEs > 0.0 && g_killTracker) {
+                            g_killTracker->ConfirmDamageContribution(targetId, hitRes.absorbedByEs);
+                        }
+                        return -static_cast<float>(std::max(0.0, hitRes.remainingHealthDamage));
                     }
                 }
                 return value;
@@ -464,6 +708,15 @@ namespace SkyrimPoE::Runtime
             if (std::isfinite(skyrimRes) && skyrimRes > 1e-4f && skyrimRes < 10.0f) {
                 preResistD /= static_cast<double>(skyrimRes);
             }
+            if (const auto caster = self->GetCasterActor(); caster && !caster->IsPlayerRef()) {
+                const auto monOut = MonsterRuntime::GetOutgoingModifier(caster->GetFormID());
+                preResistD *= monOut.damageMultiplier;
+                if (monOut.isDeadly && RollUnit() < 0.20) {
+                    preResistD *= 1.30;
+                }
+            }
+            // C-22, N-3: 플레이어 감전 상태 시 받는 마법 피해 증폭
+            preResistD *= AilmentRuntime::PlayerShockDamageMultiplier();
 
             // 2) 타격 vs 지속 피해 분류 및 주문 회피(Acrobatics)·주문 막기·주문 억제(결정 82, 87)
             const bool isConcentration =
@@ -529,27 +782,80 @@ namespace SkyrimPoE::Runtime
                 }
             }
 
+            // 2.5) 5단계(결정 162) + 검수 M5/M6: 원소·카오스 피격 시 참 자동 발동 + 정화의 참(냉기) + 같은 프레임 연속 피격 보정
+            Core::StatSnapshot effectiveSnap = *snap;
+            if (g_charmSystem && g_config->enableCharms && !mapping.useAverageElemental) {
+                if (g_charmSystem->TryTriggerOnIncomingDamage(mapping.type, true)) {
+                    switch (mapping.type) {
+                        case Core::DamageType::Fire:
+                            EnqueueCharmBonusSync("[참] 루비 참 자동 발동! (+25% 화염 저항)");
+                            break;
+                        case Core::DamageType::Cold:
+                            EnqueueCharmBonusSync("[참] 사파이어 참 자동 발동! (+25% 냉기 저항)");
+                            break;
+                        case Core::DamageType::Lightning:
+                            EnqueueCharmBonusSync("[참] 토파즈 참 자동 발동! (+25% 번개 저항)");
+                            break;
+                        case Core::DamageType::Chaos:
+                            EnqueueCharmBonusSync("[참] 자수정 참 자동 발동! (+25% 카오스 저항)");
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+            // 방금 켜진 참뿐 아니라 같은 프레임 직전 타격에서 켜진 참 보너스도 모두 즉시 반영(검수 M6)
+            ApplyPendingCharmBonuses(effectiveSnap);
+
             // 3) PoE 저항 + PoE 3.30 인내 원소 피해 감소 + 기대 저항 되돌림(결정 71, 74, 142)
             double postDefense = 0.0;
             if (mapping.useAverageElemental) {
-                Core::StatSnapshot avgSnap = *snap;
-                avgSnap.fireResist = (snap->fireResist + snap->coldResist + snap->lightningResist) / 3.0;
-                avgSnap.maxFireResist = (snap->maxFireResist + snap->maxColdResist + snap->maxLightningResist) / 3.0;
+                Core::StatSnapshot avgSnap = effectiveSnap;
+                avgSnap.fireResist = (effectiveSnap.fireResist + effectiveSnap.coldResist + effectiveSnap.lightningResist) / 3.0;
+                avgSnap.maxFireResist = (effectiveSnap.maxFireResist + effectiveSnap.maxColdResist + effectiveSnap.maxLightningResist) / 3.0;
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, Core::DamageType::Fire, snap->exileLevel, avgSnap, *g_dataPack, *g_config);
+                    preResistD, Core::DamageType::Fire, effectiveSnap.exileLevel, avgSnap, *g_dataPack, *g_config);
             } else {
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, mapping.type, snap->exileLevel, *snap, *g_dataPack, *g_config);
+                    preResistD, mapping.type, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
             }
 
-            // 4) 난이도 배율 보정 에너지 실드 선차감(카오스는 ES 우회) + Mind Over Matter(카오스·DoT 포함 적용)
+            // C-22, N-3: 유효 원소 마법 타격(최대 체력의 5% 이상) 시 적->플레이어 상태이상(점화·냉각/빙결·감전) 적용
+            // (정화의 참은 실제 동결/냉각이 발생할 유효 냉기 타격에서만 발동하여 충전 낭비 방지)
+            if (isHit && !mapping.useAverageElemental && postDefense > 0.0) {
+                const auto* pav = player->AsActorValueOwner();
+                const double pMaxHp = pav ? std::max(50.0, static_cast<double>(pav->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
+                if (postDefense >= pMaxHp * 0.05) {
+                    if (mapping.type == Core::DamageType::Cold) {
+                        const auto ailOut = AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Freeze, postDefense);
+                        if (ailOut.purifyingCharmTriggered) {
+                            EnqueueCharmBonusSync("[참] 정화의 참 자동 발동! (빙결·출혈 면역)");
+                        }
+                    } else if (mapping.type == Core::DamageType::Fire && RollUnit() < 0.25) {
+                        (void)AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Ignite, postDefense);
+                    } else if (mapping.type == Core::DamageType::Lightning && RollUnit() < 0.25) {
+                        (void)AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Shock, postDefense);
+                    }
+                }
+            }
+
+            // 4) 5단계 7단계 방어 순서: ④ 가드(용암 방패, DoT 우회) → ⑤ 에너지 실드(샤브론 시 카오스 차단) → ⑥ MoM → ⑦ 저체력 수호의 참
             const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
             double finalRaw = postDefense;
+            if (g_skillSystem) {
+                const auto guard = g_skillSystem->AbsorbWithGuardShield(finalRaw, diffMult, !isHit);
+                finalRaw = guard.remainingRawDamage;
+                if (guard.brokeNow) {
+                    EnqueueMoltenShellBreakEffects(guard.reflectedFireSkyrim);
+                }
+            }
             if (g_esPool) {
-                const auto absorb = g_esPool->AbsorbDamage(postDefense, diffMult, isChaos);
+                const bool chaosBypassesEs = isChaos && !effectiveSnap.shavronneChaosEs;
+                const auto absorb = g_esPool->AbsorbDamage(finalRaw, diffMult, chaosBypassesEs);
                 finalRaw = absorb.remainingRawDamage;
             }
-            finalRaw = ApplyMindOverMatterIfActive(finalRaw, diffMult, *snap, player);
+            finalRaw = ApplyMindOverMatterIfActive(finalRaw, diffMult, effectiveSnap, player);
+            TryTriggerBastionOnProjectedLowLife(player, finalRaw, diffMult);
             return -static_cast<float>(std::max(0.0, finalRaw));
         }
 
@@ -620,8 +926,8 @@ namespace SkyrimPoE::Runtime
             const auto& spec = Addresses::kAeMagicDirectCalls[I];
             const auto site = REL::ID(spec.id).address() + spec.offset;
             std::uintptr_t preTarget = 0;
-            if (!ReadRel32Target(site, preTarget)) {
-                SKSE::log::warn("CombatHooks: magic direct call '{}' (ID {}+0x{:X}) invalid; skipped.",
+            if (!ReadRel32Target(site, REL::ID(Addresses::kAeModifyActorValueId).address(), preTarget)) {
+                SKSE::log::warn("CombatHooks: magic direct call '{}' (ID {}+0x{:X}) target mismatch or invalid; skipped.",
                     spec.name, spec.id, spec.offset);
                 return false;
             }
@@ -695,13 +1001,18 @@ namespace SkyrimPoE::Runtime
         }
     }
 
-    ScopedCycloneHitContext::ScopedCycloneHitContext(double convertedSkyrimDamage, bool isCrit, RE::FormID targetId) noexcept
+    ScopedCycloneHitContext::ScopedCycloneHitContext(
+        double convertedSkyrimDamage,
+        bool isCrit,
+        RE::FormID targetId,
+        bool* outAbsorbedByMonsterEs) noexcept
         : previous_(t_cycloneCtx)
     {
         t_cycloneCtx.active = true;
         t_cycloneCtx.convertedSkyrimDamage = convertedSkyrimDamage;
         t_cycloneCtx.isCrit = isCrit;
         t_cycloneCtx.expectedTargetId = targetId;
+        t_cycloneCtx.outAbsorbedByMonsterEs = outAbsorbedByMonsterEs;
     }
 
     ScopedCycloneHitContext::~ScopedCycloneHitContext() noexcept
@@ -715,7 +1026,9 @@ namespace SkyrimPoE::Runtime
         Core::EnergyShieldPool* esPool,
         Core::KillTracker* killTracker,
         const Core::DataPack* dataPack,
-        const Core::Config* config)
+        const Core::Config* config,
+        Core::SkillSystem* skillSystem,
+        Core::CharmSystem* charmSystem)
     {
         if (g_installed) {
             return true;
@@ -724,6 +1037,8 @@ namespace SkyrimPoE::Runtime
         g_statEngine = statEngine;
         g_esPool = esPool;
         g_killTracker = killTracker;
+        g_skillSystem = skillSystem;
+        g_charmSystem = charmSystem;
         g_dataPack = dataPack;
         g_config = config;
 
@@ -743,7 +1058,8 @@ namespace SkyrimPoE::Runtime
         {
             const auto site = REL::ID(Addresses::kAeExplosionStepsSite.id).address() + Addresses::kAeExplosionStepsSite.offset;
             std::uintptr_t preTarget = 0;
-            if (ReadRel32Target(site, preTarget) && SKSE::GetTrampoline().free_size() >= 14) {
+            if (ReadRel32Target(site, REL::ID(Addresses::kAeExplosionDamageStepsId).address(), preTarget) &&
+                SKSE::GetTrampoline().free_size() >= 14) {
                 ExplosionStepsHook::originalAddr.store(preTarget, std::memory_order_release);
                 const auto prev = SKSE::GetTrampoline().write_call<5>(site, ExplosionStepsHook::Thunk);
                 ExplosionStepsHook::originalAddr.store(prev, std::memory_order_release);
@@ -755,7 +1071,8 @@ namespace SkyrimPoE::Runtime
         {
             const auto site = REL::ID(Addresses::kAeSetEffectivenessSite.id).address() + Addresses::kAeSetEffectivenessSite.offset;
             std::uintptr_t preTarget = 0;
-            if (ReadRel32Target(site, preTarget) && SKSE::GetTrampoline().free_size() >= 14) {
+            if (ReadRel32Target(site, REL::ID(Addresses::kAeSetEffectivenessId).address(), preTarget) &&
+                SKSE::GetTrampoline().free_size() >= 14) {
                 SetEffectivenessHook::originalAddr.store(preTarget, std::memory_order_release);
                 const auto prev = SKSE::GetTrampoline().write_call<5>(site, SetEffectivenessHook::Thunk);
                 SetEffectivenessHook::originalAddr.store(prev, std::memory_order_release);
@@ -801,6 +1118,14 @@ namespace SkyrimPoE::Runtime
     {
         if (g_esPool) {
             g_esPool->Tick(deltaSec, gamePaused);
+        }
+        if (g_charmSystem && g_charmSystem->Tick(deltaSec, gamePaused)) {
+            if (g_statEngine) {
+                const auto bonuses = g_charmSystem->ComputeActiveBonuses();
+                g_statEngine->UpdateLayer2([bonuses](Core::Layer2Input& l2) {
+                    l2.charmBonuses = bonuses;
+                });
+            }
         }
 
         if (gamePaused || !g_statEngine || !g_dataPack || !g_config || !g_dataPack->IsLoaded()) {

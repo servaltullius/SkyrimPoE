@@ -26,7 +26,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "MagicSkill",
@@ -125,7 +125,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -178,7 +178,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -231,7 +231,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -284,7 +284,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -337,7 +337,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -390,7 +390,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -443,7 +443,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -496,7 +496,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -549,7 +549,7 @@
       },
       {
         "field_path": "TargetType",
-        "value": "Aimed"
+        "value": "Self"
       },
       {
         "field_path": "EquipmentType",
@@ -3318,6 +3318,1120 @@
       {
         "field_path": "Model.File",
         "value": "Effects\\Ambient\\FXGlowFlatRndXBrt.nif"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Fireball",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 화염구"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_FreezingPulse",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 빙결 파동"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Arc",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 연쇄 번개"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Spark",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 전기불꽃"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupGMP",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 상위 다중 투사체"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupChain",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 연쇄"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupFork",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 분기"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupPierce",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 관통"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupSpellEcho",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 주문 메아리"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Determination",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "오라 젬: 결의"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Grace",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "오라 젬: 은총"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Discipline",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "오라 젬: 단련"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Hatred",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "오라 젬: 증오"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Wrath",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "오라 젬: 진노"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Anger",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "오라 젬: 분노"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_PurityOfElements",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "오라 젬: 원소의 순수함"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_HeraldOfIce",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "전령 젬: 얼음의 전령"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_HeraldOfAsh",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "전령 젬: 재의 전령"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_MoltenShell",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "가드 젬: 용암 방패"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Belt_Leather",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "가죽 허리띠"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\LeatherStrips.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "80"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.5"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Belt_Heavy",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "무거운 허리띠"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\LeatherStrips.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.8"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Belt_Chain",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "사슬 허리띠"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\LeatherStrips.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.6"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Belt_Rustic",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "투박한 장식띠"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\LeatherStrips.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "110"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.5"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Belt_Stygian",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "명계의 조임쇠"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\LeatherStrips.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "500"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.5"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Magic_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 허리띠 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "60"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T1_Rare_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 허리띠 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Magic_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 허리띠 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T2_Rare_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 허리띠 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Magic_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 허리띠 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "180"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T3_Rare_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 허리띠 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "360"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Magic_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 허리띠 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "240"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T4_Rare_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 허리띠 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "480"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Magic_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 매직 허리띠 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "300"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_T5_Rare_Belt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 희귀 허리띠 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Jewel_Crimson",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "진홍색 주얼"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\RubyFlawless.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Jewel_Viridian",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "청록색 주얼"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\EmeraldFlawless.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Jewel_Cobalt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "코발트색 주얼"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gems\\SapphireFlawless.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Charm_Ruby",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "루비 참"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemPiece01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Charm_Sapphire",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "사파이어 참"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemPiece01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Charm_Topaz",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "토파즈 참"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemPiece01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Charm_Amethyst",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "자수정 참"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemPiece01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Charm_Purifying",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "정화의 참"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemPiece01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Charm_Bastion",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "수호의 참"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemPiece01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "Projectile",
+    "editorid": "SPOE_Proj_Fireball",
+    "ops": [
+      {
+        "field_path": "Type",
+        "value": "Missile"
+      },
+      {
+        "field_path": "Speed",
+        "value": "2200"
+      },
+      {
+        "field_path": "Range",
+        "value": "8000"
+      },
+      {
+        "field_path": "Gravity",
+        "value": "0"
+      },
+      {
+        "field_path": "CollisionRadius",
+        "value": "10"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Magic\\FireballProjectile01.nif"
+      },
+      {
+        "field_path": "Light",
+        "value": "01CBB3:Skyrim.esm"
+      },
+      {
+        "field_path": "Sound",
+        "value": "03C8FE:Skyrim.esm"
+      }
+    ]
+  },
+  {
+    "record_type": "Projectile",
+    "editorid": "SPOE_Proj_FreezingPulse",
+    "ops": [
+      {
+        "field_path": "Type",
+        "value": "Missile"
+      },
+      {
+        "field_path": "Speed",
+        "value": "2200"
+      },
+      {
+        "field_path": "Range",
+        "value": "6500"
+      },
+      {
+        "field_path": "Gravity",
+        "value": "0"
+      },
+      {
+        "field_path": "CollisionRadius",
+        "value": "12"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Magic\\IceVolleyProjectile.nif"
+      }
+    ]
+  },
+  {
+    "record_type": "Projectile",
+    "editorid": "SPOE_Proj_Spark",
+    "ops": [
+      {
+        "field_path": "Type",
+        "value": "Missile"
+      },
+      {
+        "field_path": "Speed",
+        "value": "1600"
+      },
+      {
+        "field_path": "Range",
+        "value": "6000"
+      },
+      {
+        "field_path": "Gravity",
+        "value": "0"
+      },
+      {
+        "field_path": "CollisionRadius",
+        "value": "10"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Magic\\LightSpellProjectile.nif"
+      },
+      {
+        "field_path": "Light",
+        "value": "03FA58:Skyrim.esm"
+      }
+    ]
+  },
+  {
+    "record_type": "Explosion",
+    "editorid": "SPOE_Vfx_FireBurst",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "PoE 화염 폭발 연출"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Magic\\FireBallExp01.nif"
+      },
+      {
+        "field_path": "Sound1",
+        "value": "02518E:Skyrim.esm"
+      },
+      {
+        "field_path": "Sound2",
+        "value": "02518F:Skyrim.esm"
+      },
+      {
+        "field_path": "Radius",
+        "value": "240"
+      },
+      {
+        "field_path": "Force",
+        "value": "0"
+      },
+      {
+        "field_path": "Damage",
+        "value": "0"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tok_Unique",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "미감정 고유 장비 토큰"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Common\\RollOfPaper01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "2000"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "Static",
+    "editorid": "SPOE_LootBeam_Unique",
+    "ops": [
+      {
+        "field_path": "Model.File",
+        "value": "Effects\\Ambient\\FXGlowFillRndLitXBrt.nif"
       }
     ]
   }

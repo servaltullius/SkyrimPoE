@@ -61,7 +61,7 @@ namespace SkyrimPoE::Tests
     do {                                                                                          \
         const double _a = static_cast<double>(actual);                                            \
         const double _e = static_cast<double>(expected);                                          \
-        if (!std::isfinite(_a) || std::abs(_a - _e) > (eps)) {                                    \
+        if (!std::isfinite(_a) || !std::isfinite(_e) || std::abs(_a - _e) > (eps)) {              \
             std::ostringstream _oss;                                                              \
             _oss << "actual=" << _a << ", expected=" << _e << ", eps=" << (eps);                  \
             ::SkyrimPoE::Tests::Fail(#actual " ~= " #expected, __FILE__, __LINE__, _oss.str());   \

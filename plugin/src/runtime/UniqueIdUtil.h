@@ -21,7 +21,14 @@ namespace SkyrimPoE::Runtime::UniqueIdUtil
 
     // 각 추적기(GemInventory, ItemTracker)가 자신이 사용 중인 인벤토리 UID를 보고하도록 콜백 등록
     void RegisterUsedInventoryUidCollector(std::function<void(std::unordered_set<std::uint16_t>&)> collector);
+    // 각 추적기(GemInventory, ItemTracker)가 특정 (ownerFormId, uniqueId) 키를 추적 중인지 판별하는 콜백 등록
+    void RegisterTrackedKeyChecker(std::function<bool(RE::FormID, std::uint16_t)> checker);
 
     // owner 인벤토리의 엔진 ExtraUniqueID + 등록된 모든 추적기의 인벤토리 UID를 피해 미사용 번호 할당
     [[nodiscard]] std::uint16_t AllocateInventoryUniqueId(RE::TESObjectREFR* owner);
+
+    // Q-6(실게임 확인): 동일 베이스에 일반 스택과 추적품(ExtraDataList)이 공존할 때
+    // RemoveItem(..., nullptr, ...)은 첫 ExtraDataList(추적품)를 먼저 소비한다.
+    // 이 함수는 일반 스택(plain)만 정확히 count개 제거해 추적품·강화품을 건드리지 않는다.
+    bool RemovePlainItem(RE::TESObjectREFR* owner, RE::TESBoundObject* baseObj, std::int32_t count = 1);
 }

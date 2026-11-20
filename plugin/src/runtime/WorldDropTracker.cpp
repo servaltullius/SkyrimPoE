@@ -18,6 +18,8 @@ namespace SkyrimPoE::Runtime
             RE::FormID dropRefFormId = 0;
             RE::FormID corpseRefFormId = 0;
             RE::FormID beamRefFormId = 0;
+            RE::ObjectRefHandle dropHandle{};
+            RE::ActorHandle corpseHandle{};
             std::uint8_t worldDropTier = 2;
             double elapsedSec = 0.0;
         };
@@ -39,19 +41,16 @@ namespace SkyrimPoE::Runtime
             if (!base) {
                 return false;
             }
-            const RE::FormID fid = base->GetFormID();
-            for (const auto localId : FormIds::kCurrencyOrbForms) {
-                if (const auto* f = FormIds::Lookup<RE::TESObjectMISC>(localId); f && f->GetFormID() == fid) {
-                    return true;
-                }
+            const auto localId = FormIds::ResolveLocalFormIdIfOurs(base->GetFormID());
+            if (localId == 0) {
+                return false;
             }
-            for (std::size_t off = 0; off < FormIds::kSealedTokenCount; ++off) {
-                const auto localId = FormIds::kSealedTokenBase + static_cast<RE::FormID>(off);
-                if (const auto* f = FormIds::Lookup<RE::TESObjectMISC>(localId); f && f->GetFormID() == fid) {
-                    return true;
-                }
-            }
-            return false;
+            return FormIds::CurrencyKindFromLocalFormId(localId).has_value() ||
+                   FormIds::DecodeSealedTokenLocalFormId(localId).has_value() ||
+                   localId == FormIds::kUniqueSealedToken ||
+                   FormIds::JewelColorFromLocalFormId(localId).has_value() ||
+                   FormIds::CharmKindFromLocalFormId(localId).has_value() ||
+                   !FormIds::FindGemIdForLocalFormId(localId).empty();
         }
 
         [[nodiscard]] std::int32_t CountItemInContainer(RE::TESObjectREFR* owner, RE::TESBoundObject* obj)
@@ -67,10 +66,10 @@ namespace SkyrimPoE::Runtime
             if (!base) {
                 return false;
             }
-            const auto* rareBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamRare);
-            const auto* currBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamCurrency);
-            const RE::FormID id = base->GetFormID();
-            return (rareBeam && rareBeam->GetFormID() == id) || (currBeam && currBeam->GetFormID() == id);
+            const auto localId = FormIds::ResolveLocalFormIdIfOurs(base->GetFormID());
+            return localId == FormIds::kLootBeamRare ||
+                   localId == FormIds::kLootBeamCurrency ||
+                   localId == FormIds::kLootBeamUnique;
         }
 
         // 정적 임시 빛기둥 마커 전용 삭제 헬퍼(절대 Actor에 호출하지 않음)
@@ -102,31 +101,66 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        bool TryReturnSingleDropToCorpse(const ActiveWorldDrop& d)
+        enum class ReturnOutcome
+        {
+            Completed,        // 이미 주워짐/소실 또는 시체 회수 완료 -> 추적 종료
+            CorpseGone,       // 시체가 영구 삭제/비유효 -> 빛기둥만 제거 후 추적 종료
+            RetryLater        // 시체가 일시 미로드 상태 -> 빛기둥만 먼저 제거하고 추적 유지(C-20)
+        };
+
+        [[nodiscard]] RE::TESObjectREFR* ResolveDropRef(const ActiveWorldDrop& d)
+        {
+            if (auto ptr = d.dropHandle.get()) {
+                return ptr.get();
+            }
+            auto* form = RE::TESForm::LookupByID(d.dropRefFormId);
+            auto* refr = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            if (!refr || refr->As<RE::Actor>() != nullptr || !IsSkyrimPoELootForm(refr->GetBaseObject())) {
+                return nullptr;
+            }
+            return refr;
+        }
+
+        [[nodiscard]] RE::Actor* ResolveCorpseActor(const ActiveWorldDrop& d)
+        {
+            if (auto ptr = d.corpseHandle.get()) {
+                return ptr.get();
+            }
+            auto* form = RE::TESForm::LookupByID(d.corpseRefFormId);
+            return form ? form->As<RE::Actor>() : nullptr;
+        }
+
+        ReturnOutcome TryReturnSingleDropToCorpse(const ActiveWorldDrop& d)
         {
             DeleteBeamMarker(d.beamRefFormId);
 
-            auto* dropForm = RE::TESForm::LookupByID(d.dropRefFormId);
-            auto* dropRef = dropForm ? dropForm->As<RE::TESObjectREFR>() : nullptr;
-            if (!dropRef || dropRef->IsDeleted() || dropRef->IsDisabled()) {
-                return true;  // 이미 주웠거나 사라짐
+            auto* dropRef = ResolveDropRef(d);
+            // Q-5: 삭제·비활성 또는 월드 셀 소속 상실(인벤토리로 회수됨)이면 이미 주워진 것으로 판정
+            if (!dropRef || dropRef->IsDeleted() || dropRef->IsDisabled() || dropRef->GetParentCell() == nullptr) {
+                return ReturnOutcome::Completed;
             }
 
-            auto* corpseForm = RE::TESForm::LookupByID(d.corpseRefFormId);
-            auto* corpseRef = corpseForm ? corpseForm->As<RE::TESObjectREFR>() : nullptr;
-            auto* baseObj = dropRef->GetBaseObject();
+            // Q-8: 시체 쪽은 핸들 우선 룩업 + Actor 여부 및 사망 상태 검증
+            auto* corpseActor = ResolveCorpseActor(d);
+            if (!corpseActor || corpseActor->IsDeleted()) {
+                return ReturnOutcome::CorpseGone;
+            }
+            if (corpseActor->IsDisabled() || !corpseActor->IsDead()) {
+                return ReturnOutcome::CorpseGone;
+            }
+            if (!corpseActor->Is3DLoaded() && corpseActor->GetParentCell() == nullptr) {
+                return ReturnOutcome::RetryLater;
+            }
 
-            // 검수 C4, M4: SkyrimPoE 전리품 폼임을 재확인하고 시체가 로드·유효할 때만 정확한 스택 수량으로 회수
-            if (corpseRef && !corpseRef->IsDeleted() && !corpseRef->IsDisabled() && baseObj &&
-                IsSkyrimPoELootForm(baseObj) &&
-                dropRef->As<RE::Actor>() == nullptr) {
+            auto* baseObj = dropRef->GetBaseObject();
+            if (baseObj && IsSkyrimPoELootForm(baseObj) && dropRef->As<RE::Actor>() == nullptr) {
                 const std::int32_t cnt = std::max<std::int32_t>(1, dropRef->extraList.GetCount());
-                corpseRef->AddObjectToContainer(baseObj, nullptr, cnt, nullptr);
+                corpseActor->AddObjectToContainer(baseObj, nullptr, cnt, nullptr);
                 dropRef->Disable();
                 dropRef->SetDelete(true);
-                return true;
+                return ReturnOutcome::Completed;
             }
-            return false;
+            return ReturnOutcome::CorpseGone;
         }
     }
 
@@ -140,7 +174,8 @@ namespace SkyrimPoE::Runtime
         RE::TESObjectREFR* sourceContainer,
         RE::TESBoundObject* itemObj,
         std::uint8_t worldDropTier,
-        bool isCurrencyDrop)
+        bool isCurrencyDrop,
+        bool isUniqueDrop)
     {
         if (!sourceContainer || !itemObj || !g_config) {
             return false;
@@ -179,7 +214,9 @@ namespace SkyrimPoE::Runtime
 
         RE::FormID beamId = 0;
         if (g_config->lootBeamEnabled) {
-            const RE::FormID beamLocal = isCurrencyDrop ? FormIds::kLootBeamCurrency : FormIds::kLootBeamRare;
+            const RE::FormID beamLocal = isUniqueDrop
+                ? FormIds::kLootBeamUnique
+                : (isCurrencyDrop ? FormIds::kLootBeamCurrency : FormIds::kLootBeamRare);
             if (auto* beamBase = FormIds::Lookup<RE::TESObjectSTAT>(beamLocal)) {
                 if (auto beamPtr = droppedPtr->PlaceObjectAtMe(beamBase, false)) {
                     beamId = beamPtr->GetFormID();
@@ -187,14 +224,17 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        PlayDropSound(isCurrencyDrop && worldDropTier >= 2);
+        PlayDropSound(isUniqueDrop || (isCurrencyDrop && worldDropTier >= 2));
 
         {
+            auto* corpseActor = sourceContainer->As<RE::Actor>();
             std::scoped_lock lock(g_dropMutex);
             g_active.push_back(ActiveWorldDrop{
                 droppedPtr->GetFormID(),
                 sourceContainer->GetFormID(),
                 beamId,
+                droppedPtr->GetHandle(),
+                corpseActor ? corpseActor->GetHandle() : RE::ActorHandle{},
                 worldDropTier,
                 0.0
             });
@@ -206,7 +246,8 @@ namespace SkyrimPoE::Runtime
         RE::ActorHandle corpseHandle,
         std::uint32_t effectiveMonsterLevel,
         bool isBoss,
-        bool isDragon)
+        bool isDragon,
+        Core::MonsterRarity monsterRarity)
     {
         if (!g_itemData || !g_itemData->IsLoaded() || !g_config || !g_config->enableLootDrops) {
             return;
@@ -221,7 +262,7 @@ namespace SkyrimPoE::Runtime
         {
             std::scoped_lock lock(g_dropMutex);
             drops = Core::LootTable::RollKillDrops(
-                effectiveMonsterLevel, isBoss, isDragon, *g_config, *g_itemData, g_rng);
+                effectiveMonsterLevel, isBoss, isDragon, *g_config, *g_itemData, g_rng, monsterRarity);
         }
         if (drops.empty()) {
             return;
@@ -230,12 +271,31 @@ namespace SkyrimPoE::Runtime
         for (const auto& d : drops) {
             RE::TESObjectMISC* misc = nullptr;
             bool isCurr = false;
-            if (d.kind == Core::DropKind::SealedToken) {
-                misc = FormIds::Lookup<RE::TESObjectMISC>(
-                    FormIds::SealedTokenLocalFormId(d.tier, d.rarity, d.slotGroup));
-            } else {
-                isCurr = true;
-                misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CurrencyLocalFormId(d.currency));
+            bool isUniq = false;
+            switch (d.kind) {
+                case Core::DropKind::SealedToken:
+                    misc = FormIds::Lookup<RE::TESObjectMISC>(
+                        FormIds::SealedTokenLocalFormId(d.tier, d.rarity, d.slotGroup));
+                    break;
+                case Core::DropKind::CurrencyOrb:
+                    isCurr = true;
+                    misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CurrencyLocalFormId(d.currency));
+                    break;
+                case Core::DropKind::UniqueToken:
+                    isUniq = true;
+                    misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kUniqueSealedToken);
+                    break;
+                case Core::DropKind::Jewel:
+                    misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::JewelLocalFormId(d.jewelColor));
+                    break;
+                case Core::DropKind::Charm:
+                    misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CharmLocalFormId(d.charm));
+                    break;
+                case Core::DropKind::SkillGem:
+                    if (const auto localId = FormIds::FindLocalFormIdForGem(d.gemId); localId != 0) {
+                        misc = FormIds::Lookup<RE::TESObjectMISC>(localId);
+                    }
+                    break;
             }
             if (!misc) {
                 continue;
@@ -243,7 +303,7 @@ namespace SkyrimPoE::Runtime
 
             if (g_config->worldDropEnabled && d.worldDropTier >= g_config->worldDropMinTier) {
                 // 검수 M3: SpawnPhysicalDropFromContainer가 실패 시 내부에서 시체 잔여를 보장하므로 중복 추가 금지
-                (void)SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr);
+                (void)SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr, isUniq);
             } else {
                 corpse->AddObjectToContainer(misc, nullptr, 1, nullptr);
             }
@@ -268,12 +328,14 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        // 검수 m6: ForEachReference 스핀락 밖에서 두 빛기둥 FormID를 1회 캐싱
+        // 검수 m6: ForEachReference 스핀락 밖에서 세 빛기둥 FormID를 1회 캐싱
         const auto* rareBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamRare);
         const auto* currBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamCurrency);
+        const auto* uniqBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamUnique);
         const RE::FormID rareBeamId = rareBeam ? rareBeam->GetFormID() : 0;
         const RE::FormID currBeamId = currBeam ? currBeam->GetFormID() : 0;
-        if (rareBeamId == 0 && currBeamId == 0) {
+        const RE::FormID uniqBeamId = uniqBeam ? uniqBeam->GetFormID() : 0;
+        if (rareBeamId == 0 && currBeamId == 0 && uniqBeamId == 0) {
             return 0;
         }
 
@@ -290,7 +352,7 @@ namespace SkyrimPoE::Runtime
                 !trackedBeams.contains(fid)) {
                 const auto* base = ref->GetBaseObject();
                 const RE::FormID baseId = base ? base->GetFormID() : 0;
-                if (baseId != 0 && (baseId == rareBeamId || baseId == currBeamId)) {
+                if (baseId != 0 && (baseId == rareBeamId || baseId == currBeamId || baseId == uniqBeamId)) {
                     orphans.push_back(fid);
                 }
             }
@@ -362,26 +424,31 @@ namespace SkyrimPoE::Runtime
         constexpr float kFarReturnDistSq = 4096.0f * 4096.0f;
 
         std::vector<RE::FormID> toRemoveDropIds;
+        std::vector<RE::FormID> clearedBeamDropIds;
         for (const auto& d : snapshot) {
-            auto* dropForm = RE::TESForm::LookupByID(d.dropRefFormId);
-            auto* dropRef = dropForm ? dropForm->As<RE::TESObjectREFR>() : nullptr;
+            auto* dropRef = ResolveDropRef(d);
 
-            // 1. 주웠거나 사라짐 → 빛기둥 즉시 삭제
-            if (!dropRef || dropRef->IsDeleted() || dropRef->IsDisabled()) {
+            // 1. 주웠거나 사라짐 → 빛기둥 즉시 삭제 (Q-5: 셀 소속 상실 포함)
+            if (!dropRef || dropRef->IsDeleted() || dropRef->IsDisabled() || dropRef->GetParentCell() == nullptr) {
                 DeleteBeamMarker(d.beamRefFormId);
                 toRemoveDropIds.push_back(d.dropRefFormId);
                 continue;
             }
 
-            // 2. 시간 초과·구역 이탈·플레이어 원거리 이탈(>4096u) → 시체로 회수(시체 부재 시 빛기둥만 정리)
+            // 2. 시간 초과·구역 이탈·플레이어 원거리 이탈(>4096u) → 시체로 회수
             const auto dp = dropRef->GetPosition();
             const float px = dp.x - playerPos.x;
             const float py = dp.y - playerPos.y;
             const float pz = dp.z - playerPos.z;
             const bool tooFar = player && ((px * px + py * py + pz * pz) > kFarReturnDistSq);
             if (zoneChanged || tooFar || d.elapsedSec >= g_config->worldDropReturnSeconds) {
-                (void)TryReturnSingleDropToCorpse(d);
-                toRemoveDropIds.push_back(d.dropRefFormId);
+                const auto outcome = TryReturnSingleDropToCorpse(d);
+                if (outcome != ReturnOutcome::RetryLater ||
+                    d.elapsedSec >= g_config->worldDropReturnSeconds * 2.0) {
+                    toRemoveDropIds.push_back(d.dropRefFormId);
+                } else if (d.beamRefFormId != 0) {
+                    clearedBeamDropIds.push_back(d.dropRefFormId);
+                }
                 continue;
             }
 
@@ -401,11 +468,18 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        if (!toRemoveDropIds.empty()) {
+        if (!toRemoveDropIds.empty() || !clearedBeamDropIds.empty()) {
             std::scoped_lock lock(g_dropMutex);
-            std::erase_if(g_active, [&](const ActiveWorldDrop& d) {
-                return std::find(toRemoveDropIds.begin(), toRemoveDropIds.end(), d.dropRefFormId) != toRemoveDropIds.end();
-            });
+            for (auto& d : g_active) {
+                if (std::find(clearedBeamDropIds.begin(), clearedBeamDropIds.end(), d.dropRefFormId) != clearedBeamDropIds.end()) {
+                    d.beamRefFormId = 0;
+                }
+            }
+            if (!toRemoveDropIds.empty()) {
+                std::erase_if(g_active, [&](const ActiveWorldDrop& d) {
+                    return std::find(toRemoveDropIds.begin(), toRemoveDropIds.end(), d.dropRefFormId) != toRemoveDropIds.end();
+                });
+            }
         }
     }
 
@@ -447,6 +521,8 @@ namespace SkyrimPoE::Runtime
                 e.dropRefFormId,
                 e.corpseRefFormId,
                 e.beamRefFormId,
+                RE::ObjectRefHandle{},
+                RE::ActorHandle{},
                 e.worldDropTier,
                 0.0
             });

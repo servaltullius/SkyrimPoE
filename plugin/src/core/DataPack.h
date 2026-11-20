@@ -56,6 +56,7 @@ namespace SkyrimPoE::Core
         double damageEffectiveness = 1.0;
         double critChance = 0.0;
         double cooldown = 0.0;
+        std::uint32_t spiritCost = 0;
         std::unordered_map<std::string, double> stats;
 
         [[nodiscard]] double GetStat(const std::string& key, double fallback = 0.0) const;
@@ -69,6 +70,7 @@ namespace SkyrimPoE::Core
         bool isSupport = false;
         GemKind kind = GemKind::Unknown;
         double castTime = 0.0;
+        std::uint32_t spiritCost = 0;
         std::unordered_set<std::string> skillTypes;
         std::vector<std::string> requireSkillTypes;  // RPN 표현식 (AND, OR, NOT 포함)
         std::vector<std::string> excludeSkillTypes;  // RPN 표현식

@@ -1,0 +1,47 @@
+#pragma once
+
+#include "core/CommandQueue.h"
+#include "core/DataPack.h"
+#include "core/SkillSystem.h"
+#include "core/StatEngine.h"
+#include "core/Types.h"
+
+#include <cstdint>
+
+namespace SkyrimPoE::Runtime
+{
+    // 5단계(결정 88~91, 163, 프로토타입 10 검증):
+    // - SPOE_ProxySpell_1..9 / SPOE_ProxyPower_1..9 레코드 동기화(중복 이름 [칸 N] 접미사, OnRevert 일괄 초기화)
+    // - RE::VTABLE_ActorMagicCaster[0] CheckCast(0x0A) + SpellCast(0x09) 체인 훅(DMMF 공존)
+    // - 멀티스레드 안전 CheckCast 관문 허가 플래그 -> SpellCast에서 CommandQueue 주 갱신 이연 실행
+    // - Molten Shell 가드 버프 틱·만료/파괴 반사 화염 폭발·StatEngine Layer2 동기화
+    class ProxySpellRuntime
+    {
+    public:
+        static bool Install(
+            Core::CommandQueue* queue,
+            Core::StatEngine* statEngine,
+            Core::SkillSystem* skillSystem,
+            const Core::DataPack* dataPack,
+            const Core::Config* config);
+
+        // 주 갱신 스레드 전용: 현재 PersistentState 슬롯(0..8)과 StatSnapshot을 18개 대리 레코드에 반영
+        static void SyncProxySpellsFromState();
+
+        // 주 갱신 스레드 틱: Molten Shell 가드 버프 타이머·만료 폭발·Layer2 방어도 동기화
+        static void Tick(double deltaSec, bool gamePaused);
+
+        // AutoTest F5 및 내부 공용 직접 시전/가드 발동 헬퍼(주 갱신 스레드 전용)
+        static bool ExecuteHandCastSlot(
+            std::uint8_t slotIndex,
+            bool chargeMagicka,
+            const RE::NiPoint3* capturedOrigin = nullptr,
+            const RE::NiPoint3* capturedDir = nullptr,
+            bool dualCast = false);
+        static bool ExecuteGuardPowerSlot(std::uint8_t slotIndex);
+
+        [[nodiscard]] static std::uint64_t HandCastCount() noexcept;
+        [[nodiscard]] static std::uint64_t GuardActivationCount() noexcept;
+        static void ResetOnRevert();
+    };
+}

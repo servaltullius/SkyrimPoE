@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,17 +24,56 @@ def resolve_weight(weights: list[list], item_tags: set[str]) -> int:
 class TestItemsCompiler(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.pack = compile_items.compile_items(compile_items.DEFAULT_POB, ROOT / "data")
+        # T-8: 시험 실행이 저장소 data/packs/*.json을 덮어쓰지 않도록 임시 디렉터리로 출력
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.out_dir = Path(cls._tmp.name)
+        cls.pack = compile_items.compile_items(compile_items.DEFAULT_POB, cls.out_dir)
         cls.by_id = {a["id"]: a for a in cls.pack["affixes"]}
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
 
     def test_meta_and_currencies(self) -> None:
         m = self.pack["meta"]
-        self.assertEqual(m["schemaVersion"], 1)
+        self.assertEqual(m["schemaVersion"], 2)
         self.assertEqual(m["poeVersion"], "3.30")
-        self.assertGreater(m["totalAffixes"], 800)
-        self.assertGreater(m["rollableAffixes"], 500)
+        self.assertGreater(m["totalAffixes"], 1000)
+        self.assertGreater(m["rollableAffixes"], 750)
+        self.assertGreaterEqual(m["jewelAffixes"], 30)
+        self.assertEqual(m["uniqueCount"], 16)
         self.assertEqual(len(self.pack["tiers"]), 5)
         self.assertEqual(len(self.pack["currencies"]), 12)
+        self.assertEqual(len(self.pack["beltBases"]), 5)
+        self.assertEqual(len(self.pack["charms"]), 6)
+        self.assertEqual(len(self.pack["monsterMods"]), 12)
+        self.assertEqual(len(self.pack["uniques"]), 16)
+
+    def test_stage5_negative_ranges_jewels_and_uniques(self) -> None:
+        # 검수 C3: 음수 범위 파싱 검증 (Ventor's Gamble)
+        neg = compile_items.parse_stat_line("+(-25-50)% to Fire Resistance")
+        self.assertEqual(neg["template"], "+{0}% to Fire Resistance")
+        self.assertEqual(neg["ranges"], [[-25, 50, False]])
+
+        # 주얼 어픽스는 일반 방어구/무기에 롤링되지 않고 jewel 태그에만 매칭되어야 함
+        jewel_affs = [a for a in self.pack["affixes"] if a["rollable"] and any(k == "jewel" for k, _ in a["weights"])]
+        self.assertGreaterEqual(len(jewel_affs), 30)
+        armor_tags = {"body_armour", "str_armour", "armour", "default"}
+        crimson_tags = {"jewel", "not_dex", "not_int"}
+        for a in jewel_affs:
+            self.assertEqual(resolve_weight(a["weights"], armor_tags), 0, f"Jewel mod leaked to armor: {a['id']}")
+        self.assertTrue(any(resolve_weight(a["weights"], crimson_tags) > 0 for a in jewel_affs))
+
+        # 16종 고유 아이템 어픽스가 비롤러블(rollable=False)로 affixes에 등록되어 Divine 재롤 가능
+        uniques_by_id = {u["id"]: u for u in self.pack["uniques"]}
+        self.assertIn("Headhunter", uniques_by_id)
+        self.assertIn("VentorsGamble", uniques_by_id)
+        self.assertIn("Starforge", uniques_by_id)
+        self.assertIn("ShavronnesWrappings", uniques_by_id)
+        for u in self.pack["uniques"]:
+            for aid in u["implicitAffixIds"] + u["explicitAffixIds"]:
+                self.assertIn(aid, self.by_id)
+                self.assertFalse(self.by_id[aid]["rollable"])
 
     def test_first_match_wins_and_zero_overrides_preserved(self) -> None:
         # IncreasedLife0: weapon=0 before default=1000 -> weapon must resolve to 0, helmet to 1000
@@ -125,7 +165,7 @@ class TestItemsCompiler(unittest.TestCase):
             self.assertEqual(levels, sorted(levels))
 
     def test_stage2_gem_attribute_requirements(self) -> None:
-        core_pack = compile_stage2.compile_stage2(compile_stage2.DEFAULT_POB, ROOT / "data")
+        core_pack = compile_stage2.compile_stage2(compile_stage2.DEFAULT_POB, self.out_dir)
         cyc_lv1 = core_pack["gems"]["Cyclone"]["levels"]["1"]
         self.assertEqual(cyc_lv1["levelRequirement"], 28)
         self.assertGreater(cyc_lv1["reqStr"], 0)
@@ -137,7 +177,14 @@ class TestItemsCompiler(unittest.TestCase):
         self.assertEqual(ice_lv1["reqStr"], 0)
         self.assertGreater(ice_lv1["reqInt"], 0)
 
-        # Also ensure JSON on disk matches
+        # C-16 검증: Lifesprig은 1H 검 곡선, Stygian Vise는 PoB 원본 reqLevel 1 + Abyssal Socket
+        uniques_by_id = {u["id"]: u for u in self.pack["uniques"]}
+        self.assertEqual(uniques_by_id["Lifesprig"]["weaponTag"], "OneHandSword")
+        belts_by_id = {b["id"]: b for b in self.pack["beltBases"]}
+        self.assertEqual(belts_by_id["StygianVise"]["reqLevel"], 1)
+        self.assertTrue(belts_by_id["StygianVise"]["bonusCharmSlot"])
+
+        # Also ensure JSON on disk matches freshly compiled pack
         disk = json.loads((ROOT / "data" / "packs" / "items_3_30.json").read_text(encoding="utf-8"))
         self.assertEqual(disk["meta"]["rollableAffixes"], self.pack["meta"]["rollableAffixes"])
 

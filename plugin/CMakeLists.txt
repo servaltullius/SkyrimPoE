@@ -45,6 +45,10 @@ add_library(skyrimpoe_core STATIC
     src/core/ItemCrafting.cpp
     src/core/ItemFormatter.cpp
     src/core/LootTable.cpp
+    src/core/CharmSystem.cpp
+    src/core/AilmentSystem.cpp
+    src/core/MonsterModSystem.cpp
+    src/core/WorldStampLink.cpp
 )
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
@@ -78,6 +82,10 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/runtime/WorldDropTracker.cpp
         src/runtime/SaveLoad.cpp
         src/runtime/SkillExecution.cpp
+        src/runtime/MonsterRuntime.cpp
+        src/runtime/AilmentRuntime.cpp
+        src/runtime/ProjectileRuntime.cpp
+        src/runtime/ProxySpellRuntime.cpp
         src/runtime/CombatHooks.cpp
         src/runtime/CycloneRuntime.cpp
         src/runtime/DeathListener.cpp
@@ -105,6 +113,8 @@ add_executable(skyrimpoe_tests
     tests/test_passive_tree.cpp
     tests/test_passive_stats.cpp
     tests/test_items.cpp
+    tests/test_stage5.cpp
+    tests/test_world_stamp_link.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE

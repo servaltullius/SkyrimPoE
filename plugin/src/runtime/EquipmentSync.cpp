@@ -1,9 +1,11 @@
 #include "PCH.h"
 #include "runtime/EquipmentSync.h"
+#include "runtime/FormIds.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/SaveLoad.h"
 
 #include "core/ItemAffixParser.h"
+#include "core/ItemCrafting.h"
 
 #include <atomic>
 #include <mutex>
@@ -13,15 +15,17 @@ namespace SkyrimPoE::Runtime
     namespace
     {
         const Core::ItemData* g_itemData = nullptr;
+        Core::CharmSystem* g_charmSystem = nullptr;
         std::atomic_bool g_dirty{ true };
         std::mutex g_gearMutex;
         std::array<Core::EquippedSlotInput, Core::kEquipSlotCount> g_gear{};
         std::array<EquippedSlotMeta, Core::kEquipSlotCount> g_meta{};
     }
 
-    void EquipmentSync::Initialize(const Core::ItemData* itemData)
+    void EquipmentSync::Initialize(const Core::ItemData* itemData, Core::CharmSystem* charmSystem)
     {
         g_itemData = itemData;
+        g_charmSystem = charmSystem;
         g_dirty.store(true, std::memory_order_release);
     }
 
@@ -61,7 +65,10 @@ namespace SkyrimPoE::Runtime
             case Core::EquipSlot::Boots:  return Core::TokenSlotGroup::Boots;
             case Core::EquipSlot::Amulet:
             case Core::EquipSlot::Ring1:
+            case Core::EquipSlot::Ring2:
                 return Core::TokenSlotGroup::Jewelry;
+            case Core::EquipSlot::Belt:
+                return Core::TokenSlotGroup::Belt;
             default:
                 return Core::TokenSlotGroup::OneHandWeapon;
         }
@@ -138,19 +145,25 @@ namespace SkyrimPoE::Runtime
         out.rarity = poeRecord ? poeRecord->rarity : Core::ItemRarity::Normal;
         out.itemLevel = poeRecord ? poeRecord->itemLevel : std::clamp<std::uint32_t>(exileLevel, 1, Core::kMaxExileLevel);
 
+        // C-17: 고유 아이템은 감정 시점 itemLevel이 아닌 고유 정의의 reqLevel 기준으로 요구치를 산정한다.
+        const Core::UniqueDefinition* uniqueDef = (poeRecord && !poeRecord->uniqueId.empty())
+            ? itemData.FindUnique(poeRecord->uniqueId)
+            : nullptr;
+        const std::uint32_t reqLookupLevel = uniqueDef ? std::max<std::uint32_t>(1, uniqueDef->reqLevel) : out.itemLevel;
+
         if (auto* weap = baseObj->As<RE::TESObjectWEAP>()) {
             out.isWeapon = true;
             out.isTwoHanded = IsTwoHandedWeapon(weap);
             const std::string wTag = (poeRecord && !poeRecord->weaponTag.empty())
                 ? poeRecord->weaponTag
                 : ClassifyWeaponTag(weap);
-            const auto curve = itemData.LookupWeaponBase(wTag, out.itemLevel);
+            const auto curve = itemData.LookupWeaponBase(wTag, reqLookupLevel);
             out.baseWeaponPhysMin = curve.physMin;
             out.baseWeaponPhysMax = curve.physMax;
             out.baseWeaponCritChancePct = curve.critChance;
             out.baseWeaponAttackRate = curve.attackRate;
             if (out.isCrafted) {
-                out.reqLevel = curve.reqLevel;
+                out.reqLevel = uniqueDef ? uniqueDef->reqLevel : curve.reqLevel;
                 out.reqStr = curve.reqStr;
                 out.reqDex = curve.reqDex;
                 out.reqInt = curve.reqInt;
@@ -161,21 +174,37 @@ namespace SkyrimPoE::Runtime
             const auto sub = ClassifyDefenseSubtype(armor);
             if (equipSlot.has_value() && *equipSlot != Core::EquipSlot::Amulet && *equipSlot != Core::EquipSlot::Ring1) {
                 const auto tokGroup = EquipSlotToTokenGroup(*equipSlot, false);
-                const auto curve = itemData.LookupArmorBase(tokGroup, sub, out.itemLevel);
+                const auto curve = itemData.LookupArmorBase(tokGroup, sub, reqLookupLevel);
                 out.baseArmour = curve.baseArmour;
                 out.baseEvasion = curve.baseEvasion;
                 out.baseEnergyShield = curve.baseEnergyShield;
                 out.baseBlockChance = curve.baseBlockChance;
                 if (out.isCrafted) {
-                    out.reqLevel = curve.reqLevel;
+                    out.reqLevel = uniqueDef ? uniqueDef->reqLevel : curve.reqLevel;
                     out.reqStr = curve.reqStr;
                     out.reqDex = curve.reqDex;
                     out.reqInt = curve.reqInt;
                 }
+            } else if (uniqueDef && out.isCrafted) {
+                out.reqLevel = uniqueDef->reqLevel;
+            }
+        } else if (auto* misc = baseObj->As<RE::TESObjectMISC>()) {
+            out.isWeapon = false;
+            const auto localId = FormIds::ResolveLocalFormIdIfOurs(misc->GetFormID());
+            if (FormIds::IsBeltBaseLocalFormId(localId)) {
+                if (const auto* beltDef = itemData.FindBeltByLocalFormId(localId)) {
+                    if (out.isCrafted) {
+                        out.reqLevel = uniqueDef ? uniqueDef->reqLevel : beltDef->reqLevel;
+                    }
+                }
             }
         }
 
-        if (poeRecord && !poeRecord->affixes.empty()) {
+        if (uniqueDef && out.isCrafted) {
+            out.reqLevel = uniqueDef->reqLevel;
+        }
+
+        if (poeRecord && (!poeRecord->affixes.empty() || !poeRecord->implicitAffixes.empty() || !poeRecord->uniqueId.empty())) {
             out.stats = Core::ItemAffixParser::ParseItem(*poeRecord, itemData);
         }
         return out;
@@ -312,6 +341,98 @@ namespace SkyrimPoE::Runtime
             const auto offIdx = static_cast<std::size_t>(Core::EquipSlot::OffHand);
             nextGear[offIdx] = Core::EquippedSlotInput{};
             nextMeta[offIdx] = EquippedSlotMeta{};
+        }
+
+        // 5단계(결정 162): 가상 반지2(Ring2) — 플레이어 가방에 존재하고 Ring1과 동일 개체가 아닐 때만 귀속
+        bool clearVirtualRing2 = false;
+        if (st.virtualRing2BaseFormId != 0 && st.virtualRing2Key.IsValid()) {
+            auto* ringForm = RE::TESForm::LookupByID<RE::TESObjectARMO>(st.virtualRing2BaseFormId);
+            const auto ring1Key = nextMeta[static_cast<std::size_t>(Core::EquipSlot::Ring1)].key;
+            auto* extra = ringForm
+                ? ItemTracker::FindExtraListByKey(player, ringForm, st.virtualRing2Key)
+                : nullptr;
+            const bool isRingArmor = ringForm && ClassifyArmorEquipSlot(ringForm) == Core::EquipSlot::Ring1;
+            const bool sameAsRing1 = ring1Key.IsValid() && ring1Key == st.virtualRing2Key;
+            const bool physicallyWorn = extra && (extra->HasType<RE::ExtraWorn>() || extra->HasType<RE::ExtraWornLeft>());
+            if (isRingArmor && extra && !sameAsRing1 && !physicallyWorn) {
+                fillSlot(Core::EquipSlot::Ring2, ringForm, extra, false);
+            } else {
+                clearVirtualRing2 = true;
+            }
+        } else if (st.virtualRing2BaseFormId != 0 || st.virtualRing2Key.IsValid()) {
+            clearVirtualRing2 = true;
+        }
+
+        // 5단계(결정 162): 가상 벨트(Belt) — 플레이어 가방에 존재하는 SkyrimPoE.esp 벨트 베이스만 귀속
+        bool clearVirtualBelt = false;
+        bool isStygianBelt = false;
+        if (st.virtualBeltBaseFormId != 0) {
+            auto* beltMisc = RE::TESForm::LookupByID<RE::TESObjectMISC>(st.virtualBeltBaseFormId);
+            const auto beltLocalId = beltMisc ? FormIds::ResolveLocalFormIdIfOurs(beltMisc->GetFormID()) : 0;
+            if (beltMisc && FormIds::IsBeltBaseLocalFormId(beltLocalId)) {
+                RE::ExtraDataList* beltExtra = nullptr;
+                bool presentInBag = false;
+                if (st.virtualBeltKey.IsValid()) {
+                    beltExtra = ItemTracker::FindExtraListByKey(player, beltMisc, st.virtualBeltKey);
+                    presentInBag = (beltExtra != nullptr);
+                } else {
+                    const auto counts = player->GetInventoryCounts();
+                    if (auto it = counts.find(beltMisc); it != counts.end() && it->second > 0) {
+                        presentInBag = true;
+                    }
+                }
+                if (presentInBag) {
+                    const auto beltIdx = static_cast<std::size_t>(Core::EquipSlot::Belt);
+                    std::optional<Core::PoEItemRecord> poeRec;
+                    if (st.virtualBeltKey.IsValid()) {
+                        poeRec = ItemTracker::FindByKey(st.virtualBeltKey);
+                    }
+                    const Core::PoEItemRecord* recPtr = poeRec ? &(*poeRec) : nullptr;
+                    nextGear[beltIdx] = BuildSlotInput(beltMisc, recPtr, exileLevel, *g_itemData);
+                    auto& m = nextMeta[beltIdx];
+                    m.occupied = true;
+                    m.baseFormId = beltMisc->GetFormID();
+                    m.key = st.virtualBeltKey;
+                    m.displayName = beltMisc->GetName() ? beltMisc->GetName() : "";
+                    m.slotGroup = Core::TokenSlotGroup::Belt;
+                    m.defenseSubtype = Core::DefenseSubtype::None;
+                    m.hasPoERecord = (recPtr != nullptr);
+                    if (recPtr) {
+                        m.record = *recPtr;
+                    }
+                    if (const auto* beltDef = g_itemData->FindBeltByLocalFormId(beltLocalId)) {
+                        isStygianBelt = beltDef->bonusCharmSlot;
+                    }
+                } else {
+                    clearVirtualBelt = true;
+                }
+            } else {
+                clearVirtualBelt = true;
+            }
+        } else if (st.virtualBeltKey.IsValid()) {
+            clearVirtualBelt = true;
+        }
+
+        if (clearVirtualRing2 || clearVirtualBelt) {
+            SaveLoad::UpdateState([&](PersistentState& s) {
+                if (clearVirtualRing2) {
+                    s.virtualRing2Key = {};
+                    s.virtualRing2BaseFormId = 0;
+                }
+                if (clearVirtualBelt) {
+                    s.virtualBeltKey = {};
+                    s.virtualBeltBaseFormId = 0;
+                }
+            });
+        }
+
+        // 5단계(결정 162): 장착 벨트에 따라 개방 참 슬롯 수(0~3)를 CharmSystem에 동기화
+        if (g_charmSystem) {
+            const auto& beltMeta = nextMeta[static_cast<std::size_t>(Core::EquipSlot::Belt)];
+            const Core::PoEItemRecord* beltRecPtr = beltMeta.hasPoERecord ? &beltMeta.record : nullptr;
+            const std::uint8_t unlocked = Core::ItemCrafting::ComputeBeltCharmSlots(
+                beltMeta.occupied, beltRecPtr, isStygianBelt);
+            g_charmSystem->SetUnlockedSlots(unlocked);
         }
 
         {

@@ -111,8 +111,7 @@ POE_TEST("GemTransaction: duplicate request on last gem, rollback on failure, an
     POE_CHECK(!GemTransaction::LinkTriggerAttack(slots, 2, 0, pack).ok);
     POE_CHECK(slots[2].linkedAttackSlot == -1);
 
-    // IceNova는 메인 칸 거부(2단계 CoC 전용), CoC 소켓에는 성공 + 내부 보조 장착
-    POE_CHECK(!GemTransaction::EquipSkillGem(slots, nextId, 3, {}, "IceNova", 3, pack, inv).ok);
+    // IceNova는 CoC 소켓에 장착 + 내부 보조 장착 가능
     POE_CHECK(GemTransaction::SocketSubGem(slots, nextId, 1, -1, {}, "IceNova", 3, pack, inv).ok);
     POE_CHECK(GemTransaction::SocketSubGem(slots, nextId, 1, 0, {}, "SupportConcentratedEffect", 3, pack, inv).ok);
     // 비호환 보조(MeleePhys)는 IceNova 내부 소켓 거부
@@ -169,4 +168,21 @@ POE_TEST("GemTransaction: duplicate request on last gem, rollback on failure, an
     POE_CHECK(GemTransaction::LinkTriggerAttack(slots, 4, 0, pack).ok && slots[4].linkedAttackSlot == 0);
     POE_CHECK(GemTransaction::UnequipSkillGem(slots, 0, inv).ok);
     POE_CHECK(!slots[0].occupied && slots[4].linkedAttackSlot == -1);
+
+    // 8. 5단계(결정 161·163): 손 시전 주문·오라·가드 젬 메인 칸 장착 + 오라 소켓 0칸/보조 거부 검증
+    inv.plainCounts["Fireball"] = 1;
+    inv.plainCounts["Determination"] = 1;
+    inv.plainCounts["MoltenShell"] = 1;
+    inv.plainCounts["SupportConcentratedEffect"] = 1;
+    POE_CHECK(!GemTransaction::EquipSkillGem(slots, nextId, 3, {}, "SupportConcentratedEffect", 3, pack, inv).ok);
+    POE_CHECK(GemTransaction::EquipSkillGem(slots, nextId, 3, {}, "Fireball", 3, pack, inv).ok);
+    POE_CHECK(slots[3].occupied && slots[3].gem.gemId == "Fireball" && slots[3].gem.socketCount == 3);
+    POE_CHECK(GemTransaction::UnequipSkillGem(slots, 3, inv).ok);
+    POE_CHECK(GemTransaction::EquipSkillGem(slots, nextId, 3, {}, "Determination", 3, pack, inv).ok);
+    POE_CHECK(slots[3].occupied && slots[3].gem.socketCount == 0);
+    POE_CHECK(!GemTransaction::SocketSubGem(slots, nextId, 3, -1, {}, "SupportConcentratedEffect", 3, pack, inv).ok);
+    POE_CHECK(GemTransaction::UnequipSkillGem(slots, 3, inv).ok);
+    POE_CHECK(GemTransaction::EquipSkillGem(slots, nextId, 3, {}, "MoltenShell", 3, pack, inv).ok);
+    POE_CHECK(slots[3].occupied && slots[3].gem.gemId == "MoltenShell" && slots[3].gem.socketCount == 3);
+    POE_CHECK(GemTransaction::UnequipSkillGem(slots, 3, inv).ok);
 }

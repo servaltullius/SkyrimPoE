@@ -46,8 +46,13 @@ namespace SkyrimPoE::Core
             const std::string formatted = FormatNumber(val, ranges[i].isFloat);
             std::size_t pos = 0;
             while ((pos = out.find(token, pos)) != std::string::npos) {
-                out.replace(pos, token.size(), formatted);
-                pos += formatted.size();
+                if (pos > 0 && out[pos - 1] == '+' && !formatted.empty() && formatted[0] == '-') {
+                    out.replace(pos - 1, token.size() + 1, formatted);
+                    pos = (pos - 1) + formatted.size();
+                } else {
+                    out.replace(pos, token.size(), formatted);
+                    pos += formatted.size();
+                }
             }
         }
         return out;
@@ -64,9 +69,17 @@ namespace SkyrimPoE::Core
         FormattedItemCard card;
         card.title = baseItemName.empty() ? std::string("이름 없는 장비") : std::string(baseItemName);
         card.rarity = record ? record->rarity : ItemRarity::Normal;
+        if (record && record->rarity == ItemRarity::Unique && !record->uniqueId.empty()) {
+            card.uniqueId = record->uniqueId;
+            if (const auto* uDef = data.FindUnique(record->uniqueId)) {
+                card.title = uDef->koName + " (" + card.title + ")";
+            }
+        }
         card.rarityBadge = std::string("[") + RarityKoreanLabel(card.rarity) + "]";
         card.itemLevel = record ? record->itemLevel : computedSlot.itemLevel;
-        card.slotLabel = EquipSlotKoreanName(slot);
+        card.slotLabel = (record && record->slotGroup == TokenSlotGroup::Jewel)
+            ? std::string("주얼")
+            : std::string(EquipSlotKoreanName(slot));
         card.requirementMet = requirementMet;
 
         // 요구치 문자열 조합
@@ -122,6 +135,41 @@ namespace SkyrimPoE::Core
         }
 
         if (!record) {
+            return card;
+        }
+
+        // 5단계: 임플리싯 어픽스 분리 표시
+        for (const auto& rolled : record->implicitAffixes) {
+            const auto* def = data.FindAffix(rolled.affixId);
+            if (!def) continue;
+            std::size_t valOffset = 0;
+            for (const auto& ln : def->lines) {
+                FormattedAffixLine fl;
+                fl.type = def->type;
+                fl.tier = def->tier;
+                fl.tierBadge = "[고정]";
+                fl.textKo = RenderLineTemplate(ln.templateKo, rolled.values, valOffset, ln.ranges);
+                card.implicitLines.push_back(std::move(fl));
+                valOffset += ln.ranges.size();
+            }
+        }
+
+        if (record->rarity == ItemRarity::Unique) {
+            // 고유 아이템 명시 모드는 정의 순서대로 [고유] 배지로 표시
+            for (const auto& rolled : record->affixes) {
+                const auto* def = data.FindAffix(rolled.affixId);
+                if (!def) continue;
+                std::size_t valOffset = 0;
+                for (const auto& ln : def->lines) {
+                    FormattedAffixLine fl;
+                    fl.type = def->type;
+                    fl.tier = 1;
+                    fl.tierBadge = "[고유]";
+                    fl.textKo = RenderLineTemplate(ln.templateKo, rolled.values, valOffset, ln.ranges);
+                    card.affixLines.push_back(std::move(fl));
+                    valOffset += ln.ranges.size();
+                }
+            }
             return card;
         }
 

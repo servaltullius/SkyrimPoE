@@ -109,6 +109,7 @@ POE_TEST("StatEngine: immutable snapshot, CoC attack/spell rules, Brutality, and
 {
     const DataPack pack = LoadStage2Pack();
     Config cfg;
+    cfg.enforceGemRequirements = false;  // Scion 기본 능력치로 젬 규칙 자체만 독립 검증
     StatEngine engine;
 
     // 1. Cyclone(slot 0) + CoC(slot 1 linked to 0, socketing IceNova) + Brutality on Cyclone
@@ -200,6 +201,7 @@ POE_TEST("StatEngine: duplicate support dedup, socket cap, multi-CoC rejection, 
 {
     const DataPack pack = LoadStage2Pack();
     Config cfg;
+    cfg.enforceGemRequirements = false;  // Scion 기본 능력치로 젬 규칙 자체만 독립 검증
     StatEngine engine;
 
     Layer1Input l1;
