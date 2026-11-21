@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "runtime/MonsterRuntime.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/SkillExecution.h"
 
 #include <algorithm>
@@ -26,22 +27,22 @@ namespace SkyrimPoE::Runtime
         std::uint16_t g_lastSyncedHhMask = 0;
         double g_scanAccumSec = 0.0;
 
-        void ApplyHasteSpeedIfNeeded(RE::Actor* actor)
+        void ApplyHasteSpeedIfNeeded(RE::Actor* actor, float speedBonus = 20.0f)
         {
             if (!actor || actor->IsPlayerRef() || actor->IsDead() || actor->IsDeleted()) {
                 return;
             }
             const auto fid = actor->GetFormID();
-            constexpr float kHastedSpeedBonus = 20.0f;
+            const float bonus = std::clamp(speedBonus, 5.0f, 50.0f);
             {
                 std::scoped_lock lk(g_mutex);
                 if (g_appliedHasteDelta.contains(fid)) {
                     return;
                 }
-                g_appliedHasteDelta[fid] = kHastedSpeedBonus;
+                g_appliedHasteDelta[fid] = bonus;
             }
             if (auto* av = actor->AsActorValueOwner()) {
-                av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult, kHastedSpeedBonus);
+                av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult, bonus);
                 av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, 0.01f);
                 av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, -0.01f);
             }
@@ -211,15 +212,38 @@ namespace SkyrimPoE::Runtime
             const auto* av = actor->AsActorValueOwner();
             const double maxHp = std::max(10.0, static_cast<double>(
                 av ? av->GetPermanentActorValue(RE::ActorValue::kHealth) : 100.0f));
-            auto prof = Core::MonsterModSystem::RollPromotion(isBoss, isDragon, maxHp, *g_config, MonsterRng());
+            const bool inMap = MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const auto mapMods = inMap ? MapDeviceRuntime::GetActiveMapModSummary() : Core::MapModSummary{};
+            Core::Config effCfg = *g_config;
+            if (inMap && mapMods.moreMagicRarePct > 0.0) {
+                const double boost = 1.0 + mapMods.moreMagicRarePct / 100.0;
+                effCfg.magicMonsterChance = std::clamp(effCfg.magicMonsterChance * boost, 0.0, 0.80);
+                effCfg.rareMonsterChance = std::clamp(effCfg.rareMonsterChance * boost, 0.0, 0.45);
+            }
+            auto prof = Core::MonsterModSystem::RollPromotion(isBoss, isDragon, maxHp, effCfg, MonsterRng());
             if (prof.rarity != Core::MonsterRarity::Normal) {
+                if (inMap && mapMods.forceHasted) {
+                    prof.modMask |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted));
+                }
+                if (inMap && mapMods.forceDeadly) {
+                    prof.modMask |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Deadly));
+                }
                 {
                     std::scoped_lock lk(g_mutex);
                     g_profiles[fid] = prof;
                 }
                 if (prof.HasMod(Core::MonsterModKind::Hasted)) {
-                    ApplyHasteSpeedIfNeeded(actor);
+                    const float hasteVal = (inMap && mapMods.monsterHasteSpeedBonus > 0.0)
+                        ? static_cast<float>(mapMods.monsterHasteSpeedBonus)
+                        : 20.0f;
+                    ApplyHasteSpeedIfNeeded(actor, hasteVal);
                 }
+            } else if (inMap && mapMods.forceHasted) {
+                // 6단계(검수 M-4): 미승격 일반 지도 몹에도 MapMod_MonsterHaste 속도 적용
+                const float hasteVal = (mapMods.monsterHasteSpeedBonus > 0.0)
+                    ? static_cast<float>(mapMods.monsterHasteSpeedBonus)
+                    : 20.0f;
+                ApplyHasteSpeedIfNeeded(actor, hasteVal);
             }
         }
 
@@ -271,27 +295,81 @@ namespace SkyrimPoE::Runtime
         RE::FormID actorId,
         double rawSkyrimDamage,
         Core::DamageType dominantType,
-        bool bypassesEs)
+        bool bypassesEs,
+        RE::Actor* targetActor,
+        double engineDiffMult)
     {
-        std::scoped_lock lk(g_mutex);
-        const auto it = g_profiles.find(actorId);
-        if (it == g_profiles.end()) {
-            Core::MonsterIncomingResult plain{};
-            plain.remainingHealthDamage = std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
-            plain.hadAnyImpact = plain.remainingHealthDamage > 0.0;
-            return plain;
+        double adjustedDmg = std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
+
+        // 6단계(검수 M-4): 지도 내부 일반·승격 몬스터 전원에게 지도 방어/저항 모드 적용(g_mutex 밖에서 MapDeviceRuntime 조회)
+        if (adjustedDmg > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+            const auto mods = MapDeviceRuntime::GetActiveMapModSummary();
+            if (mods.monsterReducedTakenPct > 0.0) {
+                adjustedDmg *= std::max(0.25, 1.0 - mods.monsterReducedTakenPct / 100.0);
+            }
+            if ((dominantType == Core::DamageType::Fire ||
+                 dominantType == Core::DamageType::Cold ||
+                 dominantType == Core::DamageType::Lightning) &&
+                mods.monsterElemResPct > 0.0) {
+                adjustedDmg *= std::max(0.25, 1.0 - mods.monsterElemResPct / 100.0);
+            } else if (dominantType == Core::DamageType::Chaos && mods.monsterChaosResPct > 0.0) {
+                adjustedDmg *= std::max(0.25, 1.0 - mods.monsterChaosResPct / 100.0);
+            }
         }
-        return Core::MonsterModSystem::ApplyPlayerHitToMonster(it->second, rawSkyrimDamage, dominantType, bypassesEs);
+
+        Core::MonsterIncomingResult res{};
+        {
+            std::scoped_lock lk(g_mutex);
+            const auto it = g_profiles.find(actorId);
+            if (it == g_profiles.end()) {
+                res.remainingHealthDamage = adjustedDmg;
+                res.hadAnyImpact = res.remainingHealthDamage > 0.0;
+            } else {
+                res = Core::MonsterModSystem::ApplyPlayerHitToMonster(it->second, adjustedDmg, dominantType, bypassesEs);
+            }
+        }
+
+        // 6단계(배치2 검수 Critical #1): 호출부가 전달한 실제 엔진 난이도 배율(DoDamage(...,true)=1.0, CombatHooks=fDiffMultHPByPC)과
+        // 직접 RE::Actor* 포인터를 사용해 이중 역보정 및 워커 스레드 LookupByID 전역 폼 락을 제거한다.
+        if (res.remainingHealthDamage > 0.0 && MapDeviceRuntime::IsActiveArena4Boss(actorId)) {
+            RE::Actor* boss = targetActor ? targetActor : RE::TESForm::LookupByID<RE::Actor>(actorId);
+            if (boss) {
+                res.remainingHealthDamage = MapDeviceRuntime::FilterArena4BossIncomingDamage(
+                    boss, res.remainingHealthDamage, engineDiffMult);
+            }
+        }
+        return res;
     }
 
     Core::MonsterOutgoingModifier MonsterRuntime::GetOutgoingModifier(RE::FormID actorId)
     {
-        std::scoped_lock lk(g_mutex);
-        const auto it = g_profiles.find(actorId);
-        if (it == g_profiles.end()) {
-            return {};
+        Core::MonsterOutgoingModifier out{};
+        {
+            std::scoped_lock lk(g_mutex);
+            if (const auto it = g_profiles.find(actorId); it != g_profiles.end()) {
+                out = Core::MonsterModSystem::ComputeOutgoingModifier(it->second);
+            }
         }
-        return Core::MonsterModSystem::ComputeOutgoingModifier(it->second);
+        // 6단계(검수 M-4): 지도 내부 일반·승격 적 모두에게 지도 공격/추가 원소/치명타 모드 반영
+        if (MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+            const auto mods = MapDeviceRuntime::GetActiveMapModSummary();
+            if (mods.monsterDamageIncPct > 0.0) {
+                out.damageMultiplier *= (1.0 + mods.monsterDamageIncPct / 100.0);
+            }
+            if (mods.monsterExtraFirePct > 0.0) {
+                out.extraFireRatio += mods.monsterExtraFirePct / 100.0;
+            }
+            if (mods.monsterExtraColdPct > 0.0) {
+                out.extraColdRatio += mods.monsterExtraColdPct / 100.0;
+            }
+            if (mods.monsterExtraLightningPct > 0.0) {
+                out.extraLightningRatio += mods.monsterExtraLightningPct / 100.0;
+            }
+            if (mods.forceDeadly) {
+                out.isDeadly = true;
+            }
+        }
+        return out;
     }
 
     Core::MonsterProfile MonsterRuntime::OnMonsterKilled(RE::FormID actorId, bool playerHasHeadhunter)
@@ -386,6 +464,26 @@ namespace SkyrimPoE::Runtime
         std::scoped_lock lk(g_mutex);
         g_profiles.erase(actorId);
         g_rolledActors.erase(actorId);
+    }
+
+    void MonsterRuntime::RevertAllHasteSpeedsNow()
+    {
+        std::vector<RE::FormID> fids;
+        {
+            std::scoped_lock lk(g_mutex);
+            fids.reserve(g_appliedHasteDelta.size());
+            for (const auto& [fid, _] : g_appliedHasteDelta) {
+                fids.push_back(fid);
+            }
+        }
+        for (const auto fid : fids) {
+            RevertHasteSpeedByFormId(fid);
+        }
+        std::scoped_lock lk(g_mutex);
+        g_profiles.clear();
+        g_rolledActors.clear();
+        g_hhBuffs.clear();
+        g_lastSyncedHhMask = 0;
     }
 
     std::vector<std::pair<RE::FormID, float>> MonsterRuntime::TakeActiveSpeedDeltasForSave()

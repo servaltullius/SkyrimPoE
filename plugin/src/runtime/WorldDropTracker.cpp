@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "runtime/WorldDropTracker.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 
 #include "core/LootTable.h"
 
@@ -50,6 +51,8 @@ namespace SkyrimPoE::Runtime
                    localId == FormIds::kUniqueSealedToken ||
                    FormIds::JewelColorFromLocalFormId(localId).has_value() ||
                    FormIds::CharmKindFromLocalFormId(localId).has_value() ||
+                   FormIds::IsMapItemLocalFormId(localId) ||
+                   FormIds::IsAscendancy4TributeLocalFormId(localId) ||
                    !FormIds::FindGemIdForLocalFormId(localId).empty();
         }
 
@@ -69,7 +72,8 @@ namespace SkyrimPoE::Runtime
             const auto localId = FormIds::ResolveLocalFormIdIfOurs(base->GetFormID());
             return localId == FormIds::kLootBeamRare ||
                    localId == FormIds::kLootBeamCurrency ||
-                   localId == FormIds::kLootBeamUnique;
+                   localId == FormIds::kLootBeamUnique ||
+                   localId == FormIds::kLootBeamMap;
         }
 
         // 정적 임시 빛기둥 마커 전용 삭제 헬퍼(절대 Actor에 호출하지 않음)
@@ -175,7 +179,8 @@ namespace SkyrimPoE::Runtime
         RE::TESBoundObject* itemObj,
         std::uint8_t worldDropTier,
         bool isCurrencyDrop,
-        bool isUniqueDrop)
+        bool isUniqueDrop,
+        bool isMapDrop)
     {
         if (!sourceContainer || !itemObj || !g_config) {
             return false;
@@ -216,7 +221,7 @@ namespace SkyrimPoE::Runtime
         if (g_config->lootBeamEnabled) {
             const RE::FormID beamLocal = isUniqueDrop
                 ? FormIds::kLootBeamUnique
-                : (isCurrencyDrop ? FormIds::kLootBeamCurrency : FormIds::kLootBeamRare);
+                : (isMapDrop ? FormIds::kLootBeamMap : (isCurrencyDrop ? FormIds::kLootBeamCurrency : FormIds::kLootBeamRare));
             if (auto* beamBase = FormIds::Lookup<RE::TESObjectSTAT>(beamLocal)) {
                 if (auto beamPtr = droppedPtr->PlaceObjectAtMe(beamBase, false)) {
                     beamId = beamPtr->GetFormID();
@@ -224,7 +229,7 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        PlayDropSound(isUniqueDrop || (isCurrencyDrop && worldDropTier >= 2));
+        PlayDropSound(isUniqueDrop || isMapDrop || (isCurrencyDrop && worldDropTier >= 2));
 
         {
             auto* corpseActor = sourceContainer->As<RE::Actor>();
@@ -247,7 +252,11 @@ namespace SkyrimPoE::Runtime
         std::uint32_t effectiveMonsterLevel,
         bool isBoss,
         bool isDragon,
-        Core::MonsterRarity monsterRarity)
+        Core::MonsterRarity monsterRarity,
+        std::uint8_t activeMapTier,
+        double bonusIiqPct,
+        double bonusIirPct,
+        bool guaranteeFirstTribute)
     {
         if (!g_itemData || !g_itemData->IsLoaded() || !g_config || !g_config->enableLootDrops) {
             return;
@@ -262,7 +271,8 @@ namespace SkyrimPoE::Runtime
         {
             std::scoped_lock lock(g_dropMutex);
             drops = Core::LootTable::RollKillDrops(
-                effectiveMonsterLevel, isBoss, isDragon, *g_config, *g_itemData, g_rng, monsterRarity);
+                effectiveMonsterLevel, isBoss, isDragon, *g_config, *g_itemData, g_rng, monsterRarity,
+                activeMapTier, bonusIiqPct, bonusIirPct, guaranteeFirstTribute);
         }
         if (drops.empty()) {
             return;
@@ -272,6 +282,7 @@ namespace SkyrimPoE::Runtime
             RE::TESObjectMISC* misc = nullptr;
             bool isCurr = false;
             bool isUniq = false;
+            bool isMap = false;
             switch (d.kind) {
                 case Core::DropKind::SealedToken:
                     misc = FormIds::Lookup<RE::TESObjectMISC>(
@@ -296,6 +307,14 @@ namespace SkyrimPoE::Runtime
                         misc = FormIds::Lookup<RE::TESObjectMISC>(localId);
                     }
                     break;
+                case Core::DropKind::MapItem:
+                    isMap = true;
+                    misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(d.tier));
+                    break;
+                case Core::DropKind::AscendancyTribute:
+                    isUniq = true;
+                    misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+                    break;
             }
             if (!misc) {
                 continue;
@@ -303,7 +322,7 @@ namespace SkyrimPoE::Runtime
 
             if (g_config->worldDropEnabled && d.worldDropTier >= g_config->worldDropMinTier) {
                 // 검수 M3: SpawnPhysicalDropFromContainer가 실패 시 내부에서 시체 잔여를 보장하므로 중복 추가 금지
-                (void)SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr, isUniq);
+                (void)SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr, isUniq, isMap);
             } else {
                 corpse->AddObjectToContainer(misc, nullptr, 1, nullptr);
             }
@@ -328,14 +347,16 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        // 검수 m6: ForEachReference 스핀락 밖에서 세 빛기둥 FormID를 1회 캐싱
+        // 검수 m6 + 6단계: ForEachReference 스핀락 밖에서 네 빛기둥 FormID를 1회 캐싱
         const auto* rareBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamRare);
         const auto* currBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamCurrency);
         const auto* uniqBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamUnique);
+        const auto* mapBeam = FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamMap);
         const RE::FormID rareBeamId = rareBeam ? rareBeam->GetFormID() : 0;
         const RE::FormID currBeamId = currBeam ? currBeam->GetFormID() : 0;
         const RE::FormID uniqBeamId = uniqBeam ? uniqBeam->GetFormID() : 0;
-        if (rareBeamId == 0 && currBeamId == 0 && uniqBeamId == 0) {
+        const RE::FormID mapBeamId = mapBeam ? mapBeam->GetFormID() : 0;
+        if (rareBeamId == 0 && currBeamId == 0 && uniqBeamId == 0 && mapBeamId == 0) {
             return 0;
         }
 
@@ -352,7 +373,7 @@ namespace SkyrimPoE::Runtime
                 !trackedBeams.contains(fid)) {
                 const auto* base = ref->GetBaseObject();
                 const RE::FormID baseId = base ? base->GetFormID() : 0;
-                if (baseId != 0 && (baseId == rareBeamId || baseId == currBeamId || baseId == uniqBeamId)) {
+                if (baseId != 0 && (baseId == rareBeamId || baseId == currBeamId || baseId == uniqBeamId || baseId == mapBeamId)) {
                     orphans.push_back(fid);
                 }
             }
@@ -436,12 +457,15 @@ namespace SkyrimPoE::Runtime
             }
 
             // 2. 시간 초과·구역 이탈·플레이어 원거리 이탈(>4096u) → 시체로 회수
+            // 6단계(검수 M-2): 활성 지도 셀 내부 드랍은 포털 왕복 중 지도가 살아있는 동안 zoneChanged 즉시 회수 보류
+            const auto* dropCell = dropRef->GetParentCell();
+            const bool deferForActiveMap = dropCell && MapDeviceRuntime::IsActiveMapCell(dropCell->GetFormID());
             const auto dp = dropRef->GetPosition();
             const float px = dp.x - playerPos.x;
             const float py = dp.y - playerPos.y;
             const float pz = dp.z - playerPos.z;
             const bool tooFar = player && ((px * px + py * py + pz * pz) > kFarReturnDistSq);
-            if (zoneChanged || tooFar || d.elapsedSec >= g_config->worldDropReturnSeconds) {
+            if ((!deferForActiveMap && (zoneChanged || tooFar)) || d.elapsedSec >= g_config->worldDropReturnSeconds) {
                 const auto outcome = TryReturnSingleDropToCorpse(d);
                 if (outcome != ReturnOutcome::RetryLater ||
                     d.elapsedSec >= g_config->worldDropReturnSeconds * 2.0) {

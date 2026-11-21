@@ -4434,5 +4434,389 @@
         "value": "Effects\\Ambient\\FXGlowFillRndLitXBrt.nif"
       }
     ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T1]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T2",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T2]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "200"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T3",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T3]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "250"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T4",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T4]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "300"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T5",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T5]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "350"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T6",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T6]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "400"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T7",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T7]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "450"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T8",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T8]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "500"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T9",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T9]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "550"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T10",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T10]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "600"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T11",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T11]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "650"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T12",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T12]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "700"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T13",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T13]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "750"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T14",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T14]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "800"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T15",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T15]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "850"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Map_T16",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "지도 [T16]"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Books\\Scroll01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "900"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Tribute_Ascendancy4",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "4차 전직의 공물"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\SoulGem\\SoulGemBlack01.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "5000"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.2"
+      }
+    ]
+  },
+  {
+    "record_type": "Static",
+    "editorid": "SPOE_LootBeam_Map",
+    "ops": [
+      {
+        "field_path": "Model.File",
+        "value": "Effects\\Ambient\\FXGlowFlatRndXBrt.nif"
+      }
+    ]
   }
 ]

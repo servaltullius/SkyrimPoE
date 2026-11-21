@@ -429,6 +429,11 @@ namespace SkyrimPoE::Core
             }
             return tags;
         }
+        if (slotGroup == TokenSlotGroup::Map) {
+            // 6단계(검수 M-3): 지도는 "default"를 넣지 않아 일반 장비 어픽스와 완전 격리한다.
+            tags.insert("map");
+            return tags;
+        }
         tags.insert("default");
 
         auto insertArmorSubtypeTag = [&]() {

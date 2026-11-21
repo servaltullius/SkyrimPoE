@@ -8,6 +8,7 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -24,6 +25,7 @@
 #include "core/ItemCrafting.h"
 #include "core/ItemFormatter.h"
 #include "core/LootTable.h"
+#include "core/MapSystem.h"
 #include "core/PassiveTree.h"
 #include "core/SkillSystem.h"
 #include "core/WorldStampLink.h"
@@ -78,7 +80,7 @@ namespace SkyrimPoE::Runtime
             std::string tempSave = "SkyrimPoE_autotest";
             bool quitWhenDone = true;
             bool consumeMarker = true;
-            double globalTimeoutSec = 300.0;
+            double globalTimeoutSec = 420.0;
         };
 
         enum class Phase : std::uint8_t
@@ -146,6 +148,23 @@ namespace SkyrimPoE::Runtime
             ScenarioG_SaveWaitBeforeLoad,
             ScenarioG_AwaitReload,
             ScenarioG_ReloadSettle,
+            ScenarioH_Start,
+            ScenarioH_MapEntryWait,
+            ScenarioH_DeathInterceptTrigger,
+            ScenarioH_DeathEscapeWait,
+            ScenarioH_ReenterWait,
+            ScenarioH_BossKillWait,
+            ScenarioH_PostMapAbandonWait,
+            ScenarioH_Arena4EntryWait,
+            ScenarioH_Arena4Phase2Wait,
+            ScenarioH_Arena4Phase3Wait,
+            ScenarioH_Arena4KillWait,
+            ScenarioH_PostArenaAbandonWait,
+            ScenarioH_SavePump,
+            ScenarioH_SaveWaitBeforeLoad,
+            ScenarioH_AwaitReload,
+            ScenarioH_ReloadSettle,
+            ScenarioH_UninstallVerifyWait,
             QuitDelay,
             Done
         };
@@ -216,6 +235,23 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioG_SaveWaitBeforeLoad: return "ScenarioG_SaveWaitBeforeLoad";
             case Phase::ScenarioG_AwaitReload: return "ScenarioG_AwaitReload";
             case Phase::ScenarioG_ReloadSettle: return "ScenarioG_ReloadSettle";
+            case Phase::ScenarioH_Start: return "ScenarioH_Start";
+            case Phase::ScenarioH_MapEntryWait: return "ScenarioH_MapEntryWait";
+            case Phase::ScenarioH_DeathInterceptTrigger: return "ScenarioH_DeathInterceptTrigger";
+            case Phase::ScenarioH_DeathEscapeWait: return "ScenarioH_DeathEscapeWait";
+            case Phase::ScenarioH_ReenterWait: return "ScenarioH_ReenterWait";
+            case Phase::ScenarioH_BossKillWait: return "ScenarioH_BossKillWait";
+            case Phase::ScenarioH_PostMapAbandonWait: return "ScenarioH_PostMapAbandonWait";
+            case Phase::ScenarioH_Arena4EntryWait: return "ScenarioH_Arena4EntryWait";
+            case Phase::ScenarioH_Arena4Phase2Wait: return "ScenarioH_Arena4Phase2Wait";
+            case Phase::ScenarioH_Arena4Phase3Wait: return "ScenarioH_Arena4Phase3Wait";
+            case Phase::ScenarioH_Arena4KillWait: return "ScenarioH_Arena4KillWait";
+            case Phase::ScenarioH_PostArenaAbandonWait: return "ScenarioH_PostArenaAbandonWait";
+            case Phase::ScenarioH_SavePump: return "ScenarioH_SavePump";
+            case Phase::ScenarioH_SaveWaitBeforeLoad: return "ScenarioH_SaveWaitBeforeLoad";
+            case Phase::ScenarioH_AwaitReload: return "ScenarioH_AwaitReload";
+            case Phase::ScenarioH_ReloadSettle: return "ScenarioH_ReloadSettle";
+            case Phase::ScenarioH_UninstallVerifyWait: return "ScenarioH_UninstallVerifyWait";
             case Phase::QuitDelay: return "QuitDelay";
             case Phase::Done: return "Done";
             default: return "Unknown";
@@ -261,6 +297,28 @@ namespace SkyrimPoE::Runtime
         bool g_gSaveBoundaryWasWorldBeforeSave = false;
         RE::FormID g_gQ1ActorFormId = 0;
         float g_gQ1SpeedBeforeSave = 0.0f;
+
+        // 6단계 시나리오 H (지도 장치·아틀라스·4차 결투장·안전 제거) 전용 상태
+        RE::FormID g_hPreMapCellId = 0;
+        RE::FormID g_hPreMapWsId = 0;
+        double g_hPreMapPoeLife = 0.0;
+        std::int32_t g_hAvailPtsBeforeBoss = 0;
+        RE::FormID g_hMapBossFormId = 0;
+        bool g_hDeathEscapeIntercepted = false;
+        bool g_hMovedToMapBossForH4 = false;
+        int g_hDeathInterceptHitsSent = 0;
+        bool g_hMovedToMapBoss = false;
+        std::uint32_t g_hSpiritBeforeArena4 = 0;
+        std::int32_t g_hAscPtsBeforeArena4 = 0;
+        RE::FormID g_hArenaBossFormId = 0;
+        bool g_hMovedToArenaBoss = false;
+        bool g_hArenaPhase1Clamped = false;
+        bool g_hArenaInvulnBlocked = false;
+        bool g_hArenaPhase2Clamped = false;
+        double g_hHpDeltaBeforeUninstall = 0.0;
+        double g_hMpDeltaBeforeUninstall = 0.0;
+        float g_hPermHpBeforeUninstall = 0.0f;
+        float g_hPermMpBeforeUninstall = 0.0f;
 
         std::atomic_bool g_enabled{ false };
         AutoTestConfig g_cfg;
@@ -443,8 +501,8 @@ namespace SkyrimPoE::Runtime
             if (!reason.empty()) {
                 LogInfo(reason);
             }
-            // T-1: 기대 건수(50건: A~F 45건 + 시나리오 G 5건) 및 WARN=0까지 충족해야 RESULT=PASS 인정
-            constexpr int kExpectedAutoTestChecks = 50;
+            // T-1 + 6단계: 기대 건수(58건: A~F 45건 + 시나리오 G 5건 + 시나리오 H 8건) 및 WARN=0까지 충족해야 RESULT=PASS 인정
+            constexpr int kExpectedAutoTestChecks = 58;
             const bool overallOk = (g_failCount == 0 && g_warnCount == 0 && g_passCount == kExpectedAutoTestChecks);
             const auto summary = std::format(
                 "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={} ===",
@@ -1081,7 +1139,7 @@ namespace SkyrimPoE::Runtime
         }
         g_enabled.store(true, std::memory_order_release);
 
-        LogInfo(std::format("SkyrimPoE Stage 5 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
+        LogInfo(std::format("SkyrimPoE Stage 6 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
             g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
         if (g_cfg.baselineSave.empty()) {
@@ -4031,7 +4089,637 @@ namespace SkyrimPoE::Runtime
                 std::format("actor=0x{:08X}, found={}, tempSpeedMultBefore={:.1f}, tempSpeedMultAfterReload={:.1f}",
                     g_gQ1ActorFormId, q1FoundActor, g_gQ1SpeedBeforeSave, q1SpeedAfter));
 
-            FinishAndScheduleQuit("All Stage 5 + Review Scenario G AutoTest scenarios (A-G) completed.");
+            EnterPhase(Phase::ScenarioH_Start);
+            break;
+        }
+
+        // ================= SCENARIO H (6단계: 지도 장치·아틀라스·4차 결투장·안전 제거) =================
+        case Phase::ScenarioH_Start: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !g_config || !g_itemData || !g_statEngine || !g_treeData) {
+                Check("H1_Stage6Esp192FormsAndMapKey", false, "Core singletons unavailable.");
+                FinishAndScheduleQuit("Scenario H aborted.");
+                break;
+            }
+            RestorePlayerVitals(player, true, true);
+            if (player->IsInCombat()) {
+                player->StopCombat();
+            }
+            g_hDeathEscapeIntercepted = false;
+            g_hMovedToMapBossForH4 = false;
+            g_hDeathInterceptHitsSent = 0;
+            g_hMovedToMapBoss = false;
+            g_hMovedToArenaBoss = false;
+
+            // H1: 6단계 신규 18폼(0x8AE..0x8BF, 총 192 ESL) + MapPanelKey(0x16 U) ControlMap 비충돌 + maps UI JSON
+            std::size_t s6Found = 0;
+            for (const auto fid : FormIds::kMapItemForms) {
+                if (FormIds::Lookup<RE::TESObjectMISC>(fid) != nullptr) ++s6Found;
+            }
+            if (FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute) != nullptr) ++s6Found;
+            if (FormIds::Lookup<RE::TESObjectSTAT>(FormIds::kLootBeamMap) != nullptr) ++s6Found;
+
+            const std::uint32_t mapKey = g_config->mapPanelKey;
+            bool mapKeyCollides = false;
+            if (auto* cm = RE::ControlMap::GetSingleton()) {
+                constexpr std::array<std::string_view, 6> kVanillaKeys = {
+                    "Quick Magic", "Quick Inventory", "Quick Map", "Journal", "Tween Menu", "Wait"
+                };
+                for (const auto kname : kVanillaKeys) {
+                    const auto vk = cm->GetMappedKey(kname, RE::INPUT_DEVICE::kKeyboard);
+                    if (vk != RE::ControlMap::kInvalid && vk == mapKey) {
+                        mapKeyCollides = true;
+                        break;
+                    }
+                }
+            }
+            bool mapsJsonOk = false;
+            try {
+                const auto panelJson = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread());
+                mapsJsonOk = panelJson.contains("maps") && panelJson["maps"].is_object() &&
+                             panelJson["maps"].contains("atlas") && panelJson["maps"].contains("active") &&
+                             panelJson["maps"].contains("bagMaps");
+            } catch (...) {
+            }
+            Check("H1_Stage6Esp192FormsAndMapKey",
+                (s6Found == 18u) && (mapKey == 0x16u) && !mapKeyCollides && mapsJsonOk,
+                std::format("s6Forms={}/18, mapKey=0x{:02X}, collides={}, mapsJson={}",
+                    s6Found, mapKey, mapKeyCollides, mapsJsonOk));
+
+            // H2: T10 지도(0x0008B7) 지급 + 연금술 오브 제작 -> Rare, iLvl=77, MapMod_* 격리 확인
+            auto* t10Misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(10));
+            auto* alchOrb = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CurrencyLocalFormId(Core::CurrencyKind::Alchemy));
+            bool h2Ok = false;
+            std::string h2Detail = "missing forms";
+            Core::InventoryItemKey craftedMapKey{};
+            RE::FormID craftedMapBaseId = t10Misc ? t10Misc->GetFormID() : 0u;
+            if (t10Misc && alchOrb) {
+                player->AddObjectToContainer(t10Misc, nullptr, 1, nullptr);
+                player->AddObjectToContainer(alchOrb, nullptr, 1, nullptr);
+                const auto craftRes = CraftingRuntime::ApplyOrbToItem(
+                    Core::CurrencyKind::Alchemy, craftedMapBaseId, 0, false);
+                const auto mapsList = MapDeviceRuntime::ListPlayerMaps(player);
+                for (const auto& m : mapsList) {
+                    if (m.tier == 10 && m.tracked && m.rarity == Core::ItemRarity::Rare && m.modLines.size() >= 4) {
+                        craftedMapKey = m.key;
+                        if (const auto rec = ItemTracker::FindByKey(m.key)) {
+                            bool allMapMods = !rec->affixes.empty();
+                            for (const auto& af : rec->affixes) {
+                                if (!af.affixId.starts_with("MapMod_")) {
+                                    allMapMods = false;
+                                }
+                            }
+                            h2Ok = craftRes.ok && allMapMods && (rec->itemLevel == 77u) && (m.summary.bonusIiqPct > 0.0);
+                            h2Detail = std::format("craftOk={}, iLvl={}, mods={}, allMapMods={}, iiq={:.0f}",
+                                craftRes.ok, rec->itemLevel, rec->affixes.size(), allMapMods, m.summary.bonusIiqPct);
+                        }
+                        break;
+                    }
+                }
+            }
+            Check("H2_MapCraftingAndCombatAreaLevel", h2Ok, h2Detail);
+
+            // H3 준비: T10 지도 개방 및 MoveTo_Impl 텔레포트 + 비동기 셀 로드 스폰 대기
+            g_hPreMapCellId = player->GetParentCell() ? player->GetParentCell()->GetFormID() : 0u;
+            g_hPreMapWsId = player->GetWorldspace() ? player->GetWorldspace()->GetFormID() : 0u;
+            const auto preSnap = g_statEngine->GetSnapshot();
+            g_hPreMapPoeLife = preSnap ? preSnap->poeMaxLife : 0.0;
+            if (craftedMapBaseId != 0 && (!h2Ok || !craftedMapKey.IsValid())) {
+                if (t10Misc) {
+                    player->AddObjectToContainer(t10Misc, nullptr, 1, nullptr);
+                }
+                craftedMapKey = {};
+            }
+            const auto openRes = MapDeviceRuntime::OpenNormalMap(player, craftedMapKey, craftedMapBaseId);
+            if (!openRes.ok) {
+                Check("H3_MapEntryTeleportAndAsyncSpawn", false, std::format("OpenNormalMap failed: {}", openRes.message));
+                Check("H4_MapDeathInterceptAndPortalReturn", false, "Skipped due to H3 failure.");
+                Check("H5_MapReenterBossKillAndAtlasPoint", false, "Skipped due to H3 failure.");
+                EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
+                break;
+            }
+            EnterPhase(Phase::ScenarioH_MapEntryWait);
+            break;
+        }
+
+        case Phase::ScenarioH_MapEntryWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto active = MapDeviceRuntime::GetActiveMapStateCopy();
+            const auto& dg = Core::MapSystem::GetDungeonForState(active);
+            const RE::FormID curCellId = (player && player->GetParentCell()) ? player->GetParentCell()->GetFormID() : 0u;
+            const bool inTargetCell = (curCellId == dg.cellFormId) && MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const bool spawned = (active.bossRefFormId != 0) && (active.spawnedRefFormIds.size() >= 4u);
+
+            if ((!IsPlayerReadyInWorld() || !inTargetCell || !spawned) && PhaseElapsedSec() < 25.0) {
+                break;
+            }
+            if (g_dataPack && g_dataPack->IsLoaded()) {
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            }
+            const auto snap = g_statEngine->GetSnapshot();
+            auto* bossActor = active.bossRefFormId != 0
+                ? RE::TESForm::LookupByID<RE::Actor>(active.bossRefFormId)
+                : nullptr;
+            const bool areaLvOk = snap && snap->inActiveMap && (snap->combatAreaLevel == 77u) &&
+                                  (std::abs(snap->poeMaxLife - g_hPreMapPoeLife) < 1e-3);
+            const bool bossRecognized = bossActor && SkillExecution::IsBossOrDragon(bossActor);
+            g_hMapBossFormId = active.bossRefFormId;
+
+            Check("H3_MapEntryTeleportAndAsyncSpawn",
+                inTargetCell && spawned && areaLvOk && bossRecognized && (active.portalsRemaining == 5u),
+                std::format("cell=0x{:08X}/0x{:08X}, spawns={}, boss=0x{:08X}, bossRec={}, areaLv={}, portals={}",
+                    curCellId, dg.cellFormId, active.spawnedRefFormIds.size(), active.bossRefFormId,
+                    bossRecognized, snap ? snap->combatAreaLevel : 0u, active.portalsRemaining));
+
+            // H4 준비: 실제 CombatHooks::ApplyHitHook(CallDealDamage) 경로로 치명타 가로채기 발동 검증
+            g_hDeathEscapeIntercepted = false;
+            g_hMovedToMapBossForH4 = false;
+            g_hDeathInterceptHitsSent = 0;
+            EnterPhase(Phase::ScenarioH_DeathInterceptTrigger);
+            break;
+        }
+
+        case Phase::ScenarioH_DeathInterceptTrigger: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                g_hDeathEscapeIntercepted = true;
+                EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+                break;
+            }
+            if (!player || !MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+                if (PhaseElapsedSec() >= 10.0) {
+                    g_hDeathEscapeIntercepted = MapDeviceRuntime::IsDeathEscapeInFlight();
+                    EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+                }
+                break;
+            }
+            if (!IsPlayerReadyInWorld() && PhaseElapsedSec() < 10.0) {
+                break;
+            }
+            auto* boss = (g_hMapBossFormId != 0)
+                ? RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId)
+                : nullptr;
+            if (!boss || boss->IsDead()) {
+                g_hDeathEscapeIntercepted = MapDeviceRuntime::IsDeathEscapeInFlight();
+                EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+                break;
+            }
+            if (!boss->Is3DLoaded()) {
+                if (!g_hMovedToMapBossForH4) {
+                    player->MoveTo(boss);
+                    g_hMovedToMapBossForH4 = true;
+                }
+                if (PhaseElapsedSec() < 10.0) {
+                    break;
+                }
+            }
+            if (boss->Is3DLoaded()) {
+                if (g_esPool) {
+                    g_esPool->Clear();
+                }
+                if (g_skillSystem) {
+                    (void)g_skillSystem->TickGuardShield(30.0, false);
+                }
+                if (auto* av = player->AsActorValueOwner()) {
+                    const float curHp = av->GetActorValue(RE::ActorValue::kHealth);
+                    if (curHp > 2.5f) {
+                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, -(curHp - 2.0f));
+                    }
+                }
+                CallDealDamage(boss, player, nullptr, false);
+                ++g_hDeathInterceptHitsSent;
+                if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    g_hDeathEscapeIntercepted = true;
+                    EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+                    break;
+                }
+            }
+            if (PhaseElapsedSec() >= 10.0) {
+                g_hDeathEscapeIntercepted = MapDeviceRuntime::IsDeathEscapeInFlight();
+                EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+            }
+            break;
+        }
+
+        case Phase::ScenarioH_DeathEscapeWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const bool returnedOut = !MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const bool escapeCleared = !MapDeviceRuntime::IsDeathEscapeInFlight();
+            if ((!returnedOut || !escapeCleared || !IsPlayerReadyInWorld()) && PhaseElapsedSec() < 15.0) {
+                break;
+            }
+            const RE::FormID curCell = (player && player->GetParentCell()) ? player->GetParentCell()->GetFormID() : 0u;
+            const RE::FormID curWs = (player && player->GetWorldspace()) ? player->GetWorldspace()->GetFormID() : 0u;
+            const bool locMatched = (g_hPreMapWsId != 0) ? (curWs == g_hPreMapWsId) : (curCell == g_hPreMapCellId);
+            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
+            const bool alive = player && !player->IsDead();
+            Check("H4_MapDeathInterceptAndPortalReturn",
+                g_hDeathEscapeIntercepted && returnedOut && escapeCleared && locMatched && alive &&
+                act.active && (act.portalsRemaining == 5u),
+                std::format("intercepted={}, hits={}, out={}, cleared={}, locMatch={} (cell=0x{:08X}, ws=0x{:08X}), alive={}, portals={}",
+                    g_hDeathEscapeIntercepted, g_hDeathInterceptHitsSent, returnedOut, escapeCleared,
+                    locMatched, curCell, curWs, alive, act.portalsRemaining));
+
+            // H5: 재입장(5->4) 후 보스 처치 -> 아틀라스 T10 첫 클리어 +1P & 첫 T6+ 공물 확정
+            const auto stBefore = SaveLoad::GetStateCopy();
+            g_hAvailPtsBeforeBoss = (g_treeData && g_treeData->IsLoaded())
+                ? Core::PassiveTree::ComputeAvailableNormalPoints(
+                      *g_treeData, stBefore.tree, stBefore.exileLevel, *g_config, stBefore.atlas.completedTierMask)
+                : static_cast<std::int32_t>(stBefore.unallocatedPassivePoints);
+            const auto reenterRes = MapDeviceRuntime::ReenterActiveMap(player);
+            if (!reenterRes.ok) {
+                Check("H5_MapReenterBossKillAndAtlasPoint", false, std::format("ReenterActiveMap failed: {}", reenterRes.message));
+                (void)MapDeviceRuntime::AbandonActiveMap(player);
+                EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
+                break;
+            }
+            g_hMovedToMapBoss = false;
+            EnterPhase(Phase::ScenarioH_ReenterWait);
+            break;
+        }
+
+        case Phase::ScenarioH_ReenterWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if ((!IsPlayerReadyInWorld() || !MapDeviceRuntime::IsPlayerInActiveMapCell()) && PhaseElapsedSec() < 15.0) {
+                break;
+            }
+            auto* boss = (g_hMapBossFormId != 0)
+                ? RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId)
+                : nullptr;
+            if (boss && !boss->IsDead() && player) {
+                if (!boss->Is3DLoaded()) {
+                    if (!g_hMovedToMapBoss) {
+                        player->MoveTo(boss);
+                        g_hMovedToMapBoss = true;
+                    }
+                    if (PhaseElapsedSec() < 15.0) {
+                        break;
+                    }
+                }
+                (void)SkillExecution::DealDirectSkillDamage(boss, 50000.0, Core::DamageType::Physical, true, true);
+                if (!boss->IsDead()) {
+                    boss->KillImmediate();
+                }
+            }
+            EnterPhase(Phase::ScenarioH_BossKillWait);
+            break;
+        }
+
+        case Phase::ScenarioH_BossKillWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                RestorePlayerVitals(player, true, true);
+            }
+            const auto stNow = SaveLoad::GetStateCopy();
+            const bool t10Cleared = (stNow.atlas.completedTierMask & static_cast<std::uint16_t>(1u << 9u)) != 0u;
+            if (!t10Cleared && g_unpausedAccumSec < 5.0 && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
+            const auto availAfter = (g_treeData && g_treeData->IsLoaded())
+                ? Core::PassiveTree::ComputeAvailableNormalPoints(
+                      *g_treeData, stNow.tree, stNow.exileLevel, *g_config, stNow.atlas.completedTierMask)
+                : static_cast<std::int32_t>(stNow.unallocatedPassivePoints);
+            Check("H5_MapReenterBossKillAndAtlasPoint",
+                t10Cleared && act.bossKilled && (act.portalsRemaining == 4u) &&
+                (availAfter == g_hAvailPtsBeforeBoss + 1) && stNow.atlas.firstTributeGiven,
+                std::format("t10Bit={}, bossKilled={}, portals={}, pts={}->{}, firstTrib={}",
+                    t10Cleared, act.bossKilled, act.portalsRemaining, g_hAvailPtsBeforeBoss, availAfter,
+                    stNow.atlas.firstTributeGiven));
+
+            (void)MapDeviceRuntime::AbandonActiveMap(player);
+            EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
+            break;
+        }
+
+        case Phase::ScenarioH_PostMapAbandonWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if ((MapDeviceRuntime::IsPlayerInActiveMapCell() || !IsPlayerReadyInWorld()) && PhaseElapsedSec() < 15.0) {
+                break;
+            }
+            if (!player) {
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Player unavailable before Arena4.");
+                EnterPhase(Phase::ScenarioH_PostArenaAbandonWait);
+                break;
+            }
+            RestorePlayerVitals(player, true, true);
+            if (player->IsInCombat()) {
+                player->StopCombat();
+            }
+            if (MapDeviceRuntime::CountPlayerTributes(player) <= 0) {
+                if (auto* trib = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute)) {
+                    player->AddObjectToContainer(trib, nullptr, 1, nullptr);
+                }
+            }
+            // 1~3차 이정표까지 모두 켜진 상태에서 4차 완료 시 정확히 전직 8/8 · 정신력 220 도달을 검증한다.
+            SaveLoad::UpdateState([](PersistentState& st) {
+                st.tree.ascendancyMilestonesBitmask |= 0x7u;
+                st.tree.ascendancyMilestonesBitmask &= ~0x8u;
+            });
+            SaveLoad::SyncStateToStatEngine();
+            if (g_dataPack && g_dataPack->IsLoaded()) {
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            }
+            const auto stBeforeA4 = SaveLoad::GetStateCopy();
+            const auto snapBeforeA4 = g_statEngine->GetSnapshot();
+            g_hSpiritBeforeArena4 = snapBeforeA4 ? snapBeforeA4->maxSpirit : 190u;
+            g_hAscPtsBeforeArena4 = Core::PassiveTree::ComputeEarnedAscendancyPoints(stBeforeA4.tree, *g_config);
+            g_hArenaPhase1Clamped = false;
+            g_hArenaInvulnBlocked = false;
+            g_hArenaPhase2Clamped = false;
+            g_hArenaBossFormId = 0;
+            g_hMovedToArenaBoss = false;
+
+            const auto a4Res = MapDeviceRuntime::OpenArena4(player);
+            if (!a4Res.ok) {
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, std::format("OpenArena4 failed: {}", a4Res.message));
+                EnterPhase(Phase::ScenarioH_PostArenaAbandonWait);
+                break;
+            }
+            EnterPhase(Phase::ScenarioH_Arena4EntryWait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4EntryWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                RestorePlayerVitals(player, true, true);
+            }
+            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
+            const bool ready = IsPlayerReadyInWorld() && MapDeviceRuntime::IsPlayerInActiveMapCell() &&
+                               act.active && act.isArena4 && (act.bossRefFormId != 0);
+            if (!ready && PhaseElapsedSec() < 25.0) {
+                break;
+            }
+            g_hArenaBossFormId = act.bossRefFormId;
+            auto* boss = (g_hArenaBossFormId != 0) ? RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId) : nullptr;
+            if (boss && player && !boss->IsDead()) {
+                if (!boss->Is3DLoaded()) {
+                    if (!g_hMovedToArenaBoss) {
+                        player->MoveTo(boss);
+                        g_hMovedToArenaBoss = true;
+                    }
+                    if (PhaseElapsedSec() < 25.0) {
+                        break;
+                    }
+                }
+                const auto* av = boss->AsActorValueOwner();
+                const double maxHp = av ? std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
+                // 1타 원샷 시도 -> Phase 1 하한(66.5%) 클램프 + Phase 2 전환 + 0.8초 무적
+                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
+                const double hpAfter1 = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
+                const auto actAfter1 = MapDeviceRuntime::GetActiveMapStateCopy();
+                g_hArenaPhase1Clamped = !boss->IsDead() && (hpAfter1 >= maxHp * 0.60) && (actAfter1.arenaPhase == 2u);
+
+                // 즉시 무적 중 2타 -> 피해 0 차단 확인
+                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
+                const double hpAfterInv = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
+                g_hArenaInvulnBlocked = !boss->IsDead() && (std::abs(hpAfterInv - hpAfter1) < 1.0);
+            }
+            EnterPhase(Phase::ScenarioH_Arena4Phase2Wait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4Phase2Wait: {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                RestorePlayerVitals(player, true, true);
+            }
+            if (g_unpausedAccumSec < 1.0 && PhaseElapsedSec() < 4.0) {
+                break;
+            }
+            auto* boss = (g_hArenaBossFormId != 0) ? RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId) : nullptr;
+            if (boss && !boss->IsDead()) {
+                const auto* av = boss->AsActorValueOwner();
+                const double maxHp = av ? std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
+                // Phase 2 원샷 시도 -> 33.5% 클램프 + Phase 3 전환
+                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
+                const double hpAfter2 = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
+                const auto actAfter2 = MapDeviceRuntime::GetActiveMapStateCopy();
+                g_hArenaPhase2Clamped = !boss->IsDead() && (hpAfter2 >= maxHp * 0.30) && (actAfter2.arenaPhase == 3u);
+            }
+            EnterPhase(Phase::ScenarioH_Arena4Phase3Wait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4Phase3Wait: {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                RestorePlayerVitals(player, true, true);
+            }
+            if (g_unpausedAccumSec < 1.0 && PhaseElapsedSec() < 4.0) {
+                break;
+            }
+            auto* boss = (g_hArenaBossFormId != 0) ? RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId) : nullptr;
+            if (boss && !boss->IsDead()) {
+                // Phase 3 처치 허용
+                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
+                if (!boss->IsDead()) {
+                    boss->KillImmediate();
+                }
+            }
+            EnterPhase(Phase::ScenarioH_Arena4KillWait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4KillWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                RestorePlayerVitals(player, true, true);
+            }
+            const auto stNow = SaveLoad::GetStateCopy();
+            const bool asc4Done = (stNow.tree.ascendancyMilestonesBitmask & 0x8u) != 0u;
+            if (!asc4Done && g_unpausedAccumSec < 5.0 && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            if (g_dataPack && g_dataPack->IsLoaded()) {
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            }
+            const auto snapAfter = g_statEngine->GetSnapshot();
+            const auto ascAfter = Core::PassiveTree::ComputeEarnedAscendancyPoints(stNow.tree, *g_config);
+            const std::uint32_t spiritAfter = snapAfter ? snapAfter->maxSpirit : 0u;
+
+            Check("H6_Arena4ThreePhaseBossAndSpirit220",
+                g_hArenaPhase1Clamped && g_hArenaInvulnBlocked && g_hArenaPhase2Clamped &&
+                asc4Done && (ascAfter == 8) && (spiritAfter == 220u),
+                std::format("p1Clamp={}, invulnBlk={}, p2Clamp={}, bit8={}, asc={}->{}, spirit={}->{}",
+                    g_hArenaPhase1Clamped, g_hArenaInvulnBlocked, g_hArenaPhase2Clamped,
+                    asc4Done, g_hAscPtsBeforeArena4, ascAfter, g_hSpiritBeforeArena4, spiritAfter));
+
+            (void)MapDeviceRuntime::AbandonActiveMap(player);
+            EnterPhase(Phase::ScenarioH_PostArenaAbandonWait);
+            break;
+        }
+
+        case Phase::ScenarioH_PostArenaAbandonWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if ((MapDeviceRuntime::IsPlayerInActiveMapCell() || !IsPlayerReadyInWorld()) && PhaseElapsedSec() < 15.0) {
+                break;
+            }
+            if (player) {
+                RestorePlayerVitals(player, true, true);
+                if (player->IsInCombat()) {
+                    player->StopCombat();
+                }
+            }
+            // H7 준비: 'MAPS' v1 + 'TREE'(0xFu) 코세이브 왕복 저장
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = g_cfg.tempSave;
+                g_saveMatched = false;
+            }
+            if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                mgr->Save(g_cfg.tempSave.c_str());
+            }
+            g_saveAttempts = 1;
+            g_nextSaveRetryAt = Clock::now() + std::chrono::seconds(2);
+            EnterPhase(Phase::ScenarioH_SavePump);
+            break;
+        }
+
+        case Phase::ScenarioH_SavePump: {
+            bool matched = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                matched = g_saveMatched;
+            }
+            if (matched) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                EnterPhase(Phase::ScenarioH_SaveWaitBeforeLoad);
+                break;
+            }
+            if (Clock::now() >= g_nextSaveRetryAt) {
+                ++g_saveAttempts;
+                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    mgr->Save(g_cfg.tempSave.c_str());
+                } else {
+                    Check("H7_MapsAndTreeCosaveRoundTrip", false, "BGSSaveLoadManager unavailable.");
+                    FinishAndScheduleQuit("Scenario H save failed.");
+                    break;
+                }
+                g_nextSaveRetryAt = Clock::now() + std::chrono::seconds(2);
+            }
+            if (PhaseElapsedSec() > 25.0) {
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem.clear();
+                }
+                Check("H7_MapsAndTreeCosaveRoundTrip", false, "Timed out waiting for Scenario H kSaveGame.");
+                FinishAndScheduleQuit("Scenario H save timeout.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioH_SaveWaitBeforeLoad: {
+            if (PhaseElapsedSec() < 1.0) {
+                break;
+            }
+            if (!RequestLoadSave(g_cfg.tempSave)) {
+                Check("H7_MapsAndTreeCosaveRoundTrip", false, "Scenario H reload request failed.");
+                FinishAndScheduleQuit("Scenario H reload failed.");
+                break;
+            }
+            EnterPhase(Phase::ScenarioH_AwaitReload);
+            break;
+        }
+
+        case Phase::ScenarioH_AwaitReload: {
+            bool signaled = false;
+            bool ok = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                signaled = g_postLoadSignaled;
+                ok = g_postLoadSucceeded;
+            }
+            if (signaled && !ok) {
+                Check("H7_MapsAndTreeCosaveRoundTrip", false, "kPostLoadGame failed on Scenario H reload.");
+                FinishAndScheduleQuit("Scenario H reload failed.");
+                return;
+            }
+            if (signaled && ok && IsPlayerReadyInWorld()) {
+                EnterPhase(Phase::ScenarioH_ReloadSettle);
+            } else if (PhaseElapsedSec() > 90.0) {
+                Check("H7_MapsAndTreeCosaveRoundTrip", false, "Timed out waiting for Scenario H reload.");
+                FinishAndScheduleQuit("Scenario H reload timeout.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioH_ReloadSettle: {
+            if (g_unpausedAccumSec < 2.0 && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            const auto st = SaveLoad::GetStateCopy();
+            const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const bool t10Ok = (st.atlas.completedTierMask & static_cast<std::uint16_t>(1u << 9u)) != 0u;
+            const bool asc4Ok = (st.tree.ascendancyMilestonesBitmask & 0x8u) != 0u;
+            const bool spiritOk = snap && (snap->maxSpirit == 220u);
+            Check("H7_MapsAndTreeCosaveRoundTrip",
+                t10Ok && asc4Ok && spiritOk && (st.atlas.totalMapsCleared >= 1u) && st.atlas.firstTributeGiven,
+                std::format("atlasMask=0x{:04X}, cleared={}, trib={}, msMask=0x{:X}, spirit={}",
+                    st.atlas.completedTierMask, st.atlas.totalMapsCleared, st.atlas.firstTributeGiven,
+                    st.tree.ascendancyMilestonesBitmask, snap ? snap->maxSpirit : 0u));
+
+            // H8 (반드시 최후반 — 이후 저장 금지!): 안전 제거 정리 + 다음 프레임 미재오염 확인
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player && player->AsActorValueOwner()) {
+                g_hHpDeltaBeforeUninstall = st.appliedHealthDelta;
+                g_hMpDeltaBeforeUninstall = st.appliedMagickaDelta;
+                g_hPermHpBeforeUninstall = player->AsActorValueOwner()->GetPermanentActorValue(RE::ActorValue::kHealth);
+                g_hPermMpBeforeUninstall = player->AsActorValueOwner()->GetPermanentActorValue(RE::ActorValue::kMagicka);
+                (void)MapDeviceRuntime::RunSafeUninstallCleanup(player);
+            }
+            EnterPhase(Phase::ScenarioH_UninstallVerifyWait);
+            break;
+        }
+
+        case Phase::ScenarioH_UninstallVerifyWait: {
+            if (g_unpausedAccumSec < 1.0 && PhaseElapsedSec() < 4.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto st = SaveLoad::GetStateCopy();
+            bool anySlotOccupied = false;
+            for (const auto& s : st.slots) {
+                if (s.occupied) anySlotOccupied = true;
+            }
+            bool anyProxySpellLeft = false;
+            if (player) {
+                for (const auto fid : FormIds::kProxySpells) {
+                    if (auto* sp = FormIds::Lookup<RE::SpellItem>(fid); sp && player->HasSpell(sp)) {
+                        anyProxySpellLeft = true;
+                    }
+                }
+                for (const auto fid : FormIds::kProxyPowers) {
+                    if (auto* pw = FormIds::Lookup<RE::SpellItem>(fid); pw && player->HasSpell(pw)) {
+                        anyProxySpellLeft = true;
+                    }
+                }
+            }
+            const float permHpAfter = (player && player->AsActorValueOwner())
+                ? player->AsActorValueOwner()->GetPermanentActorValue(RE::ActorValue::kHealth) : 0.0f;
+            const float permMpAfter = (player && player->AsActorValueOwner())
+                ? player->AsActorValueOwner()->GetPermanentActorValue(RE::ActorValue::kMagicka) : 0.0f;
+            const float var09After = (player && player->AsActorValueOwner())
+                ? player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kVariable09) : -1.0f;
+            const float expectedHp = g_hPermHpBeforeUninstall - static_cast<float>(g_hHpDeltaBeforeUninstall);
+            const float expectedMp = g_hPermMpBeforeUninstall - static_cast<float>(g_hMpDeltaBeforeUninstall);
+            const bool hpRevertedAndHeld = std::abs(permHpAfter - expectedHp) < 1.5f;
+            const bool mpRevertedAndHeld = std::abs(permMpAfter - expectedMp) < 1.5f;
+
+            Check("H8_SafeUninstallCleanupAndNoReapply",
+                MapDeviceRuntime::IsUninstallCleanupArmed() &&
+                !anySlotOccupied && st.socketedJewels.empty() && (st.activeAuraMask == 0u) &&
+                !anyProxySpellLeft && (std::abs(st.appliedHealthDelta) < 0.01) &&
+                (std::abs(st.appliedMagickaDelta) < 0.01) && hpRevertedAndHeld && mpRevertedAndHeld &&
+                (std::abs(var09After) < 1e-3f),
+                std::format("armed={}, slotsEmpty={}, jewelsEmpty={}, proxyLeft={}, hp={:.1f}(exp {:.1f}), mp={:.1f}(exp {:.1f}), hpDelta={:.2f}, mpDelta={:.2f}, var09={:.2f}",
+                    MapDeviceRuntime::IsUninstallCleanupArmed(), !anySlotOccupied, st.socketedJewels.empty(),
+                    anyProxySpellLeft, permHpAfter, expectedHp, permMpAfter, expectedMp,
+                    st.appliedHealthDelta, st.appliedMagickaDelta, var09After));
+
+            FinishAndScheduleQuit("All Stage 2-6 AutoTest scenarios (A-H, 58 checks) completed.");
             break;
         }
 

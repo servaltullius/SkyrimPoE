@@ -5,6 +5,7 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/PrismaUIApi.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -15,6 +16,7 @@
 #include "core/ItemCrafting.h"
 #include "core/ItemFormatter.h"
 #include "core/KillTracker.h"
+#include "core/MapSystem.h"
 #include "core/PassiveTree.h"
 
 #include <bitset>
@@ -45,12 +47,14 @@ namespace SkyrimPoE::Runtime
         constexpr std::uint8_t kTabSkills = 0;
         constexpr std::uint8_t kTabTree = 1;
         constexpr std::uint8_t kTabGear = 2;
+        constexpr std::uint8_t kTabMaps = 3;
 
         std::string_view TabNameFromId(std::uint8_t tab) noexcept
         {
             switch (tab) {
                 case kTabTree: return "tree";
                 case kTabGear: return "gear";
+                case kTabMaps: return "maps";
                 default:       return "skills";
             }
         }
@@ -59,6 +63,7 @@ namespace SkyrimPoE::Runtime
         {
             if (name == "tree") return kTabTree;
             if (name == "gear") return kTabGear;
+            if (name == "maps") return kTabMaps;
             return kTabSkills;
         }
 
@@ -92,6 +97,7 @@ namespace SkyrimPoE::Runtime
                 case Core::TokenSlotGroup::Jewelry:               return "장신구";
                 case Core::TokenSlotGroup::Belt:                  return "벨트";
                 case Core::TokenSlotGroup::Jewel:                 return "주얼";
+                case Core::TokenSlotGroup::Map:                   return "지도";
                 default:                                          return "장비";
             }
         }
@@ -154,6 +160,14 @@ namespace SkyrimPoE::Runtime
             std::uint8_t charmActiveMask = 0;
             std::array<int, Core::kMaxCharmSlots> charmCharges{ -1, -1, -1 };
             std::array<int, Core::kMaxCharmSlots> charmKinds{ -1, -1, -1 };
+            bool mapActive = false;
+            bool mapIsArena4 = false;
+            bool mapInCell = false;
+            bool mapBossKilled = false;
+            std::uint8_t mapTier = 0;
+            std::uint8_t mapPortalsRem = 0;
+            std::uint8_t mapArenaPhase = 1;
+            std::uint32_t mapAreaLevel = 0;
         };
         CachedHud g_lastHud;
 
@@ -485,7 +499,14 @@ namespace SkyrimPoE::Runtime
             const Core::PoEItemRecord* rec = existingRecord;
             if (!rec) {
                 tmp.rarity = Core::ItemRarity::Normal;
-                tmp.itemLevel = std::clamp<std::uint32_t>(exileLevel, 1u, 100u);
+                std::uint32_t fallbackIlvl = std::clamp<std::uint32_t>(exileLevel, 1u, 100u);
+                if (slotGroup == Core::TokenSlotGroup::Map) {
+                    const auto localId = FormIds::ResolveLocalFormIdIfOurs(baseFormId);
+                    if (const auto tier = FormIds::MapTierFromLocalFormId(localId); tier.has_value()) {
+                        fallbackIlvl = Core::MapSystem::MonsterLevelForTier(*tier);
+                    }
+                }
+                tmp.itemLevel = fallbackIlvl;
                 tmp.baseFormId = baseFormId;
                 tmp.slotGroup = slotGroup;
                 tmp.defenseSubtype = defenseSubtype;
@@ -530,7 +551,8 @@ namespace SkyrimPoE::Runtime
 
             const bool treeLoaded = g_treeData && g_treeData->IsLoaded();
             const std::int32_t availNormal = treeLoaded
-                ? Core::PassiveTree::ComputeAvailableNormalPoints(*g_treeData, state.tree, state.exileLevel, *g_config)
+                ? Core::PassiveTree::ComputeAvailableNormalPoints(
+                      *g_treeData, state.tree, state.exileLevel, *g_config, state.atlas.completedTierMask)
                 : static_cast<std::int32_t>(state.unallocatedPassivePoints);
             const std::int32_t spentNormal = treeLoaded
                 ? Core::PassiveTree::ComputeSpentNormalPoints(*g_treeData, state.tree)
@@ -576,6 +598,8 @@ namespace SkyrimPoE::Runtime
             treeJ["bossKillCount"] = state.tree.bossKillCount;
             treeJ["dragonKillCount"] = state.tree.dragonKillCount;
             treeJ["ascendancyMilestonesBitmask"] = state.tree.ascendancyMilestonesBitmask;
+            treeJ["atlasTierPoints"] = Core::MapSystem::CountAtlasTierPoints(state.atlas.completedTierMask);
+            treeJ["milestonePassivePoints"] = Core::MapSystem::CountMilestonePassivePoints(state.tree.ascendancyMilestonesBitmask);
             treeJ["regretOrbCount"] = currencyCounts[static_cast<std::size_t>(Core::CurrencyKind::Regret)];
             treeJ["ascendancyRefundCost"] = g_config->freePassiveRefund ? 0u : g_config->ascendancyRefundCost;
             treeJ["refundAllCost"] = treeLoaded
@@ -793,9 +817,15 @@ namespace SkyrimPoE::Runtime
                 for (const auto& b : bagItems) {
                     auto* baseForm = RE::TESForm::LookupByID<RE::TESBoundObject>(b.baseFormId);
                     const Core::PoEItemRecord* recPtr = b.hasPoERecord ? &b.record : nullptr;
-                    const auto slotInp = baseForm
+                    auto slotInp = baseForm
                         ? EquipmentSync::BuildSlotInput(baseForm, recPtr, state.exileLevel, *g_itemData)
                         : Core::EquippedSlotInput{};
+                    if (b.slotGroup == Core::TokenSlotGroup::Map && !recPtr) {
+                        const auto localId = FormIds::ResolveLocalFormIdIfOurs(b.baseFormId);
+                        if (const auto tier = FormIds::MapTierFromLocalFormId(localId); tier.has_value()) {
+                            slotInp.itemLevel = Core::MapSystem::MonsterLevelForTier(*tier);
+                        }
+                    }
                     // 검수 Major #4: StatEngine과 동일하게 exileLevel >= reqLevel 포함 4조건 모두 판정
                     const bool reqMet = !snap ||
                         (snap->exileLevel >= slotInp.reqLevel &&
@@ -805,8 +835,11 @@ namespace SkyrimPoE::Runtime
                     auto card = Core::ItemFormatter::FormatItem(
                         recPtr, b.displayName, b.equipSlot, slotInp, reqMet, *g_itemData);
                     const bool isJewel = (b.slotGroup == Core::TokenSlotGroup::Jewel);
+                    const bool isMap = (b.slotGroup == Core::TokenSlotGroup::Map);
                     if (isJewel) {
                         card.slotLabel = "주얼";
+                    } else if (isMap) {
+                        card.slotLabel = "지도";
                     }
                     json canFlags;
                     json canReasons;
@@ -814,7 +847,7 @@ namespace SkyrimPoE::Runtime
                         recPtr, b.slotGroup, b.defenseSubtype, b.weaponTag, b.isAmulet,
                         b.baseFormId, state.exileLevel, canFlags, canReasons, b.jewelColor);
                     const bool isBelt = (b.slotGroup == Core::TokenSlotGroup::Belt);
-                    const bool isRing = (!isJewel && !isBelt && (b.equipSlot == Core::EquipSlot::Ring1 || b.equipSlot == Core::EquipSlot::Ring2));
+                    const bool isRing = (!isJewel && !isBelt && !isMap && (b.equipSlot == Core::EquipSlot::Ring1 || b.equipSlot == Core::EquipSlot::Ring2));
                     bagArr.push_back(json{
                         { "baseFormId", b.baseFormId },
                         { "uniqueId", b.uniqueId },
@@ -824,11 +857,12 @@ namespace SkyrimPoE::Runtime
                         { "isRing", isRing },
                         { "isBelt", isBelt },
                         { "isJewel", isJewel },
+                        { "isMap", isMap },
                         { "jewelColor", b.jewelColor },
                         { "displayName", b.displayName },
                         { "slotIndex", static_cast<std::size_t>(b.equipSlot) },
                         { "slotGroup", static_cast<std::uint8_t>(b.slotGroup) },
-                        { "slotLabel", isJewel ? "주얼" : EquipSlotLabelKo(b.equipSlot) },
+                        { "slotLabel", isJewel ? "주얼" : (isMap ? "지도" : EquipSlotLabelKo(b.equipSlot)) },
                         { "hasPoERecord", b.hasPoERecord },
                         { "rarity", b.hasPoERecord ? RarityStr(b.record.rarity) : "normal" },
                         { "card", SerializeFormattedCard(card) },
@@ -927,6 +961,85 @@ namespace SkyrimPoE::Runtime
             }
             root["gear"] = std::move(gearJ);
 
+            // 6단계(결정 166): 지도 장치·아틀라스·4차 전직 결투장·안전 제거 탭 페이로드
+            {
+                json mapsJ;
+                const auto atlasPts = Core::MapSystem::CountAtlasTierPoints(state.atlas.completedTierMask);
+                const auto msPts = Core::MapSystem::CountMilestonePassivePoints(state.tree.ascendancyMilestonesBitmask);
+                json tierDefs = json::array();
+                for (std::uint8_t t = Core::kMinMapTier; t <= Core::kMaxMapTier; ++t) {
+                    const auto& dg = Core::MapSystem::GetMapDungeon(Core::MapSystem::DungeonIndexForTier(t));
+                    const bool done = (state.atlas.completedTierMask & static_cast<std::uint16_t>(1u << (t - 1u))) != 0u;
+                    tierDefs.push_back(json{
+                        { "tier", t },
+                        { "areaLevel", Core::MapSystem::MonsterLevelForTier(t) },
+                        { "dungeonName", dg.koName },
+                        { "theme", dg.theme },
+                        { "completed", done }
+                    });
+                }
+                mapsJ["atlas"] = json{
+                    { "completedTierMask", state.atlas.completedTierMask },
+                    { "atlasTierPoints", atlasPts },
+                    { "milestonePassivePoints", msPts },
+                    { "totalBonusPoints", atlasPts + msPts },
+                    { "totalMapsCleared", state.atlas.totalMapsCleared },
+                    { "highestTierCleared", state.atlas.highestTierCleared },
+                    { "bonusIiqPct", Core::MapSystem::AtlasBonusIiqPct(state.atlas.completedTierMask) },
+                    { "bonusIirPct", Core::MapSystem::AtlasBonusIirPct(state.atlas.completedTierMask) },
+                    { "firstTributeGiven", state.atlas.firstTributeGiven },
+                    { "tiers", std::move(tierDefs) }
+                };
+
+                const auto activeMap = MapDeviceRuntime::GetActiveMapStateCopy();
+                const auto& activeDg = Core::MapSystem::GetDungeonForState(activeMap);
+                json activeModLines = json::array();
+                for (const auto& af : activeMap.mods) {
+                    activeModLines.push_back(Core::MapSystem::FormatMapModKoreanLine(af));
+                }
+                mapsJ["active"] = json{
+                    { "active", activeMap.active },
+                    { "isArena4", activeMap.isArena4 },
+                    { "inMapCell", MapDeviceRuntime::IsPlayerInActiveMapCell() },
+                    { "bossKilled", activeMap.bossKilled },
+                    { "failed", activeMap.failed },
+                    { "tier", activeMap.tier },
+                    { "areaLevel", activeMap.active ? (activeMap.isArena4 ? Core::kArena4MonsterLevel : Core::MapSystem::MonsterLevelForTier(activeMap.tier)) : 0u },
+                    { "dungeonName", activeMap.active ? activeDg.koName : "" },
+                    { "portalsRemaining", activeMap.portalsRemaining },
+                    { "portalsTotal", activeMap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals },
+                    { "arenaPhase", activeMap.arenaPhase },
+                    { "modLines", std::move(activeModLines) },
+                    { "iiqPct", activeMap.summary.bonusIiqPct },
+                    { "iirPct", activeMap.summary.bonusIirPct },
+                    { "packSizePct", activeMap.summary.packSizePct }
+                };
+
+                mapsJ["tributeCount"] = MapDeviceRuntime::CountPlayerTributes(player);
+                mapsJ["ascendancy4Unlocked"] = (state.tree.ascendancyMilestonesBitmask & 0x8u) != 0u;
+                mapsJ["uninstallCleanupArmed"] = MapDeviceRuntime::IsUninstallCleanupArmed();
+
+                json bagMapsArr = json::array();
+                for (const auto& bm : MapDeviceRuntime::ListPlayerMaps(player)) {
+                    bagMapsArr.push_back(json{
+                        { "ownerFormId", bm.key.ownerFormId },
+                        { "uniqueId", bm.key.uniqueId },
+                        { "baseFormId", bm.baseFormId },
+                        { "tier", bm.tier },
+                        { "count", bm.count },
+                        { "tracked", bm.tracked },
+                        { "rarity", RarityStr(bm.rarity) },
+                        { "displayName", bm.displayName },
+                        { "modLines", bm.modLines },
+                        { "iiqPct", bm.summary.bonusIiqPct },
+                        { "iirPct", bm.summary.bonusIirPct },
+                        { "packSizePct", bm.summary.packSizePct }
+                    });
+                }
+                mapsJ["bagMaps"] = std::move(bagMapsArr);
+                root["maps"] = std::move(mapsJ);
+            }
+
             // C-28: 비-UTF-8 모드 아이템 이름이 있어도 패널 JSON 전체가 예외로 소실되지 않도록 대체 문자로 직렬화한다.
             return root.dump(-1, ' ', false, json::error_handler_t::replace);
         }
@@ -1002,6 +1115,7 @@ namespace SkyrimPoE::Runtime
             const std::uint32_t panelKey = g_config->panelKey;
             const std::uint32_t treeKey = g_config->treePanelKey;
             const std::uint32_t gearKey = g_config->gearPanelKey;
+            const std::uint32_t mapKey = g_config->mapPanelKey;
             const bool open = g_panelOpen.load(std::memory_order_acquire);
             const bool imeActive = open && SimpleImeBridge::TextEntryActive();
             const bool searchFocused = open && g_searchFocused.load(std::memory_order_acquire);
@@ -1064,6 +1178,16 @@ namespace SkyrimPoE::Runtime
                             UiBridge::ClosePanelOnMainThread();
                         } else {
                             SwitchTabOnMainThread(kTabGear);
+                        }
+                    });
+                } else if (code == mapKey) {
+                    g_queue->Enqueue([]() {
+                        if (!g_panelOpen.load(std::memory_order_acquire)) {
+                            OpenPanelOnMainThread(kTabMaps);
+                        } else if (g_activeTab.load(std::memory_order_acquire) == kTabMaps) {
+                            UiBridge::ClosePanelOnMainThread();
+                        } else {
+                            SwitchTabOnMainThread(kTabMaps);
                         }
                     });
                 } else if (open && code == kEscapeScanCode) {
@@ -1273,6 +1397,11 @@ namespace SkyrimPoE::Runtime
                     PushToastToJs(false, "지금은 변경할 수 없습니다.");
                     return;
                 }
+                if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                    PushToastToJs(false, "안전 제거 정리 완료 상태입니다. 저장 후 게임을 종료하세요.");
+                    PushPanelStateToJs();
+                    return;
+                }
 
                 // 5단계(결정 161): 정신력 오라/전령 ON/OFF 토글 명령
                 if (op == "toggleAura") {
@@ -1394,7 +1523,8 @@ namespace SkyrimPoE::Runtime
                                     }
                                 }
                             }
-                            treeRes = Core::PassiveTree::AllocatePath(*g_treeData, working.tree, nodes, working.exileLevel, *g_config);
+                            treeRes = Core::PassiveTree::AllocatePath(
+                                *g_treeData, working.tree, nodes, working.exileLevel, *g_config, working.atlas.completedTierMask);
                         } else if (op == "treeSelectMastery") {
                             std::int64_t mNodeVal = 0;
                             std::int64_t effVal = 0;
@@ -1407,7 +1537,7 @@ namespace SkyrimPoE::Runtime
                                 *g_treeData, working.tree,
                                 static_cast<std::uint32_t>(mNodeVal),
                                 static_cast<std::uint32_t>(effVal),
-                                working.exileLevel, *g_config, availOrbs);
+                                working.exileLevel, *g_config, availOrbs, working.atlas.completedTierMask);
                         } else {
                             treeRes = { false, "지원하지 않는 패시브 트리 명령입니다.", 0, 0 };
                             return;
@@ -1423,7 +1553,7 @@ namespace SkyrimPoE::Runtime
                             return;
                         }
                         const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                            *g_treeData, working.tree, working.exileLevel, *g_config);
+                            *g_treeData, working.tree, working.exileLevel, *g_config, working.atlas.completedTierMask);
                         const auto nextUnalloc = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
                         // C-30: 상태 전체 덮어쓰기 대신 트리 관련 필드만 병합해 동시 변경 유실을 차단한다.
                         SaveLoad::UpdateState([&](PersistentState& cur) {
@@ -1454,7 +1584,7 @@ namespace SkyrimPoE::Runtime
                         std::int64_t slotGroupVal = 0;
                         std::int64_t rarityVal = 0;
                         if (!ReadBoundedInt(cmd, "tier", 1, 5, tierVal) ||
-                            !ReadBoundedInt(cmd, "slotGroup", 0, static_cast<std::int64_t>(Core::kTokenSlotGroupCount - 1), slotGroupVal)) {
+                            !ReadBoundedInt(cmd, "slotGroup", 0, static_cast<std::int64_t>(Core::kDroppableTokenSlotGroupCount - 1), slotGroupVal)) {
                             craftRes = { false, "잘못된 봉인 토큰 정보입니다." };
                         } else {
                             Core::ItemRarity rar = Core::ItemRarity::Magic;
@@ -1564,6 +1694,53 @@ namespace SkyrimPoE::Runtime
 
                     PushToastToJs(craftRes.ok, craftRes.message);
                     PushPanelStateToJs();
+                    return;
+                }
+
+                // 6단계(결정 166): 지도 장치·4차 결투장·안전 제거 탭 명령 분기
+                if (op.starts_with("map")) {
+                    MapActionResult mapRes{};
+                    bool closeOnSuccess = false;
+                    if (op == "mapOpen") {
+                        std::int64_t baseFormVal = 0;
+                        std::int64_t ownerVal = 0;
+                        std::int64_t uidVal = 0;
+                        if (!ReadBoundedInt(cmd, "baseFormId", 1, 0xFFFFFFFFLL, baseFormVal) ||
+                            !ReadBoundedInt(cmd, "ownerFormId", 0, 0xFFFFFFFFLL, ownerVal) ||
+                            !ReadBoundedInt(cmd, "uniqueId", 0, 0xFFFFLL, uidVal)) {
+                            mapRes = { false, "잘못된 지도 개방 요청입니다." };
+                        } else {
+                            const Core::InventoryItemKey mKey{
+                                static_cast<std::uint32_t>(ownerVal),
+                                static_cast<std::uint16_t>(uidVal)
+                            };
+                            mapRes = MapDeviceRuntime::OpenNormalMap(
+                                player, mKey, static_cast<RE::FormID>(baseFormVal));
+                            closeOnSuccess = true;
+                        }
+                    } else if (op == "mapOpenArena4") {
+                        mapRes = MapDeviceRuntime::OpenArena4(player);
+                        closeOnSuccess = true;
+                    } else if (op == "mapReenter") {
+                        mapRes = MapDeviceRuntime::ReenterActiveMap(player);
+                        closeOnSuccess = true;
+                    } else if (op == "mapReturnPortal") {
+                        mapRes = MapDeviceRuntime::ReturnPortal(player);
+                        closeOnSuccess = true;
+                    } else if (op == "mapAbandon") {
+                        mapRes = MapDeviceRuntime::AbandonActiveMap(player);
+                    } else if (op == "mapSafeUninstall") {
+                        mapRes = MapDeviceRuntime::RunSafeUninstallCleanup(player);
+                    } else {
+                        mapRes = { false, "지원하지 않는 지도 장치 명령입니다." };
+                    }
+
+                    PushToastToJs(mapRes.ok, mapRes.message);
+                    if (mapRes.ok && closeOnSuccess) {
+                        UiBridge::ClosePanelOnMainThread();
+                    } else {
+                        PushPanelStateToJs();
+                    }
                     return;
                 }
 
@@ -1897,7 +2074,8 @@ namespace SkyrimPoE::Runtime
         const int esMax = static_cast<int>(std::llround(es.max));
         const auto reqXp = Core::KillTracker::RequiredXpForNextExileLevel(state.exileLevel, *g_config);
         const std::int32_t availPts = (g_treeData && g_treeData->IsLoaded())
-            ? std::max<std::int32_t>(0, Core::PassiveTree::ComputeAvailableNormalPoints(*g_treeData, state.tree, state.exileLevel, *g_config))
+            ? std::max<std::int32_t>(0, Core::PassiveTree::ComputeAvailableNormalPoints(
+                  *g_treeData, state.tree, state.exileLevel, *g_config, state.atlas.completedTierMask))
             : static_cast<std::int32_t>(state.unallocatedPassivePoints);
         const std::uint32_t spiritRes = snap ? snap->reservedSpirit : 0u;
         const std::uint32_t spiritMax = snap ? snap->maxSpirit : g_config->spiritBase;
@@ -1916,6 +2094,18 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        const auto activeMapHud = MapDeviceRuntime::GetActiveMapStateCopy();
+        const bool mapActive = activeMapHud.active;
+        const bool mapIsArena4 = activeMapHud.active && activeMapHud.isArena4;
+        const bool mapInCell = MapDeviceRuntime::IsPlayerInActiveMapCell();
+        const bool mapBossKilled = activeMapHud.active && activeMapHud.bossKilled;
+        const std::uint8_t mapTier = activeMapHud.active ? activeMapHud.tier : 0u;
+        const std::uint8_t mapPortalsRem = activeMapHud.active ? activeMapHud.portalsRemaining : 0u;
+        const std::uint8_t mapArenaPhase = activeMapHud.active ? activeMapHud.arenaPhase : 1u;
+        const std::uint32_t mapAreaLevel = activeMapHud.active
+            ? (activeMapHud.isArena4 ? Core::kArena4MonsterLevel : Core::MapSystem::MonsterLevelForTier(activeMapHud.tier))
+            : 0u;
+
         if (!g_lastHud.valid ||
             g_lastHud.esCurrent != esCur ||
             g_lastHud.esMax != esMax ||
@@ -1931,7 +2121,15 @@ namespace SkyrimPoE::Runtime
             g_lastHud.charmUnlocked != charmUnlocked ||
             g_lastHud.charmActiveMask != charmBonuses.activeMask ||
             g_lastHud.charmCharges != charmCharges ||
-            g_lastHud.charmKinds != charmKinds) {
+            g_lastHud.charmKinds != charmKinds ||
+            g_lastHud.mapActive != mapActive ||
+            g_lastHud.mapIsArena4 != mapIsArena4 ||
+            g_lastHud.mapInCell != mapInCell ||
+            g_lastHud.mapBossKilled != mapBossKilled ||
+            g_lastHud.mapTier != mapTier ||
+            g_lastHud.mapPortalsRem != mapPortalsRem ||
+            g_lastHud.mapArenaPhase != mapArenaPhase ||
+            g_lastHud.mapAreaLevel != mapAreaLevel) {
             g_lastHud.valid = true;
             g_lastHud.esCurrent = esCur;
             g_lastHud.esMax = esMax;
@@ -1948,6 +2146,14 @@ namespace SkyrimPoE::Runtime
             g_lastHud.charmActiveMask = charmBonuses.activeMask;
             g_lastHud.charmCharges = charmCharges;
             g_lastHud.charmKinds = charmKinds;
+            g_lastHud.mapActive = mapActive;
+            g_lastHud.mapIsArena4 = mapIsArena4;
+            g_lastHud.mapInCell = mapInCell;
+            g_lastHud.mapBossKilled = mapBossKilled;
+            g_lastHud.mapTier = mapTier;
+            g_lastHud.mapPortalsRem = mapPortalsRem;
+            g_lastHud.mapArenaPhase = mapArenaPhase;
+            g_lastHud.mapAreaLevel = mapAreaLevel;
 
             json charmArr = json::array();
             for (std::size_t ci = 0; ci < charmUnlocked && ci < Core::kMaxCharmSlots; ++ci) {
@@ -1977,7 +2183,16 @@ namespace SkyrimPoE::Runtime
                 { "guardShield", guardCur },
                 { "guardMax", guardMax },
                 { "hhStacks", hhStacks },
-                { "charms", std::move(charmArr) }
+                { "charms", std::move(charmArr) },
+                { "mapActive", mapActive },
+                { "mapIsArena4", mapIsArena4 },
+                { "mapInCell", mapInCell },
+                { "mapBossKilled", mapBossKilled },
+                { "mapTier", mapTier },
+                { "mapPortalsRemaining", mapPortalsRem },
+                { "mapPortalsTotal", mapIsArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals },
+                { "mapArenaPhase", mapArenaPhase },
+                { "mapAreaLevel", mapAreaLevel }
             };
             const std::string payload = hud.dump(-1, ' ', false, json::error_handler_t::replace);
             g_api->InteropCall(g_view, kJsUpdateHud, payload.c_str());

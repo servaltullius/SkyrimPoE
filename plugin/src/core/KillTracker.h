@@ -68,7 +68,8 @@ namespace SkyrimPoE::Core
             bool isDragon,
             std::uint32_t currentExileLevel,
             const Config& config,
-            bool fallbackExcluded = false);
+            bool fallbackExcluded = false,
+            std::uint32_t overrideEffectiveMonsterLevel = 0);
 
         // TESResetEvent: 부활/리스폰된 액터의 새 삶 시작(결정 113).
         void OnActorReset(std::uint32_t actorFormId);

@@ -108,7 +108,8 @@ namespace SkyrimPoE::Core
         bool isDragon,
         std::uint32_t currentExileLevel,
         const Config& config,
-        bool fallbackExcluded)
+        bool fallbackExcluded,
+        std::uint32_t overrideEffectiveMonsterLevel)
     {
         KillRewardResult res;
         if (actorFormId == 0) {
@@ -144,8 +145,10 @@ namespace SkyrimPoE::Core
         }
 
         const std::uint32_t lv = std::clamp<std::uint32_t>(currentExileLevel, 1, kMaxExileLevel);
-        res.effectiveMonsterLevel = ComputeEffectiveMonsterLevel(
-            lv, enemySkyrimLevel, playerSkyrimLevel, isBoss, isDragon, config);
+        res.effectiveMonsterLevel = (overrideEffectiveMonsterLevel > 0u)
+            ? std::clamp<std::uint32_t>(overrideEffectiveMonsterLevel, 1, kMaxExileLevel)
+            : ComputeEffectiveMonsterLevel(
+                  lv, enemySkyrimLevel, playerSkyrimLevel, isBoss, isDragon, config);
         res.xpMultiplier = ComputeLevelDiffXpMultiplier(lv, res.effectiveMonsterLevel, config);
 
         const double rawXp = std::max(0.0, config.baseKillXp) * res.xpMultiplier;

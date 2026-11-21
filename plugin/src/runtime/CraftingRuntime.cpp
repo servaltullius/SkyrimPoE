@@ -7,6 +7,7 @@
 #include "runtime/UniqueIdUtil.h"
 
 #include "core/ItemCrafting.h"
+#include "core/MapSystem.h"
 
 #include <algorithm>
 #include <array>
@@ -427,7 +428,7 @@ namespace SkyrimPoE::Runtime
         const RE::FormID playerId = player->GetFormID();
         const auto savedState = SaveLoad::GetStateCopy();
 
-        // 검수 m4 + 5단계: WEAP/ARMO + SkyrimPoE.esp 벨트/주얼 MISC만 제작 대상으로 열거
+        // 검수 m4 + 5~6단계: WEAP/ARMO + SkyrimPoE.esp 벨트/주얼/지도 MISC만 제작 대상으로 열거
         const auto inv = player->GetInventory([](RE::TESBoundObject& obj) {
             if (obj.Is(RE::FormType::Weapon) || obj.Is(RE::FormType::Armor)) {
                 return true;
@@ -435,7 +436,8 @@ namespace SkyrimPoE::Runtime
             if (obj.Is(RE::FormType::Misc)) {
                 const auto localId = FormIds::ResolveLocalFormIdIfOurs(obj.GetFormID());
                 return localId != 0 && (FormIds::IsBeltBaseLocalFormId(localId) ||
-                    FormIds::JewelColorFromLocalFormId(localId).has_value());
+                    FormIds::JewelColorFromLocalFormId(localId).has_value() ||
+                    FormIds::IsMapItemLocalFormId(localId));
             }
             return false;
         });
@@ -485,6 +487,9 @@ namespace SkyrimPoE::Runtime
                     eqSlot = Core::EquipSlot::Belt;  // 주얼은 장비 슬롯 비귀속(slotGroup=Jewel로 판별)
                     slotGroup = Core::TokenSlotGroup::Jewel;
                     jewelColor = *jColor;
+                } else if (FormIds::IsMapItemLocalFormId(localId)) {
+                    eqSlot = Core::EquipSlot::Belt;  // 지도는 장비 슬롯 비귀속(slotGroup=Map으로 판별)
+                    slotGroup = Core::TokenSlotGroup::Map;
                 } else {
                     continue;
                 }
@@ -843,6 +848,7 @@ namespace SkyrimPoE::Runtime
         Core::DefenseSubtype defSub = Core::DefenseSubtype::None;
         bool isAmulet = false;
         std::uint8_t jewelColor = 0;
+        std::uint8_t mapTier = 0;
         const Core::BeltBaseDef* beltDef = nullptr;
         std::string wTag;
         if (weap) {
@@ -867,6 +873,9 @@ namespace SkyrimPoE::Runtime
             } else if (const auto jColor = FormIds::JewelColorFromLocalFormId(localId); jColor.has_value()) {
                 slotGroup = Core::TokenSlotGroup::Jewel;
                 jewelColor = *jColor;
+            } else if (const auto mTier = FormIds::MapTierFromLocalFormId(localId); mTier.has_value()) {
+                slotGroup = Core::TokenSlotGroup::Map;
+                mapTier = *mTier;
             } else {
                 res.message = "PoE 어픽스를 부여할 수 없는 일반 소지품입니다.";
                 return res;
@@ -914,14 +923,21 @@ namespace SkyrimPoE::Runtime
             }
 
             const auto st = SaveLoad::GetStateCopy();
+            const std::uint32_t defaultItemLevel = (slotGroup == Core::TokenSlotGroup::Map && mapTier > 0)
+                ? Core::MapSystem::MonsterLevelForTier(mapTier)
+                : std::clamp<std::uint32_t>(st.exileLevel, 1, Core::kMaxExileLevel);
             Core::PoEItemRecord working;
             if (existingKey.IsValid()) {
                 if (const auto found = ItemTracker::FindByKey(existingKey)) {
                     working = *found;
+                    if (slotGroup == Core::TokenSlotGroup::Map && mapTier > 0) {
+                        working.slotGroup = Core::TokenSlotGroup::Map;
+                        working.itemLevel = defaultItemLevel;
+                    }
                 } else {
                     working.baseFormId = baseFormId;
                     working.rarity = Core::ItemRarity::Normal;
-                    working.itemLevel = std::clamp<std::uint32_t>(st.exileLevel, 1, Core::kMaxExileLevel);
+                    working.itemLevel = defaultItemLevel;
                     working.slotGroup = slotGroup;
                     working.defenseSubtype = defSub;
                     working.isAmulet = isAmulet;
@@ -931,7 +947,7 @@ namespace SkyrimPoE::Runtime
             } else {
                 working.baseFormId = baseFormId;
                 working.rarity = Core::ItemRarity::Normal;
-                working.itemLevel = std::clamp<std::uint32_t>(st.exileLevel, 1, Core::kMaxExileLevel);
+                working.itemLevel = defaultItemLevel;
                 working.slotGroup = slotGroup;
                 working.defenseSubtype = defSub;
                 working.isAmulet = isAmulet;
@@ -1069,7 +1085,8 @@ namespace SkyrimPoE::Runtime
             const auto availOrbs = static_cast<std::uint32_t>(std::max<std::int32_t>(
                 0, CountCurrency(player, Core::CurrencyKind::Regret)));
             PersistentState working = SaveLoad::GetStateCopy();
-            res = Core::PassiveTree::RefundNode(*g_treeData, working.tree, nodeId, working.exileLevel, *g_config, availOrbs);
+            res = Core::PassiveTree::RefundNode(
+                *g_treeData, working.tree, nodeId, working.exileLevel, *g_config, availOrbs, working.atlas.completedTierMask);
             if (!res.ok) {
                 return;
             }
@@ -1087,7 +1104,7 @@ namespace SkyrimPoE::Runtime
                 }
             }
             const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                *g_treeData, working.tree, working.exileLevel, *g_config);
+                *g_treeData, working.tree, working.exileLevel, *g_config, working.atlas.completedTierMask);
             const auto newUnalloc = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
             // C-30: 트리·주얼·미배분 포인트만 필드 단위로 병합
             SaveLoad::UpdateState([&](PersistentState& st) {
@@ -1116,7 +1133,8 @@ namespace SkyrimPoE::Runtime
             const auto availOrbs = static_cast<std::uint32_t>(std::max<std::int32_t>(
                 0, CountCurrency(player, Core::CurrencyKind::Regret)));
             PersistentState working = SaveLoad::GetStateCopy();
-            res = Core::PassiveTree::RefundAll(*g_treeData, working.tree, ascendancyOnly, working.exileLevel, *g_config, availOrbs);
+            res = Core::PassiveTree::RefundAll(
+                *g_treeData, working.tree, ascendancyOnly, working.exileLevel, *g_config, availOrbs, working.atlas.completedTierMask);
             if (!res.ok) {
                 return;
             }
@@ -1139,7 +1157,7 @@ namespace SkyrimPoE::Runtime
                 }
             }
             const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                *g_treeData, working.tree, working.exileLevel, *g_config);
+                *g_treeData, working.tree, working.exileLevel, *g_config, working.atlas.completedTierMask);
             const auto newUnalloc = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
             // C-30: 트리·주얼·미배분 포인트만 필드 단위로 병합
             SaveLoad::UpdateState([&](PersistentState& st) {
@@ -1171,7 +1189,7 @@ namespace SkyrimPoE::Runtime
                 0, CountCurrency(player, Core::CurrencyKind::Regret)));
             PersistentState working = SaveLoad::GetStateCopy();
             res = Core::PassiveTree::SelectMastery(
-                *g_treeData, working.tree, masteryNodeId, effectId, working.exileLevel, *g_config, availOrbs);
+                *g_treeData, working.tree, masteryNodeId, effectId, working.exileLevel, *g_config, availOrbs, working.atlas.completedTierMask);
             if (!res.ok) {
                 return;
             }
@@ -1181,7 +1199,7 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                *g_treeData, working.tree, working.exileLevel, *g_config);
+                *g_treeData, working.tree, working.exileLevel, *g_config, working.atlas.completedTierMask);
             const auto newUnalloc = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
             // C-30: 트리·주얼·미배분 포인트만 필드 단위로 병합
             SaveLoad::UpdateState([&](PersistentState& st) {
@@ -1643,7 +1661,7 @@ namespace SkyrimPoE::Runtime
                 const std::uint32_t maxSpirit = snap
                     ? snap->maxSpirit
                     : static_cast<std::uint32_t>((g_config ? g_config->spiritBase : 100u) +
-                        std::popcount(static_cast<std::uint32_t>(working.tree.ascendancyMilestonesBitmask & 0x7u)) *
+                        std::popcount(static_cast<std::uint32_t>(working.tree.ascendancyMilestonesBitmask & 0xFu)) *
                             (g_config ? g_config->spiritPerMilestone : 30u));
 
                 // 동일 gemId 중복 발동은 이미 예약된 것으로 취급, 요구치 미달 비활성 오라는 제외

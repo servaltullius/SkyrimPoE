@@ -4,6 +4,7 @@
   const hudSpiritChip = document.getElementById("hud-spirit-chip");
   const hudGuardChip = document.getElementById("hud-guard-chip");
   const hudHhChip = document.getElementById("hud-hh-chip");
+  const hudMapChip = document.getElementById("hud-map-chip");
   const hudCharmsRow = document.getElementById("hud-charms-row");
   const hudEsRow = document.getElementById("hud-es-row");
   const hudEsText = document.getElementById("hud-es-text");
@@ -20,9 +21,11 @@
   const tabBtnSkills = document.getElementById("tab-btn-skills");
   const tabBtnTree = document.getElementById("tab-btn-tree");
   const tabBtnGear = document.getElementById("tab-btn-gear");
+  const tabBtnMaps = document.getElementById("tab-btn-maps");
   const tabPanelSkills = document.getElementById("tab-panel-skills");
   const tabPanelTree = document.getElementById("tab-panel-tree");
   const tabPanelGear = document.getElementById("tab-panel-gear");
+  const tabPanelMaps = document.getElementById("tab-panel-maps");
   const targetIndicator = document.getElementById("target-indicator");
   const slotsList = document.getElementById("slots-list");
   const inventoryList = document.getElementById("inventory-list");
@@ -48,24 +51,30 @@
   }
 
   function applyActiveTab(tab) {
-    activeTab = tab === "tree" ? "tree" : (tab === "gear" ? "gear" : "skills");
+    activeTab = tab === "tree" ? "tree" : (tab === "gear" ? "gear" : (tab === "maps" ? "maps" : "skills"));
     const isSkills = activeTab === "skills";
     const isTree = activeTab === "tree";
     const isGear = activeTab === "gear";
+    const isMaps = activeTab === "maps";
     const visible = !panelBackdrop.classList.contains("hidden");
 
     tabBtnSkills.classList.toggle("active", isSkills);
     tabBtnTree.classList.toggle("active", isTree);
     if (tabBtnGear) tabBtnGear.classList.toggle("active", isGear);
+    if (tabBtnMaps) tabBtnMaps.classList.toggle("active", isMaps);
     tabPanelSkills.classList.toggle("hidden", !isSkills);
     tabPanelTree.classList.toggle("hidden", !isTree);
     if (tabPanelGear) tabPanelGear.classList.toggle("hidden", !isGear);
+    if (tabPanelMaps) tabPanelMaps.classList.toggle("hidden", !isMaps);
 
     if (window.poeTreeModule && typeof window.poeTreeModule.setActive === "function") {
       window.poeTreeModule.setActive(isTree && visible);
     }
     if (window.poeGearModule && typeof window.poeGearModule.setActive === "function") {
       window.poeGearModule.setActive(isGear && visible);
+    }
+    if (window.poeMapsModule && typeof window.poeMapsModule.setActive === "function") {
+      window.poeMapsModule.setActive(isMaps && visible);
     }
   }
 
@@ -86,6 +95,14 @@
       lastManualTabSwitchAt = Date.now();
       applyActiveTab("gear");
       sendCommand({ op: "switchTab", tab: "gear" });
+    };
+  }
+
+  if (tabBtnMaps) {
+    tabBtnMaps.onclick = () => {
+      lastManualTabSwitchAt = Date.now();
+      applyActiveTab("maps");
+      sendCommand({ op: "switchTab", tab: "maps" });
     };
   }
 
@@ -531,6 +548,20 @@
           hudHhChip.classList.add("hidden");
         }
       }
+      if (hudMapChip) {
+        if (h.mapActive) {
+          if (h.mapIsArena4) {
+            const st = h.mapBossKilled ? "정복" : `P${Number(h.mapArenaPhase || 1)}`;
+            hudMapChip.textContent = `4차 결투장 Lv.${Number(h.mapAreaLevel || 75)} · ${st}`;
+          } else {
+            const st = h.mapBossKilled ? "보스 처치" : `포털 ${Number(h.mapPortalsRemaining || 0)}/${Number(h.mapPortalsTotal || 6)}`;
+            hudMapChip.textContent = `지도 T${Number(h.mapTier || 1)} Lv.${Number(h.mapAreaLevel || 68)} · ${st}`;
+          }
+          hudMapChip.classList.remove("hidden");
+        } else {
+          hudMapChip.classList.add("hidden");
+        }
+      }
       if (hudCharmsRow) {
         const charms = Array.isArray(h.charms) ? h.charms : [];
         hudCharmsRow.textContent = "";
@@ -574,6 +605,9 @@
       if (window.poeGearModule && typeof window.poeGearModule.updateState === "function") {
         window.poeGearModule.updateState(data);
       }
+      if (window.poeMapsModule && typeof window.poeMapsModule.updateState === "function") {
+        window.poeMapsModule.updateState(data);
+      }
     } catch (err) {
       // C-31: 렌더/파싱 예외를 삼키지 않고 사용자에게 오류 토스트 노출
       showToast(false, `패널 갱신 오류: ${err && err.message ? err.message : "알 수 없는 오류"}`);
@@ -613,6 +647,9 @@
     }
     if (window.poeGearModule && typeof window.poeGearModule.onPanelClose === "function") {
       window.poeGearModule.onPanelClose();
+    }
+    if (window.poeMapsModule && typeof window.poeMapsModule.onPanelClose === "function") {
+      window.poeMapsModule.onPanelClose();
     }
   };
 

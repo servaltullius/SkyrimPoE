@@ -49,6 +49,7 @@ add_library(skyrimpoe_core STATIC
     src/core/AilmentSystem.cpp
     src/core/MonsterModSystem.cpp
     src/core/WorldStampLink.cpp
+    src/core/MapSystem.cpp
 )
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
@@ -82,6 +83,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/runtime/WorldDropTracker.cpp
         src/runtime/SaveLoad.cpp
         src/runtime/SkillExecution.cpp
+        src/runtime/MapDeviceRuntime.cpp
         src/runtime/MonsterRuntime.cpp
         src/runtime/AilmentRuntime.cpp
         src/runtime/ProjectileRuntime.cpp
@@ -115,6 +117,7 @@ add_executable(skyrimpoe_tests
     tests/test_items.cpp
     tests/test_stage5.cpp
     tests/test_world_stamp_link.cpp
+    tests/test_stage6.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE
@@ -172,6 +175,9 @@ add_custom_target(package_mod
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${POE_UI_DIR}/gear.js"
         "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/gear.js"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_UI_DIR}/maps.js"
+        "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/maps.js"
     COMMAND "${Python3_EXECUTABLE}" "${POE_OAR_PACKAGER}" --package-dir "${POE_PACKAGE_DIR}"
     DEPENDS SkyrimPoE
     VERBATIM

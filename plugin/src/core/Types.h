@@ -25,7 +25,7 @@ namespace SkyrimPoE::Core
         std::unordered_map<std::uint32_t, std::uint32_t> masterySelections;  // masteryNodeId -> effectId
         std::uint32_t bossKillCount = 0;
         std::uint32_t dragonKillCount = 0;
-        std::uint32_t ascendancyMilestonesBitmask = 0;  // bit 0..2 = 1~3차 보스 이정표(각 +2점)
+        std::uint32_t ascendancyMilestonesBitmask = 0;  // bit 0..3 = 1~4차 보스·결투장 이정표(각 전직 +2, 패시브 +2, 정신력 +30)
 
         [[nodiscard]] bool IsAllocated(std::uint32_t nodeId) const noexcept
         {
@@ -253,5 +253,10 @@ namespace SkyrimPoE::Core
         double rareMonsterChance = 0.04;
         double uniqueDropChance = 0.04;
         double monsterEsRatio = 0.35;
+
+        // [Maps] (6단계: 결정 166)
+        std::uint32_t mapPanelKey = 0x16;        // U (controlmap.txt 비충돌)
+        bool mapDeathInterceptEnabled = true;    // 지도 인스턴스 내 치명타 클램프 귀환 (타 사망 대체 모드 병존 토글)
+        std::uint32_t mapBasePackCount = 3;      // 무리 앵커당 기본 스폰 수 (PackSize로 스케일)
     };
 }

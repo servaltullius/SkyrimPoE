@@ -1155,3 +1155,220 @@ html, body {
   display: flex;
   justify-content: flex-end;
 }
+
+/* 6단계: 지도 장치 · 아틀라스 · 4차 전직 · 안전 제거 (결정 166) */
+.hud-chip-map {
+  background: rgba(68, 42, 108, 0.88);
+  border-color: rgba(182, 134, 248, 0.72);
+  color: #ead8ff;
+}
+
+.maps-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 320px 1fr 340px;
+  gap: 12px;
+  padding: 12px 16px 14px;
+  overflow: hidden;
+}
+
+.maps-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.maps-block-active,
+.maps-block-arena4,
+.maps-block-uninstall {
+  flex-shrink: 0;
+}
+
+.maps-block-atlas,
+.maps-block-bag {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.maps-desc {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #bcb09b;
+}
+
+.maps-active-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: #e9dec7;
+  margin-bottom: 8px;
+}
+
+.maps-active-mod-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: rgba(18, 16, 24, 0.85);
+  border: 1px solid rgba(154, 122, 68, 0.35);
+  border-radius: 4px;
+  font-size: 11px;
+  color: #b7d3ff;
+}
+
+.maps-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.maps-arena4-status {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: #f0c96f;
+}
+
+.maps-arena4-status.done {
+  color: #8ee8a7;
+}
+
+.maps-atlas-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: #dfd2ba;
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  background: rgba(20, 18, 26, 0.85);
+  border: 1px solid rgba(160, 128, 70, 0.35);
+  border-radius: 4px;
+}
+
+.atlas-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.atlas-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 8px;
+  background: rgba(24, 21, 31, 0.9);
+  border: 1px solid rgba(130, 114, 88, 0.38);
+  border-radius: 5px;
+  color: #cbbda6;
+}
+
+.atlas-tile.done {
+  background: rgba(34, 62, 46, 0.78);
+  border-color: #69c987;
+  color: #e4ffe9;
+}
+
+.atlas-tile-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.atlas-tile-name {
+  font-size: 11px;
+  color: #efe2ca;
+}
+
+.atlas-tile-sub {
+  font-size: 10px;
+  color: #a99d87;
+}
+
+.maps-bag-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.map-bag-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: rgba(24, 21, 31, 0.92);
+  border: 1px solid rgba(160, 128, 70, 0.42);
+  border-radius: 5px;
+}
+
+.map-bag-card.rarity-magic {
+  border-color: #6ea3ff;
+}
+
+.map-bag-card.rarity-rare {
+  border-color: #f3c85b;
+}
+
+.map-bag-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+
+.map-bag-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f4e6cc;
+}
+
+.map-bag-card.rarity-magic .map-bag-title {
+  color: #9dc2ff;
+}
+
+.map-bag-card.rarity-rare .map-bag-title {
+  color: #ffe285;
+}
+
+.map-bag-bonus {
+  font-size: 11px;
+  color: #9ce6ff;
+}
+
+.map-bag-mods {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #c2d4f4;
+}
+
+.btn-primary {
+  background: linear-gradient(180deg, rgba(162, 114, 42, 0.92), rgba(114, 74, 24, 0.95));
+  border-color: #f0c96f;
+  color: #fff6e0;
+  font-weight: 700;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(196, 140, 54, 0.96), rgba(138, 92, 30, 0.98));
+}

@@ -5,6 +5,7 @@
 #include "core/DataPack.h"
 #include "core/ItemData.h"
 #include "core/ItemTypes.h"
+#include "core/MapTypes.h"
 #include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
@@ -41,6 +42,9 @@ namespace SkyrimPoE::Runtime
         std::array<Core::CharmSlotState, Core::kMaxCharmSlots> charmSlots{};
         std::unordered_map<std::uint32_t, Core::PoEItemRecord> socketedJewels;
 
+        // 6단계(결정 166): 아틀라스 영구 진행 상태(T1~T16 첫 클리어 +16 패시브, 첫 공물 지급)
+        Core::AtlasState atlas{};
+
         PersistentState()
         {
             for (std::size_t i = 0; i < slots.size(); ++i) {
@@ -63,6 +67,7 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kRecordSpirit = 'SPRT';
         static constexpr std::uint32_t kRecordGear = 'GEAR';
         static constexpr std::uint32_t kRecordSpeedMods = 'SPDM';
+        static constexpr std::uint32_t kRecordMaps = 'MAPS';
         static constexpr std::uint32_t kCoreVersion = 2;
         static constexpr std::uint32_t kGemKeysVersion = 1;
         static constexpr std::uint32_t kTreeVersion = 1;
@@ -71,6 +76,7 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kSpiritVersion = 1;
         static constexpr std::uint32_t kGearVersion = 1;
         static constexpr std::uint32_t kSpeedModsVersion = 1;
+        static constexpr std::uint32_t kMapsVersion = 1;
 
         static bool Install(
             Core::CommandQueue* queue,
@@ -92,5 +98,7 @@ namespace SkyrimPoE::Runtime
         static void AddRevertCallback(std::function<void()> cb);
         static void SyncStateToStatEngine();
         static void PersistCharmSlotsFromSystem();
+        // 6단계 안전 제거 정리용: 미원복 SPDM 대기열 NPC SpeedMult 즉시 원복
+        static void RevertAllPendingSpeedModsNow();
     };
 }

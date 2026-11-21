@@ -48,7 +48,8 @@ namespace SkyrimPoE::Core
             const PassiveTreeData& data,
             const PassiveTreeState& state,
             std::uint32_t exileLevel,
-            const Config& config) noexcept;
+            const Config& config,
+            std::uint16_t atlasCompletedTierMask = 0) noexcept;
 
         [[nodiscard]] static std::int32_t ComputeAvailableAscendancyPoints(
             const PassiveTreeData& data,
@@ -91,7 +92,8 @@ namespace SkyrimPoE::Core
             PassiveTreeState& state,
             const std::vector<std::uint32_t>& nodeIds,
             std::uint32_t exileLevel,
-            const Config& config);
+            const Config& config,
+            std::uint16_t atlasCompletedTierMask = 0);
 
         // 4단계(결정 152, 158): 후회의 오브 필요 비용 조회(FreePassiveRefund=true면 0)
         [[nodiscard]] static std::uint32_t GetRefundNodeCost(
@@ -120,7 +122,8 @@ namespace SkyrimPoE::Core
             std::uint32_t effectId,
             std::uint32_t exileLevel,
             const Config& config,
-            std::uint32_t availableRegretOrbs = 0);
+            std::uint32_t availableRegretOrbs = 0,
+            std::uint16_t atlasCompletedTierMask = 0);
 
         // 단일 노드 또는 마스터리 회수 (연결성 BFS + 근거 주요 패시브 상실 마스터리 자동 회수 + grantedPts 검증)
         static PassiveTreeOpResult RefundNode(
@@ -129,7 +132,8 @@ namespace SkyrimPoE::Core
             std::uint32_t nodeId,
             std::uint32_t exileLevel,
             const Config& config,
-            std::uint32_t availableRegretOrbs = 0);
+            std::uint32_t availableRegretOrbs = 0,
+            std::uint16_t atlasCompletedTierMask = 0);
 
         // 전체 회수 또는 전직만 회수 (ascendancyOnly=true 시 일반 트리 연결성과 포인트 잔액 검증)
         static PassiveTreeOpResult RefundAll(
@@ -138,7 +142,8 @@ namespace SkyrimPoE::Core
             bool ascendancyOnly,
             std::uint32_t exileLevel,
             const Config& config,
-            std::uint32_t availableRegretOrbs = 0);
+            std::uint32_t availableRegretOrbs = 0,
+            std::uint16_t atlasCompletedTierMask = 0);
 
         // 코세이브 로드 후 미존재 노드·중복 마스터리·단절 노드 정리
         static void SanitizeLoadedState(
