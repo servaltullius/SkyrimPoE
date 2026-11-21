@@ -248,6 +248,7 @@ namespace
             Runtime::WorldDropTracker::Tick(dt, paused);
             Runtime::MonsterRuntime::Tick(dt, paused);
             Runtime::AilmentRuntime::Tick(dt, paused);
+            Runtime::SaveLoad::RetryPendingSpeedReverts(dt, paused);
             Runtime::ProjectileRuntime::Tick(dt, paused);
             Runtime::ProxySpellRuntime::Tick(dt, paused);
             Runtime::CombatHooks::TickPlayerPools(dt, paused);

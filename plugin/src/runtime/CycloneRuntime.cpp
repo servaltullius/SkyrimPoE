@@ -410,7 +410,8 @@ namespace SkyrimPoE::Runtime
                     }
                     // 5단계(결정 163): 사이클론 타격 시 원소·출혈·중독 상태이상 적용
                     (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        target.get(), cycStats.baseHitDamage, isCrit, cycStats.igniteChancePct, snap.starforgeShock);
+                        target.get(), cycStats.baseHitDamage, isCrit, AilmentRuntime::HitKind::Attack,
+                        cycStats.igniteChancePct, snap.starforgeShock);
                 }
 
                 // M7 치명타 시 시전(CoC): 실제 체력 감소 > 0이고 치명타였으면(치명타 처치 포함, 결정 129) 즉시 발동 판정
@@ -501,6 +502,7 @@ namespace SkyrimPoE::Runtime
                                             if (t && !t->IsDead()) {
                                                 (void)AilmentRuntime::ApplyPlayerHitAilments(
                                                     t.get(), castCopy.poeBaseHitDamage, spellCrit,
+                                                    AilmentRuntime::HitKind::Spell,
                                                     castCopy.igniteChancePct, castCopy.starforgeShock);
                                             }
                                         }

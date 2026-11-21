@@ -310,6 +310,7 @@ namespace SkyrimPoE::Runtime
                     // N-1: 바닐라 근접·활 타격(사이클론 제외)도 상태이상(출혈·중독·Starforge 감전 등) 경로에 연결
                     if (!t_cycloneCtx.active && g_queue && snap &&
                         (snap->bleedChancePct > 0.0 || snap->poisonChancePct > 0.0 ||
+                         snap->attackPoisonChancePct > 0.0 || snap->attackIgniteChancePct > 0.0 ||
                          snap->igniteChancePct > 0.0 || snap->freezeChancePct > 0.0 ||
                          snap->shockChancePct > 0.0 || snap->starforgeShock)) {
                         const bool isHitCrit = hit->flags.any(RE::HitData::Flag::kCritical);
@@ -326,7 +327,8 @@ namespace SkyrimPoE::Runtime
                             const double estPoePhys = rawHitDmg * (monLife / 100.0);
                             Core::DamagePacket pkt{};
                             pkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { estPoePhys, estPoePhys };
-                            (void)AilmentRuntime::ApplyPlayerHitAilments(tgt, pkt, isHitCrit);
+                            (void)AilmentRuntime::ApplyPlayerHitAilments(
+                                tgt, pkt, isHitCrit, AilmentRuntime::HitKind::Attack);
                         });
                     }
                 }

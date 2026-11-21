@@ -18,7 +18,7 @@ namespace SkyrimPoE::Runtime::Addresses
     inline constexpr std::ptrdiff_t kAeMainUpdateCallOffset = 0x160;
     inline constexpr std::uint64_t kAeMainUpdateTargetId = 36564;
 
-    // 결정 65, 76, 80 (프로토타입 8·9 AE 1.6.1170 검증 완료)
+    // 결정 65, 76, 80 (프로토타입 8·9: 정적 분석으로 확인. 실행으로 확인되지 않은 자리는 설계-현황 4장 참고)
     inline constexpr std::uint64_t kAeApplyHitId = 38586;
     inline constexpr std::uint64_t kAeModifyActorValueId = 35086;
     inline constexpr std::uint64_t kAeSetEffectivenessId = 34052;
@@ -51,7 +51,7 @@ namespace SkyrimPoE::Runtime::Addresses
     inline constexpr CallSiteSpec kAeExplosionStepsSite{ "Explosion::DamageSteps", 44004, 0xC1 };
     inline constexpr CallSiteSpec kAeSetEffectivenessSite{ "AddTarget::SetEffectiveness", 34547, 0x656 };
 
-    // 35086(ValueModifierEffect::ModifyActorValue) 직접 호출 8곳 (프로토타입 9 검증)
+    // 35086(ValueModifierEffect::ModifyActorValue) 직접 호출 8곳 (프로토타입 9 정적 분석. 일부 자리는 실행 미확인, 설계-현황 4장)
     inline constexpr std::array<CallSiteSpec, 8> kAeMagicDirectCalls = {{
         { "DualValueModifierEffect+0x28",  34324, 0x28 },
         { "DualValueModifierEffect+0x5C",  34324, 0x5C },

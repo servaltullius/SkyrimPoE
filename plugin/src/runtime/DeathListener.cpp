@@ -252,6 +252,8 @@ namespace SkyrimPoE::Runtime
                         g_queue->Enqueue([id]() {
                             MonsterRuntime::OnActorReset(id);
                             AilmentRuntime::OnActorReset(id);
+                            // 재검수 R-9: 리셋으로 엔진이 임시 수정치를 지웠으므로 맡겨 둔 원복(위 두 호출이 맡긴 것 포함)을 버린다.
+                            SaveLoad::ForgetSpeedRevert(id);
                         });
                     }
                 }

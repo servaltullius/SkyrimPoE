@@ -92,5 +92,14 @@ namespace SkyrimPoE::Runtime
         static void AddRevertCallback(std::function<void()> cb);
         static void SyncStateToStatEngine();
         static void PersistCharmSlotsFromSystem();
+
+        // 재검수 R-9: 원복해야 할 NPC kTemporary SpeedMult(냉각·빙결·가속)를 그 액터를 찾지 못해 지금 되돌릴 수 없을 때 맡긴다.
+        // 맡긴 항목은 세이브(SPDM)에 함께 저장되고, 주 갱신에서 주기적으로 다시 시도한다.
+        // 실행 중 만든 FF 액터는 찾지 못하면 이미 지워진 것이고 번호가 다른 액터에게 다시 쓰일 수 있으므로 맡기지 않는다.
+        static void DeferSpeedRevert(RE::FormID actorId, float appliedDelta);
+        // TESResetEvent(부활·셀 리셋)로 엔진이 임시 수정치를 지운 액터의 맡긴 원복을 버린다(주 갱신 스레드).
+        static void ForgetSpeedRevert(RE::FormID actorId);
+        // 주 갱신 스레드 전용: 맡긴 원복을 다시 시도한다(PostLoadInit과 주기 틱에서 호출).
+        static void RetryPendingSpeedReverts(double deltaSec, bool gamePaused);
     };
 }

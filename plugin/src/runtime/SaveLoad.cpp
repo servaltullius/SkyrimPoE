@@ -14,6 +14,7 @@
 #include "core/ItemAffixParser.h"
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
+#include "core/SaveCapPolicy.h"
 
 #include <bit>
 
@@ -30,6 +31,19 @@ namespace SkyrimPoE::Runtime
         constexpr std::uint32_t kMaxValuesPerAffix = 16;
         constexpr std::uint32_t kMaxGemDepth = 4;
         constexpr std::uint32_t kMaxSocketedJewels = 64;
+        constexpr std::uint32_t kPlayerRefFormId = 0x00000014;
+
+        // 재검수 R-3: 상한을 넘으면 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다(Core::SelectEntriesWithinSaveCap).
+        template <class Entry>
+        [[nodiscard]] std::vector<std::size_t> SelectForSave(const std::vector<Entry>& entries, std::size_t cap)
+        {
+            std::vector<Core::SaveCapCandidate> cands;
+            cands.reserve(entries.size());
+            for (const auto& e : entries) {
+                cands.push_back(Core::SaveCapCandidate{ e.key.ownerFormId, e.isWorld });
+            }
+            return Core::SelectEntriesWithinSaveCap(cands, cap, kPlayerRefFormId);
+        }
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
@@ -49,6 +63,76 @@ namespace SkyrimPoE::Runtime
         // Q-1: 세이브 시점에 잔존하던 NPC kTemporary SpeedMult 델타(로드 후 주 갱신에서 안전 원복)
         std::mutex g_speedModMutex;
         std::vector<std::pair<RE::FormID, float>> g_pendingSpeedModReverts;
+        double g_speedRevertRetryAccumSec = 0.0;
+        constexpr double kSpeedRevertRetryIntervalSec = 2.0;
+        constexpr std::size_t kMaxPendingSpeedReverts = 1024;
+
+        // 재검수 R-9: 맡겨 둔 SpeedMult 원복을 지금 찾을 수 있는 액터에 적용한다(주 갱신 스레드 전용).
+        // 목록을 빼내지 않고 복사해서 처리한 뒤, 끝난 항목(원복했거나 버릴 항목)만 잠금 아래에서 지운다.
+        // 그래서 처리 도중 저장(OnSave)이 끼어들어도 아직 원복하지 않은 항목이 SPDM에서 빠지지 않는다(Codex 지적 9).
+        // 반환값: (원복한 액터 수, 아직 찾지 못해 남은 수)
+        std::pair<std::size_t, std::size_t> ApplyPendingSpeedRevertsNow()
+        {
+            std::vector<std::pair<RE::FormID, float>> speedReverts;
+            {
+                std::scoped_lock lock(g_speedModMutex);
+                speedReverts = g_pendingSpeedModReverts;
+            }
+            if (speedReverts.empty()) {
+                return { 0, 0 };
+            }
+            std::vector<std::pair<RE::FormID, float>> resolved;
+            std::size_t revertedActors = 0;
+            std::size_t remaining = 0;
+            for (const auto& entry : speedReverts) {
+                const auto& [actorId, appliedDelta] = entry;
+                auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
+                if (!actor) {
+                    if ((actorId >> 24) == 0xFF) {
+                        // 실행 중 만든 FF 액터를 찾지 못하면 이미 지워진 것이고, 번호가 다른 액터에게 다시 쓰일 수 있다.
+                        // 세이브(SPDM)에서 읽은 항목도 여기서 버린다(Codex 지적 10).
+                        resolved.push_back(entry);
+                    } else {
+                        ++remaining;
+                    }
+                    continue;
+                }
+                if (actor->IsPlayerRef() || actor->IsDeleted()) {
+                    resolved.push_back(entry);
+                    continue;
+                }
+                auto* av = actor->AsActorValueOwner();
+                if (!av) {
+                    ++remaining;
+                    continue;
+                }
+                resolved.push_back(entry);
+                // 엔진이 리셋으로 임시 수정치를 이미 0으로 돌렸으면 원복할 것이 없다.
+                const float curTemp = actor->GetActorValueModifier(
+                    RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);
+                if (std::abs(curTemp) < 0.01f) {
+                    continue;
+                }
+                const float restore = -appliedDelta;
+                if (std::abs(restore) >= 0.01f) {
+                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult, restore);
+                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, 0.01f);
+                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, -0.01f);
+                    ++revertedActors;
+                }
+            }
+            if (!resolved.empty()) {
+                std::scoped_lock lock(g_speedModMutex);
+                for (const auto& done : resolved) {
+                    // 같은 (액터, 델타) 항목을 하나씩 지운다. 그사이 OnRevert가 목록을 비웠으면 지울 것이 없다.
+                    const auto it = std::find(g_pendingSpeedModReverts.begin(), g_pendingSpeedModReverts.end(), done);
+                    if (it != g_pendingSpeedModReverts.end()) {
+                        g_pendingSpeedModReverts.erase(it);
+                    }
+                }
+            }
+            return { revertedActors, remaining };
+        }
 
         // SKSE::SerializationInterface::ReadRecordData는 bool이 아니라 실제 읽은 바이트 수(uint32_t)를 반환한다.
         // 절단·손상 레코드에서 부분 읽기가 성공으로 오인되지 않도록 정확 길이를 비교한다.
@@ -341,6 +425,7 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lock(g_speedModMutex);
                 g_pendingSpeedModReverts.clear();
+                g_speedRevertRetryAccumSec = 0.0;
             }
             if (g_statEngine) {
                 g_statEngine->SetLayer1(Core::Layer1Input{});
@@ -453,16 +538,16 @@ namespace SkyrimPoE::Runtime
             }
 
             if (intfc->OpenRecord(SaveLoad::kRecordGemKeys, SaveLoad::kGemKeysVersion)) {
-                // C-4: 상한 초과 시 가장 오래된 항목부터 잘라 최신 항목을 우선 보존한다.
-                const std::size_t startIdx = (tracked.size() > kMaxListLen) ? (tracked.size() - kMaxListLen) : 0;
-                if (startIdx > 0) {
-                    SKSE::log::warn("SaveLoad: GKEY count {} exceeded cap {}; keeping newest {} entries.",
-                        tracked.size(), kMaxListLen, kMaxListLen);
+                // C-4, 재검수 R-3: 상한 초과 시 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다.
+                const auto keep = SelectForSave(tracked, kMaxListLen);
+                if (keep.size() < tracked.size()) {
+                    SKSE::log::warn("SaveLoad: GKEY count {} exceeded cap {}; dropped {} entries not held by the player first.",
+                        tracked.size(), kMaxListLen, tracked.size() - keep.size());
                 }
-                trackedCount = static_cast<std::uint32_t>(tracked.size() - startIdx);
+                trackedCount = static_cast<std::uint32_t>(keep.size());
                 bool gkeyOk = intfc->WriteRecordData(&trackedCount, sizeof(trackedCount));
-                for (std::size_t i = startIdx; i < tracked.size() && gkeyOk; ++i) {
-                    const auto& entry = tracked[i];
+                for (std::size_t k = 0; k < keep.size() && gkeyOk; ++k) {
+                    const auto& entry = tracked[keep[k]];
                     const std::uint8_t worldByte = entry.isWorld ? 1 : 0;
                     gkeyOk = gkeyOk && intfc->WriteRecordData(&entry.key.ownerFormId, sizeof(entry.key.ownerFormId));
                     gkeyOk = gkeyOk && intfc->WriteRecordData(&entry.key.uniqueId, sizeof(entry.key.uniqueId));
@@ -513,16 +598,17 @@ namespace SkyrimPoE::Runtime
             // 4~5단계: 제작/감정/고유/벨트/주얼 PoE 아이템('ITEM' v2) + starterCurrencyGiven 헤더
             if (intfc->OpenRecord(SaveLoad::kRecordItems, SaveLoad::kItemsVersion)) {
                 const std::uint8_t starterCurrByte = state.starterCurrencyGiven ? 1 : 0;
-                const std::size_t startIdx = (trackedItems.size() > kMaxItemRecords) ? (trackedItems.size() - kMaxItemRecords) : 0;
-                if (startIdx > 0) {
-                    SKSE::log::warn("SaveLoad: ITEM count {} exceeded cap {}; keeping newest {} entries.",
-                        trackedItems.size(), kMaxItemRecords, kMaxItemRecords);
+                // C-4, 재검수 R-3: GKEY와 같은 순위로 남긴다(장비 칸 GEAR가 가리키는 플레이어 소지품이 빠지지 않게).
+                const auto keep = SelectForSave(trackedItems, kMaxItemRecords);
+                if (keep.size() < trackedItems.size()) {
+                    SKSE::log::warn("SaveLoad: ITEM count {} exceeded cap {}; dropped {} entries not held by the player first.",
+                        trackedItems.size(), kMaxItemRecords, trackedItems.size() - keep.size());
                 }
-                itemCount = static_cast<std::uint32_t>(trackedItems.size() - startIdx);
+                itemCount = static_cast<std::uint32_t>(keep.size());
                 bool itemOk = intfc->WriteRecordData(&starterCurrByte, sizeof(starterCurrByte));
                 itemOk = itemOk && intfc->WriteRecordData(&itemCount, sizeof(itemCount));
-                for (std::size_t i = startIdx; i < trackedItems.size() && itemOk; ++i) {
-                    const auto& entry = trackedItems[i];
+                for (std::size_t k = 0; k < keep.size() && itemOk; ++k) {
+                    const auto& entry = trackedItems[keep[k]];
                     const std::uint8_t worldByte = entry.isWorld ? 1 : 0;
                     itemOk = itemOk && intfc->WriteRecordData(&entry.key.ownerFormId, sizeof(entry.key.ownerFormId));
                     itemOk = itemOk && intfc->WriteRecordData(&entry.key.uniqueId, sizeof(entry.key.uniqueId));
@@ -613,6 +699,11 @@ namespace SkyrimPoE::Runtime
             if (!savedSpeedMods.empty()) {
                 if (intfc->OpenRecord(SaveLoad::kRecordSpeedMods, SaveLoad::kSpeedModsVersion)) {
                     spdmCount = static_cast<std::uint32_t>(std::min<std::size_t>(savedSpeedMods.size(), kMaxListLen));
+                    if (savedSpeedMods.size() > kMaxListLen) {
+                        // Codex 지적 13: 상한을 넘은 액터의 원복 근거는 이 세이브에 남지 않는다. 조용히 버리지 않고 알린다.
+                        SKSE::log::warn("SaveLoad: SPDM has {} actors over cap {}; {} SpeedMult revert(s) will not be saved.",
+                            savedSpeedMods.size(), kMaxListLen, savedSpeedMods.size() - kMaxListLen);
+                    }
                     bool spdmOk = intfc->WriteRecordData(&spdmCount, sizeof(spdmCount));
                     for (std::uint32_t i = 0; i < spdmCount && spdmOk; ++i) {
                         spdmOk = spdmOk && intfc->WriteRecordData(&savedSpeedMods[i].first, sizeof(RE::FormID));
@@ -641,10 +732,15 @@ namespace SkyrimPoE::Runtime
 
             PersistentState loadedState;
             bool hasCore = false;
+            bool sawGemKeysRecord = false;  // Codex 지적 16: CORE만 손상되고 GKEY만 남은 세이브도 "이미 지급받은 세이브"로 본다
             Core::PassiveTreeState loadedTree;
             bool hasTree = false;
             bool hasItems = false;
             bool hasSpirit = false;
+            // 재검수 R-14: 레코드가 있었지만 읽지 못한 경우(손상·미지원 판)를 "없던 옛 세이브"와 구별한다.
+            bool sawItemsRecord = false;
+            bool sawSpiritRecord = false;
+            bool itemStarterFlagRead = false;  // Codex 지적 15: ITEM 머리의 시작 화폐 플래그만이라도 읽었는가
             bool hasGear = false;
             bool loadedStarterCurrencyGiven = false;
             std::uint16_t loadedActiveAuraMask = 0;
@@ -716,6 +812,7 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse CORE record (truncated or corrupt); falling back to defaults.");
                     }
                 } else if (type == SaveLoad::kRecordGemKeys) {
+                    sawGemKeysRecord = true;
                     if (version != SaveLoad::kGemKeysVersion) {
                         SKSE::log::warn("SaveLoad: unsupported GKEY record version {} (expected {}).", version, SaveLoad::kGemKeysVersion);
                         continue;
@@ -810,14 +907,22 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse TREE record (truncated or corrupt); falling back to empty tree.");
                     }
                 } else if (type == SaveLoad::kRecordItems) {
+                    sawItemsRecord = true;
                     if (version != 1 && version != SaveLoad::kItemsVersion) {
                         SKSE::log::warn("SaveLoad: unsupported ITEM record version {} (expected 1 or {}).", version, SaveLoad::kItemsVersion);
                         continue;
                     }
                     std::uint8_t starterCurrByte = 0;
                     std::uint32_t itemCount = 0;
-                    if (!ReadExactPod(intfc, starterCurrByte) || !ReadExactPod(intfc, itemCount) || itemCount > kMaxItemRecords) {
+                    if (!ReadExactPod(intfc, starterCurrByte)) {
                         SKSE::log::error("SaveLoad: invalid ITEM header.");
+                        continue;
+                    }
+                    // 플래그는 온전히 읽었으므로 개수가 잘려도 그 값은 쓴다.
+                    loadedStarterCurrencyGiven = (starterCurrByte != 0);
+                    itemStarterFlagRead = true;
+                    if (!ReadExactPod(intfc, itemCount) || itemCount > kMaxItemRecords) {
+                        SKSE::log::error("SaveLoad: invalid ITEM item count.");
                         continue;
                     }
                     std::vector<TrackedItemEntry> tmpItems;
@@ -851,13 +956,14 @@ namespace SkyrimPoE::Runtime
                                 rawOwner, rr.rawBaseFormId);
                         }
                     }
-                    if (ok) {
-                        loadedStarterCurrencyGiven = (starterCurrByte != 0);
-                        loadedItems = std::move(tmpItems);
-                        hasItems = true;
-                    } else {
-                        SKSE::log::error("SaveLoad: failed to parse ITEM record.");
+                    // 재검수 R-14: 중간에 끊겼으면 끊기기 전까지 읽은 항목은 살린다(항목마다 독립적이라 앞부분은 온전함).
+                    // GKEY와 같은 처리. 시작 화폐 플래그는 위에서 이미 반영했다.
+                    if (!ok) {
+                        SKSE::log::error("SaveLoad: ITEM record truncated/corrupt after {} of {} entries; keeping the parsed prefix.",
+                            tmpItems.size(), itemCount);
                     }
+                    loadedItems = std::move(tmpItems);
+                    hasItems = true;
                 } else if (type == SaveLoad::kRecordWorldDrops) {
                     if (version != SaveLoad::kWorldDropsVersion) {
                         SKSE::log::warn("SaveLoad: unsupported WDRP record version {} (expected {}).", version, SaveLoad::kWorldDropsVersion);
@@ -898,16 +1004,23 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse WDRP record.");
                     }
                 } else if (type == SaveLoad::kRecordSpirit) {
+                    sawSpiritRecord = true;
                     if (version != SaveLoad::kSpiritVersion) {
                         SKSE::log::warn("SaveLoad: unsupported SPRT record version {} (expected {}).", version, SaveLoad::kSpiritVersion);
                         continue;
                     }
                     std::uint16_t auraMask = 0;
                     std::uint8_t s5GemsByte = 0;
-                    if (ReadExactPod(intfc, auraMask) && ReadExactPod(intfc, s5GemsByte)) {
+                    if (ReadExactPod(intfc, auraMask)) {
                         loadedActiveAuraMask = static_cast<std::uint16_t>(auraMask & 0x01FFu);
-                        loadedStarterStage5GemsGiven = (s5GemsByte != 0);
                         hasSpirit = true;
+                        if (ReadExactPod(intfc, s5GemsByte)) {
+                            loadedStarterStage5GemsGiven = (s5GemsByte != 0);
+                        } else {
+                            // Codex 지적 15: 오라 마스크는 살리고, 읽지 못한 지급 플래그는 "이미 받음"으로 둔다(중복 지급 방지).
+                            loadedStarterStage5GemsGiven = true;
+                            SKSE::log::error("SaveLoad: SPRT record truncated after aura mask; keeping mask, suppressing stage-5 starter grant.");
+                        }
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse SPRT record.");
                     }
@@ -1071,6 +1184,17 @@ namespace SkyrimPoE::Runtime
                 loadedState.activeAuraMask = loadedActiveAuraMask;
                 loadedState.starterStage5GemsGiven = loadedStarterStage5GemsGiven;
             }
+            // 재검수 R-14: 레코드는 있었는데 읽지 못했다면 그 세이브는 이미 지급을 받은 세이브다. 다시 지급하지 않는다.
+            if (sawItemsRecord && !hasItems) {
+                // 머리 플래그를 읽었으면 그 값을, 못 읽었으면 "이미 받음"을 쓴다(Codex 지적 15).
+                loadedState.starterCurrencyGiven = itemStarterFlagRead ? loadedStarterCurrencyGiven : true;
+                SKSE::log::error("SaveLoad: ITEM record present but unreadable; starter currency flag = {} ({}).",
+                    loadedState.starterCurrencyGiven, itemStarterFlagRead ? "from header" : "suppressed");
+            }
+            if (sawSpiritRecord && !hasSpirit) {
+                loadedState.starterStage5GemsGiven = true;
+                SKSE::log::error("SaveLoad: SPRT record present but unreadable; suppressing duplicate stage-5 starter gem grant.");
+            }
             if (hasGear) {
                 loadedState.virtualRing2Key = loadedRing2Key;
                 loadedState.virtualRing2BaseFormId = loadedRing2Base;
@@ -1079,7 +1203,7 @@ namespace SkyrimPoE::Runtime
                 loadedState.charmSlots = loadedCharms;
                 loadedState.socketedJewels = std::move(loadedJewels);
             }
-            if (hasCore || hasTree || hasItems || hasSpirit || hasGear) {
+            if (hasCore || hasTree || hasItems || hasSpirit || hasGear || sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
                 // C-3: CORE만 손상되고 다른 SPOE 레코드가 살아 있는 세이브에서 시작 젬·화폐 중복 지급을 막는다.
                 if (!hasCore) {
                     loadedState.starterGemsGiven = true;
@@ -1223,52 +1347,12 @@ namespace SkyrimPoE::Runtime
                 (void)GemInventory::RelinkPickedUpGems(player, true);
                 (void)ItemTracker::RelinkPickedUpItems(player, true);
 
-                // Q-1 + M-2(실게임 확인): .ess에 영구 잔존한 NPC kTemporary SpeedMult(냉각/빙결/가속)를 로드 직후 안전 원복.
-                // 미로드(LookupByID == nullptr) NPC는 버리지 않고 재저장에 유지하며,
-                // 복합/외부 SpeedMult 공존 시 부호 클램프로 원복이 누락되지 않도록 curTemp != 0이면 -appliedDelta를 정확 적용한다.
-                std::vector<std::pair<RE::FormID, float>> speedReverts;
-                {
-                    std::scoped_lock lock(g_speedModMutex);
-                    speedReverts.swap(g_pendingSpeedModReverts);
-                }
-                std::vector<std::pair<RE::FormID, float>> stillPending;
-                std::size_t revertedActors = 0;
-                for (const auto& [actorId, appliedDelta] : speedReverts) {
-                    auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
-                    if (!actor) {
-                        stillPending.emplace_back(actorId, appliedDelta);
-                        continue;
-                    }
-                    if (actor->IsPlayerRef() || actor->IsDeleted()) {
-                        continue;
-                    }
-                    auto* av = actor->AsActorValueOwner();
-                    if (!av) {
-                        stillPending.emplace_back(actorId, appliedDelta);
-                        continue;
-                    }
-                    const float curTemp = actor->GetActorValueModifier(
-                        RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);
-                    if (std::abs(curTemp) < 0.01f) {
-                        continue;
-                    }
-                    const float restore = -appliedDelta;
-                    if (std::abs(restore) >= 0.01f) {
-                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult, restore);
-                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, 0.01f);
-                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, -0.01f);
-                        ++revertedActors;
-                    }
-                }
-                if (!stillPending.empty()) {
-                    std::scoped_lock lock(g_speedModMutex);
-                    for (const auto& entry : stillPending) {
-                        g_pendingSpeedModReverts.push_back(entry);
-                    }
-                }
-                if (revertedActors > 0) {
+                // Q-1 + M-2: .ess에 남은 NPC kTemporary SpeedMult(냉각/빙결/가속)를 로드 직후 원복한다.
+                // 찾지 못한 액터는 버리지 않고 남겨 두며, 재검수 R-9에 따라 주 갱신에서 주기적으로 다시 시도한다.
+                const auto [revertedActors, stillPending] = ApplyPendingSpeedRevertsNow();
+                if (revertedActors > 0 || stillPending > 0) {
                     SKSE::log::info("SaveLoad::PostLoadInit: reverted persisted kTemporary SpeedMult on {} actor(s) from SPDM (deferred={}).",
-                        revertedActors, stillPending.size());
+                        revertedActors, stillPending);
                 }
             }
 
@@ -1300,9 +1384,21 @@ namespace SkyrimPoE::Runtime
                         }
                         auto* freshExtra = baseObj ? UniqueIdUtil::CreateGameExtraDataList() : nullptr;
                         if (baseObj && freshExtra) {
-                            const auto newKey = ItemTracker::AddObjectWithTrackedUniqueId(player, baseObj, freshExtra);
+                            bool untrackedLeft = false;
+                            const auto newKey = ItemTracker::AddObjectWithTrackedUniqueId(
+                                player, baseObj, freshExtra, nullptr,
+                                ItemTracker::UntrackedAddPolicy::RemoveAgain, &untrackedLeft);
                             if (newKey.IsValid()) {
                                 ItemTracker::Upsert(newKey, jRec, false);
+                                it = working.socketedJewels.erase(it);
+                                changed = true;
+                                continue;
+                            }
+                            if (untrackedLeft) {
+                                // 재검수 R-15: 실물은 가방에 들어갔다. 남겨 두면 로드할 때마다 1개씩 더 지급되므로 소켓에서 뺀다.
+                                SKSE::log::error("SaveLoad::PostLoadInit: orphaned jewel from node {} returned without tracking; affixes lost.",
+                                    it->first);
+                                RE::SendHUDMessage::ShowHUDMessage("주얼을 가방으로 돌려받았지만 추적에 실패해 어픽스가 사라졌습니다.");
                                 it = working.socketedJewels.erase(it);
                                 changed = true;
                                 continue;
@@ -1389,6 +1485,52 @@ namespace SkyrimPoE::Runtime
         }
         const auto state = GetStateCopy();
         g_statEngine->SetLayer1(BuildLayer1FromState(state));
+    }
+
+    void SaveLoad::DeferSpeedRevert(RE::FormID actorId, float appliedDelta)
+    {
+        if (actorId == 0 || !std::isfinite(appliedDelta) || std::abs(appliedDelta) < 0.01f) {
+            return;
+        }
+        if ((actorId >> 24) == 0xFF) {
+            SKSE::log::info("SaveLoad: not deferring SpeedMult revert for vanished dynamic actor {:08X} (FormID may be reused).", actorId);
+            return;
+        }
+        std::scoped_lock lock(g_speedModMutex);
+        g_pendingSpeedModReverts.emplace_back(actorId, appliedDelta);
+        if (g_pendingSpeedModReverts.size() > kMaxPendingSpeedReverts) {
+            // 영영 다시 나타나지 않는 액터(지워진 임시 참조)의 항목이 끝없이 쌓이지 않게 가장 오래된 것부터 버린다.
+            const auto excess = g_pendingSpeedModReverts.size() - kMaxPendingSpeedReverts;
+            SKSE::log::warn("SaveLoad: pending SpeedMult reverts exceeded {}; dropping {} oldest.", kMaxPendingSpeedReverts, excess);
+            g_pendingSpeedModReverts.erase(g_pendingSpeedModReverts.begin(),
+                g_pendingSpeedModReverts.begin() + static_cast<std::ptrdiff_t>(excess));
+        }
+    }
+
+    void SaveLoad::ForgetSpeedRevert(RE::FormID actorId)
+    {
+        std::scoped_lock lock(g_speedModMutex);
+        std::erase_if(g_pendingSpeedModReverts, [actorId](const auto& e) { return e.first == actorId; });
+    }
+
+    void SaveLoad::RetryPendingSpeedReverts(double deltaSec, bool gamePaused)
+    {
+        if (gamePaused || !std::isfinite(deltaSec) || deltaSec <= 0.0) {
+            return;
+        }
+        {
+            // OnRevert와 같은 잠금 아래에서 누적 시간을 읽고 쓴다(Codex 지적 9의 데이터 경합).
+            std::scoped_lock lock(g_speedModMutex);
+            g_speedRevertRetryAccumSec += deltaSec;
+            if (g_speedRevertRetryAccumSec < kSpeedRevertRetryIntervalSec) {
+                return;
+            }
+            g_speedRevertRetryAccumSec = 0.0;
+        }
+        const auto [reverted, remaining] = ApplyPendingSpeedRevertsNow();
+        if (reverted > 0) {
+            SKSE::log::info("SaveLoad: reverted deferred kTemporary SpeedMult on {} actor(s) (still pending={}).", reverted, remaining);
+        }
     }
 
     void SaveLoad::PersistCharmSlotsFromSystem()

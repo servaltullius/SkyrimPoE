@@ -70,7 +70,9 @@ namespace SkyrimPoE::Runtime
         }
 
         // 결정 123 + C-33/C-34: 버릴 때 바닥 참조에 ExtraUniqueID(groundRefId, stampUid)를 즉시 기록(뮤텍스 밖에서 호출)
-        bool TryStampDroppedWorldRef(RE::FormID refFormId, RE::FormID expectedBaseFormId, std::uint16_t stampUid)
+        // priorKey: 버린 이벤트의 직전 키. 바닥 참조에 이미 붙은 번호가 이 키와 같을 때만 바꿔 쓴다(Codex 교차 검토 지적 1).
+        bool TryStampDroppedWorldRef(RE::FormID refFormId, RE::FormID expectedBaseFormId, std::uint16_t stampUid,
+            Core::InventoryItemKey priorKey)
         {
             if (refFormId == 0 || !kItemStampBand.Contains(stampUid)) {
                 return false;
@@ -102,9 +104,25 @@ namespace SkyrimPoE::Runtime
 
             if (auto* existing = refr->extraList.GetByType<RE::ExtraUniqueID>()) {
                 if (existing->uniqueID != 0 && !(existing->baseID == refFormId && existing->uniqueID == stampUid)) {
-                    SKSE::log::warn("ItemTracker: world ref {:08X} already carries stamp {:08X}:{:04X}; refusing overwrite with {:04X}.",
-                        refFormId, existing->baseID, existing->uniqueID, stampUid);
-                    return true;
+                    // 다시 버린 물건의 예전 스탬프가 바닥 참조에 남는 경우가 있다(젬 쪽 자동 시험 실측, 2026-11-21).
+                    // 이번 이벤트의 직전 키와 같거나, 같은 참조에 붙은 아이템 스탬프 대역 번호이면서 장부의 다른 항목이
+                    // 쓰지 않을 때만 바꿔 쓰고, 그 밖의 번호는 거부한다.
+                    const Core::InventoryItemKey existingKey{ existing->baseID, existing->uniqueID };
+                    const Core::InventoryItemKey selfKey{ refFormId, stampUid };
+                    bool ownStale = priorKey.IsValid() && existingKey == priorKey;
+                    if (!ownStale && existing->baseID == refFormId && kItemStampBand.Contains(existing->uniqueID)) {
+                        std::scoped_lock lock(g_mutex);
+                        ownStale = std::none_of(g_entries.begin(), g_entries.end(), [&](const auto& e) {
+                            return e.key == existingKey && e.key != selfKey;
+                        });
+                    }
+                    if (!ownStale) {
+                        SKSE::log::warn("ItemTracker: world ref {:08X} already carries foreign key {:08X}:{:04X}; refusing overwrite with {:04X}.",
+                            refFormId, existing->baseID, existing->uniqueID, stampUid);
+                        return true;
+                    }
+                    SKSE::log::info("ItemTracker: replacing this item's previous stamp {:08X}:{:04X} on world ref {:08X} with {:04X}.",
+                        existing->baseID, existing->uniqueID, refFormId, stampUid);
                 }
                 existing->baseID = refFormId;
                 existing->uniqueID = stampUid;
@@ -149,6 +167,7 @@ namespace SkyrimPoE::Runtime
             std::size_t linked = 0;
             SaveLoad::RunSerializedTransaction([&]() {
                 std::vector<WorldStampLink::WorldLinkCandidate> candidates;
+                std::vector<Core::InventoryItemKey> heldKeys;  // 재검수 R-4: 이 소유자의 인벤토리 항목이 이미 쓰는 키
                 {
                     std::scoped_lock lock(g_mutex);
                     for (std::size_t i = 0; i < g_entries.size(); ++i) {
@@ -161,6 +180,8 @@ namespace SkyrimPoE::Runtime
                                 e.key,
                                 FormKindId(e.record.baseFormId)
                             });
+                        } else if (!e.isWorld && e.key.ownerFormId == ownerId) {
+                            heldKeys.push_back(e.key);
                         }
                     }
                 }
@@ -203,7 +224,7 @@ namespace SkyrimPoE::Runtime
                 }
 
                 const auto plan = WorldStampLink::PlanRelinks(
-                    candidates, observed, kItemStampBand, postLoadOwnerNormalized ? ownerId : 0u);
+                    candidates, observed, kItemStampBand, postLoadOwnerNormalized ? ownerId : 0u, heldKeys);
                 for (const std::size_t idx : plan.heldCountGtOne) {
                     const auto& obs = observed[idx];
                     SKSE::log::warn("ItemTracker: holding relink for base {} {:08X}:{:04X} because extra count is {} (> 1).",
@@ -215,43 +236,45 @@ namespace SkyrimPoE::Runtime
                         obs.kindId, obs.extraKey.ownerFormId, obs.extraKey.uniqueId);
                 }
 
-                for (const auto& p : plan.planned) {
-                    RE::ExtraDataList* targetExtra = extraPtrs[p.extraIndex];
-                    if (!targetExtra || targetExtra->GetCount() > 1) {
-                        continue;
-                    }
-                    const auto* preCheck = targetExtra->GetByType<RE::ExtraUniqueID>();
-                    if (!preCheck || preCheck->baseID != p.observedExtraKey.ownerFormId || preCheck->uniqueID != p.observedExtraKey.uniqueId) {
-                        continue;
-                    }
+                // 재검수 R-5: 적용 순서는 WorldStampLink::ExecuteRelinks 한곳에 두고, 여기서는 엔진 묶음과 아이템 장부 접근만 제공한다.
+                // 아이템 후보의 instanceId 칸에는 베이스 FormID를 넣었다(위 candidates 참고).
+                class ItemRelinkExecutor final : public WorldStampLink::IRelinkExecutor
+                {
+                public:
+                    ItemRelinkExecutor(RE::TESObjectREFR* a_owner, std::vector<RE::ExtraDataList*>& a_extras) :
+                        owner_(a_owner), extras_(a_extras)
+                    {}
 
-                    const std::uint16_t newUid = UniqueIdUtil::AllocateInventoryUniqueId(owner);
-                    if (newUid == 0) {
-                        SKSE::log::error("ItemTracker: unable to allocate inventory UID while relinking item {:08X}:{:04X}.",
-                            p.worldKey.ownerFormId, p.worldKey.uniqueId);
-                        continue;
-                    }
-                    const Core::InventoryItemKey newKey{ ownerId, newUid };
-                    const RE::FormID expectedBase = static_cast<RE::FormID>(p.instanceId);
-
-                    bool committed = false;
+                    std::optional<Core::InventoryItemKey> ReadExtraKey(std::size_t i) override
                     {
+                        auto* extra = (i < extras_.size()) ? extras_[i] : nullptr;
+                        const auto* unique = extra ? extra->GetByType<RE::ExtraUniqueID>() : nullptr;
+                        if (!unique) {
+                            return std::nullopt;
+                        }
+                        return Core::InventoryItemKey{ unique->baseID, unique->uniqueID };
+                    }
+                    std::int32_t ExtraCount(std::size_t i) override
+                    {
+                        auto* extra = (i < extras_.size()) ? extras_[i] : nullptr;
+                        return extra ? extra->GetCount() : 0;
+                    }
+                    std::uint16_t AllocateInventoryUid() override { return UniqueIdUtil::AllocateInventoryUniqueId(owner_); }
+                    bool CommitLedger(const WorldStampLink::PlannedRelink& p, const Core::InventoryItemKey& newKey) override
+                    {
+                        const auto expectedBase = static_cast<RE::FormID>(p.instanceId);
                         std::scoped_lock lock(g_mutex);
                         for (auto& e : g_entries) {
                             if (e.record.baseFormId == expectedBase &&
                                 WorldStampLink::CommitRelink(e.key, e.isWorld, p.worldKey, newKey)) {
-                                committed = true;
-                                break;
+                                return true;
                             }
                         }
+                        return false;
                     }
-                    if (!committed) {
-                        continue;
-                    }
-
-                    auto* liveUnique = targetExtra->GetByType<RE::ExtraUniqueID>();
-                    if (!liveUnique || liveUnique->baseID != p.observedExtraKey.ownerFormId || liveUnique->uniqueID != p.observedExtraKey.uniqueId) {
-                        SKSE::log::warn("ItemTracker: extra key changed before rewrite for base {:08X}; reverting ledger key.", expectedBase);
+                    void RevertLedger(const WorldStampLink::PlannedRelink& p, const Core::InventoryItemKey& newKey) override
+                    {
+                        const auto expectedBase = static_cast<RE::FormID>(p.instanceId);
                         std::scoped_lock lock(g_mutex);
                         for (auto& e : g_entries) {
                             if (!e.isWorld && e.key == newKey && e.record.baseFormId == expectedBase) {
@@ -260,12 +283,44 @@ namespace SkyrimPoE::Runtime
                                 break;
                             }
                         }
-                        continue;
                     }
-                    liveUnique->baseID = ownerId;
-                    liveUnique->uniqueID = newUid;
-                    ++linked;
-                }
+                    bool WriteExtraKey(std::size_t i, const Core::InventoryItemKey& expectedKey,
+                        const Core::InventoryItemKey& newKey) override
+                    {
+                        auto* extra = (i < extras_.size()) ? extras_[i] : nullptr;
+                        auto* unique = extra ? extra->GetByType<RE::ExtraUniqueID>() : nullptr;
+                        if (!unique || unique->baseID != expectedKey.ownerFormId || unique->uniqueID != expectedKey.uniqueId) {
+                            return false;
+                        }
+                        unique->baseID = newKey.ownerFormId;
+                        unique->uniqueID = newKey.uniqueId;
+                        return true;
+                    }
+                    void OnAllocateFailed(const WorldStampLink::PlannedRelink& p) override
+                    {
+                        SKSE::log::error("ItemTracker: unable to allocate inventory UID while relinking item {:08X}:{:04X}.",
+                            p.worldKey.ownerFormId, p.worldKey.uniqueId);
+                    }
+                    void OnExtraChangedBeforeRewrite(const WorldStampLink::PlannedRelink& p) override
+                    {
+                        SKSE::log::warn("ItemTracker: extra key changed before rewrite for base {:08X}; reverted ledger key.",
+                            static_cast<RE::FormID>(p.instanceId));
+                    }
+                    void OnLinked(const WorldStampLink::PlannedRelink& p, const Core::InventoryItemKey& newKey) override
+                    {
+                        // 재검수 R-4: 정확 대조인지 로드 직후 소유자 정규화 대조인지 남긴다.
+                        SKSE::log::info("ItemTracker: relinked picked-up item {:08X}:{:04X} -> {:08X}:{:04X} (match={}, observed {:08X}:{:04X}).",
+                            p.worldKey.ownerFormId, p.worldKey.uniqueId, newKey.ownerFormId, newKey.uniqueId,
+                            p.observedExtraKey == p.worldKey ? "exact" : "owner-normalized",
+                            p.observedExtraKey.ownerFormId, p.observedExtraKey.uniqueId);
+                    }
+
+                private:
+                    RE::TESObjectREFR* owner_;
+                    std::vector<RE::ExtraDataList*>& extras_;
+                };
+                ItemRelinkExecutor exec(owner, extraPtrs);
+                linked = WorldStampLink::ExecuteRelinks(plan, ownerId, exec);
             });
 
             if (linked > 0) {
@@ -313,6 +368,7 @@ namespace SkyrimPoE::Runtime
                 RE::FormID droppedBaseId = 0;
                 std::uint16_t stampUid = 0;
                 bool touchedPlayer = false;
+                const Core::InventoryItemKey priorKey{ event->oldBaseID, event->oldUniqueID };
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 const RE::FormID playerId = player ? player->GetFormID() : 0;
 
@@ -362,9 +418,9 @@ namespace SkyrimPoE::Runtime
 
                 // 결정 123: 버릴 때 바닥 스탬프는 이벤트 안에서 즉시 기록, 미조회 시 주 갱신 1회 보완
                 if (droppedRefId != 0 && stampUid != 0) {
-                    if (!TryStampDroppedWorldRef(droppedRefId, droppedBaseId, stampUid) && g_queue) {
-                        g_queue->Enqueue([droppedRefId, droppedBaseId, stampUid]() {
-                            (void)TryStampDroppedWorldRef(droppedRefId, droppedBaseId, stampUid);
+                    if (!TryStampDroppedWorldRef(droppedRefId, droppedBaseId, stampUid, priorKey) && g_queue) {
+                        g_queue->Enqueue([droppedRefId, droppedBaseId, stampUid, priorKey]() {
+                            (void)TryStampDroppedWorldRef(droppedRefId, droppedBaseId, stampUid, priorKey);
                         });
                     }
                 }
@@ -546,6 +602,12 @@ namespace SkyrimPoE::Runtime
 
         // 2. 검수 C2, M5, C-8: extraList == nullptr 또는 count > 1 일반 스택은 정확히 1개만 분리해 신규 ExtraDataList + UID 부여
         // 단련·마법부여·이름·충전량·독·소유권이 있으면 1개 분리에 보존한다.
+        // 재검수 R-2: 아이템을 빼기 전에 번호를 받을 수 있는지 먼저 확인한다. 뺀 뒤에 할당이 실패하면 그 1개가 사라진다.
+        // (할당기는 사용 중인 번호를 훑어 빈 번호를 고를 뿐 예약하지 않으므로, 같은 스레드에서 곧바로 다시 부르면 같은 결과다.)
+        if (UniqueIdUtil::AllocateInventoryUniqueId(owner) == 0) {
+            SKSE::log::error("ItemTracker::EnsureUniqueId: no free inventory UID for owner {:08X}; item left untouched.", ownerId);
+            return {};
+        }
         auto* freshExtra = UniqueIdUtil::CreateGameExtraDataList();
         if (!freshExtra) {
             SKSE::log::error("ItemTracker::EnsureUniqueId: CreateGameExtraDataList failed.");
@@ -575,6 +637,12 @@ namespace SkyrimPoE::Runtime
                 }
             }
         }
+        const auto countOfBase = [owner, baseObj]() -> std::int32_t {
+            const auto counts = owner->GetInventoryCounts([baseObj](RE::TESBoundObject& a_obj) { return &a_obj == baseObj; }, true);
+            const auto it = counts.find(baseObj);
+            return it != counts.end() ? it->second : 0;
+        };
+        const std::int32_t countBeforeSplit = countOfBase();
         if (extraList) {
             owner->RemoveItem(baseObj, 1, RE::ITEM_REMOVE_REASON::kRemove, extraList, nullptr);
         } else {
@@ -584,17 +652,39 @@ namespace SkyrimPoE::Runtime
                 return {};
             }
         }
-        return AddObjectWithTrackedUniqueId(owner, baseObj, freshExtra, outFinalExtra);
+        // Codex 지적 6: 실제로 1개가 빠졌을 때만 다시 넣는다. 빠지지 않았는데 넣으면 아이템이 하나 늘어난다.
+        if (countOfBase() >= countBeforeSplit) {
+            SKSE::log::error("ItemTracker::EnsureUniqueId: split removal did not reduce base {:08X} count; aborting without re-add.",
+                baseObj->GetFormID());
+            UniqueIdUtil::DestroyGameExtraDataList(freshExtra);
+            return {};
+        }
+        bool untrackedLeft = false;
+        const auto key = AddObjectWithTrackedUniqueId(
+            owner, baseObj, freshExtra, outFinalExtra, UntrackedAddPolicy::Keep, &untrackedLeft);
+        if (!key.IsValid() && !untrackedLeft) {
+            // 번호 할당 실패로 다시 넣지 못했다(위의 사전 확인 때문에 정상적으로는 오지 않는 경로).
+            // 앞에서 뺀 1개를 일반품으로라도 돌려줘 아이템 자체는 잃지 않게 한다.
+            owner->AddObjectToContainer(baseObj, nullptr, 1, nullptr);
+            SKSE::log::error("ItemTracker::EnsureUniqueId: could not re-add split item for base {:08X}; restored it as a plain item.",
+                baseObj->GetFormID());
+        }
+        return key;
     }
 
     Core::InventoryItemKey ItemTracker::AddObjectWithTrackedUniqueId(
         RE::TESObjectREFR* owner,
         RE::TESBoundObject* baseObj,
         RE::ExtraDataList* freshExtra,
-        RE::ExtraDataList** outFinalExtra)
+        RE::ExtraDataList** outFinalExtra,
+        UntrackedAddPolicy policy,
+        bool* outUntrackedItemLeft)
     {
         if (outFinalExtra) {
             *outFinalExtra = nullptr;
+        }
+        if (outUntrackedItemLeft) {
+            *outUntrackedItemLeft = false;
         }
         if (!owner || !baseObj || !freshExtra) {
             return {};
@@ -604,8 +694,9 @@ namespace SkyrimPoE::Runtime
             return {};
         }
 
-        // 안전망: AddObjectToContainer 직전 해당 베이스 오브젝트의 기존 UID 집합 스냅샷
+        // 안전망: AddObjectToContainer 직전 해당 베이스 오브젝트의 기존 UID 집합·묶음·수량 스냅샷
         std::unordered_set<std::uint16_t> preExistingUids;
+        std::unordered_set<const RE::ExtraDataList*> preExistingExtras;
         if (auto* changes = owner->GetInventoryChanges(true); changes && changes->entryList) {
             for (auto* entry : *changes->entryList) {
                 if (!entry || entry->object != baseObj || !entry->extraLists) {
@@ -613,12 +704,20 @@ namespace SkyrimPoE::Runtime
                 }
                 for (auto* ex : *entry->extraLists) {
                     if (!ex) continue;
+                    preExistingExtras.insert(ex);
                     if (const auto* u = ex->GetByType<RE::ExtraUniqueID>(); u && u->baseID == ownerId && u->uniqueID != 0) {
                         preExistingUids.insert(u->uniqueID);
                     }
                 }
             }
         }
+        const auto countOfBase = [owner, baseObj]() -> std::int32_t {
+            // a_noInit=true: 위에서 GetInventoryChanges(true)로 이미 만든 인벤토리를 다시 초기화하지 않는다(사전 스냅숏이 어긋나지 않게).
+            const auto counts = owner->GetInventoryCounts([baseObj](RE::TESBoundObject& a_obj) { return &a_obj == baseObj; }, true);
+            const auto it = counts.find(baseObj);
+            return it != counts.end() ? it->second : 0;
+        };
+        const std::int32_t preCount = countOfBase();
 
         const std::uint16_t seedUid = UniqueIdUtil::AllocateInventoryUniqueId(owner);
         if (seedUid == 0) {
@@ -676,8 +775,46 @@ namespace SkyrimPoE::Runtime
 
         // C-5: 실제 인벤토리에서 ExtraDataList를 확인하지 못하면 가짜 유효 키를 반환하지 않고 무효 키를 반환한다.
         if (!finalExtra || finalUid == 0) {
-            SKSE::log::error("ItemTracker::AddObjectWithTrackedUniqueId: failed to confirm tracked ExtraUniqueID for base {:08X} in owner {:08X}.",
-                baseObj->GetFormID(), ownerId);
+            // 재검수 R-15: 실제로 들어갔는지는 수량 변화로 판단한다. 들어간 채 무효 키만 돌려주면 호출부의 환불·재시도가 복제를 만든다.
+            bool left = countOfBase() > preCount;
+            if (left && policy == UntrackedAddPolicy::RemoveAgain) {
+                // 방금 생긴 묶음(추가 전에 없던 ExtraDataList)을 골라 뺀다. 없으면 엔진이 일반 스택에 합친 것이므로
+                // 일반품 1개를 빼는 것이 방금 넣은 것을 빼는 것과 같다.
+                RE::ExtraDataList* addedExtra = nullptr;
+                std::size_t newExtraCount = 0;
+                if (auto* changes = owner->GetInventoryChanges(true); changes && changes->entryList) {
+                    for (auto* entry : *changes->entryList) {
+                        if (!entry || entry->object != baseObj || !entry->extraLists) {
+                            continue;
+                        }
+                        for (auto* ex : *entry->extraLists) {
+                            if (ex && !preExistingExtras.contains(ex)) {
+                                addedExtra = ex;
+                                ++newExtraCount;
+                            }
+                        }
+                    }
+                }
+                const std::int32_t addedCount = countOfBase() - preCount;
+                if (addedCount != 1 || newExtraCount > 1) {
+                    // 수량이 1이 아닌 만큼 바뀌었거나 새 묶음이 여럿이면 어느 것이 방금 넣은 것인지 특정할 수 없다(Codex 지적 2).
+                    // 엉뚱한 물건을 빼지 않도록 그대로 두고, 들어간 것으로 처리한다(호출부는 환불하지 않음 → 복제 없음).
+                    left = true;
+                } else {
+                    if (addedExtra) {
+                        owner->RemoveItem(baseObj, 1, RE::ITEM_REMOVE_REASON::kRemove, addedExtra, nullptr);
+                    } else {
+                        // 새 묶음이 없다 = 엔진이 일반 스택에 합쳤다. 일반품 1개를 빼는 것이 방금 넣은 것을 빼는 것과 같다.
+                        (void)UniqueIdUtil::RemovePlainItem(owner, baseObj, 1);
+                    }
+                    left = countOfBase() > preCount;
+                }
+            }
+            if (outUntrackedItemLeft) {
+                *outUntrackedItemLeft = left;
+            }
+            SKSE::log::error("ItemTracker::AddObjectWithTrackedUniqueId: failed to confirm tracked ExtraUniqueID for base {:08X} in owner {:08X} ({}).",
+                baseObj->GetFormID(), ownerId, left ? "item left untracked" : "added item removed again");
             return {};
         }
 

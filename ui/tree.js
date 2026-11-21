@@ -1053,9 +1053,8 @@
         const note = document.createElement("div");
         note.className = "tt-note";
         const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
-        const ascCost = Number((treeState && treeState.ascendancyRefundCost) || 5);
-        const nodeCost = freeRefund ? 0 : (n.asc ? ascCost : 1);
-        const costSuffix = nodeCost > 0 ? ` (후회의 오브 ${nodeCost}개)` : " (무료)";
+        const nodeCost = freeRefund ? 0 : refundCostFor(n.id);
+        const costSuffix = nodeCost === null ? "" : (nodeCost > 0 ? ` (후회의 오브 ${nodeCost}개)` : " (무료)");
         note.textContent = n.k === KIND_SOCKET
           ? `할당됨 · 좌클릭: 주얼 장착/회수 · 우클릭: 소켓 회수${costSuffix}`
           : `할당됨 · 우클릭으로 회수${costSuffix}`;
@@ -1173,20 +1172,29 @@
       btn.disabled = isDuplicate;
       btn.textContent = lines.join(" / ") + (isDuplicate ? " [다른 마스터리에서 선택됨]" : (isSelectedHere ? " [선택됨]" : ""));
       btn.onclick = () => {
-        window.poeSendCommand({
-          op: "treeSelectMastery",
-          reqId: window.poeNextReqId(),
-          masteryNodeId: node.id,
-          effectId: eid,
-        });
-        masteryModal.classList.add("hidden");
+        const send = () => {
+          window.poeSendCommand({
+            op: "treeSelectMastery",
+            reqId: window.poeNextReqId(),
+            masteryNodeId: node.id,
+            effectId: eid,
+          });
+          masteryModal.classList.add("hidden");
+        };
+        // 재검수 R-7: 이미 고른 효과를 다른 효과로 바꾸면 후회의 오브를 쓰므로 회수와 같은 두 번 클릭 확인을 거친다.
+        if (currentEff !== undefined && !isSelectedHere) {
+          confirmOrProceedRefund(`masterySwap:${node.id}:${eid}`, masterySwapCostFor(node.id), "마스터리 효과 교체", send);
+        } else {
+          send();
+        }
       };
       masteryList.appendChild(btn);
     }
 
     btnMasteryRefund.classList.toggle("hidden", currentEff === undefined);
     const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
-    btnMasteryRefund.textContent = freeRefund ? "회수" : "회수 (후회 1)";
+    const masteryRefundCost = freeRefund ? 0 : refundCostFor(node.id);
+    btnMasteryRefund.textContent = (masteryRefundCost && masteryRefundCost > 0) ? `회수 (후회 ${masteryRefundCost})` : "회수";
     masteryModal.classList.remove("hidden");
     tooltipEl.classList.add("hidden");
   }
@@ -1244,14 +1252,31 @@
   // ---- C-27: 후회의 오브 소모 회수 2단계 확인 상태(3초 유효) ----
   let pendingRefundConfirm = null; // { key: string, expiresAt: number }
 
+  // 재검수 R-7: 회수·교체 비용은 C++(PassiveTree::GetRefundNodeCost / GetSelectMasterySwapCost)가 계산해 보낸 값을 쓴다.
+  // 값이 없으면(구버전 페이로드 등) 비용을 모르는 것이므로 확인을 거치도록 null을 돌려준다.
+  function refundCostFor(nodeId) {
+    const costs = (treeState && treeState.refundNodeCosts) || null;
+    if (!costs) return null;
+    const v = costs[String(nodeId)];
+    return (v === undefined || v === null) ? null : Number(v);
+  }
+  function masterySwapCostFor(nodeId) {
+    const costs = (treeState && treeState.masterySwapCosts) || null;
+    if (!costs) return null;
+    const v = costs[String(nodeId)];
+    return (v === undefined || v === null) ? null : Number(v);
+  }
+
   function confirmOrProceedRefund(confirmKey, cost, label, onConfirm) {
     const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
-    if (freeRefund || !cost || cost <= 0) {
+    if (freeRefund || cost === 0) {
       pendingRefundConfirm = null;
       onConfirm();
       return;
     }
     const now = Date.now();
+    // Codex 지적 21: 승인은 비용까지 묶는다. 그사이 상태가 바뀌어 비용이 달라졌으면 다시 확인을 받는다.
+    confirmKey = `${confirmKey}|cost=${cost === null || cost === undefined ? "?" : cost}`;
     if (pendingRefundConfirm && pendingRefundConfirm.key === confirmKey && now <= pendingRefundConfirm.expiresAt) {
       pendingRefundConfirm = null;
       onConfirm();
@@ -1259,7 +1284,8 @@
     }
     pendingRefundConfirm = { key: confirmKey, expiresAt: now + 3500 };
     if (window.poeShowToast) {
-      window.poeShowToast(false, `[확인] ${label}: 후회의 오브 ${cost}개 소모 — 3초 내 다시 클릭하면 확정합니다.`);
+      const costText = (cost === null || cost === undefined) ? "후회의 오브 소모" : `후회의 오브 ${cost}개 소모`;
+      window.poeShowToast(false, `[확인] ${label}: ${costText} — 3.5초 안에 다시 클릭하면 확정합니다.`);
     }
   }
 
@@ -1434,13 +1460,14 @@
   btnCenter.onclick = () => centerOnClassStart();
   btnChangeClass.onclick = () => openClassModal();
   btnRefundAsc.onclick = () => {
-    const cost = Number(treeState.refundAscCost ?? 0);
+    // 비용 필드가 없으면(다른 판의 DLL) 비용을 모르는 것이므로 null로 확인을 거친다(Codex 지적 22).
+    const cost = treeState.refundAscCost === undefined || treeState.refundAscCost === null ? null : Number(treeState.refundAscCost);
     confirmOrProceedRefund("refundAsc", cost, "전직 전체 회수", () => {
       window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: true });
     });
   };
   btnRefundAll.onclick = () => {
-    const cost = Number(treeState.refundAllCost ?? 0);
+    const cost = treeState.refundAllCost === undefined || treeState.refundAllCost === null ? null : Number(treeState.refundAllCost);
     confirmOrProceedRefund("refundAll", cost, "패시브 전체 회수", () => {
       window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: false });
     });
@@ -1538,7 +1565,7 @@
   btnMasteryRefund.onclick = () => {
     if (openMasteryNodeId > 0) {
       const targetId = openMasteryNodeId;
-      confirmOrProceedRefund(`mastery:${targetId}`, 1, "마스터리 회수", () => {
+      confirmOrProceedRefund(`mastery:${targetId}`, refundCostFor(targetId), "마스터리 회수", () => {
         window.poeSendCommand({
           op: "treeRefundNode",
           reqId: window.poeNextReqId(),
@@ -1660,8 +1687,7 @@
 
     const hasMastery = hit.k === KIND_MASTERY && (treeState.masterySelections || {})[String(hit.id)] !== undefined;
     if (allocatedSet.has(hit.id) || hasMastery) {
-      const ascCost = Number((treeState && treeState.ascendancyRefundCost) || 5);
-      const cost = hit.asc ? ascCost : 1;
+      const cost = refundCostFor(hit.id);
       const label = `${hit.nameKo || hit.name || ("#" + hit.id)} 회수`;
       confirmOrProceedRefund(`node:${hit.id}`, cost, label, () => {
         window.poeSendCommand({

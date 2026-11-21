@@ -7,6 +7,8 @@
 #include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 
+#include <cctype>
+#include <cstdio>
 #include <filesystem>
 
 namespace
@@ -384,4 +386,58 @@ POE_TEST("Config: parses [PassiveTree] section from SkyrimPoE.ini")
     POE_CHECK(cfg.worldDropMaxCount == 16);
     POE_CHECK(cfg.bonusPassivePoints == 0);
     POE_CHECK(cfg.bonusAscendancyPoints == 0);
+}
+
+POE_TEST("PassiveStatParser: every ailment-chance line in real tree_3_30.json is parsed (review R-1)")
+{
+    // 재검수 R-1: 트리 원문의 상태이상 확률 줄(예: "Attacks have 15% chance to cause Bleeding")이
+    // 하나도 빠짐없이 파싱되는지 실제 데이터로 확인한다. 시험용으로 지어낸 문구로는 이 결함을 잡지 못했다.
+    const auto& tree = LoadTree();
+    std::size_t ailmentLines = 0;
+    std::size_t bleedLines = 0;
+    std::size_t attackIgniteLines = 0;
+    for (const auto& [id, node] : tree.AllNodes()) {
+        for (const auto& line : node.stats) {
+            std::string low(line);
+            for (auto& c : low) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            const bool simpleChanceLine =
+                low.find("chance to cause bleeding") != std::string::npos ||
+                low.find("chance to ignite") != std::string::npos ||
+                low.find("chance to poison on hit") != std::string::npos;
+            // 조건부 문구(저주받은 적, 냉각된 적, 주기 발동 등)는 단순 전역 확률이 아니므로 제외한다.
+            if (!simpleChanceLine || low.find("enemies") != std::string::npos || low.find("every ") != std::string::npos) {
+                continue;
+            }
+            ++ailmentLines;
+            PassiveStatTotals one;
+            const bool parsed = PassiveStatParser::ParseLine(line, one);
+            if (!parsed) {
+                std::fprintf(stderr, "  unparsed ailment line (node %u): %s\n", id, line.c_str());
+            }
+            POE_CHECK(parsed);
+            if (low.starts_with("attacks have") && low.find("bleeding") != std::string::npos) {
+                ++bleedLines;
+                POE_CHECK(one.bleedChancePct > 0.0);
+            }
+            if (low.starts_with("attacks have") && low.find("ignite") != std::string::npos) {
+                ++attackIgniteLines;
+                POE_CHECK(one.attackIgniteChancePct > 0.0 && one.igniteChancePct == 0.0);
+            }
+        }
+    }
+    // PoE 3.30 트리 기준: 출혈 12줄(15% 9, 10% 3), 공격 점화 7줄
+    POE_CHECK(bleedLines == 12);
+    POE_CHECK(attackIgniteLines == 7);
+    POE_CHECK(ailmentLines >= bleedLines + attackIgniteLines);
+
+    // 공격·주문 한정 중독은 각자의 칸으로 간다.
+    PassiveStatTotals poison;
+    POE_CHECK(PassiveStatParser::ParseLine("10% chance to Poison on Hit with Attacks", poison));
+    POE_CHECK(PassiveStatParser::ParseLine("15% chance to Poison on Hit with Spell Damage", poison));
+    POE_CHECK(PassiveStatParser::ParseLine("20% chance to Poison on Hit", poison));
+    POE_CHECK_NEAR(poison.attackPoisonChancePct, 10.0, 1e-9);
+    POE_CHECK_NEAR(poison.spellPoisonChancePct, 15.0, 1e-9);
+    POE_CHECK_NEAR(poison.poisonChancePct, 20.0, 1e-9);
 }

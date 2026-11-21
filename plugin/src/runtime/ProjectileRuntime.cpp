@@ -315,7 +315,7 @@ namespace SkyrimPoE::Runtime
                 SkillExecution::SpawnHarmlessVfx(ActorAimCenter(current), FormIds::kVfxShockNova);
                 if (SkillExecution::DealDirectSkillDamage(current, finalDmg, domType, hop == 0, domType == Core::DamageType::Chaos)) {
                     (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        current, cast.poeBaseHitDamage, isCrit, cast.igniteChancePct, cast.starforgeShock);
+                        current, cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, cast.igniteChancePct, cast.starforgeShock);
                     if (isCrit && elemEligible) {
                         CombatHooks::NotifyPlayerElementalCrit();
                     }
@@ -417,7 +417,7 @@ namespace SkyrimPoE::Runtime
                     if (!st || (hitActor && st.get() == hitActor)) continue;
                     if (SkillExecution::DealDirectSkillDamage(st.get(), rolledSkyrimDmg, domType, false, domType == Core::DamageType::Chaos)) {
                         (void)AilmentRuntime::ApplyPlayerHitAilments(
-                            st.get(), shot.cast.poeBaseHitDamage, isCrit, shot.cast.igniteChancePct, shot.cast.starforgeShock);
+                            st.get(), shot.cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, shot.cast.igniteChancePct, shot.cast.starforgeShock);
                         if (isCrit && elemEligible) {
                             anyElemCritHit = true;
                         }
@@ -435,7 +435,7 @@ namespace SkyrimPoE::Runtime
             if (SkillExecution::DealDirectSkillDamage(
                     hitActor, rolledSkyrimDmg, domType, shot.generation == 0 && shot.isAimedPrimary, domType == Core::DamageType::Chaos)) {
                 (void)AilmentRuntime::ApplyPlayerHitAilments(
-                    hitActor, shot.cast.poeBaseHitDamage, isCrit, shot.cast.igniteChancePct, shot.cast.starforgeShock);
+                    hitActor, shot.cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, shot.cast.igniteChancePct, shot.cast.starforgeShock);
                 if (isCrit && elemEligible) {
                     anyElemCritHit = true;
                 }
@@ -637,7 +637,7 @@ namespace SkyrimPoE::Runtime
             for (const auto& t : targets) {
                 if (SkillExecution::DealDirectSkillDamage(t.get(), rolledDmg, domType, false, domType == Core::DamageType::Chaos)) {
                     (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        t.get(), cast.poeBaseHitDamage, isCrit, cast.igniteChancePct, cast.starforgeShock);
+                        t.get(), cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, cast.igniteChancePct, cast.starforgeShock);
                 }
             }
             if (isCrit && !targets.empty() && HasElementalDamage(cast.poeBaseHitDamage)) {
@@ -660,12 +660,15 @@ namespace SkyrimPoE::Runtime
         }
         const std::uint8_t count = std::max<std::uint8_t>(1, cast.projectileCount);
         const float spreadStepRad = (cast.gemId == "Spark") ? 0.24f : 0.12f;
-        const float startYaw = -0.5f * static_cast<float>(count - 1) * spreadStepRad;
+        // 결정 111(C-21, 재검수 R-8): 첫 발(i == 0)은 언제나 조준선 그대로 날아가는 조준탄이고, 나머지는 그 양옆으로
+        // 0, -s, +s, -2s, +2s ... 순서로 벌린다. 홀수 발수는 예전과 같은 대칭 부채꼴이 되고, 짝수 발수도
+        // 조준탄이 정확히 하나 있게 된다(예전 판정 |yaw| < 0.08은 Spark 짝수 발수에서 조준탄 0개, 간격 0.12 짝수에서 2개였음).
         for (std::uint8_t i = 0; i < count; ++i) {
-            const float yawOff = startYaw + static_cast<float>(i) * spreadStepRad;
+            const int ring = (static_cast<int>(i) + 1) / 2;
+            const float side = (i % 2 == 1) ? -1.0f : 1.0f;
+            const float yawOff = side * static_cast<float>(ring) * spreadStepRad;
             const auto dir = RotateYaw(aimDir, yawOff);
-            // 결정 111(C-21): 다중 투사체의 옆 탄은 비조준 판정(비적대 통과)
-            const bool isAimedPrimary = (count == 1) || (std::abs(yawOff) < 0.08f);
+            const bool isAimedPrimary = (i == 0);
             LaunchSingleMissile(
                 projLocalId, aimOrigin, dir, player, cast,
                 cast.pierceCount, cast.chainCount, cast.forkEnabled, cast.alwaysPierce,

@@ -248,8 +248,21 @@ namespace SkyrimPoE::Runtime
             if (!baseObj) return false;
             auto* freshExtra = UniqueIdUtil::CreateGameExtraDataList();
             if (!freshExtra) return false;
-            const auto newKey = ItemTracker::AddObjectWithTrackedUniqueId(player, baseObj, freshExtra);
-            if (!newKey.IsValid()) return false;
+            bool untrackedLeft = false;
+            const auto newKey = ItemTracker::AddObjectWithTrackedUniqueId(
+                player, baseObj, freshExtra, nullptr, ItemTracker::UntrackedAddPolicy::RemoveAgain, &untrackedLeft);
+            if (!newKey.IsValid()) {
+                if (untrackedLeft) {
+                    // 재검수 R-15: 주얼 실물은 가방에 들어갔지만 어픽스를 묶지 못했다. 실패로 돌리면 재시도마다 복제되므로
+                    // 반환된 것으로 처리하고(소켓에서 뺌) 어픽스 유실을 기록한다.
+                    SKSE::log::error("CraftingRuntime: jewel returned without tracking; its affixes could not be attached.");
+                    // 노드 회수·전체 회수·교체·직접 회수 어느 경로든 플레이어가 알 수 있게 HUD로 알린다(Codex 지적 7).
+                    RE::SendHUDMessage::ShowHUDMessage("주얼을 가방으로 돌려받았지만 추적에 실패해 어픽스가 사라졌습니다.");
+                    if (outBaseFormId) *outBaseFormId = baseObj->GetFormID();
+                    return true;
+                }
+                return false;
+            }
             ItemTracker::Upsert(newKey, rec, false);
             if (outKey) *outKey = newKey;
             if (outBaseFormId) *outBaseFormId = baseObj->GetFormID();
@@ -707,9 +720,16 @@ namespace SkyrimPoE::Runtime
             // 원자 반영: 토큰 1 + 지혜의 두루마리 1 차감 → AddObjectWithTrackedUniqueId로 엔진 최종 UID 확정 → ItemTracker 등록
             player->RemoveItem(tokenMisc, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
             player->RemoveItem(wisdomMisc, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-            const Core::InventoryItemKey key = ItemTracker::AddObjectWithTrackedUniqueId(player, baseObj, freshExtra);
+            bool untrackedLeft = false;
+            const Core::InventoryItemKey key = ItemTracker::AddObjectWithTrackedUniqueId(
+                player, baseObj, freshExtra, nullptr, ItemTracker::UntrackedAddPolicy::RemoveAgain, &untrackedLeft);
             if (!key.IsValid()) {
-                // C-5: 추적 ID 확정 실패 시 차감한 토큰·지혜의 두루마리를 환불한다.
+                if (untrackedLeft) {
+                    // 재검수 R-15: 장비가 추적 없이 이미 들어갔고 되돌리지도 못했다. 환불하면 장비가 복제되므로 소모로 처리한다.
+                    res.message = "감정 장비의 고유 ID 추적에 실패했습니다. 장비는 어픽스 없이 가방에 들어갔고 토큰은 소모되었습니다.";
+                    return;
+                }
+                // C-5: 추적 ID 확정 실패 시 차감한 토큰·지혜의 두루마리를 환불한다(장비는 들어가지 않았거나 되돌려짐).
                 player->AddObjectToContainer(tokenMisc, nullptr, 1, nullptr);
                 player->AddObjectToContainer(wisdomMisc, nullptr, 1, nullptr);
                 res.message = "감정 장비의 고유 ID 추적에 실패해 토큰과 두루마리를 되돌렸습니다.";
@@ -793,8 +813,15 @@ namespace SkyrimPoE::Runtime
 
             player->RemoveItem(tokenMisc, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
             player->RemoveItem(wisdomMisc, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-            const Core::InventoryItemKey key = ItemTracker::AddObjectWithTrackedUniqueId(player, baseObj, freshExtra);
+            bool untrackedLeft = false;
+            const Core::InventoryItemKey key = ItemTracker::AddObjectWithTrackedUniqueId(
+                player, baseObj, freshExtra, nullptr, ItemTracker::UntrackedAddPolicy::RemoveAgain, &untrackedLeft);
             if (!key.IsValid()) {
+                if (untrackedLeft) {
+                    // 재검수 R-15: 베이스 아이템이 추적 없이 이미 들어갔다. 환불하면 복제되므로 소모로 처리한다.
+                    res.message = "고유 아이템 추적 ID 등록에 실패했습니다. 베이스 아이템만 가방에 들어갔고 토큰은 소모되었습니다.";
+                    return;
+                }
                 // C-5: 추적 ID 확정 실패 시 차감한 고유 토큰·지혜의 두루마리를 환불한다.
                 player->AddObjectToContainer(tokenMisc, nullptr, 1, nullptr);
                 player->AddObjectToContainer(wisdomMisc, nullptr, 1, nullptr);
@@ -1593,7 +1620,10 @@ namespace SkyrimPoE::Runtime
             res.resultBaseFormId = returnedBaseId;
             res.resultKey = newKey;
             res.resultRecord = rec;
-            res.message = "패시브 주얼을 가방으로 회수했습니다.";
+            // 재검수 R-15: 실물은 돌아왔지만 추적에 실패해 어픽스를 묶지 못한 경우를 그대로 알린다.
+            res.message = newKey.IsValid()
+                ? "패시브 주얼을 가방으로 회수했습니다."
+                : "패시브 주얼을 가방으로 회수했지만 추적에 실패해 어픽스가 사라졌습니다.";
         });
 
         if (res.ok) {

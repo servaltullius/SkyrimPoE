@@ -161,11 +161,14 @@ namespace SkyrimPoE::Runtime
         // 1) 장부에서 해당 인스턴스가 아직 (refFormId, stampUid) 바닥 상태인지 확인
         // 2) 바닥 참조가 살아 있고 실제 베이스가 expectedGemId와 일치하는지 확인
         // 3) 이미 다른 유효 스탬프를 단 참조는 덮어쓰지 않음(Codex A2·B2)
+        // priorKey: 버린 이벤트의 직전 키(oldBaseID, oldUniqueID). 바닥 참조에 이미 붙은 번호가 이 키와 정확히 같을 때만
+        // "이 물건 자신의 옛 스탬프"로 보고 바꿔 쓴다(Codex 교차 검토 2026-11-21 지적 1).
         bool TryStampDroppedWorldRef(
             RE::FormID refFormId,
             std::uint64_t instanceId,
             std::uint16_t stampUid,
-            const std::string& expectedGemId)
+            const std::string& expectedGemId,
+            Core::InventoryItemKey priorKey)
         {
             if (refFormId == 0 || !kGemStampBand.Contains(stampUid) || expectedGemId.empty()) {
                 return false;
@@ -199,9 +202,26 @@ namespace SkyrimPoE::Runtime
 
             if (auto* existing = refr->extraList.GetByType<RE::ExtraUniqueID>()) {
                 if (existing->uniqueID != 0 && !(existing->baseID == refFormId && existing->uniqueID == stampUid)) {
-                    SKSE::log::warn("GemInventory: world ref {:08X} already carries stamp {:08X}:{:04X}; refusing overwrite with {:04X}.",
-                        refFormId, existing->baseID, existing->uniqueID, stampUid);
-                    return true;
+                    // 자동 시험(2026-11-21) 실측: 같은 물건을 다시 버리면 엔진이 바닥 참조 FormID를 다시 쓰고 그 위에 이 젬의
+                    // 예전 스탬프를 남긴다(직전 키였던 경우와, 이미 플레이어 키로 이어진 뒤인데도 그 전 스탬프가 남은 경우 모두 관측).
+                    // 바꿔 쓰는 것은 다음 둘 중 하나일 때뿐이고, 그 밖의 번호(다른 모드·다른 참조·다른 추적 젬)는 거부한다.
+                    //  - 이번 버리기 이벤트의 직전 키(priorKey)와 같다.
+                    //  - 같은 참조(baseID == refFormId)에 붙은 젬 스탬프 대역 번호이고, 장부의 다른 젬이 그 키를 쓰지 않는다.
+                    const Core::InventoryItemKey existingKey{ existing->baseID, existing->uniqueID };
+                    bool ownStale = priorKey.IsValid() && existingKey == priorKey;
+                    if (!ownStale && existing->baseID == refFormId && kGemStampBand.Contains(existing->uniqueID)) {
+                        std::scoped_lock lock(g_mutex);
+                        ownStale = std::none_of(g_entries.begin(), g_entries.end(), [&](const TrackedGemEntry& e) {
+                            return e.gem.instanceId != instanceId && e.key == existingKey;
+                        });
+                    }
+                    if (!ownStale) {
+                        SKSE::log::warn("GemInventory: world ref {:08X} already carries foreign key {:08X}:{:04X}; refusing overwrite with {:04X}.",
+                            refFormId, existing->baseID, existing->uniqueID, stampUid);
+                        return true;
+                    }
+                    SKSE::log::info("GemInventory: replacing this gem's previous stamp {:08X}:{:04X} on world ref {:08X} with {:04X}.",
+                        existing->baseID, existing->uniqueID, refFormId, stampUid);
                 }
                 existing->baseID = refFormId;
                 existing->uniqueID = stampUid;
@@ -247,12 +267,15 @@ namespace SkyrimPoE::Runtime
             std::size_t linked = 0;
             SaveLoad::RunSerializedTransaction([&]() {
                 std::vector<WorldStampLink::WorldLinkCandidate> candidates;
+                std::vector<Core::InventoryItemKey> heldKeys;  // 재검수 R-4: 이 소유자의 인벤토리 항목이 이미 쓰는 키
                 {
                     std::scoped_lock lock(g_mutex);
                     for (const auto& e : g_entries) {
                         if (e.isWorld && e.key.IsValid() && kGemStampBand.Contains(e.key.uniqueId) &&
                             (onlyStamp == 0 || e.key.uniqueId == onlyStamp)) {
                             candidates.push_back(WorldStampLink::WorldLinkCandidate{ e.gem.instanceId, e.key, e.gem.gemId });
+                        } else if (!e.isWorld && e.key.ownerFormId == ownerId) {
+                            heldKeys.push_back(e.key);
                         }
                     }
                 }
@@ -295,7 +318,7 @@ namespace SkyrimPoE::Runtime
                 }
 
                 const auto plan = WorldStampLink::PlanRelinks(
-                    candidates, observed, kGemStampBand, postLoadOwnerNormalized ? ownerId : 0u);
+                    candidates, observed, kGemStampBand, postLoadOwnerNormalized ? ownerId : 0u, heldKeys);
                 for (const std::size_t idx : plan.heldCountGtOne) {
                     const auto& obs = observed[idx];
                     SKSE::log::warn("GemInventory: holding relink for gem '{}' {:08X}:{:04X} because extra count is {} (> 1).",
@@ -307,45 +330,42 @@ namespace SkyrimPoE::Runtime
                         obs.kindId, obs.extraKey.ownerFormId, obs.extraKey.uniqueId);
                 }
 
-                for (const auto& p : plan.planned) {
-                    RE::ExtraDataList* targetExtra = extraPtrs[p.extraIndex];
-                    if (!targetExtra || targetExtra->GetCount() > 1) {
-                        continue;
-                    }
-                    // 실물 재확인(커밋 직전): 묶음이 아직 관측된 키(일반 런타임=바닥 참조:스탬프, 로드 직후=정규화 소유자:스탬프)를 달고 있는지 검증
-                    const auto* preCheck = targetExtra->GetByType<RE::ExtraUniqueID>();
-                    if (!preCheck || preCheck->baseID != p.observedExtraKey.ownerFormId || preCheck->uniqueID != p.observedExtraKey.uniqueId) {
-                        continue;
-                    }
+                // 재검수 R-5: 적용 순서는 WorldStampLink::ExecuteRelinks 한곳에 두고(단위 테스트도 같은 함수를 씀),
+                // 여기서는 엔진 묶음과 젬 장부 접근만 제공한다.
+                class GemRelinkExecutor final : public WorldStampLink::IRelinkExecutor
+                {
+                public:
+                    GemRelinkExecutor(RE::TESObjectREFR* a_owner, std::vector<RE::ExtraDataList*>& a_extras) :
+                        owner_(a_owner), extras_(a_extras)
+                    {}
 
-                    const std::uint16_t newUid = NextFreeInventoryUniqueId(owner);
-                    if (newUid == 0) {
-                        SKSE::log::error("GemInventory: unable to allocate inventory UID while relinking gem instance {}.",
-                            p.instanceId);
-                        continue;
+                    std::optional<Core::InventoryItemKey> ReadExtraKey(std::size_t i) override
+                    {
+                        auto* extra = (i < extras_.size()) ? extras_[i] : nullptr;
+                        const auto* unique = extra ? extra->GetByType<RE::ExtraUniqueID>() : nullptr;
+                        if (!unique) {
+                            return std::nullopt;
+                        }
+                        return Core::InventoryItemKey{ unique->baseID, unique->uniqueID };
                     }
-                    const Core::InventoryItemKey newKey{ ownerId, newUid };
-
-                    bool committed = false;
+                    std::int32_t ExtraCount(std::size_t i) override
+                    {
+                        auto* extra = (i < extras_.size()) ? extras_[i] : nullptr;
+                        return extra ? extra->GetCount() : 0;
+                    }
+                    std::uint16_t AllocateInventoryUid() override { return NextFreeInventoryUniqueId(owner_); }
+                    bool CommitLedger(const WorldStampLink::PlannedRelink& p, const Core::InventoryItemKey& newKey) override
                     {
                         std::scoped_lock lock(g_mutex);
                         for (auto& e : g_entries) {
                             if (e.gem.instanceId == p.instanceId) {
-                                committed = WorldStampLink::CommitRelink(e.key, e.isWorld, p.worldKey, newKey);
-                                break;
+                                return WorldStampLink::CommitRelink(e.key, e.isWorld, p.worldKey, newKey);
                             }
                         }
+                        return false;
                     }
-                    if (!committed) {
-                        // 그사이 다른 이벤트로 키가 바뀌었거나 이미 이어짐: 엔진 묶음을 건드리지 않는다.
-                        continue;
-                    }
-
-                    // 실물 재확인(고쳐 쓰기 직전, Codex A5): 묶음이 아직 관측된 키일 때만 기록
-                    auto* liveUnique = targetExtra->GetByType<RE::ExtraUniqueID>();
-                    if (!liveUnique || liveUnique->baseID != p.observedExtraKey.ownerFormId || liveUnique->uniqueID != p.observedExtraKey.uniqueId) {
-                        SKSE::log::warn("GemInventory: extra key changed before rewrite for gem instance {}; reverting ledger key.",
-                            p.instanceId);
+                    void RevertLedger(const WorldStampLink::PlannedRelink& p, const Core::InventoryItemKey& newKey) override
+                    {
                         std::scoped_lock lock(g_mutex);
                         for (auto& e : g_entries) {
                             if (e.gem.instanceId == p.instanceId && !e.isWorld && e.key == newKey) {
@@ -354,14 +374,44 @@ namespace SkyrimPoE::Runtime
                                 break;
                             }
                         }
-                        continue;
                     }
-                    liveUnique->baseID = ownerId;
-                    liveUnique->uniqueID = newUid;
-                    ++linked;
-                    SKSE::log::info("GemInventory: relinked picked-up gem instance {} {:08X}:{:04X} -> {:08X}:{:04X}.",
-                        p.instanceId, p.worldKey.ownerFormId, p.worldKey.uniqueId, ownerId, newUid);
-                }
+                    bool WriteExtraKey(std::size_t i, const Core::InventoryItemKey& expectedKey,
+                        const Core::InventoryItemKey& newKey) override
+                    {
+                        auto* extra = (i < extras_.size()) ? extras_[i] : nullptr;
+                        auto* unique = extra ? extra->GetByType<RE::ExtraUniqueID>() : nullptr;
+                        if (!unique || unique->baseID != expectedKey.ownerFormId || unique->uniqueID != expectedKey.uniqueId) {
+                            return false;
+                        }
+                        unique->baseID = newKey.ownerFormId;
+                        unique->uniqueID = newKey.uniqueId;
+                        return true;
+                    }
+                    void OnAllocateFailed(const WorldStampLink::PlannedRelink& p) override
+                    {
+                        SKSE::log::error("GemInventory: unable to allocate inventory UID while relinking gem instance {}.", p.instanceId);
+                    }
+                    void OnExtraChangedBeforeRewrite(const WorldStampLink::PlannedRelink& p) override
+                    {
+                        SKSE::log::warn("GemInventory: extra key changed before rewrite for gem instance {}; reverted ledger key.",
+                            p.instanceId);
+                    }
+                    void OnLinked(const WorldStampLink::PlannedRelink& p, const Core::InventoryItemKey& newKey) override
+                    {
+                        // 재검수 R-4: 정확 대조(바닥 참조:스탬프)인지 로드 직후 소유자 정규화 대조인지 남긴다.
+                        // 젬의 정규화는 2026-11-21 자동 시험(G2)에서 owner-normalized로 확인됐다. 아이템은 exact만 관측됐다.
+                        SKSE::log::info("GemInventory: relinked picked-up gem instance {} {:08X}:{:04X} -> {:08X}:{:04X} (match={}, observed {:08X}:{:04X}).",
+                            p.instanceId, p.worldKey.ownerFormId, p.worldKey.uniqueId, newKey.ownerFormId, newKey.uniqueId,
+                            p.observedExtraKey == p.worldKey ? "exact" : "owner-normalized",
+                            p.observedExtraKey.ownerFormId, p.observedExtraKey.uniqueId);
+                    }
+
+                private:
+                    RE::TESObjectREFR* owner_;
+                    std::vector<RE::ExtraDataList*>& extras_;
+                };
+                GemRelinkExecutor exec(owner, extraPtrs);
+                linked = WorldStampLink::ExecuteRelinks(plan, ownerId, exec);
             });
 
             return linked;
@@ -420,6 +470,7 @@ namespace SkyrimPoE::Runtime
                 RE::FormID droppedRefId = 0;
                 std::uint16_t stampUid = 0;
                 std::string droppedGemId;
+                const Core::InventoryItemKey priorKey{ event->oldBaseID, event->oldUniqueID };
 
                 {
                     std::scoped_lock lock(g_mutex);
@@ -460,9 +511,9 @@ namespace SkyrimPoE::Runtime
                 // 결정 123: 버릴 때 바닥 참조 번호 남기기는 결정 119의 예외로 이벤트 안에서(뮤텍스 해제 후) 즉시 수행한다.
                 // 참조가 아직 조회되지 않을 때만 주 갱신 큐로 1회 보완을 예약한다.
                 if (droppedInstanceId != 0 && droppedRefId != 0 && stampUid != 0) {
-                    if (!TryStampDroppedWorldRef(droppedRefId, droppedInstanceId, stampUid, droppedGemId) && g_queue) {
-                        g_queue->Enqueue([droppedRefId, droppedInstanceId, stampUid, droppedGemId]() {
-                            (void)TryStampDroppedWorldRef(droppedRefId, droppedInstanceId, stampUid, droppedGemId);
+                    if (!TryStampDroppedWorldRef(droppedRefId, droppedInstanceId, stampUid, droppedGemId, priorKey) && g_queue) {
+                        g_queue->Enqueue([droppedRefId, droppedInstanceId, stampUid, droppedGemId, priorKey]() {
+                            (void)TryStampDroppedWorldRef(droppedRefId, droppedInstanceId, stampUid, droppedGemId, priorKey);
                         });
                     }
                 }

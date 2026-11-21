@@ -84,12 +84,16 @@ namespace SkyrimPoE::Core
         double attackCostEfficiencyPct = 0.0;
         double spellCostEfficiencyPct = 0.0;
 
-        // 5단계(N-1): 상태이상 유발 확률(%)
+        // 5단계(N-1): 상태이상 유발 확률(%). 출혈은 PoE에서 공격으로만 걸리므로 bleedChancePct는 공격에만 적용된다.
         double igniteChancePct = 0.0;
         double freezeChancePct = 0.0;
         double shockChancePct = 0.0;
         double bleedChancePct = 0.0;
         double poisonChancePct = 0.0;
+        // 재검수 R-1: 공격·주문 한정 문구("Attacks have N% chance to Ignite", "... Poison on Hit with Attacks/Spell Damage")
+        double attackIgniteChancePct = 0.0;
+        double attackPoisonChancePct = 0.0;
+        double spellPoisonChancePct = 0.0;
 
         // 충전 상한 가산
         std::int32_t maxEnduranceBonus = 0;

@@ -9,6 +9,9 @@ from compile_tree import (
     KIND_MASTERY,
     SUPPORTED_KEYSTONE_NAMES,
     compile_tree,
+    is_stat_line_supported_by_cpp,
+    split_stat_line_groups,
+    translate_stat_groups,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -136,6 +139,39 @@ class TestTreeCompiler(unittest.TestCase):
         keystones = [n for n in self.data["nodes"] if n["k"] == KIND_KEYSTONE]
         supported_ks = [n for n in keystones if not n.get("deferred", False)]
         self.assertEqual({n["name"] for n in supported_ks}, SUPPORTED_KEYSTONE_NAMES)
+
+    def test_attack_only_ailment_lines_are_supported(self) -> None:
+        # 재검수 R-1: C++ ParseLine이 읽는 "Attacks have N% ..." 문구는 지원 표시여야 한다.
+        self.assertTrue(is_stat_line_supported_by_cpp("Attacks have 15% chance to cause Bleeding"))
+        self.assertTrue(is_stat_line_supported_by_cpp("Attacks have 10% chance to Ignite"))
+        self.assertTrue(is_stat_line_supported_by_cpp("15% chance to Poison on Hit with Spell Damage"))
+        self.assertFalse(is_stat_line_supported_by_cpp("Attacks have 100% Arcane Might while wielding a Wand"))
+        self.assertFalse(self.nodes_by_id[13273].get("deferred", False))  # Attacks have 15% chance to cause Bleeding
+        self.assertFalse(self.nodes_by_id[15727].get("deferred", False))  # Attacks have 15% chance to Ignite
+
+    def test_translation_keeps_part_translations_after_merge(self) -> None:
+        # 재검수 R-6: 줄을 합쳐도 조각별 번역이 모두 있으면 한글 문장으로 잇고, 하나라도 없으면 영어 문장을 둔다.
+        groups = split_stat_line_groups(["30% increased Projectile Speed\nProjectiles gain Damage\nas they travel"])
+        self.assertEqual(groups, [["30% increased Projectile Speed"], ["Projectiles gain Damage", "as they travel"]])
+        sd = {"30% increased Projectile Speed": "투사체 속도 30% 증가", "Projectiles gain Damage": "투사체가 피해를 얻음",
+              "as they travel": "이동할수록"}
+        self.assertEqual(translate_stat_groups(groups, sd), ["투사체 속도 30% 증가", "투사체가 피해를 얻음 이동할수록"])
+        partial = {"Projectiles gain Damage": "투사체가 피해를 얻음"}
+        self.assertEqual(translate_stat_groups(groups, partial),
+                         ["30% increased Projectile Speed", "Projectiles gain Damage as they travel"])
+        joined = {"30% increased Projectile Speed / Projectiles gain Damage / as they travel": "가 / 나 / 다"}
+        self.assertEqual(translate_stat_groups(groups, joined), ["가", "나 다"])
+        # 실제 데이터: 합쳐진 줄에서도 번역이 살아 있는 노드(한글 사전이 있을 때만 의미가 있음)
+        if DEFAULT_KO_DIR.is_dir():
+            self.assertNotEqual(self.nodes_by_id[5430]["statsKo"][0], self.nodes_by_id[5430]["stats"][0])
+
+    def test_committed_tree_matches_compiler_output(self) -> None:
+        # 재검수 R-27: 컴파일러를 바꾸고 데이터 재생성을 잊으면 잡는다(PoB 원본이 있을 때만).
+        if not DEFAULT_POB_DIR.is_dir() or not DEFAULT_KO_DIR.is_dir():
+            self.skipTest("PoB 원본이나 한글 사전이 없어 커밋된 팩과 같은 조건으로 컴파일할 수 없음")
+        self.assertTrue(TREE_JSON.is_file(), "data/packs/tree_3_30.json이 없음")
+        committed = json.loads(TREE_JSON.read_text(encoding="utf-8"))
+        self.assertEqual(committed, self.data, "data/packs/tree_3_30.json이 compile_tree.py 출력과 다름. 다시 생성하세요.")
 
 
 if __name__ == "__main__":

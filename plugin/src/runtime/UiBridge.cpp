@@ -584,6 +584,28 @@ namespace SkyrimPoE::Runtime
             treeJ["refundAscCost"] = treeLoaded
                 ? Core::PassiveTree::GetRefundAllCost(*g_treeData, state.tree, true, *g_config)
                 : 0u;
+            // 재검수 R-7: 노드 하나를 회수할 때의 실제 비용(자동 회수되는 마스터리 포함)을 C++ 계산 그대로 보낸다.
+            // JS가 따로 근사하면 마스터리가 딸린 주요 패시브(1 + 자동 회수 수)와 AscendancyRefundCost=0일 때 어긋났다.
+            json refundNodeCosts = json::object();
+            if (treeLoaded) {
+                for (const auto nid : state.tree.allocatedNodes) {
+                    refundNodeCosts[std::to_string(nid)] =
+                        Core::PassiveTree::GetRefundNodeCost(*g_treeData, state.tree, nid, *g_config);
+                }
+                for (const auto& [mNode, mEff] : state.tree.masterySelections) {
+                    refundNodeCosts[std::to_string(mNode)] =
+                        Core::PassiveTree::GetRefundNodeCost(*g_treeData, state.tree, mNode, *g_config);
+                }
+            }
+            treeJ["refundNodeCosts"] = std::move(refundNodeCosts);
+            // 이미 효과를 고른 마스터리에서 다른 효과로 바꿀 때의 비용(SelectMastery가 실제로 쓰는 함수로 계산)
+            json masterySwapCosts = json::object();
+            for (const auto& [mNode, mEff] : state.tree.masterySelections) {
+                const std::uint32_t otherEffect = (mEff == 0u) ? 1u : 0u;  // 현재와 다른 아무 효과
+                masterySwapCosts[std::to_string(mNode)] =
+                    Core::PassiveTree::GetSelectMasterySwapCost(state.tree, mNode, otherEffect, *g_config);
+            }
+            treeJ["masterySwapCosts"] = std::move(masterySwapCosts);
 
             // 5단계(결정 164): 패시브 주얼 소켓 장착 현황 직렬화
             json sockJewelsJ = json::object();

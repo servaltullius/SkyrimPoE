@@ -27,11 +27,19 @@ namespace SkyrimPoE::Runtime
         // 주 갱신 스레드 틱: 0.25s 주기 DoT 적용 및 SpeedMult 동기화/원복
         static void Tick(double deltaSec, bool gamePaused);
 
+        // 재검수 R-1: 적중 종류. 출혈과 공격·주문 한정 확률을 가르는 데 쓴다.
+        enum class HitKind : std::uint8_t
+        {
+            Attack,  // 근접·활·사이클론 타격
+            Spell,   // 손 시전·발동 주문, 투사체 주문
+        };
+
         // 플레이어 타격/주문 적중 시 대상 액터에 상태이상 적용(주 갱신 스레드 전용)
         static Core::AilmentApplyResult ApplyPlayerHitAilments(
             RE::Actor* target,
             const Core::DamagePacket& poeDamage,
             bool isCrit,
+            HitKind hitKind,
             double igniteChancePct = 0.0,
             bool starforgeShock = false,
             double bleedChancePct = 0.0,

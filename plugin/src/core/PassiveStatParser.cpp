@@ -183,6 +183,25 @@ namespace SkyrimPoE::Core
             }
         }
 
+        // 재검수 R-1: PoE 3.30 트리의 공격 한정 상태이상 문구는 숫자 앞에 "Attacks have"가 붙는다.
+        // ("Attacks have N% chance to cause Bleeding" 12줄(15% 9, 10% 3), "Attacks have N% chance to Ignite" 7줄)
+        if (low.starts_with("attacks have ")) {
+            double aVal = 0.0;
+            bool aPct = false;
+            std::string_view aRest;
+            if (ParseLeadingNumber(std::string_view(low).substr(13), aVal, aPct, aRest) && aPct) {
+                if (aRest == "chance to cause bleeding") {
+                    out.bleedChancePct += aVal;
+                    return true;
+                }
+                if (aRest == "chance to ignite") {
+                    out.attackIgniteChancePct += aVal;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         // ---- 2. 선두 수치 기반 스탯 파싱 ----
         double val = 0.0;
         bool pct = false;
@@ -364,9 +383,14 @@ namespace SkyrimPoE::Core
             rest == "chance to cause bleeding with attacks") {
             out.bleedChancePct += val; return true;
         }
-        if (rest == "chance to poison on hit" || rest == "chance to poison" ||
-            rest == "chance to poison on hit with attacks") {
+        if (rest == "chance to poison on hit" || rest == "chance to poison") {
             out.poisonChancePct += val; return true;
+        }
+        if (rest == "chance to poison on hit with attacks") {
+            out.attackPoisonChancePct += val; return true;
+        }
+        if (rest == "chance to poison on hit with spell damage") {
+            out.spellPoisonChancePct += val; return true;
         }
 
         return false;

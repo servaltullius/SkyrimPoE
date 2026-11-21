@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -105,14 +106,20 @@ namespace SkyrimPoE::Core::WorldStampLink
     // - 묶음 개수가 1보다 크면 보류(heldCountGtOne)
     // - 동일 후보에 맞는 묶음이 2개 이상이거나, 한 묶음에 맞는 후보가 2개 이상이면 모두 보류(heldAmbiguous)
     // - postLoadNormalizedOwnerId == 0(일반 런타임): (바닥 참조 FormID, 스탬프) 정확 일치만 허용(2순위 폴백 없음).
-    // - postLoadNormalizedOwnerId != 0(세이브 로드 직후 PostLoadInit 전용): 실게임 AE 1.6.1170에서 확인된
-    //   .ess 로더의 baseID 정규화(삭제된 FF 바닥 참조 → 소유자 FormID, 스탬프 대역 uniqueID 보존)에 한해
-    //   정확 일치가 없을 때 (소유자 FormID, 스탬프 대역) + kindId 1:1 유일 일치를 허용한다.
+    // - postLoadNormalizedOwnerId != 0(세이브 로드 직후 PostLoadInit 전용): .ess 로더가 주운 묶음의 baseID(삭제된 FF 바닥 참조)를
+    //   소유자 FormID로 바꾸고 스탬프 대역 uniqueID는 남긴다(AE 1.6.1170 자동 시험 2026-11-21 실측:
+    //   `match=owner-normalized, observed 00000014:7F03`, 재검수 R-4). 그래서 정확 일치가 없을 때
+    //   (소유자 FormID, 스탬프 대역) + kindId 1:1 유일 일치를 허용한다.
+    //   어느 대조로 이었는지는 ExecuteRelinks의 OnLinked에서 observedExtraKey != worldKey로 가를 수 있다.
+    //   재검수 R-4: heldInventoryKeys(장부에서 이미 인벤토리 항목의 키로 쓰는 키)에 든 묶음은 이 2차 대조에서 제외한다.
+    //   (소유자, 스탬프)가 다른 추적 젬의 실제 키와 같을 때 바닥 젬 데이터를 그 젬에 붙이는 것을 막는 방어다.
+    //   우리 인벤토리 번호 대역(0x7000~0x7EFF)은 스탬프 대역과 겹치지 않아, 엔진이 번호를 다시 매긴 경우에만 걸린다(드묾).
     [[nodiscard]] RelinkPlanResult PlanRelinks(
         const std::vector<WorldLinkCandidate>& candidates,
         const std::vector<ObservedInventoryExtra>& extras,
         StampBand band,
-        std::uint32_t postLoadNormalizedOwnerId = 0);
+        std::uint32_t postLoadNormalizedOwnerId = 0,
+        const std::vector<InventoryItemKey>& heldInventoryKeys = {});
 
     // 바닥 키를 새 소유자의 인벤토리 키로 옮긴다. 항목이 아직 기대한 바닥 키일 때만 바꾸고 true를 반환한다.
     // 이미 이어졌거나 그사이 다른 이벤트로 키가 바뀐 경우, 새 키가 무효한 경우 아무것도 바꾸지 않는다.
@@ -121,4 +128,37 @@ namespace SkyrimPoE::Core::WorldStampLink
         bool& isWorld,
         const InventoryItemKey& expectedWorldKey,
         const InventoryItemKey& newInventoryKey) noexcept;
+
+    // 재검수 R-5: 계획(PlanRelinks)을 실제로 적용하는 순서를 한곳에 둔다. 젬·아이템 추적기와 단위 테스트가 모두 이 함수를 쓴다.
+    // 엔진·장부 접근은 아래 인터페이스로 주입한다(제품은 ExtraDataList·추적 장부, 테스트는 모의 객체).
+    class IRelinkExecutor
+    {
+    public:
+        virtual ~IRelinkExecutor() = default;
+        // 묶음의 현재 ExtraUniqueID 키. 묶음이 사라졌거나 번호가 없으면 nullopt.
+        [[nodiscard]] virtual std::optional<InventoryItemKey> ReadExtraKey(std::size_t extraIndex) = 0;
+        [[nodiscard]] virtual std::int32_t ExtraCount(std::size_t extraIndex) = 0;
+        // 소유자 인벤토리에서 쓸 새 번호. 0이면 할당 실패.
+        [[nodiscard]] virtual std::uint16_t AllocateInventoryUid() = 0;
+        // 장부에서 그 항목의 키를 worldKey → newKey로 옮긴다(CommitRelink 규칙). 옮겼으면 true.
+        [[nodiscard]] virtual bool CommitLedger(const PlannedRelink& p, const InventoryItemKey& newKey) = 0;
+        // CommitLedger를 되돌린다(newKey → worldKey, 바닥 상태로).
+        virtual void RevertLedger(const PlannedRelink& p, const InventoryItemKey& newKey) = 0;
+        // 묶음이 지금도 expectedKey를 달고 있을 때만 newKey로 고쳐 쓰고 true를 돌려준다(쓰는 순간의 재확인, Codex 지적 4).
+        [[nodiscard]] virtual bool WriteExtraKey(
+            std::size_t extraIndex, const InventoryItemKey& expectedKey, const InventoryItemKey& newKey) = 0;
+
+        // 알림(로그용). 기본은 아무것도 하지 않는다.
+        virtual void OnAllocateFailed(const PlannedRelink&) {}
+        virtual void OnExtraChangedBeforeRewrite(const PlannedRelink&) {}
+        virtual void OnLinked(const PlannedRelink&, const InventoryItemKey& /*newKey*/) {}
+    };
+
+    // planned 각 항목에 대해: 개수가 정확히 1인지 확인 → 묶음이 아직 관측 키인지 확인 → 번호 할당 → 장부 커밋 →
+    // 고쳐 쓰기(쓰는 순간에도 관측 키인지 확인, 실패하면 장부 원복). 실제로 고쳐 쓴 개수만 반환한다.
+    // 장부 커밋에 실패하면(그사이 이어졌거나 키가 바뀜) 묶음을 건드리지 않는다.
+    [[nodiscard]] std::size_t ExecuteRelinks(
+        const RelinkPlanResult& plan,
+        std::uint32_t ownerId,
+        IRelinkExecutor& exec);
 }

@@ -284,22 +284,29 @@ def orbit_angles(count: int) -> list[float]:
     return [math.radians(d) for d in degrees]
 
 
-def split_stat_lines(raw_stats: list[Any]) -> list[str]:
-    # C-31: PoB 원문 내 문장 중간 줄바꿈(소문자 알파벳으로 이어지는 줄)은 공백으로 이어 붙여
-    # 하나의 논리적 스탯 문장이 두 줄로 쪼개지지 않게 정규화한다.
-    out: list[str] = []
+def split_stat_line_groups(raw_stats: list[Any]) -> list[list[str]]:
+    """PoB 원문 스탯을 논리적 문장 단위로 묶는다. 묶음 하나는 원문 줄(조각) 목록이다.
+
+    C-31: 한 원문 항목 안에서 문장 중간 줄바꿈(소문자로 이어지는 줄)은 앞 줄과 한 문장으로 묶는다.
+    재검수 R-6: 한글 번역은 원문 조각 단위로도 찾아야 하므로 조각을 버리지 않고 남긴다.
+    """
+    groups: list[list[str]] = []
     for entry in raw_stats:
         if not isinstance(entry, str):
             continue
         parts = [p.strip() for p in entry.replace("\r\n", "\n").replace("\r", "\n").split("\n") if p.strip()]
-        merged: list[str] = []
+        entry_groups: list[list[str]] = []
         for part in parts:
-            if merged and part[0].islower() and not merged[-1].endswith((".", ")")):
-                merged[-1] = merged[-1] + " " + part
+            if entry_groups and part[0].islower() and not entry_groups[-1][-1].endswith((".", ")")):
+                entry_groups[-1].append(part)
             else:
-                merged.append(part)
-        out.extend(merged)
-    return out
+                entry_groups.append([part])
+        groups.extend(entry_groups)
+    return groups
+
+
+def split_stat_lines(raw_stats: list[Any]) -> list[str]:
+    return [" ".join(g) for g in split_stat_line_groups(raw_stats)]
 
 
 def load_korean_maps(ko_dir: Path | None) -> tuple[dict[str, str], dict[str, str]]:
@@ -341,23 +348,42 @@ def load_korean_maps(ko_dir: Path | None) -> tuple[dict[str, str], dict[str, str
     return dn_map, sd_map
 
 
-def translate_stats(en_lines: list[str], sd_map: dict[str, str]) -> list[str]:
-    if not en_lines:
+def translate_stat_groups(groups: list[list[str]], sd_map: dict[str, str]) -> list[str]:
+    """묶음(논리 문장)마다 한글 문장을 하나씩 돌려준다. 결과 길이는 묶음 수와 같다.
+
+    찾는 순서(재검수 R-6: 줄을 합치기 전에 있던 번역을 잃지 않기 위함):
+    1. 원문 조각 전체를 " / "로 이은 키(여러 줄 노드 통번역). 한글 조각 수가 원문 조각 수와 같으면 묶음대로 다시 잇는다.
+    2. 묶음 문장 전체.
+    3. 묶음의 조각마다 찾아 공백으로 잇는다. 하나라도 없으면 영어 문장을 그대로 둔다.
+    """
+    if not groups:
         return []
-    # Check joined " / " key first if multi-line
-    if len(en_lines) > 1:
-        joined = " / ".join(en_lines)
+    flat = [part for g in groups for part in g]
+    if len(flat) > 1:
+        joined = " / ".join(flat)
         if joined in sd_map:
             ko_parts = [p.strip() for p in sd_map[joined].split(" / ")]
-            if len(ko_parts) == len(en_lines):
-                return ko_parts
+            if len(ko_parts) == len(flat):
+                regrouped: list[str] = []
+                idx = 0
+                for g in groups:
+                    regrouped.append(" ".join(ko_parts[idx:idx + len(g)]))
+                    idx += len(g)
+                return regrouped
     out: list[str] = []
-    for line in en_lines:
-        if line in sd_map:
-            out.append(sd_map[line])
+    for g in groups:
+        sentence = " ".join(g)
+        if sentence in sd_map:
+            out.append(sd_map[sentence])
+        elif len(g) > 1 and all(part in sd_map for part in g):
+            out.append(" ".join(sd_map[part] for part in g))
         else:
-            out.append(line)
+            out.append(sentence)
     return out
+
+
+def translate_stats(en_lines: list[str], sd_map: dict[str, str]) -> list[str]:
+    return translate_stat_groups([[line] for line in en_lines], sd_map)
 
 
 def classify_icon_category(kind: int, name: str, stats: list[str], asc_name: str) -> str:
@@ -485,7 +511,12 @@ _CPP_SUPPORTED_REST_EXACT = {
     "chance to freeze, shock and ignite",
     "chance to cause bleeding", "chance to bleed", "chance to cause bleeding with attacks",
     "chance to poison on hit", "chance to poison", "chance to poison on hit with attacks",
+    "chance to poison on hit with spell damage",
 }
+
+# 재검수 R-1: C++ ParseLine의 "Attacks have N% ..." 분기와 같은 꼬리 문구
+_CPP_SUPPORTED_ATTACKS_HAVE_REST = {"chance to cause bleeding", "chance to ignite"}
+_ATTACKS_HAVE_RE = re.compile(r"^attacks have\s+[+-]?\d+(?:\.\d+)?%\s*(.+)$")  # C++ ParseLeadingNumber처럼 % 뒤 공백은 선택
 
 _LEADING_NUM_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?%?\s+(.+)$")
 _PREVENT_SUPP_RE = re.compile(r"^prevent\s+[+-]?\d+(?:\.\d+)?%\s+of suppressed spell damage$")
@@ -501,6 +532,9 @@ def is_stat_line_supported_by_cpp(line: str) -> bool:
         return True
     if _PREVENT_SUPP_RE.match(low):
         return True
+    if low.startswith("attacks have "):
+        ma = _ATTACKS_HAVE_RE.match(low)
+        return bool(ma) and ma.group(1).strip() in _CPP_SUPPORTED_ATTACKS_HAVE_REST
     m = _LEADING_NUM_RE.match(low)
     if not m:
         return False
@@ -728,8 +762,9 @@ def compile_tree(pob_dir: Path, ko_dir: Path | None, version: str = "3_30") -> d
             if en_name in dn_map:
                 ko_name_hits += 1
 
-        en_stats = split_stat_lines(as_list(n.get("stats")))
-        ko_stats = translate_stats(en_stats, sd_map)
+        stat_groups = split_stat_line_groups(as_list(n.get("stats")))
+        en_stats = [" ".join(g) for g in stat_groups]
+        ko_stats = translate_stat_groups(stat_groups, sd_map)
         stat_lines_total += len(en_stats)
         stat_lines_ko += sum(1 for e, k in zip(en_stats, ko_stats) if e != k)
 
@@ -762,8 +797,9 @@ def compile_tree(pob_dir: Path, ko_dir: Path | None, version: str = "3_30") -> d
                 effect_ids.append(eid)
                 ekey = str(eid)
                 if ekey not in mastery_effects_table:
-                    e_stats = split_stat_lines(as_list(eff.get("stats")))
-                    e_ko = translate_stats(e_stats, sd_map)
+                    e_groups = split_stat_line_groups(as_list(eff.get("stats")))
+                    e_stats = [" ".join(g) for g in e_groups]
+                    e_ko = translate_stat_groups(e_groups, sd_map)
                     mastery_effects_table[ekey] = {
                         "id": eid,
                         "stats": e_stats,

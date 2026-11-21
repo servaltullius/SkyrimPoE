@@ -305,6 +305,12 @@ namespace SkyrimPoE::Runtime
         // 시나리오 C 추적 상태
         bool g_tempEsInjected = false;
         double g_esMaxForC = 0.0;
+        // 재검수(2026-11-21 자동 시험 실측): 시나리오 B의 늦은 사망 확정·레벨업이 C 도중 스탯을 다시 빌드하면 임시 ES가
+        // 바뀌어 C2가 실행마다 갈렸다(스키버 추가 소환이 많을수록). C는 그 처리가 가라앉은 뒤 ES를 다시 주입하고 시작한다.
+        bool g_cEsSettled = false;
+        double g_cEsSettledAt = 0.0;
+        int g_cEsRestarts = 0;  // C1~C2 사이에 스탯이 다시 빌드돼 ES 최대치가 바뀌면 C를 다시 시작한 횟수(Codex 지적 25)
+        constexpr double kCEsSettleSec = 3.0;
         double g_esAfterHit = 0.0;
         CycloneTelemetry g_telBeforeStagger{};
         RE::ActorHandle g_foxHandle{};
@@ -828,6 +834,8 @@ namespace SkyrimPoE::Runtime
                 (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
                 g_tempEsInjected = true;
             }
+            g_cEsSettled = false;
+            g_cEsSettledAt = 0.0;
             EnterPhase(Phase::ScenarioC_EsTrigger);
         }
 
@@ -1714,8 +1722,27 @@ namespace SkyrimPoE::Runtime
                 BeginScenarioC_Stagger();
                 break;
             }
+            if (!g_cEsSettled) {
+                // B의 늦은 사망 확정(약 2초)과 그에 따른 레벨업·스탯 재빌드가 끝나기를 기다린 뒤, 현재 상태로 임시 ES를 다시 주입한다.
+                if (g_unpausedAccumSec < kCEsSettleSec && PhaseElapsedSec() < kCEsSettleSec + 3.0) {
+                    break;
+                }
+                if (g_tempEsInjected && g_statEngine && g_dataPack && g_config) {
+                    const auto stNow = SaveLoad::GetStateCopy();
+                    Core::Layer1Input l1;
+                    l1.exileLevel = stNow.exileLevel;
+                    l1.className = stNow.className.empty() ? "Scion" : stNow.className;
+                    l1.slots = stNow.slots;
+                    l1.flatEnergyShield = 100.0;
+                    g_statEngine->SetLayer1(l1);
+                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                }
+                g_cEsSettled = true;
+                g_cEsSettledAt = g_unpausedAccumSec;
+                break;
+            }
             const auto esSnap = g_esPool->Snapshot();
-            if (esSnap.max <= 0.0 && g_unpausedAccumSec < 1.2 && PhaseElapsedSec() < 3.5) {
+            if (esSnap.max <= 0.0 && g_unpausedAccumSec < g_cEsSettledAt + 1.2 && PhaseElapsedSec() < kCEsSettleSec + 6.5) {
                 // 직전 시나리오 B의 지연된 스키버 TESDeathEvent가 SyncStateToStatEngine()으로
                 // 임시 flatEnergyShield=100을 덮어쓸 수 있으므로 미반영 시 재주입한다.
                 if (g_tempEsInjected && g_statEngine && g_dataPack && g_config) {
@@ -1735,7 +1762,9 @@ namespace SkyrimPoE::Runtime
             }
             g_esMaxForC = esSnap.max;
             if (g_esMaxForC <= 0.0) {
-                Check("C1_EsAbsorbDifficultyAligned", false, "esMax remained 0.0 after temporary ES injection.");
+                if (g_cEsRestarts == 0) {  // 재시작했다면 C1은 이미 기록됨(기대 건수 50을 지키기 위해 한 번만 셈)
+                    Check("C1_EsAbsorbDifficultyAligned", false, "esMax remained 0.0 after temporary ES injection.");
+                }
                 Check("C2_EsRechargeDelayHoldAt1s", false, "Skipped because esMax == 0.");
                 Check("C3_EsRechargeActiveAfter2s", false, "Skipped because esMax == 0.");
                 BeginScenarioC_Stagger();
@@ -1750,9 +1779,16 @@ namespace SkyrimPoE::Runtime
             const double expectedAbsorb = std::min(g_esMaxForC, 10.0 * diffMult);
             const bool c1Ok = (std::abs(res.absorbedEffectiveDamage - expectedAbsorb) < 0.1) &&
                 (g_esAfterHit < g_esMaxForC - 0.1);
-            Check("C1_EsAbsorbDifficultyAligned", c1Ok,
-                std::format("esMax={:.2f}, diffMult={:.2f}, absorbed={:.2f} (exp {:.2f}), esAfter={:.2f}",
-                    g_esMaxForC, diffMult, res.absorbedEffectiveDamage, expectedAbsorb, g_esAfterHit));
+            const auto c1Detail = std::format("esMax={:.2f}, diffMult={:.2f}, absorbed={:.2f} (exp {:.2f}), esAfter={:.2f}",
+                g_esMaxForC, diffMult, res.absorbedEffectiveDamage, expectedAbsorb, g_esAfterHit);
+            if (g_cEsRestarts == 0) {
+                Check("C1_EsAbsorbDifficultyAligned", c1Ok, c1Detail);
+            } else if (!c1Ok) {
+                // 재시작한 측정의 C1이 실패하면 숨기지 않는다(같은 이름으로 한 번 더 기록 → 기대 건수 초과로 전체 FAIL).
+                Check("C1_EsAbsorbDifficultyAligned", false, c1Detail + " (after C restart)");
+            } else {
+                LogInfo("Scenario C restart: C1 re-measured OK: " + c1Detail);
+            }
 
             EnterPhase(Phase::ScenarioC_EsDelay1s);
             break;
@@ -1764,6 +1800,15 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             const auto snap = g_esPool->Snapshot();
+            // Codex 지적 25: 3초 대기 뒤에도 늦은 레벨업 등으로 스탯이 다시 빌드돼 ES 최대치가 바뀌었다면 이 측정은 무효다.
+            // 실패로 세지 않고 C를 처음부터 다시 한다(최대 2회). 다시 한 횟수는 C2 상세에 남긴다.
+            if (std::abs(snap.max - g_esMaxForC) > 0.01 && g_cEsRestarts < 2) {
+                ++g_cEsRestarts;
+                LogInfo(std::format("Scenario C: ES max changed during measurement ({:.2f} -> {:.2f}); restarting C (#{}).",
+                    g_esMaxForC, snap.max, g_cEsRestarts));
+                BeginScenarioC_Es();
+                break;
+            }
             // EnergyShieldPool 자체 시계(timeSinceLastHit)를 직접 관측해 프레임 스파이크 편차를 원천 차단한다.
             if (snap.timeSinceLastHit < 1.0 && PhaseElapsedSec() < 5.0) {
                 break;
@@ -1773,8 +1818,8 @@ namespace SkyrimPoE::Runtime
                 (snap.timeSinceLastHit < snap.rechargeDelay) &&
                 (std::abs(snap.current - g_esAfterHit) < 0.05);
             Check("C2_EsRechargeDelayHoldAt1s", holdOk,
-                std::format("t={:.2f}s (< {:.2f}s), es={:.2f} (expected {:.2f})",
-                    snap.timeSinceLastHit, snap.rechargeDelay, snap.current, g_esAfterHit));
+                std::format("t={:.2f}s (< {:.2f}s), es={:.2f} (expected {:.2f}), cRestarts={}",
+                    snap.timeSinceLastHit, snap.rechargeDelay, snap.current, g_esAfterHit, g_cEsRestarts));
             EnterPhase(Phase::ScenarioC_EsRecharge3s);
             break;
         }
@@ -3328,7 +3373,8 @@ namespace SkyrimPoE::Runtime
                     ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Lightning)] = { 120.0, 120.0 };
                     ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { 100.0, 100.0 };
                     ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Chaos)] = { 100.0, 100.0 };
-                    (void)AilmentRuntime::ApplyPlayerHitAilments(target, ailPkt, true, 100.0, false, 100.0, 100.0);
+                    (void)AilmentRuntime::ApplyPlayerHitAilments(
+                        target, ailPkt, true, AilmentRuntime::HitKind::Attack, 100.0, false, 100.0, 100.0);
 
                     const double shockMult = AilmentRuntime::ShockDamageMultiplier(tid);
                     const auto stAil = AilmentRuntime::GetStateCopy(tid);
@@ -3850,7 +3896,8 @@ namespace SkyrimPoE::Runtime
                         mob->EnableAI(false);
                         Core::DamagePacket coldPkt{};
                         coldPkt.byType[static_cast<std::size_t>(Core::DamageType::Cold)] = { 5000.0, 5000.0 };
-                        (void)AilmentRuntime::ApplyPlayerHitAilments(mob, coldPkt, true, 0.0, false);
+                        (void)AilmentRuntime::ApplyPlayerHitAilments(
+                            mob, coldPkt, true, AilmentRuntime::HitKind::Spell, 0.0, false);
                         g_gQ1ActorFormId = mob->GetFormID();
                         g_gQ1SpeedBeforeSave = mob->GetActorValueModifier(
                             RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);

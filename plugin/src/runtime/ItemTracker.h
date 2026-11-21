@@ -37,13 +37,24 @@ namespace SkyrimPoE::Runtime
             RE::ExtraDataList* extraList,
             RE::ExtraDataList** outFinalExtra = nullptr);
 
+        // 재검수 R-15: 넣은 뒤 추적 번호를 확인하지 못했을 때의 처리
+        enum class UntrackedAddPolicy : std::uint8_t
+        {
+            RemoveAgain,  // 넣은 1개를 일반품 제거로 되돌린다(감정·주얼 반환: 실패 시 환불·재시도해도 복제가 없게)
+            Keep,         // 넣은 그대로 둔다(스택 분리: 원래 가진 아이템이므로 되돌리면 잃는다)
+        };
+
         // 주 갱신 스레드 전용: 신규 ExtraDataList에 임시 UID를 붙여 AddObjectToContainer를 호출한 뒤,
         // 엔진이 동기 TESUniqueIDChangeEvent로 재할당한 실제 최종 UID와 ExtraDataList*를 반환한다.
+        // 무효 키를 반환할 때 outUntrackedItemLeft가 true이면 "아이템은 인벤토리에 들어갔지만 추적되지 않음"이다.
+        // false이면 인벤토리에 남은 것이 없다(넣지 못했거나 되돌림). 호출부는 이 값으로 환불·재시도 여부를 정해야 한다.
         [[nodiscard]] static Core::InventoryItemKey AddObjectWithTrackedUniqueId(
             RE::TESObjectREFR* owner,
             RE::TESBoundObject* baseObj,
             RE::ExtraDataList* freshExtra,
-            RE::ExtraDataList** outFinalExtra = nullptr);
+            RE::ExtraDataList** outFinalExtra = nullptr,
+            UntrackedAddPolicy policy = UntrackedAddPolicy::RemoveAgain,
+            bool* outUntrackedItemLeft = nullptr);
 
         // 주 갱신 스레드 전용(계약: g_txMutex 미보유 상태에서만 호출, C-34):
         // owner 인벤토리에 (바닥 참조, 스탬프) 묶음으로 남아 있는 추적 아이템을 owner의 새 인벤토리 번호로 다시 잇는다.

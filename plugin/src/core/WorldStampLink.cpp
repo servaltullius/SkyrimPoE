@@ -1,5 +1,7 @@
 #include "core/WorldStampLink.h"
 
+#include <algorithm>
+
 #include <unordered_map>
 
 namespace SkyrimPoE::Core::WorldStampLink
@@ -60,7 +62,8 @@ namespace SkyrimPoE::Core::WorldStampLink
         const std::vector<WorldLinkCandidate>& candidates,
         const std::vector<ObservedInventoryExtra>& extras,
         StampBand band,
-        std::uint32_t postLoadNormalizedOwnerId)
+        std::uint32_t postLoadNormalizedOwnerId,
+        const std::vector<InventoryItemKey>& heldInventoryKeys)
     {
         RelinkPlanResult result;
         if (candidates.empty() || extras.empty()) {
@@ -92,7 +95,8 @@ namespace SkyrimPoE::Core::WorldStampLink
             // 2차(PostLoadInit 전용): .ess 로더가 삭제된 FF 바닥 참조 baseID를 컨테이너 소유자로 정규화한 경우
             // 스탬프 대역 uniqueID + kindId가 유일 일치할 때만 연결한다(런타임에서는 postLoadNormalizedOwnerId == 0).
             if (matchCount == 0 && postLoadNormalizedOwnerId != 0 &&
-                ex.extraKey.ownerFormId == postLoadNormalizedOwnerId) {
+                ex.extraKey.ownerFormId == postLoadNormalizedOwnerId &&
+                std::find(heldInventoryKeys.begin(), heldInventoryKeys.end(), ex.extraKey) == heldInventoryKeys.end()) {
                 for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
                     if (candidates[ci].worldKey.uniqueId == ex.extraKey.uniqueId &&
                         candidates[ci].kindId == ex.kindId) {
@@ -143,5 +147,47 @@ namespace SkyrimPoE::Core::WorldStampLink
         key = newInventoryKey;
         isWorld = false;
         return true;
+    }
+
+    std::size_t ExecuteRelinks(
+        const RelinkPlanResult& plan,
+        std::uint32_t ownerId,
+        IRelinkExecutor& exec)
+    {
+        std::size_t linked = 0;
+        for (const auto& p : plan.planned) {
+            if (exec.ExtraCount(p.extraIndex) != 1) {
+                continue;
+            }
+            // 커밋 직전 실물 재확인: 묶음이 아직 관측된 키(일반 런타임은 바닥 참조:스탬프)를 달고 있어야 한다.
+            const auto before = exec.ReadExtraKey(p.extraIndex);
+            if (!before || *before != p.observedExtraKey) {
+                continue;
+            }
+            const std::uint16_t newUid = exec.AllocateInventoryUid();
+            if (newUid == 0) {
+                exec.OnAllocateFailed(p);
+                continue;
+            }
+            const InventoryItemKey newKey{ ownerId, newUid };
+            if (!exec.CommitLedger(p, newKey)) {
+                continue;
+            }
+            // 고쳐 쓰기 직전 다시 확인(Codex A5): 그사이 묶음이 바뀌었으면 장부를 되돌리고 묶음은 건드리지 않는다.
+            const auto live = exec.ReadExtraKey(p.extraIndex);
+            if (!live || *live != p.observedExtraKey) {
+                exec.RevertLedger(p, newKey);
+                exec.OnExtraChangedBeforeRewrite(p);
+                continue;
+            }
+            if (!exec.WriteExtraKey(p.extraIndex, p.observedExtraKey, newKey)) {
+                exec.RevertLedger(p, newKey);
+                exec.OnExtraChangedBeforeRewrite(p);
+                continue;
+            }
+            ++linked;
+            exec.OnLinked(p, newKey);
+        }
+        return linked;
     }
 }

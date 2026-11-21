@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "runtime/MonsterRuntime.h"
+#include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 
 #include <algorithm>
@@ -62,7 +63,13 @@ namespace SkyrimPoE::Runtime
             if (prev <= 0.01f) {
                 return;
             }
-            if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid)) {
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid);
+            if (!actor) {
+                // 재검수 R-9: 지금 찾을 수 없는 액터의 가속(+20)을 버리면 세이브에 영구히 남는다. 맡겨서 다시 시도한다.
+                SaveLoad::DeferSpeedRevert(fid, prev);
+                return;
+            }
+            {
                 if (!actor->IsPlayerRef() && !actor->IsDeleted()) {
                     const float curTemp = actor->GetActorValueModifier(
                         RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);

@@ -1186,6 +1186,9 @@ namespace SkyrimPoE::Core
         snap.shockChancePct = std::clamp(p.shockChancePct, 0.0, 100.0);
         snap.bleedChancePct = std::clamp(p.bleedChancePct, 0.0, 100.0);
         snap.poisonChancePct = std::clamp(p.poisonChancePct, 0.0, 100.0);
+        snap.attackIgniteChancePct = std::clamp(p.attackIgniteChancePct, 0.0, 100.0);
+        snap.attackPoisonChancePct = std::clamp(p.attackPoisonChancePct, 0.0, 100.0);
+        snap.spellPoisonChancePct = std::clamp(p.spellPoisonChancePct, 0.0, 100.0);
 
         // 발동 젬이 어떤 공격 칸에 연결되어 있는지 먼저 수집(결정 131: 공격 1칸당 발동 젬 최대 1개)
         std::array<double, kSkillSlotCount> attackExtraManaMult{};

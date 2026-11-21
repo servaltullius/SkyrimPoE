@@ -2,11 +2,15 @@
 
 #include "core/DataPack.h"
 #include "core/GemTransaction.h"
+#include "core/SaveCapPolicy.h"
 #include "core/Types.h"
 #include "core/WorldStampLink.h"
 
 #include <algorithm>
 #include <array>
+#include <climits>
+#include <cstdint>
+#include <optional>
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -57,8 +61,70 @@ namespace
         return gem;
     }
 
-    // 실제 GemInventory::RelinkPickedUpGemsIn의 제품 판단 함수(PlanRelinks + CommitRelink + 실물 재확인)를
-    // 그대로 호출해 엔진 ExtraDataList 고쳐 쓰기와 장부 커밋을 시뮬레이션한다.
+    // 재검수 R-5: 다시 잇기 적용 순서는 제품 함수 WorldStampLink::ExecuteRelinks를 그대로 쓴다.
+    // 이 테스트가 흉내 내는 것은 엔진 묶음(SimExtra)과 장부(SimTrackedGem) 접근뿐이다.
+    class SimRelinkExecutor final : public IRelinkExecutor
+    {
+    public:
+        std::vector<SimTrackedGem>* ledger = nullptr;
+        std::vector<SimExtra>* ownerExtras = nullptr;
+        std::uint16_t* nextUid = nullptr;
+        bool mutateExtraAfterCommit = false;  // 커밋과 고쳐 쓰기 사이에 다른 이벤트가 묶음을 바꾼 상황
+        bool writeIsNoOp = false;             // 제품이 묶음 고쳐 쓰기를 빠뜨렸을 때를 흉내(기능 제거 점검)
+        bool mutateAtWrite = false;           // 고쳐 쓰는 바로 그 순간 다른 이벤트가 묶음을 바꾼 상황(Codex 지적 4)
+        std::size_t pendingMutateIndex = SIZE_MAX;
+
+        std::optional<InventoryItemKey> ReadExtraKey(std::size_t i) override
+        {
+            if (i >= ownerExtras->size()) {
+                return std::nullopt;
+            }
+            if (pendingMutateIndex == i) {
+                (*ownerExtras)[i].extraKey = InventoryItemKey{ kFollower, 0x7099 };
+                pendingMutateIndex = SIZE_MAX;
+            }
+            return (*ownerExtras)[i].extraKey;
+        }
+        std::int32_t ExtraCount(std::size_t i) override { return i < ownerExtras->size() ? (*ownerExtras)[i].count : 0; }
+        std::uint16_t AllocateInventoryUid() override { return (*nextUid)++; }
+        bool CommitLedger(const PlannedRelink& p, const InventoryItemKey& newKey) override
+        {
+            for (auto& e : *ledger) {
+                if (e.gem.instanceId == p.instanceId) {
+                    const bool ok = CommitRelink(e.key, e.isWorld, p.worldKey, newKey);
+                    if (ok && mutateExtraAfterCommit) {
+                        pendingMutateIndex = p.extraIndex;
+                    }
+                    return ok;
+                }
+            }
+            return false;
+        }
+        void RevertLedger(const PlannedRelink& p, const InventoryItemKey& newKey) override
+        {
+            for (auto& e : *ledger) {
+                if (e.gem.instanceId == p.instanceId && !e.isWorld && e.key == newKey) {
+                    e.key = p.worldKey;
+                    e.isWorld = true;
+                    break;
+                }
+            }
+        }
+        bool WriteExtraKey(std::size_t i, const InventoryItemKey& expectedKey, const InventoryItemKey& newKey) override
+        {
+            if (mutateAtWrite && i < ownerExtras->size()) {
+                (*ownerExtras)[i].extraKey = InventoryItemKey{ kFollower, 0x7098 };
+            }
+            if (i >= ownerExtras->size() || (*ownerExtras)[i].extraKey != expectedKey) {
+                return false;
+            }
+            if (!writeIsNoOp) {
+                (*ownerExtras)[i].extraKey = newKey;
+            }
+            return true;  // writeIsNoOp: 제품이 쓰기를 빠뜨린 결함을 흉내(성공이라 보고하지만 실물은 그대로)
+        }
+    };
+
     std::size_t RunProductRelinkPass(
         std::vector<SimTrackedGem>& ledger,
         std::vector<SimExtra>& ownerExtras,
@@ -66,57 +132,31 @@ namespace
         std::uint16_t& nextUid,
         std::uint16_t onlyStamp = 0,
         bool simulateMutateExtraBeforeRewrite = false,
-        bool skipExtraRewriteForMutationCheck = false)
+        bool skipExtraRewriteForMutationCheck = false,
+        std::uint32_t postLoadNormalizedOwnerId = 0)
     {
         std::vector<WorldLinkCandidate> cands;
+        std::vector<InventoryItemKey> heldKeys;
         for (const auto& e : ledger) {
             if (e.isWorld && e.key.IsValid() && kGemBand.Contains(e.key.uniqueId) &&
                 (onlyStamp == 0 || e.key.uniqueId == onlyStamp)) {
                 cands.push_back(WorldLinkCandidate{ e.gem.instanceId, e.key, e.gem.gemId });
+            } else if (!e.isWorld && e.key.ownerFormId == ownerId) {
+                heldKeys.push_back(e.key);
             }
         }
         std::vector<ObservedInventoryExtra> obs;
         for (std::size_t i = 0; i < ownerExtras.size(); ++i) {
             obs.push_back(ObservedInventoryExtra{ i, ownerExtras[i].extraKey, ownerExtras[i].gemId, ownerExtras[i].count });
         }
-        const auto plan = PlanRelinks(cands, obs, kGemBand);
-        std::size_t linked = 0;
-        for (const auto& p : plan.planned) {
-            auto& ex = ownerExtras[p.extraIndex];
-            if (ex.count > 1 || ex.extraKey != p.worldKey) {
-                continue;
-            }
-            const InventoryItemKey newKey{ ownerId, nextUid++ };
-            bool committed = false;
-            for (auto& e : ledger) {
-                if (e.gem.instanceId == p.instanceId) {
-                    committed = CommitRelink(e.key, e.isWorld, p.worldKey, newKey);
-                    break;
-                }
-            }
-            if (!committed) {
-                continue;
-            }
-            if (simulateMutateExtraBeforeRewrite) {
-                ex.extraKey = InventoryItemKey{ kFollower, 0x7099 };
-            }
-            // 실물 재확인(Codex A5): 고쳐 쓰기 직전 묶음이 여전히 기대 바닥 키일 때만 기록, 다르면 장부 원복
-            if (ex.extraKey != p.worldKey) {
-                for (auto& e : ledger) {
-                    if (e.gem.instanceId == p.instanceId && !e.isWorld && e.key == newKey) {
-                        e.key = p.worldKey;
-                        e.isWorld = true;
-                        break;
-                    }
-                }
-                continue;
-            }
-            if (!skipExtraRewriteForMutationCheck) {
-                ex.extraKey = newKey;
-            }
-            ++linked;
-        }
-        return linked;
+        const auto plan = PlanRelinks(cands, obs, kGemBand, postLoadNormalizedOwnerId, heldKeys);
+        SimRelinkExecutor exec;
+        exec.ledger = &ledger;
+        exec.ownerExtras = &ownerExtras;
+        exec.nextUid = &nextUid;
+        exec.mutateExtraAfterCommit = simulateMutateExtraBeforeRewrite;
+        exec.writeIsNoOp = skipExtraRewriteForMutationCheck;
+        return ExecuteRelinks(plan, ownerId, exec);
     }
 
     // 실제 GemTransaction::EquipSkillGem과 연동되는 인벤토리 어댑터(장부 키와 실물 Extra 키 일치 검증)
@@ -379,4 +419,85 @@ POE_TEST("WorldStampLink: duplicate extras, count>1, ref FormID reuse, redrop, a
         const auto ambigPlan = PlanRelinks(cands, obs, kGemBand, kPlayer);
         POE_CHECK(ambigPlan.planned.empty() && ambigPlan.heldAmbiguous.size() == 1);
     }
+}
+
+POE_TEST("SaveCapPolicy: over the cap, keep player-held first, then world, then others; newest within a rank (review R-3)")
+{
+    constexpr std::uint32_t kMerchant = 0xFF000123;
+    constexpr std::uint32_t kGroundRef = 0xFF003115;
+    // 0: 오래전에 얻어 지금도 가진 장비, 1~3: 판 물건, 4: 바닥, 5: 최근에 얻어 가진 것, 6: 최근에 판 것
+    const std::vector<SaveCapCandidate> entries = {
+        { kPlayer, false }, { kMerchant, false }, { kMerchant, false }, { kMerchant, false },
+        { kGroundRef, true }, { kPlayer, false }, { kMerchant, false },
+    };
+    // 상한 안이면 전부 원래 순서로
+    POE_CHECK((SelectEntriesWithinSaveCap(entries, 7, kPlayer) == std::vector<std::size_t>{ 0, 1, 2, 3, 4, 5, 6 }));
+    // 상한 3: 플레이어 소지품 둘(0, 5) + 바닥(4). 예전 "최신 우선"이면 0이 빠졌다.
+    POE_CHECK((SelectEntriesWithinSaveCap(entries, 3, kPlayer) == std::vector<std::size_t>{ 0, 4, 5 }));
+    // 상한 4: 그 밖 소유자 중 최신(6)이 하나 더 남는다.
+    POE_CHECK((SelectEntriesWithinSaveCap(entries, 4, kPlayer) == std::vector<std::size_t>{ 0, 4, 5, 6 }));
+    // 상한 1: 플레이어 소지품 중 최신
+    POE_CHECK((SelectEntriesWithinSaveCap(entries, 1, kPlayer) == std::vector<std::size_t>{ 5 }));
+    POE_CHECK(SelectEntriesWithinSaveCap(entries, 0, kPlayer).empty());
+}
+
+POE_TEST("WorldStampLink: post-load owner-normalized match never takes another tracked gem's key (review R-4)")
+{
+    // 바닥 젬 X(스탬프 0x7F10)와, 장부상 플레이어가 가진 같은 종류 젬 Y의 키가 (플레이어, 0x7F10)으로 같은 경우.
+    // 로드 직후(소유자 정규화 대조 켬)에도 X의 데이터가 Y의 묶음에 붙으면 안 된다.
+    std::vector<SimTrackedGem> ledger;
+    ledger.push_back(SimTrackedGem{ InventoryItemKey{ kGroundRefA, 0x7F10 }, true, MakeNestedCycloneGem(10) });
+    ledger.push_back(SimTrackedGem{ InventoryItemKey{ kPlayer, 0x7F10 }, false, MakeNestedCycloneGem(20, 5) });
+    std::vector<SimExtra> extras = { SimExtra{ InventoryItemKey{ kPlayer, 0x7F10 }, "Cyclone", 1 } };
+    std::uint16_t nextUid = 0x7200;
+    POE_CHECK(RunProductRelinkPass(ledger, extras, kPlayer, nextUid, 0, false, false, kPlayer) == 0);
+    POE_CHECK(ledger[0].isWorld && ledger[0].key == (InventoryItemKey{ kGroundRefA, 0x7F10 }));
+    POE_CHECK(!ledger[1].isWorld && ledger[1].key == (InventoryItemKey{ kPlayer, 0x7F10 }));
+    POE_CHECK(extras[0].extraKey == (InventoryItemKey{ kPlayer, 0x7F10 }));
+
+    // 같은 묶음이 장부 어디에도 없으면(정규화된 바닥 젬 X 자신) 로드 직후 경로가 잇는다.
+    std::vector<SimTrackedGem> ledger2;
+    ledger2.push_back(SimTrackedGem{ InventoryItemKey{ kGroundRefA, 0x7F11 }, true, MakeNestedCycloneGem(30) });
+    std::vector<SimExtra> extras2 = { SimExtra{ InventoryItemKey{ kPlayer, 0x7F11 }, "Cyclone", 1 } };
+    std::uint16_t nextUid2 = 0x7300;
+    POE_CHECK(RunProductRelinkPass(ledger2, extras2, kPlayer, nextUid2, 0, false, false, kPlayer) == 1);
+    POE_CHECK(!ledger2[0].isWorld && ledger2[0].key == (InventoryItemKey{ kPlayer, 0x7300 }));
+    POE_CHECK(extras2[0].extraKey == (InventoryItemKey{ kPlayer, 0x7300 }));
+    // 일반 런타임(정규화 대조 끔)에서는 같은 입력을 잇지 않는다.
+    std::vector<SimTrackedGem> ledger3;
+    ledger3.push_back(SimTrackedGem{ InventoryItemKey{ kGroundRefA, 0x7F12 }, true, MakeNestedCycloneGem(40) });
+    std::vector<SimExtra> extras3 = { SimExtra{ InventoryItemKey{ kPlayer, 0x7F12 }, "Cyclone", 1 } };
+    std::uint16_t nextUid3 = 0x7400;
+    POE_CHECK(RunProductRelinkPass(ledger3, extras3, kPlayer, nextUid3) == 0);
+    POE_CHECK(ledger3[0].isWorld);
+}
+
+POE_TEST("WorldStampLink: ExecuteRelinks counts only real rewrites and reverts the ledger when the write-time check fails (Codex 4)")
+{
+    std::vector<SimTrackedGem> ledger;
+    ledger.push_back(SimTrackedGem{ InventoryItemKey{ kGroundRefA, 0x7F20 }, true, MakeNestedCycloneGem(50) });
+    std::vector<SimExtra> extras = { SimExtra{ InventoryItemKey{ kGroundRefA, 0x7F20 }, "Cyclone", 1 } };
+    std::vector<WorldLinkCandidate> cands = { WorldLinkCandidate{ 50, ledger[0].key, "Cyclone" } };
+    std::vector<ObservedInventoryExtra> obs = { ObservedInventoryExtra{ 0, extras[0].extraKey, "Cyclone", 1 } };
+    const auto plan = PlanRelinks(cands, obs, kGemBand);
+    POE_CHECK(plan.planned.size() == 1);
+
+    std::uint16_t nextUid = 0x7500;
+    SimRelinkExecutor exec;
+    exec.ledger = &ledger;
+    exec.ownerExtras = &extras;
+    exec.nextUid = &nextUid;
+    exec.mutateAtWrite = true;
+    POE_CHECK(ExecuteRelinks(plan, kPlayer, exec) == 0);
+    // 장부는 바닥 키로 되돌아가고, 묶음은 다른 이벤트가 바꾼 값 그대로다(우리 번호로 덮지 않음).
+    POE_CHECK(ledger[0].isWorld && ledger[0].key == (InventoryItemKey{ kGroundRefA, 0x7F20 }));
+    POE_CHECK(extras[0].extraKey == (InventoryItemKey{ kFollower, 0x7098 }));
+
+    // 개수가 1이 아닌 묶음(0 포함)은 건드리지 않는다.
+    std::vector<SimTrackedGem> ledger2;
+    ledger2.push_back(SimTrackedGem{ InventoryItemKey{ kGroundRefA, 0x7F21 }, true, MakeNestedCycloneGem(60) });
+    std::vector<SimExtra> extras2 = { SimExtra{ InventoryItemKey{ kGroundRefA, 0x7F21 }, "Cyclone", 0 } };
+    std::uint16_t nextUid2 = 0x7600;
+    POE_CHECK(RunProductRelinkPass(ledger2, extras2, kPlayer, nextUid2) == 0);
+    POE_CHECK(ledger2[0].isWorld);
 }

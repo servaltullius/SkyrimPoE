@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "runtime/AilmentRuntime.h"
+#include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 
 #include "core/DamageConversion.h"
@@ -101,7 +102,13 @@ namespace SkyrimPoE::Runtime
             if (std::abs(prevDelta) < 0.01f) {
                 return;
             }
-            if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid)) {
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid);
+            if (!actor) {
+                // 재검수 R-9: 지금 찾을 수 없는 액터(셀 언로드 등)의 원복을 버리면 세이브에 감속이 영구히 남는다. 맡겨서 다시 시도한다.
+                SaveLoad::DeferSpeedRevert(fid, prevDelta);
+                return;
+            }
+            {
                 if (!actor->IsPlayerRef() && !actor->IsDeleted()) {
                     if (auto* av = actor->AsActorValueOwner()) {
                         // Q-1 + M-2: 엔진 리셋(OnActorReset)으로 이미 0이면 생략하되,
@@ -294,6 +301,7 @@ namespace SkyrimPoE::Runtime
         RE::Actor* target,
         const Core::DamagePacket& poeDamage,
         bool isCrit,
+        HitKind hitKind,
         double igniteChancePct,
         bool starforgeShock,
         double bleedChancePct,
@@ -320,11 +328,15 @@ namespace SkyrimPoE::Runtime
         in.isBossOrDragon = IsBossOrDragon(target);
         in.starforgeShock = starforgeShock || (snap && snap->starforgeShock);
         // N-1: 패시브/전역 상태이상 확률을 스킬·타격 개별 확률에 자동 합산
-        in.igniteChancePct = igniteChancePct + (snap ? snap->igniteChancePct : 0.0);
+        // 재검수 R-1: 출혈은 PoE에서 공격으로만 걸리고, 공격·주문 한정 확률은 해당 적중에만 더한다.
+        const bool isAttack = (hitKind == HitKind::Attack);
+        in.igniteChancePct = igniteChancePct +
+            (snap ? snap->igniteChancePct + (isAttack ? snap->attackIgniteChancePct : 0.0) : 0.0);
         in.freezeChancePct = freezeChancePct + (snap ? snap->freezeChancePct : 0.0);
         in.shockChancePct = shockChancePct + (snap ? snap->shockChancePct : 0.0);
-        in.bleedChancePct = bleedChancePct + (snap ? snap->bleedChancePct : 0.0);
-        in.poisonChancePct = poisonChancePct + (snap ? snap->poisonChancePct : 0.0);
+        in.bleedChancePct = isAttack ? bleedChancePct + (snap ? snap->bleedChancePct : 0.0) : 0.0;
+        in.poisonChancePct = poisonChancePct +
+            (snap ? snap->poisonChancePct + (isAttack ? snap->attackPoisonChancePct : snap->spellPoisonChancePct) : 0.0);
         in.roll01 = u01(AilmentRng());
 
         bool wasFrozenBefore = false;
@@ -452,12 +464,9 @@ namespace SkyrimPoE::Runtime
         const RE::FormID fid = (actorId != 0) ? actorId : (victim ? victim->GetFormID() : 0);
         if (fid == 0) return;
 
-        if (victim) {
-            RevertTrackedSpeedByFormId(fid);
-        } else {
-            std::scoped_lock lk(g_mutex);
-            g_appliedSpeedDelta.erase(fid);
-        }
+        // Codex 지적 12: 시체 핸들이 만료돼 victim이 없어도 FormID로 원복을 시도한다.
+        // 찾지 못하면 RevertTrackedSpeedByFormId가 맡겨서(SaveLoad::DeferSpeedRevert) 다시 시도한다.
+        RevertTrackedSpeedByFormId(fid);
 
         std::optional<Core::ActorAilmentState> prevState;
         {

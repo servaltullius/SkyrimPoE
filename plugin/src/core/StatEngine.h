@@ -198,12 +198,16 @@ namespace SkyrimPoE::Core
         double itemRarityPct = 0.0;
         double flatPhysTakenFromAttacksDelta = 0.0;  // U5: Astramentis 등 공격 물리 피해 고정 증감(PoE 단위)
 
-        // 5단계(N-1): 전역 상태이상 유발 확률(%)
+        // 5단계(N-1): 전역 상태이상 유발 확률(%). 출혈은 공격에만 적용한다.
         double igniteChancePct = 0.0;
         double freezeChancePct = 0.0;
         double shockChancePct = 0.0;
         double bleedChancePct = 0.0;
         double poisonChancePct = 0.0;
+        // 재검수 R-1: 공격·주문 한정 확률(%)
+        double attackIgniteChancePct = 0.0;
+        double attackPoisonChancePct = 0.0;
+        double spellPoisonChancePct = 0.0;
 
         // 4~5단계(결정 156, 162): 고정점 수렴 후 10칸 장비 활성 및 요구치 미달 상태
         std::array<bool, kEquipSlotCount> gearSlotActive{};
