@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>SkyrimPoE.Tools.DungeonClone</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- houseCARL과 프로토타입 13이 쓰는 판과 같다. -->
+    <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.54.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DungeonClone.Tests" />
+  </ItemGroup>
+
+</Project>

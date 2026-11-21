@@ -1,0 +1,54 @@
+{
+  "plugin": "SkyrimPoE_Maps.esp",
+  "packVersion": 1,
+  "editorIdPrefix": "SPOE_Map_",
+  "anchorMinDistanceFromEntry": 600,
+  "anchorMaxSnapDistance": 256,
+  "anchorMinSeparation": 128,
+  "dungeons": [
+    {
+      "key": "embershard",
+      "type": "mine",
+      "role": "map",
+      "name": "엠버샤드 광산",
+      "sourceCell": "EmbershardMine01",
+      "bossAnchor": "0B6FEE",
+      "bossAnchorReason": "Boss 표시 NPC 3개 가운데 입구에서 가장 먼 자리(광전사, 6,364유닛). 브랜치(neon/stage6-wip)의 보스 앵커와 같음.",
+      "minPackAnchors": 3
+    },
+    {
+      "key": "pinemoon",
+      "type": "cave",
+      "role": "map",
+      "name": "파인문 동굴",
+      "sourceCell": "PinemoonCave01",
+      "minPackAnchors": 3
+    },
+    {
+      "key": "ironbind",
+      "type": "nordic_barrow",
+      "role": "map",
+      "name": "아이언바인드 고분",
+      "sourceCell": "IronbindBarrow01",
+      "minPackAnchors": 3
+    },
+    {
+      "key": "raldbthar",
+      "type": "dwemer_ruin",
+      "role": "map",
+      "name": "랄드브타르",
+      "sourceCell": "Raldbthar01",
+      "bossAnchor": "0F21AD",
+      "bossAnchorReason": "Boss 표시가 없음. 매복(Ambush)이 아닌 적 가운데 입구에서 가장 먼 자리(드웨머 구체, 16,263유닛).",
+      "minPackAnchors": 3
+    },
+    {
+      "key": "shrouded_grove",
+      "type": "grove",
+      "role": "arena",
+      "name": "가려진 숲",
+      "sourceCell": "ShroudedGrove01",
+      "minPackAnchors": 2
+    }
+  ]
+}

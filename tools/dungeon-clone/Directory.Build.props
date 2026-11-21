@@ -1,0 +1,7 @@
+<Project>
+  <!-- 빌드 산출물은 저장소 밖에 둔다(프로토타입과 같은 규칙). -->
+  <PropertyGroup>
+    <BaseOutputPath>G:\skyrim-build\SkyrimPoE-dungeon-clone\$(MSBuildProjectName)\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>G:\skyrim-build\SkyrimPoE-dungeon-clone\$(MSBuildProjectName)\obj\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>
