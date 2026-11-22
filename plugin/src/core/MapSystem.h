@@ -3,16 +3,55 @@
 #include "core/MapTypes.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace SkyrimPoE::Core
 {
+    class DataPack;
+
+    struct MapMonsterMultipliers
+    {
+        double lifeMultiplier = 1.0;
+        double damageMultiplier = 1.0;
+    };
+
+    struct MapActorScaling
+    {
+        std::uint64_t runId = 0;
+        double lifeMultiplier = 1.0;
+        double damageMultiplier = 1.0;
+
+        [[nodiscard]] double ScaleIncomingDamage(double damage) const noexcept;
+    };
+
+    // 결정 169·170: 스폰 목록에서 복원하며, 읽는 쪽과 쓰는 쪽의 동기화는 런타임이 맡는다.
+    class MapActorRegistry
+    {
+    public:
+        void Register(std::uint32_t actorId, MapActorScaling scaling);
+        [[nodiscard]] std::optional<MapActorScaling> Find(std::uint32_t actorId) const;
+        void Rebuild(const ActiveMapState& state, const DataPack& pack);
+        void Clear() noexcept;
+
+    private:
+        std::unordered_map<std::uint32_t, MapActorScaling> actors_;
+    };
+
     // 6단계(결정 166): 지도 티어·던전·모드 집계·포털 거래·아틀라스 +24 패시브·4차 결투장 3페이즈 순수 코어 로직
     class MapSystem
     {
     public:
         [[nodiscard]] static std::uint32_t MonsterLevelForTier(std::uint8_t tier) noexcept;
+        [[nodiscard]] static std::uint32_t RewardMonsterLevel(const ActiveMapState& state) noexcept;
+        [[nodiscard]] static MapMonsterMultipliers GetMapMonsterMultipliers(
+            std::uint32_t mapLevel, const DataPack& pack) noexcept;
+        [[nodiscard]] static double AilmentThreshold(
+            std::uint32_t exileLevel, double lifeMultiplier, const DataPack& pack) noexcept;
+        [[nodiscard]] static double EstimateVanillaHitPoe(
+            double rawHitDamage, std::uint32_t exileLevel, const DataPack& pack) noexcept;
         [[nodiscard]] static std::uint8_t DungeonIndexForTier(std::uint8_t tier) noexcept;
         [[nodiscard]] static const MapDungeonDef& GetMapDungeon(std::uint8_t dungeonIndex) noexcept;
         [[nodiscard]] static const MapDungeonDef& GetArena4Dungeon() noexcept;

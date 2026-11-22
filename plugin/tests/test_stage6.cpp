@@ -119,17 +119,18 @@ POE_TEST("Stage6 Atlas & PassiveTree: 123 normal points (99 + 16 atlas + 8 miles
     const auto cfgOutOfRange = LoadConfigFromString("[Maps]\nMapBasePackCount = 7\n");
     POE_CHECK(cfgOutOfRange.config.mapBasePackCount == 3u && !cfgOutOfRange.warnings.empty());
 
-    // KillTracker 지도 combatAreaLevel 오버라이드 XP 산정 검증 (배치2 검수 Major #2)
+    // 결정 116·170 U-4: 회차의 보상 몬스터 레벨로 XP를 산정한다.
+    constexpr std::uint32_t rewardMonsterLevel = 77;
     KillTracker kt;
     kt.RecordFirstHitHostility(0xFF001234, true, true);
     kt.ConfirmDamageContribution(0xFF001234, 50.0);
-    const auto mapReward = kt.OnDeathConfirm(0xFF001234, 5, 50, false, false, 60, cfg, false, 77);
+    const auto mapReward = kt.OnDeathConfirm(0xFF001234, 5, 50, false, false, 60, cfg, false, rewardMonsterLevel);
     POE_CHECK(mapReward.awarded);
     POE_CHECK(mapReward.effectiveMonsterLevel == 77u);
     POE_CHECK(mapReward.xpMultiplier > 1.5);  // Lv60 유배자가 Lv77 지도 적 처치 시 보너스 배율 적용
 }
 
-POE_TEST("Stage6 StatEngine: combatAreaLevel separation, map penalties, and 4th milestone Spirit 220")
+POE_TEST("Stage6 StatEngine: exile level, map penalties, and 4th milestone Spirit 220")
 {
     DataPack pack;
     std::string err;
@@ -151,13 +152,12 @@ POE_TEST("Stage6 StatEngine: combatAreaLevel separation, map penalties, and 4th 
     POE_CHECK(openSnap != nullptr);
     POE_CHECK(openSnap->maxSpirit == 220);
     POE_CHECK(!openSnap->inActiveMap);
-    POE_CHECK(openSnap->combatAreaLevel == 50);
+    POE_CHECK(openSnap->exileLevel == 50);
     POE_CHECK_NEAR(openSnap->maxFireResist, 75.0, 1e-6);
 
-    // T16 지도(Lv83) 진입 + 최대저항 -10%, 방어도 -40%, 회피 -30%, ES 재충전 -50%
+    // 활성 회차 셀 진입 + 최대 저항 -10%, 방어도 -40%, 회피 -30%, ES 재충전 -50%
     Layer2Input l2;
     l2.inActiveMap = true;
-    l2.combatAreaLevel = MapSystem::MonsterLevelForTier(16);
     l2.activeMapMods.playerMaxResPenalty = 10.0;
     l2.activeMapMods.playerLessArmourPct = 40.0;
     l2.activeMapMods.playerLessEvasionPct = 30.0;
@@ -167,8 +167,8 @@ POE_TEST("Stage6 StatEngine: combatAreaLevel separation, map penalties, and 4th 
     const auto mapSnap = engine.GetSnapshot();
     POE_CHECK(mapSnap != nullptr);
     POE_CHECK(mapSnap->inActiveMap);
-    POE_CHECK(mapSnap->combatAreaLevel == 83);
-    // 생명력/매지카 풀은 exileLevel(50) 기준으로 변하지 않아야 함
+    POE_CHECK(mapSnap->exileLevel == 50);
+    // 회차 셀 진입 뒤에도 유배자 레벨과 생명력·매지카 풀을 유지한다.
     POE_CHECK_NEAR(mapSnap->poeMaxLife, openSnap->poeMaxLife, 1e-6);
     POE_CHECK_NEAR(mapSnap->poeMaxMana, openSnap->poeMaxMana, 1e-6);
     POE_CHECK_NEAR(mapSnap->maxFireResist, 65.0, 1e-6);

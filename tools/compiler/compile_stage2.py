@@ -143,6 +143,38 @@ def read_lua_number_table(src: str, name: str) -> list[float]:
     return [float(x) for x in m.group(1).split(",") if x.strip()]
 
 
+def read_lua_keyed_number_table(src: str, name: str) -> dict[int, float]:
+    table = re.search(r"^data\." + re.escape(name) + r"\s*=\s*\{([^}]*)\}", src, re.M)
+    if not table:
+        raise ValueError(f"Data/Misc.lua에서 {name}을 찾지 못했습니다")
+    values: dict[int, float] = {}
+    for entry in table.group(1).split(","):
+        if not entry.strip():
+            continue
+        pair = re.fullmatch(r"\s*\[(\d+)\]\s*=\s*([0-9eE.+\-]+)\s*", entry)
+        if not pair:
+            raise ValueError(f"Data/Misc.lua의 {name} 항목 형식이 잘못됐습니다: {entry}")
+        key = int(pair.group(1))
+        if key in values:
+            raise ValueError(f"Data/Misc.lua의 {name}에 키 {key}가 중복됩니다")
+        values[key] = float(pair.group(2))
+    return values
+
+
+# 결정 170 U-3: DLL(DataPack)이 요구하는 지도 생명 배율표 범위. 컴파일러도 같은 조건으로 거부한다.
+MAP_LIFE_MULT_LEVELS = range(66, 91)
+
+
+def validate_map_level_life_mult(values: dict[int, float]) -> dict[int, float]:
+    missing = [lv for lv in MAP_LIFE_MULT_LEVELS if lv not in values]
+    if missing or len(values) != len(MAP_LIFE_MULT_LEVELS):
+        raise ValueError(f"mapLevelLifeMult는 Lv66~90을 정확히 담아야 합니다(빠진 레벨 {missing}, 개수 {len(values)})")
+    bad = [lv for lv, v in values.items() if not (math.isfinite(v) and v > 0.0)]
+    if bad:
+        raise ValueError(f"mapLevelLifeMult에 양수가 아닌 값이 있습니다: 레벨 {bad}")
+    return values
+
+
 def read_lua_const(src: str, key: str) -> float:
     m = re.search(r'\["' + re.escape(key) + r'"\]\s*=\s*([0-9eE.+\-]+)', src)
     if not m:
@@ -591,6 +623,8 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
     monster_life = read_lua_number_table(misc_src, "monsterLifeTable")[:100]
     monster_damage = read_lua_number_table(misc_src, "monsterDamageTable")[:100]
     monster_accuracy = read_lua_number_table(misc_src, "monsterAccuracyTable")[:100]
+    map_level_life_mult = validate_map_level_life_mult(
+        read_lua_keyed_number_table(misc_src, "mapLevelLifeMult"))  # 결정 170 U-3
     if not (len(monster_life) == 100 and len(monster_damage) == 100 and len(monster_accuracy) == 100):
         raise ValueError("몬스터 표는 1~100레벨 100개 항목이어야 합니다")
 
@@ -646,6 +680,7 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
             "monsterLife": monster_life,
             "monsterDamage": monster_damage,
             "monsterAccuracy": monster_accuracy,
+            "mapLevelLifeMult": map_level_life_mult,
             "expectedDefense": expected_defense,
         },
         "classes": classes,
@@ -658,14 +693,14 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
     lang_dir.mkdir(parents=True, exist_ok=True)
 
     (packs_dir / "core_3_30.json").write_text(
-        json.dumps(pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     ko, en = build_lang_packs()
     (lang_dir / "ko-KR.json").write_text(
-        json.dumps(ko, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(ko, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     (lang_dir / "en-US.json").write_text(
-        json.dumps(en, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(en, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     return pack
 

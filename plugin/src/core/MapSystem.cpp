@@ -1,5 +1,7 @@
 #include "core/MapSystem.h"
 
+#include "core/DataPack.h"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -9,6 +11,10 @@ namespace SkyrimPoE::Core
 {
     namespace
     {
+        // 결정 170 U-4: 상태이상 문턱 하한과 바닐라 타격 역산에 쓰는 스카이림 체력 기준값.
+        constexpr double kMinAilmentThresholdPoe = 20.0;
+        constexpr double kVanillaHitReferenceLife = 100.0;
+
         // 결정 166: houseCARL Skyrim.esm 실측 대조된 바닐라 던전 5종
         constexpr std::array<MapDungeonDef, kMapDungeonCount> kMapDungeons{ {
             MapDungeonDef{
@@ -65,6 +71,80 @@ namespace SkyrimPoE::Core
     {
         const auto clamped = std::clamp<std::uint8_t>(tier, kMinMapTier, kMaxMapTier);
         return kMapBaseMonsterLevel + static_cast<std::uint32_t>(clamped - 1);
+    }
+
+    std::uint32_t MapSystem::RewardMonsterLevel(const ActiveMapState& state) noexcept
+    {
+        // 결정 116·170 U-4: 결투장은 Lv75, 일반 지도는 회차 티어로 처치 보상 레벨을 정한다.
+        if (!state.active) {
+            return 0;
+        }
+        return state.isArena4 ? kArena4MonsterLevel : MonsterLevelForTier(state.tier);
+    }
+
+    MapMonsterMultipliers MapSystem::GetMapMonsterMultipliers(std::uint32_t mapLevel, const DataPack& pack) noexcept
+    {
+        // 결정 170 U-3: 일반 몬스터 생명과 지도 생명 배율을 곱하고, 생명·피해 모두 T1을 기준으로 삼는다.
+        const double baseLife = pack.MonsterLife(kMapBaseMonsterLevel) * pack.MapLevelLifeMult(kMapBaseMonsterLevel);
+        const double baseDamage = pack.MonsterDamage(kMapBaseMonsterLevel);
+        return {
+            pack.MonsterLife(mapLevel) * pack.MapLevelLifeMult(mapLevel) / baseLife,
+            pack.MonsterDamage(mapLevel) / baseDamage
+        };
+    }
+
+    double MapSystem::AilmentThreshold(std::uint32_t exileLevel, double lifeMultiplier, const DataPack& pack) noexcept
+    {
+        // 결정 170 U-4: 유배자 레벨로 기본 문턱을 구한 뒤 대상의 생명 배율을 적용한다.
+        return std::max(kMinAilmentThresholdPoe, pack.MonsterLife(exileLevel)) * lifeMultiplier;
+    }
+
+    double MapSystem::EstimateVanillaHitPoe(double rawHitDamage, std::uint32_t exileLevel, const DataPack& pack) noexcept
+    {
+        // 결정 170 U-4 및 R3 브리프: 바닐라 타격은 유배자 레벨의 몬스터 생명으로 역산한다.
+        return rawHitDamage * pack.MonsterLife(exileLevel) / kVanillaHitReferenceLife;
+    }
+
+    double MapActorScaling::ScaleIncomingDamage(double damage) const noexcept
+    {
+        // 결정 169·170 U-3: 생명 배율을 받는 피해에 역으로 적용한다.
+        return damage / lifeMultiplier;
+    }
+
+    void MapActorRegistry::Register(std::uint32_t actorId, MapActorScaling scaling)
+    {
+        if (actorId != 0) {
+            actors_.insert_or_assign(actorId, scaling);
+        }
+    }
+
+    std::optional<MapActorScaling> MapActorRegistry::Find(std::uint32_t actorId) const
+    {
+        const auto it = actors_.find(actorId);
+        if (it == actors_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    void MapActorRegistry::Rebuild(const ActiveMapState& state, const DataPack& pack)
+    {
+        Clear();
+        if (!state.active) {
+            return;
+        }
+
+        const auto multipliers = MapSystem::GetMapMonsterMultipliers(MapSystem::RewardMonsterLevel(state), pack);
+        const MapActorScaling scaling{ state.runId, multipliers.lifeMultiplier, multipliers.damageMultiplier };
+        for (const auto actorId : state.spawnedRefFormIds) {
+            Register(actorId, scaling);
+        }
+        Register(state.bossRefFormId, scaling);
+    }
+
+    void MapActorRegistry::Clear() noexcept
+    {
+        actors_.clear();
     }
 
     std::uint8_t MapSystem::DungeonIndexForTier(std::uint8_t tier) noexcept

@@ -80,9 +80,8 @@ namespace SkyrimPoE::Core
         std::uint16_t headhunterModMask = 0;   // 레어 몬스터로부터 훔친 속성 비트마스크(최대 60초)
         double moltenShellBonusArmour = 0.0;   // 용암 방패 활성 중 고정 방어도 보너스
 
-        // 6단계(결정 166, 검수 M-4): 활성 지도/결투장 전투 환산 레벨 및 지도 어픽스 요약
+        // 결정 169: 플레이어의 활성 회차 셀 소속과 플레이어 쪽 지도 불이익을 위한 어픽스 요약
         bool inActiveMap = false;
-        std::uint32_t combatAreaLevel = 0;     // 0 또는 !inActiveMap이면 exileLevel 사용
         MapModSummary activeMapMods{};
     };
 
@@ -215,9 +214,8 @@ namespace SkyrimPoE::Core
         double attackPoisonChancePct = 0.0;
         double spellPoisonChancePct = 0.0;
 
-        // 6단계(결정 45, 166): 지도 인스턴스 전투 환산 레벨(오픈월드=exileLevel, 지도=68..83, 결투장=75)
+        // 결정 169: 플레이어 쪽 지도 불이익은 활성 회차 셀 안에서만 적용한다.
         bool inActiveMap = false;
-        std::uint32_t combatAreaLevel = 1;
         MapModSummary activeMapMods{};
 
         // 4~5단계(결정 156, 162): 고정점 수렴 후 10칸 장비 활성 및 요구치 미달 상태

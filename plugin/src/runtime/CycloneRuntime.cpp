@@ -394,7 +394,7 @@ namespace SkyrimPoE::Runtime
                 if (isCrit) {
                     poeHit *= std::max(1.0, cycStats.critMultiplierPct / 100.0);
                 }
-                const double convertedSkyrimDmg = Core::ConvertOffenseHit(poeHit, snap.combatAreaLevel, *g_dataPack, *g_config);
+                const double convertedSkyrimDmg = Core::ConvertOffenseHit(poeHit, snap.exileLevel, *g_dataPack, *g_config);
 
                 const float healthBefore = targetAv->GetActorValue(RE::ActorValue::kHealth);
                 bool absorbedByMonsterEs = false;

@@ -298,7 +298,10 @@ namespace SkyrimPoE::Runtime
 
                 // 5단계(결정 163, 164) + 검수 C2: task_queue(siteIdx==7) 2중 적용 차단(siteIdx < 7)
                 if (siteIdx < 7 && isRealHit && hit->totalDamage > 0.0f) {
-                    double dmg = static_cast<double>(hit->totalDamage);
+                    // 상태이상 역산의 입력은 대상 쪽 증폭(감전·희귀 대상 추가 피해) 전 값이다.
+                    // 지속 피해 틱이 DealDirectSkillDamage에서 같은 증폭을 다시 받으므로, 여기서 넣으면 두 번 곱해진다.
+                    const double baseHitDmg = static_cast<double>(hit->totalDamage);
+                    double dmg = baseHitDmg;
                     dmg *= AilmentRuntime::ShockDamageMultiplier(target->GetFormID());
                     const auto snap = g_statEngine->GetSnapshot();
                     if (snap && snap->incDamageVsRarePct > 0.0) {
@@ -330,16 +333,16 @@ namespace SkyrimPoE::Runtime
                          snap->shockChancePct > 0.0 || snap->starforgeShock)) {
                         const bool isHitCrit = hit->flags.any(RE::HitData::Flag::kCritical);
                         const RE::ActorHandle targetHandle = target->GetHandle();
-                        const double rawHitDmg = dmg;
-                        const std::uint32_t areaLv = snap->combatAreaLevel;
-                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, areaLv]() {
+                        const double rawHitDmg = baseHitDmg;
+                        const std::uint32_t exileLevel = snap->exileLevel;
+                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, exileLevel]() {
                             auto ptr = targetHandle.get();
                             auto* tgt = ptr.get();
                             if (!tgt || tgt->IsDead() || !g_dataPack) {
                                 return;
                             }
-                            const double monLife = std::max(20.0, g_dataPack->MonsterLife(areaLv));
-                            const double estPoePhys = rawHitDmg * (monLife / 100.0);
+                            const double estPoePhys = Core::MapSystem::EstimateVanillaHitPoe(
+                                rawHitDmg, exileLevel, *g_dataPack);
                             Core::DamagePacket pkt{};
                             pkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { estPoePhys, estPoePhys };
                             (void)AilmentRuntime::ApplyPlayerHitAilments(
@@ -399,10 +402,7 @@ namespace SkyrimPoE::Runtime
                     preBlock *= monOut.damageMultiplier;
                     // N-2 + 6단계 지도 치명타 수치 반영: Deadly(치명) 몬스터 치명타 확률
                     if (monOut.isDeadly) {
-                        const double critIncPct = MapDeviceRuntime::IsPlayerInActiveMapCell()
-                            ? MapDeviceRuntime::GetActiveMapModSummary().monsterCritChanceIncPct
-                            : 0.0;
-                        const double critProb = std::clamp(0.20 * (1.0 + critIncPct / 100.0), 0.20, 0.50);
+                        const double critProb = std::clamp(0.20 * (1.0 + monOut.critChanceIncPct / 100.0), 0.20, 0.50);
                         if (RollUnit() < critProb) {
                             preBlock *= 1.30;
                         }
@@ -420,9 +420,9 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
 
-                // 1) PoE 회피 판정(결정 72, 6단계 지도 내 combatAreaLevel 기준)
+                // 1) PoE 회피 판정(결정 72, 170: 유배자 레벨 기준)
                 if (snap->evasion > 0.0) {
-                    const double acc = g_dataPack->MonsterAccuracy(snap->combatAreaLevel);
+                    const double acc = g_dataPack->MonsterAccuracy(snap->exileLevel);
                     const double hitChance = Core::EvasionHitChance(snap->evasion, acc, g_dataPack->Constants().minHitChance);
                     if (RollUnit() >= hitChance) {
                         hit->totalDamage = 0.0f;
@@ -438,35 +438,35 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
 
-                // 3) PoE 물리 방어 + N-2 승격 적 추가 원소 피해 + 기대 방어 되돌림 환산 (6단계 combatAreaLevel 사용)
+                // 3) PoE 물리 방어 + N-2 적 추가 원소 피해 + 기대 방어 되돌림 환산 (결정 170: 유배자 레벨)
                 Core::StatSnapshot effectiveSnap = *snap;
                 ApplyPendingCharmBonuses(effectiveSnap);
                 double postDefense = Core::ConvertDefensePhysicalHit(
-                    preBlock, effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
+                    preBlock, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
                 // 6단계 지도 취약(Vulnerability) 모드: 플레이어 받는 물리 피해 +%
                 if (effectiveSnap.inActiveMap && effectiveSnap.activeMapMods.playerPhysTakenIncPct > 0.0 && postDefense > 0.0) {
                     postDefense *= (1.0 + effectiveSnap.activeMapMods.playerPhysTakenIncPct / 100.0);
                 }
                 // U5 확정(2026-11-20): Astramentis(-4 Physical Damage taken from Attack Hits) 등 고정 물리 공격 피해 감산
                 if (effectiveSnap.flatPhysTakenFromAttacksDelta < 0.0 && postDefense > 0.0) {
-                    const double monDmg = std::max(1.0, g_dataPack->MonsterDamage(effectiveSnap.combatAreaLevel));
+                    const double monDmg = std::max(1.0, g_dataPack->MonsterDamage(effectiveSnap.exileLevel));
                     const double flatSkyrimDelta = effectiveSnap.flatPhysTakenFromAttacksDelta * (10.0 / monDmg);
                     postDefense = std::max(0.0, postDefense + flatSkyrimDelta);
                 }
                 if (monOut.extraFireRatio > 0.0) {
                     postDefense += Core::ConvertDefenseResistDamage(
                         preBlock * monOut.extraFireRatio, Core::DamageType::Fire,
-                        effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
+                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
                 }
                 if (monOut.extraColdRatio > 0.0) {
                     postDefense += Core::ConvertDefenseResistDamage(
                         preBlock * monOut.extraColdRatio, Core::DamageType::Cold,
-                        effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
+                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
                 }
                 if (monOut.extraLightningRatio > 0.0) {
                     postDefense += Core::ConvertDefenseResistDamage(
                         preBlock * monOut.extraLightningRatio, Core::DamageType::Lightning,
-                        effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
+                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
                 }
 
                 // C-22, N-3: 유효 물리 타격(최대 체력의 5% 이상) 시 20% 확률로 적->플레이어 출혈 판정(정화의 참이 실제 출혈을 차단)
@@ -685,7 +685,10 @@ namespace SkyrimPoE::Runtime
                     if (g_killTracker) {
                         g_killTracker->RecordFirstHitHostility(targetId, actor->IsHostileToActor(player), !actor->IsDead());
                     }
-                    if (value < 0.0f && self->effect && self->effect->baseEffect && self->effect->baseEffect->IsDetrimental()) {
+                    // 결정 81·172: kRecover(만료 때 엔진이 원래 크기로 되돌리는 일시 체력 감소)는 피해가 아니므로
+                    // 생명 배율·ES·희귀도 보정을 걸지 않는다. 걸 때만 줄이면 되돌릴 때 체력이 늘어난 채 남는다.
+                    if (value < 0.0f && self->effect && self->effect->baseEffect && self->effect->baseEffect->IsDetrimental() &&
+                        !self->effect->baseEffect->data.flags.all(RE::EffectSetting::EffectSettingData::Flag::kRecover)) {
                         const auto mapping = ClassifyMagicDamage(self->effect->baseEffect);
                         double magDmg = static_cast<double>(-value);
                         const double shockMult = AilmentRuntime::ShockDamageMultiplier(targetId);
@@ -794,10 +797,7 @@ namespace SkyrimPoE::Runtime
                 const auto monOut = MonsterRuntime::GetOutgoingModifier(caster->GetFormID());
                 preResistD *= monOut.damageMultiplier;
                 if (monOut.isDeadly) {
-                    const double critIncPct = MapDeviceRuntime::IsPlayerInActiveMapCell()
-                        ? MapDeviceRuntime::GetActiveMapModSummary().monsterCritChanceIncPct
-                        : 0.0;
-                    const double critProb = std::clamp(0.20 * (1.0 + critIncPct / 100.0), 0.20, 0.50);
+                    const double critProb = std::clamp(0.20 * (1.0 + monOut.critChanceIncPct / 100.0), 0.20, 0.50);
                     if (RollUnit() < critProb) {
                         preResistD *= 1.30;
                     }
@@ -895,17 +895,17 @@ namespace SkyrimPoE::Runtime
             // 방금 켜진 참뿐 아니라 같은 프레임 직전 타격에서 켜진 참 보너스도 모두 즉시 반영(검수 M6)
             ApplyPendingCharmBonuses(effectiveSnap);
 
-            // 3) PoE 저항 + PoE 3.30 인내 원소 피해 감소 + 기대 저항 되돌림(결정 71, 74, 142, 6단계 combatAreaLevel)
+            // 3) PoE 저항 + PoE 3.30 인내 원소 피해 감소 + 유배자 레벨 기준 기대 저항 되돌림(결정 71, 74, 142, 170)
             double postDefense = 0.0;
             if (mapping.useAverageElemental) {
                 Core::StatSnapshot avgSnap = effectiveSnap;
                 avgSnap.fireResist = (effectiveSnap.fireResist + effectiveSnap.coldResist + effectiveSnap.lightningResist) / 3.0;
                 avgSnap.maxFireResist = (effectiveSnap.maxFireResist + effectiveSnap.maxColdResist + effectiveSnap.maxLightningResist) / 3.0;
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, Core::DamageType::Fire, effectiveSnap.combatAreaLevel, avgSnap, *g_dataPack, *g_config);
+                    preResistD, Core::DamageType::Fire, effectiveSnap.exileLevel, avgSnap, *g_dataPack, *g_config);
             } else {
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, mapping.type, effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
+                    preResistD, mapping.type, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
             }
 
             // C-22, N-3: 유효 원소 마법 타격(최대 체력의 5% 이상) 시 적->플레이어 상태이상(점화·냉각/빙결·감전) 적용

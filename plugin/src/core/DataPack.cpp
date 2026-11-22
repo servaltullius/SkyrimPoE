@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 
@@ -10,6 +11,10 @@ namespace SkyrimPoE::Core
 {
     namespace
     {
+        // 결정 170 U-3: PoB 3.30의 Misc.lua 지도 생명 배율표 범위.
+        constexpr std::uint32_t kMinMapLifeMultLevel = 66;
+        constexpr std::uint32_t kMaxMapLifeMultLevel = 90;
+
         GemKind ParseGemKind(const std::string& s)
         {
             if (s == "attack_channel") return GemKind::AttackChannel;
@@ -189,6 +194,31 @@ namespace SkyrimPoE::Core
                 if (errorOut) *errorOut = "Monster tables must contain at least 100 entries.";
                 return false;
             }
+            // 결정 170 U-3: 티어 배율은 이 표의 비율이므로 0·음수·비유한 값이 있으면 배율이 무한대나 NaN이 된다.
+            const auto allPositiveFinite = [](const std::vector<double>& values) {
+                return std::ranges::all_of(values, [](double v) { return std::isfinite(v) && v > 0.0; });
+            };
+            if (!allPositiveFinite(nextLife) || !allPositiveFinite(nextDamage) || !allPositiveFinite(nextAccuracy)) {
+                if (errorOut) *errorOut = "Monster tables must contain only positive finite values.";
+                return false;
+            }
+
+            const auto& mapLifeMult = t.at("mapLevelLifeMult");
+            if (!mapLifeMult.is_object() || mapLifeMult.size() != kMaxMapLifeMultLevel - kMinMapLifeMultLevel + 1) {
+                if (errorOut) *errorOut = "mapLevelLifeMult must contain levels 66 through 90.";
+                return false;
+            }
+            std::vector<double> nextMapLifeMult;
+            nextMapLifeMult.reserve(mapLifeMult.size());
+            for (auto level = kMinMapLifeMultLevel; level <= kMaxMapLifeMultLevel; ++level) {
+                const auto& entry = mapLifeMult.at(std::to_string(level));
+                const double multiplier = entry.is_number() ? entry.get<double>() : 0.0;
+                if (!std::isfinite(multiplier) || multiplier <= 0.0) {
+                    if (errorOut) *errorOut = "mapLevelLifeMult must be positive at level " + std::to_string(level) + ".";
+                    return false;
+                }
+                nextMapLifeMult.push_back(multiplier);
+            }
 
             std::vector<ExpectedDefenseRow> nextDef;
             for (const auto& row : t.at("expectedDefense")) {
@@ -276,6 +306,7 @@ namespace SkyrimPoE::Core
             monsterLife_ = std::move(nextLife);
             monsterDamage_ = std::move(nextDamage);
             monsterAccuracy_ = std::move(nextAccuracy);
+            mapLevelLifeMult_ = std::move(nextMapLifeMult);
             expectedDefense_ = std::move(nextDef);
             classes_ = std::move(nextClasses);
             gems_ = std::move(nextGems);
@@ -305,6 +336,15 @@ namespace SkyrimPoE::Core
     {
         if (monsterAccuracy_.empty()) return 14.0;
         return monsterAccuracy_[ClampLevelIndex(level, monsterAccuracy_.size())];
+    }
+
+    double DataPack::MapLevelLifeMult(std::uint32_t level) const noexcept
+    {
+        // 결정 170 U-3의 지도 티어는 Lv68~83이다. 원표 범위 밖이면 추가 배율을 적용하지 않는다.
+        if (mapLevelLifeMult_.empty() || level < kMinMapLifeMultLevel || level > kMaxMapLifeMultLevel) {
+            return 1.0;
+        }
+        return mapLevelLifeMult_[level - kMinMapLifeMultLevel];
     }
 
     const ExpectedDefenseRow& DataPack::ExpectedDefense(std::uint32_t level) const noexcept

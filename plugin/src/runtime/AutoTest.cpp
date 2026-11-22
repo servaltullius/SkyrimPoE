@@ -4224,7 +4224,7 @@ namespace SkyrimPoE::Runtime
                     }
                 }
             }
-            Check("H2_MapCraftingAndCombatAreaLevel", h2Ok, h2Detail);
+            Check("H2_MapCraftingAndItemLevel", h2Ok, h2Detail);
 
             // H3 준비: T10 지도 개방 및 MoveTo_Impl 텔레포트 + 비동기 셀 로드 스폰 대기
             g_hPreMapCellId = player->GetParentCell() ? player->GetParentCell()->GetFormID() : 0u;
@@ -4267,16 +4267,31 @@ namespace SkyrimPoE::Runtime
             auto* bossActor = active.bossRefFormId != 0
                 ? RE::TESForm::LookupByID<RE::Actor>(active.bossRefFormId)
                 : nullptr;
-            const bool areaLvOk = snap && snap->inActiveMap && (snap->combatAreaLevel == 77u) &&
-                                  (std::abs(snap->poeMaxLife - g_hPreMapPoeLife) < 1e-3);
+            // 결정 169, 170: 지도 입장 후에도 플레이어 생명 기준이 유지되고 스폰마다 회차 난이도와 보상이 붙는다.
+            const auto bossReward = MapDeviceRuntime::GetMapKillContext(active.bossRefFormId);
+            const bool rewardOk = bossReward.isBoss && bossReward.runId == active.runId &&
+                                  bossReward.rewardMonsterLevel == 77u && bossReward.dropMapTier == 10u;
+            bool scalingOk = false;
+            if (spawned && g_dataPack && g_dataPack->IsLoaded()) {
+                const auto expected = Core::MapSystem::GetMapMonsterMultipliers(77u, *g_dataPack);
+                scalingOk = std::ranges::all_of(active.spawnedRefFormIds, [&](RE::FormID id) {
+                    const auto scaling = MapDeviceRuntime::GetMapActorScaling(id);
+                    return scaling.runId == active.runId &&
+                           std::abs(scaling.lifeMultiplier - expected.lifeMultiplier) < 1e-4 &&
+                           std::abs(scaling.damageMultiplier - expected.damageMultiplier) < 1e-4;
+                });
+            }
+            const bool playerStatsOk = snap && snap->inActiveMap &&
+                                       std::abs(snap->poeMaxLife - g_hPreMapPoeLife) < 1e-3;
             const bool bossRecognized = bossActor && SkillExecution::IsBossOrDragon(bossActor);
             g_hMapBossFormId = active.bossRefFormId;
 
             Check("H3_MapEntryTeleportAndAsyncSpawn",
-                inTargetCell && spawned && areaLvOk && bossRecognized && (active.portalsRemaining == 5u),
-                std::format("cell=0x{:08X}/0x{:08X}, spawns={}, boss=0x{:08X}, bossRec={}, areaLv={}, portals={}",
+                inTargetCell && spawned && rewardOk && scalingOk && playerStatsOk &&
+                    bossRecognized && (active.portalsRemaining == 5u),
+                std::format("cell=0x{:08X}/0x{:08X}, spawns={}, boss=0x{:08X}, bossRec={}, rewardLv={}, scaling={}, playerStats={}, portals={}",
                     curCellId, dg.cellFormId, active.spawnedRefFormIds.size(), active.bossRefFormId,
-                    bossRecognized, snap ? snap->combatAreaLevel : 0u, active.portalsRemaining));
+                    bossRecognized, bossReward.rewardMonsterLevel, scalingOk, playerStatsOk, active.portalsRemaining));
 
             // H4 준비: 실제 CombatHooks::ApplyHitHook(CallDealDamage) 경로로 치명타 가로채기 발동 검증
             g_hDeathEscapeIntercepted = false;

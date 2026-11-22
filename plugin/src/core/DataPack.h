@@ -106,6 +106,7 @@ namespace SkyrimPoE::Core
         [[nodiscard]] double MonsterLife(std::uint32_t level) const noexcept;
         [[nodiscard]] double MonsterDamage(std::uint32_t level) const noexcept;
         [[nodiscard]] double MonsterAccuracy(std::uint32_t level) const noexcept;
+        [[nodiscard]] double MapLevelLifeMult(std::uint32_t level) const noexcept;
         [[nodiscard]] const ExpectedDefenseRow& ExpectedDefense(std::uint32_t level) const noexcept;
 
         [[nodiscard]] const ClassBase* FindClass(const std::string& name) const;
@@ -137,6 +138,7 @@ namespace SkyrimPoE::Core
         std::vector<double> monsterLife_;
         std::vector<double> monsterDamage_;
         std::vector<double> monsterAccuracy_;
+        std::vector<double> mapLevelLifeMult_;
         std::vector<ExpectedDefenseRow> expectedDefense_;
         std::unordered_map<std::string, ClassBase> classes_;
         std::unordered_map<std::string, SkillEffectDefinition> gems_;

@@ -913,11 +913,8 @@ namespace SkyrimPoE::Core
             gear.weaponLocalSpeedMult = w.speedMult;
         }
 
-        // 6단계(결정 45, 166): 지도 인스턴스 전투 환산 레벨·모드 스냅샷 반영(생명/매지카 풀은 exileLevel 유지)
+        // 결정 169: 플레이어 쪽 지도 불이익에 셀 소속과 어픽스를 반영한다. 전투 환산은 유배자 레벨을 쓴다.
         snap.inActiveMap = l2.inActiveMap;
-        snap.combatAreaLevel = (l2.inActiveMap && l2.combatAreaLevel > 0)
-            ? std::clamp<std::uint32_t>(l2.combatAreaLevel, 1, kMaxExileLevel)
-            : snap.exileLevel;
         snap.activeMapMods = l2.inActiveMap ? l2.activeMapMods : MapModSummary{};
 
         // 5~6단계(결정 161, 166): 정신력 상한 계산(1~4차 이정표 각 +30, 기본 최대 220) + 활성 오라/전령 중복 제거
@@ -1152,11 +1149,13 @@ namespace SkyrimPoE::Core
             snap.evasion = p.cannotEvade ? 0.0 : (rawEvasion * aura.moreEvasionMult * mapEvasionFactor);
         }
 
-        // 동적 원소별 최대 저항 상한 (기본 75% + 패시브 + 참 최대 저항 - 지도 최대 모든 저항 감소, PoE 하드캡 90%, 최소 50%)
-        snap.maxFireResist = std::clamp(c.resistCap + p.maxFireResistBonus + cb.maxFireResist - mapResPen, 50.0, 90.0);
-        snap.maxColdResist = std::clamp(c.resistCap + p.maxColdResistBonus + cb.maxColdResist - mapResPen, 50.0, 90.0);
-        snap.maxLightningResist = std::clamp(c.resistCap + p.maxLightningResistBonus + cb.maxLightningResist - mapResPen, 50.0, 90.0);
-        snap.maxChaosResist = std::clamp(c.resistCap + p.maxChaosResistBonus - mapResPen, 50.0, 90.0);
+        // 결정 169: 동적 최대 저항은 90% 상한이며, 50% 하한은 활성 회차 셀 안에서만 적용한다.
+        constexpr double kMapMaxResistFloor = 50.0;
+        const double maxResistFloor = snap.inActiveMap ? kMapMaxResistFloor : 0.0;
+        snap.maxFireResist = std::clamp(c.resistCap + p.maxFireResistBonus + cb.maxFireResist - mapResPen, maxResistFloor, 90.0);
+        snap.maxColdResist = std::clamp(c.resistCap + p.maxColdResistBonus + cb.maxColdResist - mapResPen, maxResistFloor, 90.0);
+        snap.maxLightningResist = std::clamp(c.resistCap + p.maxLightningResistBonus + cb.maxLightningResist - mapResPen, maxResistFloor, 90.0);
+        snap.maxChaosResist = std::clamp(c.resistCap + p.maxChaosResistBonus - mapResPen, maxResistFloor, 90.0);
 
         const std::uint8_t clampedEnd = std::min(l2.enduranceCharges, snap.maxEnduranceCharges);
         const double endDR = clampedEnd * kEndurancePhysAndElemDR;

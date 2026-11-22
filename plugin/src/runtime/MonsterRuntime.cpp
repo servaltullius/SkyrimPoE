@@ -219,20 +219,20 @@ namespace SkyrimPoE::Runtime
             const auto* av = actor->AsActorValueOwner();
             const double maxHp = std::max(10.0, static_cast<double>(
                 av ? av->GetPermanentActorValue(RE::ActorValue::kHealth) : 100.0f));
-            const bool inMap = MapDeviceRuntime::IsPlayerInActiveMapCell();
-            const auto mapMods = inMap ? MapDeviceRuntime::GetActiveMapModSummary() : Core::MapModSummary{};
+            Core::MapModSummary mapMods{};
+            const bool mapOwned = MapDeviceRuntime::GetMapActorScaling(fid, &mapMods).runId != 0;
             Core::Config effCfg = *g_config;
-            if (inMap && mapMods.moreMagicRarePct > 0.0) {
+            if (mapOwned && mapMods.moreMagicRarePct > 0.0) {
                 const double boost = 1.0 + mapMods.moreMagicRarePct / 100.0;
                 effCfg.magicMonsterChance = std::clamp(effCfg.magicMonsterChance * boost, 0.0, 0.80);
                 effCfg.rareMonsterChance = std::clamp(effCfg.rareMonsterChance * boost, 0.0, 0.45);
             }
             auto prof = Core::MonsterModSystem::RollPromotion(isBoss, isDragon, maxHp, effCfg, MonsterRng());
             if (prof.rarity != Core::MonsterRarity::Normal) {
-                if (inMap && mapMods.forceHasted) {
+                if (mapOwned && mapMods.forceHasted) {
                     prof.modMask |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted));
                 }
-                if (inMap && mapMods.forceDeadly) {
+                if (mapOwned && mapMods.forceDeadly) {
                     prof.modMask |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Deadly));
                 }
                 {
@@ -240,12 +240,12 @@ namespace SkyrimPoE::Runtime
                     g_profiles[fid] = prof;
                 }
                 if (prof.HasMod(Core::MonsterModKind::Hasted)) {
-                    const float hasteVal = (inMap && mapMods.monsterHasteSpeedBonus > 0.0)
+                    const float hasteVal = (mapOwned && mapMods.monsterHasteSpeedBonus > 0.0)
                         ? static_cast<float>(mapMods.monsterHasteSpeedBonus)
                         : 20.0f;
                     ApplyHasteSpeedIfNeeded(actor, hasteVal);
                 }
-            } else if (inMap && mapMods.forceHasted) {
+            } else if (mapOwned && mapMods.forceHasted) {
                 // 6단계(검수 M-4): 미승격 일반 지도 몹에도 MapMod_MonsterHaste 속도 적용
                 const float hasteVal = (mapMods.monsterHasteSpeedBonus > 0.0)
                     ? static_cast<float>(mapMods.monsterHasteSpeedBonus)
@@ -308,9 +308,11 @@ namespace SkyrimPoE::Runtime
     {
         double adjustedDmg = std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
 
-        // 6단계(검수 M-4): 지도 내부 일반·승격 몬스터 전원에게 지도 방어/저항 모드 적용(g_mutex 밖에서 MapDeviceRuntime 조회)
-        if (adjustedDmg > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
-            const auto mods = MapDeviceRuntime::GetActiveMapModSummary();
+        // 결정 170: 회차 소유 액터는 ES 흡수와 희귀도 피해 보정 전에 생명 배율과 지도 어픽스를 적용한다.
+        Core::MapModSummary mods{};
+        const auto scaling = MapDeviceRuntime::GetMapActorScaling(actorId, &mods);
+        if (adjustedDmg > 0.0 && scaling.runId != 0) {
+            adjustedDmg = scaling.ScaleIncomingDamage(adjustedDmg);
             if (mods.monsterReducedTakenPct > 0.0) {
                 adjustedDmg *= std::max(0.25, 1.0 - mods.monsterReducedTakenPct / 100.0);
             }
@@ -357,9 +359,11 @@ namespace SkyrimPoE::Runtime
                 out = Core::MonsterModSystem::ComputeOutgoingModifier(it->second);
             }
         }
-        // 6단계(검수 M-4): 지도 내부 일반·승격 적 모두에게 지도 공격/추가 원소/치명타 모드 반영
-        if (MapDeviceRuntime::IsPlayerInActiveMapCell()) {
-            const auto mods = MapDeviceRuntime::GetActiveMapModSummary();
+        // 결정 170: 희귀도와 무관하게 공격자 소속 회차의 피해 배율과 지도 어픽스를 적용한다.
+        Core::MapModSummary mods{};
+        const auto scaling = MapDeviceRuntime::GetMapActorScaling(actorId, &mods);
+        if (scaling.runId != 0) {
+            out.damageMultiplier *= scaling.damageMultiplier;
             if (mods.monsterDamageIncPct > 0.0) {
                 out.damageMultiplier *= (1.0 + mods.monsterDamageIncPct / 100.0);
             }
@@ -375,6 +379,7 @@ namespace SkyrimPoE::Runtime
             if (mods.forceDeadly) {
                 out.isDeadly = true;
             }
+            out.critChanceIncPct = mods.monsterCritChanceIncPct;
         }
         return out;
     }

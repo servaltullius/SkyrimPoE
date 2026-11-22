@@ -86,10 +86,11 @@ namespace SkyrimPoE::Runtime
                 const std::uint32_t enemyLvl = actor->GetLevel();
                 const std::uint32_t playerLvl = player ? player->GetLevel() : 1;
                 const bool isDragon = IsDragonActor(actor);
-                const bool isDynamicMapBoss = MapDeviceRuntime::IsActiveMapOrArenaBoss(actorId);
-                const bool isBoss = IsBossActor(actor) || isDynamicMapBoss;
+                // 결정 116, 170 U-4: 사망 확정 때 희생자의 회차와 보상 조건을 함께 캡처한다.
+                const auto mapKill = MapDeviceRuntime::GetMapKillContext(actorId);
+                const bool isBoss = IsBossActor(actor) || mapKill.isBoss;
                 // 검수 M5 + 6단계: 이정표 보스 카운트는 오픈월드 바닐라 LocTypeBoss만 인정(동적 지도/결투장 보스는 아틀라스·4차 전용)
-                const bool isMilestoneBoss = !isDragon && !isDynamicMapBoss && HasLocationBossRefType(actor);
+                const bool isMilestoneBoss = !isDragon && mapKill.runId == 0 && HasLocationBossRefType(actor);
 
                 const auto* actorState = actor->AsActorState();
                 const bool fallbackExcluded = actor->IsSummoned() ||
@@ -97,8 +98,6 @@ namespace SkyrimPoE::Runtime
                     actor->IsCommandedActor();
 
                 const auto stateCopy = SaveLoad::GetStateCopy();
-                const bool inActiveMapCell = MapDeviceRuntime::IsPlayerInActiveMapCell();
-                const std::uint32_t activeAreaLv = inActiveMapCell ? MapDeviceRuntime::GetActiveCombatAreaLevel() : 0u;
                 const auto reward = g_killTracker->OnDeathConfirm(
                     actorId,
                     enemyLvl,
@@ -108,7 +107,7 @@ namespace SkyrimPoE::Runtime
                     stateCopy.exileLevel,
                     *g_config,
                     fallbackExcluded,
-                    activeAreaLv);
+                    mapKill.rewardMonsterLevel);
 
                 // 결정 119: 원시 Actor* 대신 ActorHandle을 캡처해 주 갱신에서 유효성 재확인
                 const RE::ActorHandle corpseHandle = actor->GetHandle();
@@ -117,21 +116,21 @@ namespace SkyrimPoE::Runtime
                 // 1~3차 보스 이정표 및 전리품 드랍 판정을 항상 수행한다.
                 if (!reward.awarded) {
                     // 보상 대상이 아닌 사망자도 상태이상(SpeedMult 원복)·승격 테이블 정리 + 동적 보스 처치(동료 마무리 등) 누락 방지
-                    g_queue->Enqueue([actorId, corpseHandle]() {
+                    g_queue->Enqueue([actorId, corpseHandle, runId = mapKill.runId]() {
                         if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
                             return;
                         }
                         MonsterRuntime::OnActorReset(actorId);
                         auto corpsePtr = corpseHandle.get();
                         AilmentRuntime::OnActorKilled(actorId, corpsePtr.get(), false);
-                        MapDeviceRuntime::OnActorKilled(actorId, corpsePtr.get());
+                        MapDeviceRuntime::OnActorKilled(actorId, corpsePtr.get(), runId);
                     });
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 const bool hasXp = (reward.exileXpGained > 0 || reward.gemXpGained > 0);
 
                 // 상태 갱신·드랍 판정·참 충전·전령 폭발·헤드헌터·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
-                g_queue->Enqueue([actorId, reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle]() {
+                g_queue->Enqueue([actorId, reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle, mapKill]() {
                     if (!g_config || MapDeviceRuntime::IsUninstallCleanupArmed()) {
                         return;
                     }
@@ -207,22 +206,18 @@ namespace SkyrimPoE::Runtime
                     }
 
                     // 4~6단계(결정 16, 157~159, 164, 166): 지도·아틀라스 IIQ/IIR 반영 시체/바닥 드랍 + 지도/결투장 보스 처치 처리
-                    const bool inMapNow = MapDeviceRuntime::IsPlayerInActiveMapCell();
-                    const auto activeMapSnap = MapDeviceRuntime::GetActiveMapStateCopy();
-                    const bool isNormalMapNow = inMapNow && activeMapSnap.active && !activeMapSnap.isArena4;
-                    const std::uint8_t dropMapTier = isNormalMapNow ? activeMapSnap.tier : 0u;
                     const auto curSt = SaveLoad::GetStateCopy();
-                    const double mapIiq = isNormalMapNow
-                        ? (activeMapSnap.summary.bonusIiqPct + Core::MapSystem::AtlasBonusIiqPct(curSt.atlas.completedTierMask))
-                        : 0.0;
-                    const double mapIir = (isNormalMapNow
-                        ? (activeMapSnap.summary.bonusIirPct + Core::MapSystem::AtlasBonusIirPct(curSt.atlas.completedTierMask))
-                        : 0.0) + (snap ? snap->itemRarityPct : 0.0);
+                    double mapIiq = mapKill.bonusIiqPct;
+                    double mapIir = mapKill.bonusIirPct + (snap ? snap->itemRarityPct : 0.0);
+                    if (mapKill.dropMapTier != 0) {
+                        mapIiq += Core::MapSystem::AtlasBonusIiqPct(curSt.atlas.completedTierMask);
+                        mapIir += Core::MapSystem::AtlasBonusIirPct(curSt.atlas.completedTierMask);
+                    }
 
                     WorldDropTracker::OnKillAwarded(
                         corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon, killedProf.rarity,
-                        dropMapTier, mapIiq, mapIir, false);
-                    MapDeviceRuntime::OnActorKilled(actorId, victim);
+                        mapKill.dropMapTier, mapIiq, mapIir, false);
+                    MapDeviceRuntime::OnActorKilled(actorId, victim, mapKill.runId);
 
                     // 5단계(결정 161): 보스 이정표 달성 시 최대 정신력 +30 즉시 반영을 위해 StatEngine 동기화
                     if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0 || unlockedTier > 0) {

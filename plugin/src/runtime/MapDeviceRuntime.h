@@ -5,7 +5,7 @@
 #include "core/EnergyShield.h"
 #include "core/ItemData.h"
 #include "core/ItemTypes.h"
-#include "core/MapTypes.h"
+#include "core/MapSystem.h"
 #include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
@@ -20,6 +20,16 @@ namespace SkyrimPoE::Runtime
     {
         bool ok = false;
         std::string message;
+    };
+
+    struct MapKillContext
+    {
+        std::uint64_t runId = 0;
+        std::uint32_t rewardMonsterLevel = 0;
+        std::uint8_t dropMapTier = 0;
+        double bonusIiqPct = 0.0;
+        double bonusIirPct = 0.0;
+        bool isBoss = false;
     };
 
     struct PlayerMapItemEntry
@@ -47,6 +57,7 @@ namespace SkyrimPoE::Runtime
             const Core::Config* config,
             Core::EnergyShieldPool* esPool,
             Core::CharmSystem* charmSystem);
+        static void BindDataPack(const Core::DataPack* dataPack);
 
         // 주 갱신 스레드 프레임 틱: 셀 소속 원자 갱신, 비동기 셀 로드 완료 후 스폰, 3페이즈 무적 타이머, 탈출 쿨다운
         static void Tick(double deltaSec, bool gamePaused);
@@ -65,7 +76,7 @@ namespace SkyrimPoE::Runtime
         static MapActionResult RunSafeUninstallCleanup(RE::PlayerCharacter* player);
 
         // 주 갱신 스레드 전용(DeathListener 호출): 지도 보스 클리어(아틀라스 +1, 첫 T6+ 공물) 및 4차 전직 보스 처치
-        static void OnActorKilled(RE::FormID actorId, RE::Actor* victim);
+        static void OnActorKilled(RE::FormID actorId, RE::Actor* victim, std::uint64_t runId);
 
         // 스레드 안전(CombatHooks / MonsterRuntime 호출): 4차 전직 3페이즈 보스 체력 하한 동기 클램프 + 전환 예약
         // rawSkyrimDamage는 난이도 배율 적용 전 피해량이며, diffMult는 실제 체력 차감 배율(fDiffMultHPByPC)이다.
@@ -85,7 +96,6 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static bool IsActiveMapRun() noexcept;
         [[nodiscard]] static bool IsActiveMapCell(RE::FormID cellFormId) noexcept;
         [[nodiscard]] static std::uint8_t GetActiveMapTier() noexcept;
-        [[nodiscard]] static std::uint32_t GetActiveCombatAreaLevel() noexcept;
         [[nodiscard]] static bool IsActiveMapOrArenaBoss(RE::FormID actorFormId) noexcept;
         [[nodiscard]] static bool IsActiveArena4Boss(RE::FormID actorFormId) noexcept;
         [[nodiscard]] static bool IsDeathEscapeInFlight() noexcept;
@@ -94,7 +104,11 @@ namespace SkyrimPoE::Runtime
 
         // 뮤텍스 보호 스냅샷 조회
         [[nodiscard]] static Core::ActiveMapState GetActiveMapStateCopy();
-        [[nodiscard]] static Core::MapModSummary GetActiveMapModSummary();
+
+        // 전용 잎 잠금으로 회차 소유와 해당 회차의 어픽스·보상 정보를 일관되게 읽는다.
+        [[nodiscard]] static Core::MapActorScaling GetMapActorScaling(
+            RE::FormID actorId, Core::MapModSummary* mods = nullptr);
+        [[nodiscard]] static MapKillContext GetMapKillContext(RE::FormID actorId);
 
         // 주 갱신 스레드 전용: 인벤토리 보유 지도 목록·4차 공물 수량·안전 텔레포트 래퍼
         [[nodiscard]] static std::vector<PlayerMapItemEntry> ListPlayerMaps(RE::PlayerCharacter* player);
@@ -106,7 +120,7 @@ namespace SkyrimPoE::Runtime
             const RE::NiPoint3& pos,
             const RE::NiPoint3& angle);
 
-        // Layer2Input(inActiveMap/combatAreaLevel/activeMapMods) 동기화
+        // Layer2Input에 플레이어의 지도 셀 소속과 불이익을 동기화
         static void SyncMapLayer2ToStatEngine();
 
         // SKSE 코세이브 'MAPS' v1 스냅샷/복원/초기화(순수 메모리) 및 PostLoad 재바인딩

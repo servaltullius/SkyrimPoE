@@ -118,6 +118,7 @@ add_executable(skyrimpoe_tests
     tests/test_stage5.cpp
     tests/test_world_stamp_link.cpp
     tests/test_stage6.cpp
+    tests/test_map_difficulty.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE
