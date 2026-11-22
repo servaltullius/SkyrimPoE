@@ -33,6 +33,12 @@ namespace SkyrimPoE::Core
         return distanceSquared <= request.arrivalRadius * request.arrivalRadius;
     }
 
+    bool HasFallenBelowMap(const MapTravelObservation& player, double navmeshMinZ, double margin) noexcept
+    {
+        const double z = player.position[2];
+        return player.inPackCell && std::isfinite(z) && z < navmeshMinZ - margin;
+    }
+
     bool MapTravel::TryStart(MapTravelRequest request) noexcept
     {
         if (current_) {

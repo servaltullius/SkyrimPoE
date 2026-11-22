@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -86,6 +87,8 @@ namespace SkyrimPoE::Core
         // 재입장 시 포털 1 소모 (포털 0이거나 실패 상태면 false)
         [[nodiscard]] static bool TryConsumePortalForReenter(ActiveMapState& state) noexcept;
         [[nodiscard]] static bool ShouldEndOnReturn(const ActiveMapState& state) noexcept;
+
+        [[nodiscard]] static bool IsRunDrop(std::uint32_t corpseId, std::span<const std::uint32_t> spawnedRefIds) noexcept;
 
         // 지도 내 치명타 사망 탈출 처리 (PoE1 표준 6포털 = 총 6회 진입/목숨, 이중 차감 및 0포털 좀비 상태 차단):
         // - 일반 지도: 남은 포털 > 0이면 안전 귀환(활성 유지, 재입장 시 포털 -1 소모) -> true;

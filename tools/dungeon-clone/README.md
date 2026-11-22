@@ -44,15 +44,16 @@ dotnet test tools/dungeon-clone/DungeonClone.Tests/DungeonClone.Tests.csproj -c 
   - 8: 장부 갱신 필요
   - 9: 파일 입출력 오류
 
-## 런타임 목록 파일 형식 2
+## 런타임 목록 파일 형식 3
 
-`manifestFormat`은 2다. 최상위에 `plugin` (`SkyrimPoE_Maps.esp`), 양의 정수 `packVersion`, ESP 바이트의 SHA-256인 `espSha256`(16진수 64자리), `sourceMaster` (`Skyrim.esm`), `dungeons` 배열이 있다. 런타임은 지도 역할을 배열 순서대로 티어에 배정하고, 세이브에는 던전 `key`와 `packVersion`을 저장한다.
+`manifestFormat`은 3이다. 최상위에 `plugin` (`SkyrimPoE_Maps.esp`), 양의 정수 `packVersion`, ESP 바이트의 SHA-256인 `espSha256`(16진수 64자리), `sourceMaster` (`Skyrim.esm`), `dungeons` 배열이 있다. 런타임은 지도 역할을 배열 순서대로 티어에 배정하고, 세이브에는 던전 `key`와 `packVersion`을 저장한다.
 
 | 던전 필드 | 값 |
 |---|---|
 | `key`, `type`, `role`, `name` | 고정 키, 던전 유형, `map` 또는 `arena`, 표시 이름. 키는 소문자·숫자·밑줄 최대 64바이트 |
 | `sourceCell` | Skyrim.esm 원본 셀의 로컬 FormID 문자열, 16진수 6자리 |
 | `cell`, `entryMarker`, `bossAnchor`, `packAnchors` | 지도 팩의 복제 셀, 입구, 보스 및 무리 마커. 로컬 FormID는 `0x`와 16진수 6자리 |
+| `navmeshMinZ` | 복제 셀에서 걸을 수 있는 내비메쉬 삼각형 꼭짓점의 최저 Z. 삭제·물 삼각형을 제외하며, 걸을 수 있는 삼각형이 없으면 빌드 실패 |
 | `returnDoors`, `sealedDoors` | 귀환 문, 막힌 문의 지도 팩 로컬 FormID 배열 |
 | `autoExits` | 자동 출구 배열. 각 항목은 지도 팩 로컬 ID `id`, 원래 목적지 `leads` (`exterior` 또는 `interior`), 3축 `position`과 `rotation` |
 | `bossNpc` | 두 역할에 필요한 보스 원형. Skyrim.esm 로컬 NPC_ FormID 문자열, 16진수 6자리 |
@@ -179,7 +180,8 @@ dotnet test tools/dungeon-clone/DungeonClone.Tests/DungeonClone.Tests.csproj -c 
   - 원본 대조 검증이 결함을 잡는지: 위치를 옮김, 연결 필드를 바꿈, 상자를 남김, 앵커를 멀리 옮김
   - 같은 키에 다른 원본 셀을 주면 실패
   - 내비메쉬 계산: 위 판정, 가장 가까운 점, 퇴화 삼각형 제외
-  - 원형 누락, 잘못된 NPC_ 번호 거부와 역할별 형식 2 원형 필드 출력
+  - 원형 누락, 잘못된 NPC_ 번호 거부와 역할별 형식 3 원형 필드 출력
+  - 여러 내비메쉬에서 걸을 수 있는 삼각형의 최저 Z 계산, 걸을 수 있는 삼각형이 없는 셀 거부
 
 ## 2026-11-22 결과
 
@@ -219,4 +221,4 @@ dotnet test tools/dungeon-clone/DungeonClone.Tests/DungeonClone.Tests.csproj -c 
   - 드웨머 함정 계열(`TrapDweThresher` 등)
   - `FXCameraAttachScript`(화면 효과)
 - 셀 레코드는 원본의 압축 플래그를 그대로 가진다.
-- 막음 물체는 실험 G-7에서 방법을 정한다.
+- 막음 물체는 두지 않는다. 자동 출구 너머로 떨어지면 런타임 낙하 복귀가 처리한다(목록의 `navmeshMinZ`, 결정 177).

@@ -324,6 +324,8 @@ namespace SkyrimPoE::Core
                     if (ParseDouble(val, d) && d >= 64.0 && d <= 4096.0) result.mapTravel.arrivalRadius = d; else warnInvalid();
                 } else if (key == "MapTravelMaxAttempts") {
                     if (ParseUint(val, u) && u >= 1 && u <= 5) result.mapTravel.maxAttempts = u; else warnInvalid();
+                } else if (key == "MapFallMargin") {
+                    if (ParseDouble(val, d) && d >= 128.0 && d <= 8192.0) result.mapTravel.fallMargin = d; else warnInvalid();
                 } else {
                     warnInvalid();
                 }

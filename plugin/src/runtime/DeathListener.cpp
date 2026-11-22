@@ -88,6 +88,7 @@ namespace SkyrimPoE::Runtime
                 const bool isDragon = IsDragonActor(actor);
                 // 결정 116, 170 U-4: 사망 확정 때 희생자의 회차와 보상 조건을 함께 캡처한다.
                 const auto mapKill = MapDeviceRuntime::GetMapKillContext(actorId);
+                MapDeviceRuntime::NoteConfirmedMapKill(mapKill);
                 const bool isBoss = IsBossActor(actor) || mapKill.isBoss;
                 // 검수 M5 + 6단계: 이정표 보스 카운트는 오픈월드 바닐라 LocTypeBoss만 인정(동적 지도/결투장 보스는 아틀라스·4차 전용)
                 const bool isMilestoneBoss = !isDragon && mapKill.runId == 0 && HasLocationBossRefType(actor);

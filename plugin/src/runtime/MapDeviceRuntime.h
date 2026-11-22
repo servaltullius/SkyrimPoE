@@ -47,6 +47,13 @@ namespace SkyrimPoE::Runtime
         bool operator==(const MapTravelStatus&) const = default;
     };
 
+    struct MapCellResetStatus
+    {
+        bool pending = false;
+        std::size_t dispatched = 0;   // VM이 접수한 횟수
+        std::size_t completed = 0;    // 호출 완료 콜백이 온 횟수
+    };
+
     struct PlayerMapItemEntry
     {
         Core::InventoryItemKey key{};
@@ -91,6 +98,10 @@ namespace SkyrimPoE::Runtime
         static MapActionResult SafeEscape(RE::PlayerCharacter* player);
         [[nodiscard]] static MapTravelStatus GetTravelStatus(RE::PlayerCharacter* player);
         [[nodiscard]] static double GetTravelArrivalRadius() noexcept;
+        [[nodiscard]] static double GetFallMargin() noexcept;
+        // 입구로 옮긴 낙하 복귀 횟수(자동 시험 H10)
+        [[nodiscard]] static std::size_t GetFallRecoveryCount();
+        [[nodiscard]] static MapCellResetStatus GetCellResetStatus(RE::FormID cellId);
 
         // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차(검수 C-4: 완료 후 g_uninstallCleanupArmed=true로 재오염 차단)
         static MapActionResult RunSafeUninstallCleanup(RE::PlayerCharacter* player);
@@ -129,6 +140,8 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static Core::MapActorScaling GetMapActorScaling(
             RE::FormID actorId, Core::MapModSummary* mods = nullptr);
         [[nodiscard]] static MapKillContext GetMapKillContext(RE::FormID actorId);
+        // 사망 확정 때 DeathListener가 부른다. 보상 자격이 있는 보스 사망을 표시한다(조회 함수는 상태를 바꾸지 않음).
+        static void NoteConfirmedMapKill(const MapKillContext& context);
 
         // 주 갱신 스레드 전용: 인벤토리 보유 지도 목록·4차 공물 수량·엔진 이동 요청
         [[nodiscard]] static std::vector<PlayerMapItemEntry> ListPlayerMaps(RE::PlayerCharacter* player);

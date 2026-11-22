@@ -87,6 +87,16 @@ namespace SkyrimPoE::Core
             dungeon.type = ReadText(entry, "type");
             (void)ReadFormId(entry.at("sourceCell"), "sourceCell", false);
             dungeon.cell = ReadFormId(entry.at("cell"), "cell", true);
+            const auto& navmeshMinZ = entry.at("navmeshMinZ");
+            if (!navmeshMinZ.is_number()) {
+                throw std::runtime_error("navmeshMinZ는 유한한 실수여야 합니다.");
+            }
+            dungeon.navmeshMinZ = navmeshMinZ.get<double>();
+            // 도구와 엔진 좌표는 float이다. 손으로 고친 목록의 터무니없는 값이 낙하 판정을 망가뜨리지 않게 막는다.
+            constexpr double kMaxNavmeshZ = 1.0e6;
+            if (!std::isfinite(dungeon.navmeshMinZ) || std::abs(dungeon.navmeshMinZ) > kMaxNavmeshZ) {
+                throw std::runtime_error("navmeshMinZ는 유한한 실수여야 합니다.");
+            }
             dungeon.entryMarker = ReadFormId(entry.at("entryMarker"), "entryMarker", true);
             dungeon.bossAnchor = ReadFormId(entry.at("bossAnchor"), "bossAnchor", true);
             dungeon.packAnchors = ReadIds(entry, "packAnchors", true);
@@ -115,7 +125,7 @@ namespace SkyrimPoE::Core
         const auto root = json::parse(input);
         const auto& format = root.at("manifestFormat");
         if (!format.is_number_integer() || format != kMapsManifestFormat) {
-            throw std::runtime_error("지도 목록의 형식 번호가 2여야 합니다.");
+            throw std::runtime_error(std::format("지도 목록의 형식 번호가 {}여야 합니다.", kMapsManifestFormat));
         }
         if (ReadText(root, "plugin") != kMapsPluginName || ReadText(root, "sourceMaster") != kMapsSourceMaster) {
             throw std::runtime_error("지도 목록의 plugin 또는 sourceMaster가 올바르지 않습니다.");

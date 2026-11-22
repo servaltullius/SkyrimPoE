@@ -21,17 +21,17 @@ namespace
 
     json ManifestFixture()
     {
-        std::ifstream input(std::filesystem::path(POE_TEST_PLUGIN_DIR) / "tests" / "maps_format2.json");
+        std::ifstream input(std::filesystem::path(POE_TEST_PLUGIN_DIR) / "tests" / "maps_format3.json");
         return json::parse(input);
     }
 
-    MapPack Parse(const json& fixture)
+    MapPack Parse(std::string_view fixture)
     {
-        std::istringstream input(fixture.dump());
+        std::istringstream input{ std::string(fixture) };
         return ParseMapManifest(input);
     }
 
-    void CheckRejected(const json& fixture, std::string_view reason)
+    void CheckRejectedText(std::string_view fixture, std::string_view reason)
     {
         std::string error;
         try {
@@ -41,11 +41,16 @@ namespace
         }
         POE_CHECK(error.find(reason) != std::string::npos);
     }
+
+    void CheckRejected(const json& fixture, std::string_view reason)
+    {
+        CheckRejectedText(fixture.dump(), reason);
+    }
 }
 
-POE_TEST("Map pack format 2: resolved local IDs, ordered tiers and arena selection")
+POE_TEST("Map pack format 3: resolved local IDs, ordered tiers and arena selection")
 {
-    const auto pack = Parse(ManifestFixture());
+    const auto pack = Parse(ManifestFixture().dump());
     POE_CHECK(pack.version == 1 && pack.espSha256.size() == 64);
     POE_CHECK(pack.maps.size() == 4);
     constexpr std::array<std::string_view, 4> keys{ "embershard", "pinemoon", "ironbind", "raldbthar" };
@@ -57,6 +62,7 @@ POE_TEST("Map pack format 2: resolved local IDs, ordered tiers and arena selecti
     }
     const auto& mine = pack.maps.front();
     POE_CHECK(mine.name == "엠버샤드 광산");
+    POE_CHECK_NEAR(mine.navmeshMinZ, 8036.257, 1e-6);
     POE_CHECK(mine.cell == 0x800 && mine.entryMarker == 0xB32 && mine.bossAnchor == 0xBBE);
     POE_CHECK(mine.packAnchors.size() == 3 && mine.packNpcs.size() == 4 && mine.bossNpc == 0x03DF0C);
     POE_CHECK(mine.returnDoors == std::vector<std::uint32_t>{ 0x00080B });
@@ -64,6 +70,7 @@ POE_TEST("Map pack format 2: resolved local IDs, ordered tiers and arena selecti
     POE_CHECK(pack.maps[2].returnDoors == std::vector<std::uint32_t>{ 0x00482E });
     POE_CHECK(pack.maps[3].returnDoors == std::vector<std::uint32_t>{ 0x006807 });
     POE_CHECK(pack.arena.key == "shrouded_grove");
+    POE_CHECK_NEAR(pack.arena.navmeshMinZ, -607.9122, 1e-6);
     POE_CHECK(pack.arena.cell == 0x008800 && pack.arena.addNpcs.front() == 0x016FF8);
     POE_CHECK(pack.arena.returnDoors.empty());
 
@@ -82,13 +89,13 @@ POE_TEST("Map pack format 2: resolved local IDs, ordered tiers and arena selecti
     POE_CHECK(pack.ForRun(run) == &mine);
 }
 
-POE_TEST("Map pack format 2 rejects invalid headers and missing dungeon fields")
+POE_TEST("Map pack format 3 rejects invalid headers and missing dungeon fields")
 {
     const auto fixture = ManifestFixture();
     auto invalid = fixture;
-    invalid["manifestFormat"] = 1;
+    invalid["manifestFormat"] = 2;
     CheckRejected(invalid, "형식 번호");
-    invalid["manifestFormat"] = 2.0;
+    invalid["manifestFormat"] = 3.0;
     CheckRejected(invalid, "형식 번호");
     invalid = fixture;
     invalid["plugin"] = "SkyrimPoE.esp";
@@ -99,7 +106,7 @@ POE_TEST("Map pack format 2 rejects invalid headers and missing dungeon fields")
     invalid = fixture;
     invalid["espSha256"] = std::string(64, 'z');
     CheckRejected(invalid, "espSha256");
-    for (const auto* field : { "name", "cell", "entryMarker", "bossAnchor", "packAnchors", "returnDoors" }) {
+    for (const auto* field : { "name", "cell", "navmeshMinZ", "entryMarker", "bossAnchor", "packAnchors", "returnDoors" }) {
         invalid = fixture;
         invalid["dungeons"][0].erase(field);
         CheckRejected(invalid, field);
@@ -112,7 +119,22 @@ POE_TEST("Map pack format 2 rejects invalid headers and missing dungeon fields")
     CheckRejected(invalid, "무리 앵커");
 }
 
-POE_TEST("Map pack format 2 rejects duplicate keys, invalid role counts and missing NPC templates")
+POE_TEST("Map pack format 3 rejects nonnumeric and nonfinite navmesh heights")
+{
+    auto invalid = ManifestFixture();
+    invalid["dungeons"][0]["navmeshMinZ"] = "NaN";
+    CheckRejected(invalid, "navmeshMinZ");
+    invalid["dungeons"][0]["navmeshMinZ"] = nullptr;
+    CheckRejected(invalid, "navmeshMinZ");
+    auto overflow = invalid.dump();
+    constexpr std::string_view field = "\"navmeshMinZ\":null";
+    const auto height = overflow.find(field);
+    POE_CHECK(height != std::string::npos);
+    overflow.replace(height, field.size(), "\"navmeshMinZ\":1e309");
+    CheckRejectedText(overflow, "1e309");
+}
+
+POE_TEST("Map pack format 3 rejects duplicate keys, invalid role counts and missing NPC templates")
 {
     const auto fixture = ManifestFixture();
     auto invalid = fixture;

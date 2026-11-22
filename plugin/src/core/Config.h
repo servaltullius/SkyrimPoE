@@ -13,6 +13,7 @@ namespace SkyrimPoE::Core
         double timeoutSec = 20.0;
         double arrivalRadius = 512.0;
         std::uint32_t maxAttempts = 2;
+        double fallMargin = 512.0;
     };
 
     struct ConfigLoadResult

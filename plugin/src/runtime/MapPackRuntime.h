@@ -21,6 +21,9 @@ namespace SkyrimPoE::Runtime::MapPackRuntime
     [[nodiscard]] const Core::MapPack& Manifest() noexcept;
     [[nodiscard]] const std::string& UnavailableReason() noexcept;
     [[nodiscard]] const DungeonForms* FindForms(const Core::MapDungeonDef* dungeon);
+    [[nodiscard]] const Core::MapDungeonDef* FindDungeonByCell(RE::FormID cellId) noexcept;
+    // 검증된 팩의 모든 던전 셀(팩을 쓸 수 없으면 빈 목록)
+    [[nodiscard]] std::vector<RE::FormID> DungeonCellIds();
     [[nodiscard]] RE::FormID ReturnDoorCell(RE::FormID doorId) noexcept;
 
     // 비호환 세이브의 귀환 판정에는 검증 실패 후에도 원본 셀을 확인할 수 있다.

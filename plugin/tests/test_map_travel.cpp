@@ -4,6 +4,8 @@
 #include "core/MapSystem.h"
 #include "core/MapTravel.h"
 
+#include <limits>
+
 using namespace SkyrimPoE::Core;
 
 namespace
@@ -199,4 +201,45 @@ POE_TEST("Map travel INI parses its bounds and keeps defaults for invalid values
         "[Maps]\nMapTravelTimeoutSec=4\nMapTravelArrivalRadius=4097\nMapTravelMaxAttempts=6\n");
     POE_CHECK(invalid.warnings.size() == 3);
     POE_CHECK(invalid.mapTravel.timeoutSec == 20.0 && invalid.mapTravel.arrivalRadius == 512.0 && invalid.mapTravel.maxAttempts == 2);
+}
+
+POE_TEST("Map fall requires a pack cell and a height strictly below the threshold")
+{
+    constexpr double minimumZ = -600.0;
+    constexpr double margin = 512.0;
+    auto player = kAtEntrance;
+    player.position[2] = -1111.99f;
+    POE_CHECK(!HasFallenBelowMap(player, minimumZ, margin));
+    player.position[2] = -1112.0f;
+    POE_CHECK(!HasFallenBelowMap(player, minimumZ, margin));
+    player.position[2] = -1112.01f;
+    POE_CHECK(HasFallenBelowMap(player, minimumZ, margin));
+    player.inPackCell = false;
+    POE_CHECK(!HasFallenBelowMap(player, minimumZ, margin));
+    player.inPackCell = true;
+    player.position[2] = std::numeric_limits<float>::quiet_NaN();
+    POE_CHECK(!HasFallenBelowMap(player, minimumZ, margin));
+}
+
+POE_TEST("Map fall margin INI accepts its bounds and defaults on invalid values")
+{
+    POE_CHECK(LoadConfigFromString("[Maps]\n").mapTravel.fallMargin == 512.0);
+    const auto minimum = LoadConfigFromString("[Maps]\nMapFallMargin=128\n");
+    const auto maximum = LoadConfigFromString("[Maps]\nMapFallMargin=8192\n");
+    POE_CHECK(minimum.warnings.empty() && minimum.mapTravel.fallMargin == 128.0);
+    POE_CHECK(maximum.warnings.empty() && maximum.mapTravel.fallMargin == 8192.0);
+    for (const auto* value : { "127.999", "8192.001", "nan", "inf" }) {
+        const auto invalid = LoadConfigFromString(std::string("[Maps]\nMapFallMargin=") + value);
+        POE_CHECK(invalid.warnings.size() == 1 && invalid.mapTravel.fallMargin == 512.0);
+    }
+}
+
+POE_TEST("Map drop cleanup selects only corpses from the closed run")
+{
+    constexpr std::array<std::uint32_t, 3> spawned{ 0xFF000010, 0xFF000011, 0 };
+    POE_CHECK(MapSystem::IsRunDrop(0xFF000010, spawned));
+    POE_CHECK(MapSystem::IsRunDrop(0xFF000011, spawned));
+    POE_CHECK(!MapSystem::IsRunDrop(0xFF000012, spawned));
+    POE_CHECK(!MapSystem::IsRunDrop(0, spawned));
+    POE_CHECK(!MapSystem::IsRunDrop(0xFF000010, {}));
 }

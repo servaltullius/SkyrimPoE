@@ -48,6 +48,7 @@ namespace SkyrimPoE::Core
     enum class MapTravelOutcome { Waiting, Arrived, Retry, Fallback, Failed };
 
     [[nodiscard]] bool HasArrived(const MapTravelRequest& request, const MapTravelObservation& player) noexcept;
+    [[nodiscard]] bool HasFallenBelowMap(const MapTravelObservation& player, double navmeshMinZ, double margin) noexcept;
 
     class MapTravel
     {

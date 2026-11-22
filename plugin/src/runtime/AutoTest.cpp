@@ -151,6 +151,7 @@ namespace SkyrimPoE::Runtime
             ScenarioG_ReloadSettle,
             ScenarioH_Start,
             ScenarioH_MapEntryWait,
+            ScenarioH_FallRecoveryWait,
             ScenarioH_DeathInterceptTrigger,
             ScenarioH_DeathEscapeWait,
             ScenarioH_UnauthorizedEntryWait,
@@ -159,6 +160,7 @@ namespace SkyrimPoE::Runtime
             ScenarioH_ReenterWait,
             ScenarioH_BossKillWait,
             ScenarioH_PostMapAbandonWait,
+            ScenarioH_CellResetWait,
             ScenarioH_Arena4EntryWait,
             ScenarioH_Arena4Phase2Wait,
             ScenarioH_Arena4Phase3Wait,
@@ -241,6 +243,7 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioG_ReloadSettle: return "ScenarioG_ReloadSettle";
             case Phase::ScenarioH_Start: return "ScenarioH_Start";
             case Phase::ScenarioH_MapEntryWait: return "ScenarioH_MapEntryWait";
+            case Phase::ScenarioH_FallRecoveryWait: return "ScenarioH_FallRecoveryWait";
             case Phase::ScenarioH_DeathInterceptTrigger: return "ScenarioH_DeathInterceptTrigger";
             case Phase::ScenarioH_DeathEscapeWait: return "ScenarioH_DeathEscapeWait";
             case Phase::ScenarioH_UnauthorizedEntryWait: return "ScenarioH_UnauthorizedEntryWait";
@@ -249,6 +252,7 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioH_ReenterWait: return "ScenarioH_ReenterWait";
             case Phase::ScenarioH_BossKillWait: return "ScenarioH_BossKillWait";
             case Phase::ScenarioH_PostMapAbandonWait: return "ScenarioH_PostMapAbandonWait";
+            case Phase::ScenarioH_CellResetWait: return "ScenarioH_CellResetWait";
             case Phase::ScenarioH_Arena4EntryWait: return "ScenarioH_Arena4EntryWait";
             case Phase::ScenarioH_Arena4Phase2Wait: return "ScenarioH_Arena4Phase2Wait";
             case Phase::ScenarioH_Arena4Phase3Wait: return "ScenarioH_Arena4Phase3Wait";
@@ -317,6 +321,17 @@ namespace SkyrimPoE::Runtime
         // 최대 설정(입장 120초, 귀환 5회 + 마커 1회)에 로딩 여유 시간을 더한다.
         constexpr double kMapEntryWaitSec = 150.0;
         constexpr double kMapReturnWaitSec = 780.0;
+        constexpr double kMapFallWaitSec = 10.0;
+        // 셀이 떨어진 뒤 보내고 VM 콜백까지 기다린다(콜백 시간 초과 10초로 다시 보내는 경우 포함).
+        constexpr double kMapResetWaitSec = 60.0;
+        constexpr int kExpectedAutoTestChecks = 61;  // A~F 45건, G 5건, H 11건
+        RE::FormID g_hMapCellId = 0;
+        std::size_t g_hResetCountBeforeMap = 0;
+        std::size_t g_hResetCompletedBeforeMap = 0;
+        bool g_hExpectMapReset = false;
+        std::uint64_t g_hFallRunId = 0;
+        std::size_t g_hFallRecoveriesBefore = 0;
+        std::uint8_t g_hFallPortals = 0;
         std::int32_t g_hAvailPtsBeforeBoss = 0;
         RE::FormID g_hMapBossFormId = 0;
         bool g_hDeathEscapeIntercepted = false;
@@ -526,8 +541,7 @@ namespace SkyrimPoE::Runtime
             if (!reason.empty()) {
                 LogInfo(reason);
             }
-            // T-1 + 6단계: 기대 건수(58건: A~F 45건 + 시나리오 G 5건 + 시나리오 H 8건) 및 WARN=0까지 충족해야 RESULT=PASS 인정
-            constexpr int kExpectedAutoTestChecks = 58;
+            // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
             const bool overallOk = (g_failCount == 0 && g_warnCount == 0 && g_passCount == kExpectedAutoTestChecks);
             const auto summary = std::format(
                 "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={} ===",
@@ -4281,12 +4295,18 @@ namespace SkyrimPoE::Runtime
             g_hEntryItemId = craftedMapBaseId;
             g_hEntryItemKey = craftedMapKey;
             g_hEntryItemCount = t10Misc ? player->GetItemCount(t10Misc) : 0;
+            const auto* t10Forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForTier(10));
+            g_hMapCellId = t10Forms ? t10Forms->cellId : 0;
+            g_hResetCountBeforeMap = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId).dispatched;
+            g_hResetCompletedBeforeMap = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId).completed;
+            g_hExpectMapReset = false;
             const auto openRes = MapDeviceRuntime::OpenNormalMap(player, craftedMapKey, craftedMapBaseId);
             if (!openRes.ok) {
                 Check("H3_MapEntryTeleportAndAsyncSpawn", false, std::format("OpenNormalMap failed: {}", openRes.message));
                 Check("H4_MapDeathInterceptAndPortalReturn", false, "Skipped due to H3 failure.");
                 Check("H5_MapReenterBossKillAndAtlasPoint", false, "Skipped due to H3 failure.");
                 Check("H9_UnauthorizedEntryAndSafeEscape", false, "Skipped due to H3 failure.");
+                Check("H10_MapFallRecovery", false, "Skipped due to H3 failure.");
                 EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
                 break;
             }
@@ -4351,7 +4371,52 @@ namespace SkyrimPoE::Runtime
                     bossRecognized, bossReward.rewardMonsterLevel, scalingOk, playerStatsOk, active.portalsRemaining,
                     g_hEntryPendingWithoutConsumption, consumedOnArrival));
 
-            // H4 준비: 실제 CombatHooks::ApplyHitHook(CallDealDamage) 경로로 치명타 가로채기 발동 검증
+            // H10: 같은 셀의 낙하 문턱 아래로 옮긴다. 위치는 다음 프레임 이후에 반영될 수 있으므로,
+            // 판정은 낙하 복귀 횟수가 늘고 입구 근처로 돌아왔는지로 한다.
+            if (player && inTargetCell && spawned && forms && forms->entryMarker) {
+                constexpr double kFallProbeDepth = 256.0;
+                auto* entry = forms->entryMarker;
+                auto belowFloor = entry->GetPosition();
+                const auto threshold = dungeon->navmeshMinZ - MapDeviceRuntime::GetFallMargin();
+                belowFloor.z = static_cast<float>(threshold - kFallProbeDepth);
+                g_hFallRecoveriesBefore = MapDeviceRuntime::GetFallRecoveryCount();
+                if (MapDeviceRuntime::MovePlayerToSpace(player, forms->cell, entry->GetWorldspace(), belowFloor, entry->GetAngle())) {
+                    g_hFallRunId = active.runId;
+                    g_hFallPortals = active.portalsRemaining;
+                    EnterPhase(Phase::ScenarioH_FallRecoveryWait);
+                    break;
+                }
+            }
+            Check("H10_MapFallRecovery", false, "Could not place the player below the fall threshold in the authorized cell.");
+            EnterPhase(Phase::ScenarioH_DeathInterceptTrigger);
+            break;
+        }
+
+        case Phase::ScenarioH_FallRecoveryWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto active = MapDeviceRuntime::GetActiveMapStateCopy();
+            const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(active));
+            const bool sameCell = player && forms && forms->cellId == g_hMapCellId && player->GetParentCell() == forms->cell;
+            const auto distance = sameCell && forms->entryMarker
+                ? (player->GetPosition() - forms->entryMarker->GetPosition()).Length() : -1.0f;
+            const bool authorized = MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool fallDetected = MapDeviceRuntime::GetFallRecoveryCount() > g_hFallRecoveriesBefore;
+            // 시험점(문턱 아래)과 겹치지 않는 고정 허용 거리와, 실제로 문턱 위로 올라왔는지로 판정한다.
+            constexpr float kFallRecoveredEntryTolerance = 256.0f;
+            const auto* fallDungeon = MapPackRuntime::Manifest().ForRun(active);
+            const bool aboveThreshold = player && fallDungeon &&
+                player->GetPosition().z >= fallDungeon->navmeshMinZ - MapDeviceRuntime::GetFallMargin();
+            const bool recovered = fallDetected && sameCell && authorized && aboveThreshold && !travel.kind &&
+                IsPlayerReadyInWorld() && distance >= 0.0f && distance <= kFallRecoveredEntryTolerance;
+            if (!recovered && PhaseElapsedSec() < kMapFallWaitSec) {
+                break;
+            }
+            Check("H10_MapFallRecovery", recovered && active.runId == g_hFallRunId &&
+                active.portalsRemaining == g_hFallPortals && !MapDeviceRuntime::IsDeathEscapeInFlight(),
+                std::format("fallDetected={}, aboveThreshold={}, sameCell={}, authorized={}, pending={}, entryDistance={:.2f}, run={}/{}, portals={}/{}",
+                    fallDetected, aboveThreshold, sameCell, authorized, travel.kind.has_value(), distance, active.runId, g_hFallRunId,
+                    active.portalsRemaining, g_hFallPortals));
             g_hDeathEscapeIntercepted = false;
             g_hMovedToMapBossForH4 = false;
             g_hDeathInterceptHitsSent = 0;
@@ -4594,7 +4659,11 @@ namespace SkyrimPoE::Runtime
                     stNow.atlas.firstTributeGiven));
 
             // 결정 175: 보스를 처치한 뒤 귀환하면 포털이 남아 있어도 회차가 끝난다(다음 단계에서 닫힘을 확인).
-            if (const auto returnRes = MapDeviceRuntime::ReturnPortal(player); !returnRes.ok) {
+            const auto resetBeforeReturn = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
+            const auto returnRes = MapDeviceRuntime::ReturnPortal(player);
+            g_hExpectMapReset = act.bossKilled && returnRes.ok && !resetBeforeReturn.pending &&
+                resetBeforeReturn.dispatched == g_hResetCountBeforeMap;
+            if (!returnRes.ok) {
                 Check("H5_MapReenterBossKillAndAtlasPoint", false,
                     std::format("ReturnPortal after the boss kill failed: {}", returnRes.message));
                 (void)MapDeviceRuntime::AbandonActiveMap(player);
@@ -4611,8 +4680,31 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!player || !outsideClosedRun || travel.kind) {
+                Check("H11_ClosedMapCellResetDispatch", false, "The run did not close after returning.");
                 Check("H6_Arena4ThreePhaseBossAndSpirit220", false,
                     "The map run did not close outside the pack after the post-boss return (decision 175) before Arena4.");
+                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
+                break;
+            }
+            EnterPhase(Phase::ScenarioH_CellResetWait);
+            break;
+        }
+
+        case Phase::ScenarioH_CellResetWait: {
+            const auto reset = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
+            // 접수(dispatched)와 VM 호출 완료 콜백(completed)이 모두 한 번 이상 늘고 대기에서 빠져야 한다.
+            const bool dispatched = !reset.pending && reset.dispatched > g_hResetCountBeforeMap &&
+                reset.completed > g_hResetCompletedBeforeMap;
+            if (g_hExpectMapReset && !dispatched && PhaseElapsedSec() < kMapResetWaitSec) {
+                break;
+            }
+            Check("H11_ClosedMapCellResetDispatch", g_hExpectMapReset && dispatched,
+                std::format("cell=0x{:08X}, pending={}, dispatched={}->{}, completed={}->{}, expectedAfterBossReturn={}",
+                    g_hMapCellId, reset.pending, g_hResetCountBeforeMap, reset.dispatched,
+                    g_hResetCompletedBeforeMap, reset.completed, g_hExpectMapReset));
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Player unavailable after the map closed.");
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }
@@ -4959,7 +5051,7 @@ namespace SkyrimPoE::Runtime
                     anyProxySpellLeft, permHpAfter, expectedHp, permMpAfter, expectedMp,
                     st.appliedHealthDelta, st.appliedMagickaDelta, var09After));
 
-            FinishAndScheduleQuit("All Stage 2-6 AutoTest scenarios (A-H, 59 checks) completed.");
+            FinishAndScheduleQuit(std::format("All Stage 2-6 AutoTest scenarios (A-H, {} checks) completed.", kExpectedAutoTestChecks));
             break;
         }
 

@@ -6,7 +6,7 @@ namespace SkyrimPoE.Tools.DungeonClone;
 
 internal sealed class PackManifest
 {
-    public const int CurrentFormat = 2;
+    public const int CurrentFormat = 3;
 
     [JsonRequired] public int ManifestFormat { get; set; } = CurrentFormat;
     [JsonRequired] public string Plugin { get; set; } = "";
@@ -25,6 +25,7 @@ internal sealed class DungeonManifest
     [JsonRequired] public string Name { get; set; } = "";
     [JsonRequired] public string SourceCell { get; set; } = "";
     [JsonRequired] public string Cell { get; set; } = "";
+    [JsonRequired] public float NavmeshMinZ { get; set; }
     [JsonRequired] public string EntryMarker { get; set; } = "";
     [JsonRequired] public string BossAnchor { get; set; } = "";
     [JsonRequired] public List<string> PackAnchors { get; set; } = new();
@@ -33,7 +34,7 @@ internal sealed class DungeonManifest
     public List<string>? AddNpcs { get; set; }
     // 직접 여는 바깥문(순간이동을 지움). 런타임은 이 문을 열면 귀환을 묻는다.
     [JsonRequired] public List<string> ReturnDoors { get; set; } = new();
-    // 닿으면 넘어가는 자동 문(순간이동을 지움). 그 너머는 빈 공간일 수 있어 실험 G-7의 결과대로 막는다.
+    // 닿으면 넘어가던 자동 문(순간이동을 지움). 그 너머는 빈 공간일 수 있다(실험 G-7).
     [JsonRequired] public List<AutoExit> AutoExits { get; set; } = new();
     // 다른 실내 칸으로 가던, 직접 여는 문(순간이동을 지움). 열어도 아무 데도 가지 않는다(물리적으로 막은 것은 아님).
     [JsonRequired] public List<string> SealedDoors { get; set; } = new();

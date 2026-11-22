@@ -385,6 +385,12 @@ internal static class Builder
         cell.Temporary.AddRange(temporary);
         cell.NavigationMeshes.Clear();
         cell.NavigationMeshes.AddRange(navmeshes);
+        var navmeshMinZ = WalkableTriangles(cell.NavigationMeshes)
+            .Select(t => Math.Min(t.A.Z, Math.Min(t.B.Z, t.C.Z)))
+            .DefaultIfEmpty(float.PositiveInfinity)
+            .Min();
+        if (!float.IsFinite(navmeshMinZ))
+            throw new InvalidDataException($"{spec.Key}: 걸을 수 있는 내비메쉬 삼각형의 최저 Z를 구할 수 없습니다.");
         report.Kept = persistent.Count + temporary.Count + navmeshes.Count;
         cell.RemapLinks(mapping);
         var newKeys = mapping.Values.Where(k => !k.IsNull).ToHashSet();
@@ -420,6 +426,7 @@ internal static class Builder
         {
             Key = spec.Key, Type = spec.Type, Role = spec.Role, Name = spec.Name,
             SourceCell = $"{srcCell.FormKey.ID:X6}", Cell = Ledger.Format(mapping[srcCell.FormKey].ID),
+            NavmeshMinZ = navmeshMinZ,
             BossNpc = spec.BossNpc, PackNpcs = spec.PackNpcs, AddNpcs = spec.AddNpcs,
         };
         var cutDoors = new HashSet<FormKey>();

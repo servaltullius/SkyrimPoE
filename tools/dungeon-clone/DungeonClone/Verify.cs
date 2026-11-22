@@ -43,6 +43,8 @@ internal static class Verify
         {
             fails.Add($"목록 파일을 읽지 못했습니다(필수 필드·모르는 필드·형식): {ex.Message}");
         }
+        if (diskManifest is null && fails.Count == 0)
+            fails.Add("목록 파일이 비어 있습니다(JSON null).");
         if (diskManifest is not null && diskManifest.ManifestFormat != PackManifest.CurrentFormat)
             fails.Add($"목록 파일 형식 {diskManifest.ManifestFormat}이 도구의 {PackManifest.CurrentFormat}과 다릅니다.");
         if (diskManifest is not null && diskManifest.EspSha256 != Sha256(espPath))

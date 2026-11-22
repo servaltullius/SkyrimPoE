@@ -4,6 +4,7 @@
 #include "core/Types.h"
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace SkyrimPoE::Runtime
@@ -55,6 +56,10 @@ namespace SkyrimPoE::Runtime
 
         // 모든 활성 드랍을 즉시 시체로 회수/정리(AutoTest E7 검증용)
         static void ReturnAllToCorpsesNow();
+
+        // 회차 스폰의 시체에서 나왔거나 회차 셀에 있는 추적 바닥 전리품과 빛기둥을 정리한다(주 갱신 스레드).
+        // 삭제는 회차 셀 안의 참조에만 한다(FormID 재사용으로 다른 곳의 물건을 지우지 않게).
+        static void DiscardDropsFromCorpses(std::span<const RE::FormID> corpseIds, RE::FormID runCellId);
 
         // 코세이브 'WDRP' v1 스냅샷/복원/초기화(순수 메모리)
         [[nodiscard]] static std::vector<SavedWorldDropEntry> TakeSnapshotForSave();

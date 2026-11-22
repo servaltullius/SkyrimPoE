@@ -316,6 +316,11 @@ namespace SkyrimPoE::Core
         return state.bossKilled || state.portalsRemaining == 0;
     }
 
+    bool MapSystem::IsRunDrop(std::uint32_t corpseId, std::span<const std::uint32_t> spawnedRefIds) noexcept
+    {
+        return corpseId != 0 && std::ranges::find(spawnedRefIds, corpseId) != spawnedRefIds.end();
+    }
+
     bool MapSystem::ConsumePortalOnDeathEscape(ActiveMapState& state) noexcept
     {
         if (!state.active || state.failed) {

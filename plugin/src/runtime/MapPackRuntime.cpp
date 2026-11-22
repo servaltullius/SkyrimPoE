@@ -156,6 +156,24 @@ namespace SkyrimPoE::Runtime::MapPackRuntime
         return found == g_forms.end() ? nullptr : &found->second;
     }
 
+    const Core::MapDungeonDef* FindDungeonByCell(RE::FormID cellId) noexcept
+    {
+        const auto found = std::ranges::find_if(g_forms, [cellId](const auto& entry) {
+            return entry.second.cellId == cellId;
+        });
+        return found == g_forms.end() ? nullptr : found->first;
+    }
+
+    std::vector<RE::FormID> DungeonCellIds()
+    {
+        std::vector<RE::FormID> cells;
+        cells.reserve(g_forms.size());
+        for (const auto& [dungeon, forms] : g_forms) {
+            cells.push_back(forms.cellId);
+        }
+        return cells;
+    }
+
     RE::FormID ReturnDoorCell(RE::FormID doorId) noexcept
     {
         for (const auto& [dungeon, forms] : g_forms) {

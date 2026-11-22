@@ -138,7 +138,7 @@ public class BuilderTests
     [Theory]
     [InlineData("map", "packNpcs", "addNpcs")]
     [InlineData("arena", "addNpcs", "packNpcs")]
-    public void FormatTwoWritesRoleSpecificSpawnTemplates(string role, string presentList, string absentList)
+    public void FormatThreeWritesRoleSpecificSpawnTemplatesAndNavmeshHeight(string role, string presentList, string absentList)
     {
         var pack = Pack();
         var dungeon = pack.Dungeons[0];
@@ -151,11 +151,50 @@ public class BuilderTests
         var source = SourceIndex.Create(MakeSource(false));
         var result = Builder.Build(pack, source, new Ledger(), allowLedgerChanges: true);
         using var output = JsonDocument.Parse(JsonSerializer.Serialize(result.Manifest, Json.Options));
-        Assert.Equal(2, output.RootElement.GetProperty("manifestFormat").GetInt32());
+        Assert.Equal(3, output.RootElement.GetProperty("manifestFormat").GetInt32());
         var entry = output.RootElement.GetProperty("dungeons")[0];
+        Assert.Equal(0f, entry.GetProperty("navmeshMinZ").GetSingle());
         Assert.Equal("000103", entry.GetProperty("bossNpc").GetString());
         Assert.Equal("000103", entry.GetProperty(presentList)[0].GetString());
         Assert.False(entry.TryGetProperty(absentList, out _));
+    }
+
+    [Fact]
+    public void NavmeshHeightUsesOnlyWalkableTriangleVerticesAcrossMeshes()
+    {
+        var mod = MakeSource(false);
+        var cell = mod.Cells.Records.Single().SubBlocks.Single().Cells.First();
+        var nav = cell.NavigationMeshes.Single().Data!;
+        nav.Vertices.Add(new P3Float(1400, 200, -500));
+        nav.Vertices.Add(new P3Float(1400, 300, -600));
+        nav.Vertices.Add(new P3Float(1400, 400, -700)); // 삼각형에서 참조하지 않는 꼭짓점
+        nav.Triangles.Add(new NavmeshTriangle { Vertices = new P3Int16(0, 1, 4), Flags = NavmeshTriangle.Flag.Deleted });
+        nav.Triangles.Add(new NavmeshTriangle { Vertices = new P3Int16(0, 1, 5), Flags = NavmeshTriangle.Flag.Water });
+        cell.NavigationMeshes.Add(new NavigationMesh(K(Nav + 1), Rel)
+        {
+            Data = new NavigationMeshData
+            {
+                Parent = new CellNavmeshParent { Parent = new FormLink<ICellGetter>(K(CellA)) },
+                Vertices = new ExtendedList<P3Float> { new(100, 100, -10), new(200, 100, -17.5f), new(100, 200, -12) },
+                Triangles = new ExtendedList<NavmeshTriangle> { new() { Vertices = new P3Int16(0, 1, 2) } },
+            },
+        });
+
+        var result = Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true);
+        Assert.Equal(-17.5f, result.Manifest.Dungeons.Single().NavmeshMinZ);
+    }
+
+    [Fact]
+    public void NoWalkableTrianglesFailTheBuild()
+    {
+        var mod = MakeSource(false);
+        var nav = mod.Cells.Records.Single().SubBlocks.Single().Cells.First().NavigationMeshes.Single().Data!;
+        nav.Triangles[0].Flags = NavmeshTriangle.Flag.Deleted;
+        nav.Triangles[1].Flags = NavmeshTriangle.Flag.Water;
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("걸을 수 있는 내비메쉬 삼각형", error.Message);
     }
 
     private static Dictionary<string, uint> IdsByKey(Ledger l) => l.Slots[0].Ids.ToDictionary(kv => kv.Key, kv => Ledger.ParseId(kv.Value));

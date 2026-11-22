@@ -4,6 +4,7 @@
 #include "runtime/MapDeviceRuntime.h"
 
 #include "core/LootTable.h"
+#include "core/MapSystem.h"
 
 #include <cmath>
 #include <mutex>
@@ -516,6 +517,62 @@ namespace SkyrimPoE::Runtime
         }
         for (const auto& d : all) {
             (void)TryReturnSingleDropToCorpse(d);
+        }
+    }
+
+    void WorldDropTracker::DiscardDropsFromCorpses(std::span<const RE::FormID> corpseIds, RE::FormID runCellId)
+    {
+        if (corpseIds.empty() && runCellId == 0) {
+            return;
+        }
+        // 드랍 참조를 핸들로 잡아 두고(강한 참조) 판정·삭제가 끝날 때까지 유지한다.
+        const auto resolve = [](const ActiveWorldDrop& drop) -> RE::NiPointer<RE::TESObjectREFR> {
+            if (auto ptr = drop.dropHandle.get()) {
+                return ptr;
+            }
+            auto* form = RE::TESForm::LookupByID(drop.dropRefFormId);
+            return RE::NiPointer<RE::TESObjectREFR>(form ? form->As<RE::TESObjectREFR>() : nullptr);
+        };
+        const auto inRunCell = [runCellId](const RE::TESObjectREFR* ref) {
+            const auto* cell = ref ? ref->GetParentCell() : nullptr;
+            return runCellId != 0 && cell && cell->GetFormID() == runCellId;
+        };
+
+        std::vector<ActiveWorldDrop> candidates;
+        {
+            std::scoped_lock lock(g_dropMutex);
+            candidates = g_active;
+        }
+        std::vector<RE::FormID> finished;
+        for (const auto& drop : candidates) {
+            auto ref = resolve(drop);
+            // 회차 소속: 그 회차 스폰의 시체에서 나왔거나(시체 ID), 지금 그 회차 셀에 있는 추적 드랍.
+            // FormID가 재사용돼 다른 곳의 물건을 지우지 않도록, 실제 삭제는 회차 셀 안에 있을 때만 한다.
+            const bool fromRunCorpse = Core::MapSystem::IsRunDrop(drop.corpseRefFormId, corpseIds);
+            const bool inCell = inRunCell(ref.get());
+            if (!fromRunCorpse && !inCell) {
+                continue;
+            }
+            if (ref && inCell && !ref->IsDeleted() && !ref->IsDisabled() && !ref->As<RE::Actor>() &&
+                IsSkyrimPoELootForm(ref->GetBaseObject())) {
+                ref->Disable();
+                ref->SetDelete(true);
+            }
+            // 빛기둥도 같은 셀에 있을 때만 지운다.
+            if (auto* beamForm = drop.beamRefFormId ? RE::TESForm::LookupByID(drop.beamRefFormId) : nullptr) {
+                auto* beam = beamForm->As<RE::TESObjectREFR>();
+                if (beam && (inRunCell(beam) || !beam->GetParentCell())) {
+                    DeleteBeamMarker(drop.beamRefFormId);
+                }
+            }
+            // 기존 Tick과 같은 규칙: 조회되지 않는 드랍은 주웠거나 사라진 것으로 보고 추적을 끝낸다.
+            finished.push_back(drop.dropRefFormId);
+        }
+        if (!finished.empty()) {
+            std::scoped_lock lock(g_dropMutex);
+            std::erase_if(g_active, [&](const ActiveWorldDrop& drop) {
+                return std::ranges::find(finished, drop.dropRefFormId) != finished.end();
+            });
         }
     }
 

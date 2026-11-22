@@ -23,6 +23,7 @@
 #include <cmath>
 #include <format>
 #include <mutex>
+#include <unordered_map>
 
 namespace SkyrimPoE::Runtime
 {
@@ -34,6 +35,7 @@ namespace SkyrimPoE::Runtime
         constexpr RE::FormID kTamrielWorldspaceId = 0x0000003C;
         constexpr double kDeathEscapeReleaseCooldownSec = 1.5;
         constexpr double kArena4PhaseInvulnSec = 0.8;
+        constexpr double kFallRecoveryCooldownSec = 3.0;
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
@@ -64,6 +66,31 @@ namespace SkyrimPoE::Runtime
         RE::FormID g_permittedCell = 0;
         RE::FormID g_warnedUnauthorizedCell = 0;
         std::uint64_t g_retryReturnRunId = 0;
+        // 결정 177 ①: Reset은 VM이 호출을 마쳤다는 콜백이 와야 대기에서 뺀다. 접수만으로는 새 회차를 열지 않는다.
+        struct PendingCellReset
+        {
+            std::uint64_t seq = 0;       // 불러오기 뒤 늦게 온 옛 콜백이 새 대기를 지우지 않게 구분한다
+            bool warned = false;         // 전송 실패 경고를 한 번만 남긴다
+            bool inFlight = false;       // VM이 접수했고 콜백을 기다리는 중
+            double waitedSec = 0.0;      // 대기에 들어온 뒤 지난 시간(일시정지·로딩 제외)
+            double inFlightSec = 0.0;    // 접수 뒤 지난 시간(일시정지·로딩 제외)
+        };
+        // 콜백이 이 시간 안에 오지 않으면 다시 보낸다.
+        constexpr double kCellResetCallbackTimeoutSec = 10.0;
+        // 초기화가 이 시간보다 오래 끝나지 않으면 새 회차 입장을 더 막지 않고 경고만 남긴다(영구 차단 방지).
+        constexpr double kCellResetMaxEntryWaitSec = 20.0;
+        std::unordered_map<RE::FormID, PendingCellReset> g_pendingCellResets;
+        std::unordered_map<RE::FormID, std::size_t> g_sentCellResets;
+        std::unordered_map<RE::FormID, std::size_t> g_completedCellResets;
+        std::uint64_t g_nextCellResetSeq = 1;
+        // 불러온 뒤 셀을 아직 못 읽어 결정 175 종료 판단을 미룬 경우
+        bool g_endCheckAfterLoad = false;
+        // 입구로 옮긴 뒤에도 다음 판정에서 여전히 문턱 아래면 포털 귀환으로 바꾼다.
+        std::uint32_t g_fallRecoveryStreak = 0;
+        double g_fallRecoveryCooldownSec = 0.0;
+        std::size_t g_fallRecoveryCount = 0;
+        // 셀이 막 바뀐 프레임(위치가 아직 옛 좌표일 수 있음)에는 낙하를 판정하지 않는다.
+        RE::FormID g_lastObservedCell = 0;
         struct IncompatibleSavedRun
         {
             Core::ActiveMapState state;
@@ -179,6 +206,17 @@ namespace SkyrimPoE::Runtime
                 { pos.x, pos.y, pos.z }, { angle.x, angle.y, angle.z } };
         }
 
+        std::optional<Core::MapTravelTarget> EntryTarget(const MapPackRuntime::DungeonForms& forms)
+        {
+            auto* marker = forms.entryMarker;
+            if (!marker || marker->IsDeleted() || marker->GetParentCell() != forms.cell) {
+                return std::nullopt;
+            }
+            auto target = CaptureLocation(*marker);
+            target.marker = marker->GetFormID();
+            return target;
+        }
+
         void ResolveSafeReturnMarker()
         {
             auto* marker = RE::TESForm::LookupByID<RE::TESObjectREFR>(kSafeReturnMarkerId);
@@ -263,6 +301,139 @@ namespace SkyrimPoE::Runtime
                 { pos.x, pos.y, pos.z }, player->Is3DLoaded(), loading, MapPackRuntime::OwnsCell(cell) };
         }
 
+        class CellResetCallback final : public RE::BSScript::IStackCallbackFunctor
+        {
+        public:
+            CellResetCallback(RE::FormID cellId, std::uint64_t seq) : cellId_(cellId), seq_(seq) {}
+
+            // VM 스레드에서 불린다. 게임 상태는 건드리지 않고 대기 목록만 지도 잠금 아래에서 갱신한다.
+            void operator()(RE::BSScript::Variable result) override
+            {
+                // Reset은 반환값이 없어 성공·실패를 구별할 수 없다. VM이 호출을 마쳤다는 것만 기록한다.
+                if (result.GetType().GetRawType() != RE::BSScript::TypeInfo::RawType::kNone) {
+                    SKSE::log::warn("MapDeviceRuntime: Cell.Reset callback returned an unexpected type for 0x{:08X}.", cellId_);
+                }
+                std::scoped_lock lk(g_mutex);
+                const auto pending = g_pendingCellResets.find(cellId_);
+                if (pending == g_pendingCellResets.end() || pending->second.seq != seq_ || !pending->second.inFlight) {
+                    return;
+                }
+                g_pendingCellResets.erase(pending);
+                ++g_completedCellResets[cellId_];
+                SKSE::log::info("MapDeviceRuntime: Cell.Reset call returned for 0x{:08X} (no result value).", cellId_);
+            }
+
+            void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+        private:
+            RE::FormID cellId_;
+            std::uint64_t seq_;
+        };
+
+        // 셀이 붙어 있거나 붙고·떨어지는 중이 아닐 때만 Reset을 보낸다(실험 E: 셀이 떨어진 뒤 요청).
+        [[nodiscard]] bool IsCellDetachedForReset(const RE::TESObjectCELL* cell) noexcept
+        {
+            using State = RE::TESObjectCELL::CellState;
+            if (!cell) {
+                return true;
+            }
+            const auto state = cell->cellState.get();
+            return state == State::kUnloaded || state == State::kDataLoaded || state == State::kUnattached;
+        }
+
+        void QueueCellResetLocked(RE::FormID cellId)
+        {
+            if (cellId != 0 && !g_pendingCellResets.contains(cellId)) {
+                g_pendingCellResets.emplace(cellId, PendingCellReset{ .seq = g_nextCellResetSeq++ });
+            }
+        }
+
+        std::string_view DispatchCellReset(RE::TESObjectCELL* cell, std::uint64_t seq)
+        {
+            if (!cell) {
+                return "cell lookup failed";
+            }
+            auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+            auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+            if (!policy) {
+                return "VM or handle policy unavailable";
+            }
+            const auto handle = policy->GetHandleForObject(RE::FormType::Cell, cell);
+            if (handle == policy->EmptyHandle()) {
+                return "empty cell handle";
+            }
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new CellResetCallback(cell->GetFormID(), seq) };
+            if (!vm->DispatchMethodCall2(handle, "Cell", "Reset", RE::MakeFunctionArguments(), callback)) {
+                return "VM rejected the request";
+            }
+            return {};
+        }
+
+        // 잠금 안: 상태만 보고 보낼 후보를 고른다(엔진 호출 없음).
+        bool IsCellResetCandidateLocked(RE::FormID cellId, const Core::MapTravelObservation& observation)
+        {
+            const auto& travel = g_travel.Current();
+            // 전 회차의 Reset이 밀렸어도 새 회차의 포털 귀환·재입장 사이에는 보내지 않는다.
+            return !observation.loading && observation.cell != 0 && observation.cell != cellId &&
+                g_activeCellFormId.load(std::memory_order_relaxed) != cellId && !(travel && travel->target.cell == cellId);
+        }
+
+        std::vector<std::pair<RE::FormID, std::uint64_t>> CollectCellResetCandidatesLocked(
+            const Core::MapTravelObservation& observation)
+        {
+            std::vector<std::pair<RE::FormID, std::uint64_t>> candidates;
+            for (const auto& [cellId, pending] : g_pendingCellResets) {
+                if (!pending.inFlight && IsCellResetCandidateLocked(cellId, observation)) {
+                    candidates.emplace_back(cellId, pending.seq);
+                }
+            }
+            return candidates;
+        }
+
+        // 잠금 밖: 셀이 떨어져 있으면 Reset을 보내고, 결과를 잠금 안에서 대기 목록에 반영한다.
+        // 접수되면 콜백을 기다리는 상태로 두고, 콜백이 와야 대기에서 뺀다.
+        void SendCellResets(const std::vector<std::pair<RE::FormID, std::uint64_t>>& candidates)
+        {
+            for (const auto& [cellId, seq] : candidates) {
+                auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(cellId);
+                if (!IsCellDetachedForReset(cell)) {
+                    continue;
+                }
+                const auto failure = DispatchCellReset(cell, seq);
+                std::scoped_lock lk(g_mutex);
+                const auto pending = g_pendingCellResets.find(cellId);
+                if (pending == g_pendingCellResets.end() || pending->second.seq != seq) {
+                    continue;
+                }
+                if (!failure.empty()) {
+                    if (!std::exchange(pending->second.warned, true)) {
+                        SKSE::log::warn("MapDeviceRuntime: Cell.Reset dispatch failed for 0x{:08X} ({}); will retry.", cellId, failure);
+                    }
+                    continue;
+                }
+                pending->second.inFlight = true;
+                pending->second.inFlightSec = 0.0;
+                ++g_sentCellResets[cellId];
+                SKSE::log::info("MapDeviceRuntime: Cell.Reset dispatched for 0x{:08X}.", cellId);
+            }
+        }
+
+        // 잠금 안: 대기 시간을 늘리고, 콜백이 오지 않는 접수는 다시 보낼 수 있게 되돌린다.
+        void AdvanceCellResetTimersLocked(double deltaSec)
+        {
+            for (auto& [cellId, pending] : g_pendingCellResets) {
+                pending.waitedSec += deltaSec;
+                if (!pending.inFlight) {
+                    continue;
+                }
+                pending.inFlightSec += deltaSec;
+                if (pending.inFlightSec >= kCellResetCallbackTimeoutSec) {
+                    pending.inFlight = false;
+                    SKSE::log::warn("MapDeviceRuntime: Cell.Reset callback for 0x{:08X} did not arrive; sending again.", cellId);
+                }
+            }
+        }
+
         using Core::MapTravelKind;
 
         MapActionResult StartTravel(RE::PlayerCharacter* player, MapTravelKind kind,
@@ -322,6 +493,28 @@ namespace SkyrimPoE::Runtime
         void ShowMapMessage(const MapActionResult& result)
         {
             RE::SendHUDMessage::ShowHUDMessage(result.message.c_str());
+        }
+
+        void RecoverFromMapFall(RE::PlayerCharacter* player, const Core::MapDungeonDef& dungeon, bool authorized, bool usePortal)
+        {
+            if (!authorized) {
+                ShowMapMessage(MapDeviceRuntime::SafeEscape(player));
+                return;
+            }
+            const auto* forms = MapPackRuntime::FindForms(&dungeon);
+            const auto target = forms && !usePortal ? EntryTarget(*forms) : std::nullopt;
+            if (target && IssueTravelMove(player, *target)) {
+                {
+                    std::scoped_lock lk(g_mutex);
+                    ++g_fallRecoveryCount;
+                }
+                RE::SendHUDMessage::ShowHUDMessage("낙하하여 던전 입구로 돌아갑니다.");
+                return;
+            }
+            // 입구로 옮길 수 없거나 옮긴 뒤에도 문턱 아래면 계속 떨어지지 않게 포털 귀환(포털 차감 없음)으로 내보낸다.
+            // 결정 175에 따라 보스 처치 뒤나 포털 0(결투장)이면 이 귀환으로 회차가 끝난다.
+            SKSE::log::warn("MapDeviceRuntime: could not recover at the entry after a fall in {}; returning instead.", dungeon.key);
+            ShowMapMessage(MapDeviceRuntime::ReturnPortal(player));
         }
 
         bool RefundEntryOnMainThread(
@@ -397,15 +590,25 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void FinishCancelledRunOnMainThread(
-            RE::PlayerCharacter* player, const Core::ActiveMapState& snap, bool returnPlayer,
-            std::optional<bool> refunded, std::string_view reason)
+        void CleanupClosedRunOnMainThread(std::span<const RE::FormID> spawnedIds, RE::FormID cellId)
         {
-            // refunded: nullopt = 돌려줄 대상이 아님(보스를 처치했거나 실패한 회차), true/false = 환불 성공 여부
-            // 보스는 스폰할 때 목록에도 들어가므로 목록만 지운다. 목록 밖의 보스 ID는 손상됐거나 재사용된 ID일 수 있다.
-            for (const auto id : snap.spawnedRefFormIds) {
+            WorldDropTracker::DiscardDropsFromCorpses(spawnedIds, cellId);
+            // 보스도 스폰 목록에 있다. 목록 밖의 ID는 손상됐거나 재사용됐을 수 있다.
+            for (const auto id : spawnedIds) {
                 CleanupSpawnedRefOnMainThread(id);
             }
+            if (cellId != 0) {
+                std::scoped_lock lk(g_mutex);
+                QueueCellResetLocked(cellId);
+            }
+        }
+
+        void FinishCancelledRunOnMainThread(
+            RE::PlayerCharacter* player, const Core::ActiveMapState& snap, bool returnPlayer,
+            std::optional<bool> refunded, std::string_view reason, RE::FormID cellId)
+        {
+            // refunded: nullopt = 돌려줄 대상이 아님(보스를 처치했거나 실패한 회차), true/false = 환불 성공 여부
+            CleanupClosedRunOnMainThread(snap.spawnedRefFormIds, cellId);
             const std::string_view refundText = !refunded.has_value()
                 ? "이미 끝난 회차(보스 처치 또는 실패)라 소모품은 돌려주지 않습니다."
                 : (*refunded ? (snap.isArena4 ? "공물을 돌려받았습니다." : "지도를 돌려받았습니다.")
@@ -663,7 +866,8 @@ namespace SkyrimPoE::Runtime
                 });
                 if (cancelled) {
                     FinishCancelledRunOnMainThread(player, snap, true, refunded,
-                        boss ? "무리 생성에 실패해 회차를 취소했습니다." : "보스 생성에 실패해 회차를 취소했습니다.");
+                        boss ? "무리 생성에 실패해 회차를 취소했습니다." : "보스 생성에 실패해 회차를 취소했습니다.",
+                        dungeon ? dungeon->cellId : 0);
                     MapDeviceRuntime::SyncMapLayer2ToStatEngine();
                 }
                 return;
@@ -689,9 +893,10 @@ namespace SkyrimPoE::Runtime
         void EndRunOnMainThread()
         {
             std::vector<std::uint32_t> toClean;
+            RE::FormID cellId = 0;
             {
                 std::scoped_lock lk(g_mutex);
-                // 보스도 스폰 목록에 있으므로 목록에 담긴 참조만 정리한다.
+                cellId = g_activeCellFormId.load(std::memory_order_relaxed);
                 toClean.swap(g_activeMap.spawnedRefFormIds);
                 SetActiveMapLocked({});
                 g_spawnedForCurrentRun = false;
@@ -701,9 +906,7 @@ namespace SkyrimPoE::Runtime
                 g_retryReturnRunId = 0;
                 RefreshAtomicsLocked();
             }
-            for (const auto id : toClean) {
-                CleanupSpawnedRefOnMainThread(id);
-            }
+            CleanupClosedRunOnMainThread(toClean, cellId);
             MapDeviceRuntime::SyncMapLayer2ToStatEngine();
             RE::SendHUDMessage::ShowHUDMessage("지도 회차를 종료했습니다.");
         }
@@ -1044,14 +1247,24 @@ namespace SkyrimPoE::Runtime
         MapActionResult RequestEntry(RE::PlayerCharacter* player, MapTravelKind kind,
             const MapPackRuntime::DungeonForms& forms, TravelContext context, std::string message)
         {
-            auto* marker = forms.entryMarker;
-            if (!marker || marker->IsDeleted() || marker->GetParentCell() != forms.cell) {
+            const auto target = EntryTarget(forms);
+            if (!target) {
                 return { false, "지도 입구 마커를 찾을 수 없습니다." };
             }
-            auto target = CaptureLocation(*marker);
-            target.marker = marker->GetFormID();
+            if (kind != MapTravelKind::Reenter) {
+                // 입장 직전에 같은 셀로 Reset을 보내면 VM 실행 시점에 따라 이번 회차의 재입장에 초기화가 걸릴 수 있다(U-5).
+                // 그래서 여기서 보내지 않고, Tick이 먼저 보내도록 이번 요청을 거절한다. 전송이 계속 실패하는 셀만 그대로 연다.
+                std::scoped_lock lk(g_mutex);
+                if (const auto pending = g_pendingCellResets.find(forms.cellId); pending != g_pendingCellResets.end()) {
+                    if (pending->second.waitedSec < kCellResetMaxEntryWaitSec) {
+                        return { false, "던전 초기화를 기다리는 중입니다. 잠시 뒤 다시 시도하세요." };
+                    }
+                    SKSE::log::warn("MapDeviceRuntime: opening a run while Cell.Reset has not finished for 0x{:08X} after {:.0f}s.",
+                        forms.cellId, pending->second.waitedSec);
+                }
+            }
             context.entryOrigin = CaptureLocation(*player);
-            return StartTravel(player, kind, target, context, std::move(message));
+            return StartTravel(player, kind, *target, context, std::move(message));
         }
     }
 
@@ -1155,12 +1368,18 @@ namespace SkyrimPoE::Runtime
         bool accessChanged = false;
         bool warnUnauthorized = false;
         bool shouldSpawnNow = false;
+        bool fallAuthorized = false;
+        bool fallUsePortal = false;
+        bool endRunNow = false;
+        const Core::MapDungeonDef* fallDungeon = nullptr;
+        std::vector<std::pair<RE::FormID, std::uint64_t>> resetCandidates;
         {
             std::scoped_lock lk(g_mutex);
             const auto access = GetEntryAccessLocked(observation);
             g_permittedCell = access.permittedCell;
             accessChanged = g_playerInActiveMapCell.exchange(access.inActiveMap, std::memory_order_acq_rel) != access.inActiveMap;
             const auto& pending = g_travel.Current();
+            resetCandidates = CollectCellResetCandidatesLocked(observation);
             if (!observation.loading) {
                 if (!access.unauthorized) {
                     g_warnedUnauthorizedCell = 0;
@@ -1169,8 +1388,38 @@ namespace SkyrimPoE::Runtime
                     warnUnauthorized = true;
                 }
             }
+            if (observation.loading) {
+                g_lastObservedCell = 0;
+            }
+            if (g_endCheckAfterLoad && !observation.loading && observation.cell != 0) {
+                // 결정 175: 불러온 직후 셀을 못 읽었던 회차의 종료 판단을 셀이 확인된 뒤에 한다.
+                g_endCheckAfterLoad = false;
+                endRunNow = g_activeMap.active && !observation.inPackCell && Core::MapSystem::ShouldEndOnReturn(g_activeMap);
+            }
+            bool belowMap = false;
             if (!gamePaused && !observation.loading) {
                 const bool validDelta = std::isfinite(deltaSec) && deltaSec > 0.0;
+                if (validDelta) {
+                    g_fallRecoveryCooldownSec = std::max(0.0, g_fallRecoveryCooldownSec - deltaSec);
+                    AdvanceCellResetTimersLocked(deltaSec);
+                }
+                // 3D가 준비된 같은 셀을 두 틱 연속 본 뒤에만 높이를 믿는다(순간이동 직후 옛 좌표 제외).
+                const bool observedReady = observation.loaded3D && observation.cell != 0;
+                const bool cellStable = observedReady && observation.cell == g_lastObservedCell;
+                g_lastObservedCell = observedReady ? observation.cell : 0;
+                if (cellStable && observation.inPackCell) {
+                    const auto* dungeon = MapPackRuntime::FindDungeonByCell(observation.cell);
+                    belowMap = dungeon && Core::HasFallenBelowMap(observation, dungeon->navmeshMinZ, g_travelSettings.fallMargin);
+                    if (!belowMap) {
+                        g_fallRecoveryStreak = 0;
+                    } else if (!pending && g_fallRecoveryCooldownSec == 0.0 &&
+                               !g_deathEscapeInFlight.load(std::memory_order_acquire)) {
+                        fallDungeon = dungeon;
+                        fallAuthorized = access.inActiveMap;
+                        fallUsePortal = ++g_fallRecoveryStreak >= 2;
+                        g_fallRecoveryCooldownSec = kFallRecoveryCooldownSec;
+                    }
+                }
                 if (g_deathEscapeInFlight.load(std::memory_order_acquire)) {
                     if (observation.inPackCell || !observation.loaded3D || observation.cell == 0) {
                         g_deathEscapeExitElapsedSec = 0.0;
@@ -1185,7 +1434,7 @@ namespace SkyrimPoE::Runtime
                 if (g_activeMap.active && g_arenaPhaseInvulnSec > 0.0 && validDelta) {
                     g_arenaPhaseInvulnSec = std::max(0.0, g_arenaPhaseInvulnSec - deltaSec);
                 }
-                shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !g_spawnedForCurrentRun &&
+                shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !belowMap && !g_spawnedForCurrentRun &&
                     g_pendingSpawnRunId != 0 && g_pendingSpawnRunId == g_activeMap.runId;
             }
         }
@@ -1193,8 +1442,20 @@ namespace SkyrimPoE::Runtime
         if (accessChanged) {
             SyncMapLayer2ToStatEngine();
         }
+        if (!resetCandidates.empty()) {
+            SendCellResets(resetCandidates);
+        }
+        if (endRunNow) {
+            EndRunOnMainThread();
+            SKSE::log::info("MapDeviceRuntime: ended a run loaded outside the pack once the player cell was known.");
+            return;
+        }
         if (warnUnauthorized) {
             RE::SendHUDMessage::ShowHUDMessage("입장 허가가 없습니다. 귀환 문이나 지도 탭의 안전 탈출을 이용하세요.");
+        }
+        if (fallDungeon) {
+            RecoverFromMapFall(player, *fallDungeon, fallAuthorized, fallUsePortal);
+            return;  // 다음 틱에서 옮긴 위치를 다시 관측한 뒤 스폰한다.
         }
         if (shouldSpawnNow) {
             SpawnMapEncounterOnMainThread(player);
@@ -1356,6 +1617,26 @@ namespace SkyrimPoE::Runtime
         return g_travelSettings.arrivalRadius;
     }
 
+    double MapDeviceRuntime::GetFallMargin() noexcept
+    {
+        return g_travelSettings.fallMargin;
+    }
+
+    std::size_t MapDeviceRuntime::GetFallRecoveryCount()
+    {
+        std::scoped_lock lk(g_mutex);
+        return g_fallRecoveryCount;
+    }
+
+    MapCellResetStatus MapDeviceRuntime::GetCellResetStatus(RE::FormID cellId)
+    {
+        std::scoped_lock lk(g_mutex);
+        const auto sent = g_sentCellResets.find(cellId);
+        const auto completed = g_completedCellResets.find(cellId);
+        return { g_pendingCellResets.contains(cellId), sent == g_sentCellResets.end() ? 0 : sent->second,
+            completed == g_completedCellResets.end() ? 0 : completed->second };
+    }
+
     MapActionResult MapDeviceRuntime::RunSafeUninstallCleanup(RE::PlayerCharacter* player)
     {
         if (!player) {
@@ -1366,15 +1647,13 @@ namespace SkyrimPoE::Runtime
             return { false, "이동을 마치고 지도 밖에서 실행하세요." };
         }
 
-        // 배치2 검수 Major #1: 사이클론 즉시 중단 + 바닥 드랍/빛기둥을 활성 지도 시체 삭제·이탈 전에 먼저 정리
+        // 회차 드랍은 액터 정리 전에 버리고, 나머지는 안전 제거 절차대로 각 시체에 돌려준다.
         CycloneRuntime::StopNowOnMainThread(player);
-        WorldDropTracker::ReturnAllToCorpsesNow();
-        (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
-
         if (g_activeMapRun.load(std::memory_order_acquire)) {
             EndRunOnMainThread();
-            (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
         }
+        WorldDropTracker::ReturnAllToCorpsesNow();
+        (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
 
         std::size_t returnedGems = 0;
         std::size_t returnedJewels = 0;
@@ -1522,8 +1801,17 @@ namespace SkyrimPoE::Runtime
     void MapDeviceRuntime::OnActorKilled(RE::FormID actorId, RE::Actor* victim, std::uint64_t runId)
     {
         if (runId != 0) {
-            auto expected = runId;
-            (void)g_bossDeathPendingRunId.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+            // 그 회차의 보스(또는 이미 끝난 회차)의 처리일 때만 대기 표시를 푼다. 일반 적의 처리로 풀면
+            // 아직 큐에 있는 보스 처리보다 귀환 확정이 먼저 올 수 있다.
+            bool clearPending = false;
+            {
+                std::scoped_lock lk(g_mutex);
+                clearPending = !g_activeMap.active || g_activeMap.runId != runId || g_activeMap.bossRefFormId == actorId;
+            }
+            if (clearPending) {
+                auto expected = runId;
+                (void)g_bossDeathPendingRunId.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+            }
         }
         if (actorId == 0 || runId == 0 || g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
             return;
@@ -1762,10 +2050,16 @@ namespace SkyrimPoE::Runtime
         context.isBoss = actorId == g_mapActorBossId;
         // 결정 176 ④: 허가 없이 셀에 들어왔거나(재입장 포털 없이 처치) 실패한 회차의 처치는 지도 보상을 주지 않는다.
         context.rewardBlocked = context.runFailed || !g_playerInActiveMapCell.load(std::memory_order_acquire);
-        if (context.isBoss && !context.rewardBlocked) {
+        return context;
+    }
+
+    void MapDeviceRuntime::NoteConfirmedMapKill(const MapKillContext& context)
+    {
+        // 사망 확정 때만 부른다(조회만으로 상태가 바뀌지 않게). 보상 자격이 있는 보스 사망이면
+        // 큐의 처치 처리가 끝날 때까지 귀환 확정을 미룬다(결정 175).
+        if (context.runId != 0 && context.isBoss && !context.rewardBlocked) {
             g_bossDeathPendingRunId.store(context.runId, std::memory_order_release);
         }
-        return context;
     }
 
     std::int32_t MapDeviceRuntime::CountPlayerTributes(RE::PlayerCharacter* player)
@@ -1932,6 +2226,13 @@ namespace SkyrimPoE::Runtime
             g_permittedCell = 0;
             g_warnedUnauthorizedCell = 0;
             g_retryReturnRunId = 0;
+            g_pendingCellResets.clear();
+            g_sentCellResets.clear();
+            g_completedCellResets.clear();
+            g_fallRecoveryCooldownSec = 0.0;
+            g_fallRecoveryStreak = 0;
+            g_lastObservedCell = 0;
+            g_endCheckAfterLoad = false;
         }
 
         if (player) {
@@ -1953,8 +2254,9 @@ namespace SkyrimPoE::Runtime
                 const auto& snap = cancelled->state;
                 const auto& pack = MapPackRuntime::Manifest();
                 const auto* dungeon = pack.Find(snap.dungeonKey);
+                auto* savedDungeonCell = dungeon ? MapPackRuntime::ResolveCell(*dungeon) : nullptr;
                 const bool inLegacyCell = cell && cancelled->legacyCell != 0 && cell->GetFormID() == cancelled->legacyCell;
-                const bool inSavedDungeon = cell && dungeon && cell == MapPackRuntime::ResolveCell(*dungeon);
+                const bool inSavedDungeon = cell && cell == savedDungeonCell;
                 // 키를 찾았어도 그 키의 셀이 바뀌었을 수 있으므로 팩 소속 셀 검사를 함께 한다.
                 // 현재 셀을 모르면 출구 없는 셀에 남지 않도록 귀환시킨다.
                 const bool returnPlayer = !cell || inSavedDungeon || inLegacyCell || MapPackRuntime::OwnsCell(cell);
@@ -1962,7 +2264,13 @@ namespace SkyrimPoE::Runtime
                 const auto reason = packError.empty()
                     ? std::string("저장된 던전 키나 팩 판이 현재 지도 팩과 달라 회차를 종료했습니다.")
                     : std::format("{} 저장된 회차를 종료했습니다.", packError);
-                FinishCancelledRunOnMainThread(player, snap, returnPlayer, refunded, reason);
+                auto* legacyCell = cancelled->legacyCell ? RE::TESForm::LookupByID<RE::TESObjectCELL>(cancelled->legacyCell) : nullptr;
+                auto* resetCell = MapPackRuntime::OwnsCell(legacyCell) ? legacyCell : savedDungeonCell;
+                if (!MapPackRuntime::OwnsCell(resetCell)) {
+                    resetCell = nullptr;
+                    SKSE::log::warn("MapDeviceRuntime: cancelled run {} had no resolvable map pack cell to reset.", snap.runId);
+                }
+                FinishCancelledRunOnMainThread(player, snap, returnPlayer, refunded, reason, resetCell ? resetCell->GetFormID() : 0);
             }
         }
 
@@ -1982,7 +2290,9 @@ namespace SkyrimPoE::Runtime
                 const bool inCell = authorized && cell == forms->cell;
                 g_playerInActiveMapCell.store(inCell, std::memory_order_release);
                 // 결정 175: 끝나야 할 회차(보스 처치·포털 0)인데 플레이어가 이미 지도 팩 밖이면, 귀환 확정 전에 저장된 것이다.
+                // 셀을 아직 못 읽었으면 Tick이 셀을 확인한 뒤 같은 판단을 한다.
                 endRunAfterLoad = cell && !MapPackRuntime::OwnsCell(cell) && Core::MapSystem::ShouldEndOnReturn(g_activeMap);
+                g_endCheckAfterLoad = !cell;
                 isArena4 = g_activeMap.isArena4;
                 bossId = g_activeMap.bossRefFormId;
                 arenaPhase = g_activeMap.arenaPhase;
@@ -1991,6 +2301,14 @@ namespace SkyrimPoE::Runtime
                 g_playerInActiveMapCell.store(false, std::memory_order_release);
             }
             RefreshAtomicsLocked();
+            // 결정 177 ①: 초기화 대기는 세이브에 남지 않으므로, 불러온 뒤 지금 쓰는 회차 셀을 뺀 팩 셀을 모두 다시 초기화한다.
+            // 쓰지 않던 셀의 초기화는 해가 없고, 저장 경계에서 대기를 잃어 이전 회차의 상태가 남는 것을 막는다.
+            const auto activeCell = g_activeCellFormId.load(std::memory_order_relaxed);
+            for (const auto cellId : MapPackRuntime::DungeonCellIds()) {
+                if (cellId != activeCell) {
+                    QueueCellResetLocked(cellId);
+                }
+            }
         }
 
         if (endRunAfterLoad) {
@@ -2036,6 +2354,13 @@ namespace SkyrimPoE::Runtime
         g_permittedCell = 0;
         g_warnedUnauthorizedCell = 0;
         g_retryReturnRunId = 0;
+        g_pendingCellResets.clear();
+        g_sentCellResets.clear();
+        g_completedCellResets.clear();
+        g_fallRecoveryCooldownSec = 0.0;
+        g_fallRecoveryStreak = 0;
+        g_lastObservedCell = 0;
+        g_endCheckAfterLoad = false;
         g_incompatibleSavedRun.reset();
         SetActiveMapLocked({});
         g_spawnedForCurrentRun = false;
