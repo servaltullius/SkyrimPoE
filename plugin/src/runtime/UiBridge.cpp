@@ -184,6 +184,7 @@ namespace SkyrimPoE::Runtime
             bool mapIsArena4 = false;
             bool mapInCell = false;
             bool mapBossKilled = false;
+            bool mapArena4Unlocked = false;
             std::uint8_t mapTier = 0;
             std::uint8_t mapPortalsRem = 0;
             std::uint8_t mapArenaPhase = 1;
@@ -1088,7 +1089,10 @@ namespace SkyrimPoE::Runtime
                 };
 
                 mapsJ["tributeCount"] = MapDeviceRuntime::CountPlayerTributes(player);
-                mapsJ["ascendancy4Unlocked"] = (state.tree.ascendancyMilestonesBitmask & 0x8u) != 0u;
+                const auto arenaEntry = Core::MapSystem::GetArena4EntryStatus(state.tree.ascendancyMilestonesBitmask);
+                mapsJ["arena4CanEnter"] = arenaEntry.CanEnter();
+                mapsJ["arena4MilestonesCompleted"] = arenaEntry.milestonesCompleted;
+                mapsJ["ascendancy4Unlocked"] = arenaEntry.denial == Core::Arena4EntryDenial::AlreadyCleared;
                 mapsJ["uninstallCleanupArmed"] = MapDeviceRuntime::IsUninstallCleanupArmed();
 
                 json bagMapsArr = json::array();
@@ -1415,7 +1419,7 @@ namespace SkyrimPoE::Runtime
         }
 
         // ---- JS -> C++ 명령 처리(Prisma UI 스레드에서 호출될 수 있으므로 반드시 CommandQueue로 이연) ----
-        void ExecuteCommandOnMainThread(const std::string& rawJson)
+        void ExecuteCommandOnMainThread(const std::string& rawJson, std::uint64_t mapRunId)
         {
             if (!g_dataPack || !g_config || !g_statEngine) {
                 return;
@@ -1771,6 +1775,11 @@ namespace SkyrimPoE::Runtime
 
                 // 6단계(결정 166): 지도 장치·4차 결투장·안전 제거 탭 명령 분기
                 if (op.starts_with("map")) {
+                    if (MapDeviceRuntime::GetActiveRunId() != mapRunId) {
+                        PushToastToJs(false, "지도 회차가 바뀌었습니다. 다시 시도하세요.");
+                        PushPanelStateToJs();
+                        return;
+                    }
                     MapActionResult mapRes{};
                     bool closeOnSuccess = false;
                     if (op == "mapOpen") {
@@ -1919,8 +1928,10 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             std::string raw(argument);
-            g_queue->Enqueue([raw = std::move(raw)]() {
-                ExecuteCommandOnMainThread(raw);
+            const auto generation = g_queue->CurrentGeneration();
+            const auto mapRunId = MapDeviceRuntime::GetActiveRunId();
+            g_queue->EnqueueForGeneration(generation, [raw = std::move(raw), mapRunId]() {
+                ExecuteCommandOnMainThread(raw, mapRunId);
             });
         }
 
@@ -2181,6 +2192,8 @@ namespace SkyrimPoE::Runtime
         const bool mapIsArena4 = activeMapHud.active && activeMapHud.isArena4;
         const bool mapInCell = MapDeviceRuntime::IsPlayerInActiveMapCell();
         const bool mapBossKilled = activeMapHud.active && activeMapHud.bossKilled;
+        const bool mapArena4Unlocked = mapIsArena4 &&
+            (state.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) != 0u;
         const std::uint8_t mapTier = activeMapHud.active ? activeMapHud.tier : 0u;
         const std::uint8_t mapPortalsRem = activeMapHud.active ? activeMapHud.portalsRemaining : 0u;
         const std::uint8_t mapArenaPhase = activeMapHud.active ? activeMapHud.arenaPhase : 1u;
@@ -2208,6 +2221,7 @@ namespace SkyrimPoE::Runtime
             g_lastHud.mapIsArena4 != mapIsArena4 ||
             g_lastHud.mapInCell != mapInCell ||
             g_lastHud.mapBossKilled != mapBossKilled ||
+            g_lastHud.mapArena4Unlocked != mapArena4Unlocked ||
             g_lastHud.mapTier != mapTier ||
             g_lastHud.mapPortalsRem != mapPortalsRem ||
             g_lastHud.mapArenaPhase != mapArenaPhase ||
@@ -2232,6 +2246,7 @@ namespace SkyrimPoE::Runtime
             g_lastHud.mapIsArena4 = mapIsArena4;
             g_lastHud.mapInCell = mapInCell;
             g_lastHud.mapBossKilled = mapBossKilled;
+            g_lastHud.mapArena4Unlocked = mapArena4Unlocked;
             g_lastHud.mapTier = mapTier;
             g_lastHud.mapPortalsRem = mapPortalsRem;
             g_lastHud.mapArenaPhase = mapArenaPhase;
@@ -2270,6 +2285,7 @@ namespace SkyrimPoE::Runtime
                 { "mapIsArena4", mapIsArena4 },
                 { "mapInCell", mapInCell },
                 { "mapBossKilled", mapBossKilled },
+                { "mapArena4Unlocked", mapArena4Unlocked },
                 { "mapTier", mapTier },
                 { "mapPortalsRemaining", mapPortalsRem },
                 { "mapPortalsTotal", mapIsArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals },
@@ -2319,7 +2335,7 @@ namespace SkyrimPoE::Runtime
 
     void UiBridge::ExecuteCommandForTestOnMainThread(std::string_view rawJson)
     {
-        ExecuteCommandOnMainThread(std::string(rawJson));
+        ExecuteCommandOnMainThread(std::string(rawJson), MapDeviceRuntime::GetActiveRunId());
     }
 
     std::string UiBridge::BuildPanelJsonForTestOnMainThread()

@@ -28,6 +28,32 @@ namespace SkyrimPoE::Core
         std::uint32_t cellId = 0;
     };
 
+    inline constexpr std::uint32_t kArena4PrerequisiteMask = 0x7u;
+    inline constexpr std::uint32_t kArena4MilestoneBit = 0x8u;
+    inline constexpr std::uint8_t kArena4FirstPhase = 1;
+    inline constexpr std::uint8_t kArena4FinalPhase = 3;
+
+    enum class Arena4EntryDenial
+    {
+        None,
+        MissingMilestones,
+        AlreadyCleared
+    };
+
+    struct Arena4EntryStatus
+    {
+        Arena4EntryDenial denial;
+        int milestonesCompleted;
+
+        [[nodiscard]] bool CanEnter() const noexcept { return denial == Arena4EntryDenial::None; }
+    };
+
+    struct Arena4BossDeathState
+    {
+        std::uint8_t completedPhase;
+        bool invulnerable;
+    };
+
     struct MapActorScaling
     {
         std::uint64_t runId = 0;
@@ -76,6 +102,17 @@ namespace SkyrimPoE::Core
 
         // 지도 보스 클리어 반영: 해당 티어가 첫 클리어이면 true 반환
         static bool RecordMapClear(AtlasState& atlas, std::uint8_t tier) noexcept;
+
+        [[nodiscard]] static bool IsMapKillRewardEligible(
+            bool killRewardAwarded, bool rewardBlocked, bool runFailed) noexcept;
+        [[nodiscard]] static bool IsArena4ClearEligible(
+            bool mapKillRewardEligible, Arena4BossDeathState death) noexcept;
+        [[nodiscard]] static Arena4EntryStatus GetArena4EntryStatus(std::uint32_t milestonesMask) noexcept;
+        [[nodiscard]] static Arena4EntryDenial TryUnlockArena4(std::uint32_t& milestonesMask) noexcept;
+        [[nodiscard]] static bool IsArena4PhaseInvulnerable(
+            std::uint8_t requestedPhase, std::uint8_t completedPhase, double remainingSec) noexcept;
+        [[nodiscard]] static std::uint8_t Arena4PhaseForSave(
+            std::uint8_t requestedPhase, std::uint8_t completedPhase) noexcept;
 
         // 포털 거래 상태머신 (원검토 #42)
         [[nodiscard]] static ActiveMapState CreateNormalMapRun(

@@ -121,12 +121,17 @@ namespace SkyrimPoE::Runtime
         std::mutex g_mapActorsMutex;
         Core::MapActorRegistry g_mapActors;
         Core::MapModSummary g_mapActorMods{};
-        MapKillContext g_mapKillContext{};
-        RE::FormID g_mapActorBossId = 0;
         bool g_spawnedForCurrentRun = false;
         std::uint64_t g_nextRunId = 1;
         std::uint64_t g_pendingSpawnRunId = 0;
         double g_arenaPhaseInvulnSec = 0.0;
+        std::uint8_t g_completedArenaPhase = Core::kArena4FirstPhase;
+        struct ArenaBossDeathStart
+        {
+            std::uint64_t runId;
+            Core::Arena4BossDeathState state;
+        };
+        std::optional<ArenaBossDeathStart> g_arenaBossDeathStart;
         double g_deathEscapeExitElapsedSec = 0.0;
 
         // 락프리 원자 상태(CombatHooks 워커 스레드 안전 조회용)
@@ -138,10 +143,33 @@ namespace SkyrimPoE::Runtime
         std::atomic_bool g_activeIsArena4{ false };
         std::atomic_bool g_deathEscapeInFlight{ false };
         std::atomic_bool g_uninstallCleanupArmed{ false };
-        // 보상 자격이 있는 보스 사망을 사망 이벤트 때 표시한다. 큐에 있는 처치 처리보다 귀환 확정이 먼저 오지 않게 한다.
-        std::atomic<std::uint64_t> g_bossDeathPendingRunId{ 0 };
-        std::atomic<std::uint64_t> g_bossDeathConfirmedRunId{ 0 };
+        // g_mutex로 보호한다. 큐에 있는 보스 처치 처리보다 귀환 확정이 먼저 오지 않게 한다.
+        std::uint64_t g_bossDeathPendingRunId = 0;
+        std::uint64_t g_bossDeathConfirmedRunId = 0;
         std::optional<std::chrono::steady_clock::time_point> g_firstBossDeathReturnDeferral;
+        struct PendingReturnConfirmation
+        {
+            std::uint64_t runId;
+            Core::MapTravelKind kind;
+        };
+        std::optional<PendingReturnConfirmation> g_pendingReturnConfirmation;
+
+        std::optional<Core::MapTravelKind> PendingTravelKindLocked()
+        {
+            if (const auto& travel = g_travel.Current()) {
+                return travel->kind;
+            }
+            if (g_pendingReturnConfirmation) {
+                return g_pendingReturnConfirmation->kind;
+            }
+            return std::nullopt;
+        }
+
+        bool IsArena4PhaseInvulnerableLocked()
+        {
+            return Core::MapSystem::IsArena4PhaseInvulnerable(
+                g_activeMap.arenaPhase, g_completedArenaPhase, g_arenaPhaseInvulnSec);
+        }
 
         void RefreshMapActorsLocked()
         {
@@ -149,19 +177,34 @@ namespace SkyrimPoE::Runtime
             if (g_activeMap.active && g_dataPack) {
                 g_mapActors.Rebuild(g_activeMap, *g_dataPack);
                 g_mapActorMods = g_activeMap.summary;
-                g_mapKillContext.runId = g_activeMap.runId;
-                g_mapKillContext.rewardMonsterLevel = Core::MapSystem::RewardMonsterLevel(g_activeMap);
-                g_mapKillContext.dropMapTier = g_activeMap.isArena4 ? std::uint8_t{ 0 } : g_activeMap.tier;
-                g_mapKillContext.bonusIiqPct = g_activeMap.summary.bonusIiqPct;
-                g_mapKillContext.bonusIirPct = g_activeMap.summary.bonusIirPct;
-                g_mapKillContext.runFailed = g_activeMap.failed;
-                g_mapActorBossId = g_activeMap.bossRefFormId;
             } else {
                 g_mapActors.Clear();
                 g_mapActorMods = {};
-                g_mapKillContext = {};
-                g_mapActorBossId = 0;
             }
+        }
+
+        MapKillContext GetMapKillContextLocked(RE::FormID actorId, RE::FormID playerCellId)
+        {
+            std::scoped_lock actorLock(g_mapActorsMutex);
+            if (!g_mapActors.Find(actorId)) {
+                return {};
+            }
+            MapKillContext context;
+            context.runId = g_activeMap.runId;
+            context.rewardMonsterLevel = Core::MapSystem::RewardMonsterLevel(g_activeMap);
+            context.dropMapTier = g_activeMap.isArena4 ? std::uint8_t{ 0 } : g_activeMap.tier;
+            context.bonusIiqPct = g_activeMap.summary.bonusIiqPct;
+            context.bonusIirPct = g_activeMap.summary.bonusIirPct;
+            context.runFailed = g_activeMap.failed;
+            context.isBoss = actorId == g_activeMap.bossRefFormId;
+            context.rewardBlocked = playerCellId == 0 || playerCellId != g_permittedCell ||
+                !g_playerInActiveMapCell.load(std::memory_order_acquire);
+            if (context.isBoss && g_activeMap.isArena4) {
+                context.arenaBossDeath = g_arenaBossDeathStart && g_arenaBossDeathStart->runId == context.runId
+                    ? g_arenaBossDeathStart->state
+                    : Core::Arena4BossDeathState{ g_completedArenaPhase, IsArena4PhaseInvulnerableLocked() };
+            }
+            return context;
         }
 
         void RefreshAtomicsLocked() noexcept
@@ -186,9 +229,12 @@ namespace SkyrimPoE::Runtime
         void SetActiveMapLocked(Core::ActiveMapState state, std::optional<Core::PoEItemRecord> consumedMap = std::nullopt)
         {
             if (g_activeMap.runId != state.runId) {
-                g_bossDeathPendingRunId.store(0, std::memory_order_release);
-                g_bossDeathConfirmedRunId.store(0, std::memory_order_release);
+                g_bossDeathPendingRunId = 0;
+                g_bossDeathConfirmedRunId = 0;
                 g_firstBossDeathReturnDeferral.reset();
+                g_pendingReturnConfirmation.reset();
+                g_completedArenaPhase = Core::kArena4FirstPhase;
+                g_arenaBossDeathStart.reset();
             }
             g_activeMap = std::move(state);
             g_consumedMapRecord = std::move(consumedMap);
@@ -476,6 +522,29 @@ namespace SkyrimPoE::Runtime
 
         using Core::MapTravelKind;
 
+        bool IsBossDeadNow(RE::FormID bossId)
+        {
+            const RE::NiPointer<RE::Actor> boss{ bossId ? RE::TESForm::LookupByID<RE::Actor>(bossId) : nullptr };
+            return boss && boss->IsDead();
+        }
+
+        bool ShouldDeferBossDeathLocked(bool bossDeadNow)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            const double waitedSec = std::chrono::duration<double>(
+                now - g_firstBossDeathReturnDeferral.value_or(now)).count();
+            const bool deathConfirmed = g_bossDeathConfirmedRunId == g_activeMap.runId;
+            const bool killPending = g_bossDeathPendingRunId == g_activeMap.runId;
+            if (!Core::MapSystem::ShouldDeferReturnForBossDeath(g_activeMap.bossKilled,
+                    bossDeadNow, deathConfirmed, killPending, waitedSec)) {
+                return false;
+            }
+            if (!g_firstBossDeathReturnDeferral) {
+                g_firstBossDeathReturnDeferral = now;
+            }
+            return true;
+        }
+
         MapActionResult StartTravel(RE::PlayerCharacter* player, MapTravelKind kind,
             const Core::MapTravelTarget& target, const TravelContext& context, std::string message)
         {
@@ -499,27 +568,16 @@ namespace SkyrimPoE::Runtime
             std::uint64_t endingRunId = 0;
             const auto bossId = kind == MapTravelKind::Return
                 ? g_activeBossFormId.load(std::memory_order_acquire) : 0u;
-            bool bossDeadNow = false;
-            if (bossId != 0) {
-                const RE::NiPointer<RE::Actor> boss{ RE::TESForm::LookupByID<RE::Actor>(bossId) };
-                bossDeadNow = boss && boss->IsDead();
-            }
+            const bool bossDeadNow = IsBossDeadNow(bossId);
             {
                 std::scoped_lock lk(g_mutex);
                 const bool currentRun = context.runId != 0 && g_activeMap.active && g_activeMap.runId == context.runId;
-                if (kind == MapTravelKind::Return && currentRun && !g_travel.Current()) {
-                    const auto now = std::chrono::steady_clock::now();
-                    const double waitedSec = std::chrono::duration<double>(
-                        now - g_firstBossDeathReturnDeferral.value_or(now)).count();
-                    const bool deathConfirmed = g_bossDeathConfirmedRunId.load(std::memory_order_acquire) == context.runId;
-                    const bool killPending = g_bossDeathPendingRunId.load(std::memory_order_acquire) == context.runId;
-                    if (Core::MapSystem::ShouldDeferReturnForBossDeath(g_activeMap.bossKilled,
-                            bossDeadNow && bossId == g_activeMap.bossRefFormId, deathConfirmed, killPending, waitedSec)) {
-                        if (!g_firstBossDeathReturnDeferral) {
-                            g_firstBossDeathReturnDeferral = now;
-                        }
-                        return { false, "보스 처치를 처리하는 중입니다. 잠시 후 다시 귀환하세요." };
-                    }
+                if (PendingTravelKindLocked()) {
+                    return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
+                }
+                if (kind == MapTravelKind::Return && currentRun &&
+                    ShouldDeferBossDeathLocked(bossDeadNow && bossId == g_activeMap.bossRefFormId)) {
+                    return { false, "보스 처치를 처리하는 중입니다. 잠시 후 다시 귀환하세요." };
                 }
                 if (!g_travel.TryStart(request)) {
                     return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
@@ -944,7 +1002,6 @@ namespace SkyrimPoE::Runtime
                     std::scoped_lock actorLock(g_mapActorsMutex);
                     g_mapActors.Register(actorId, { runId, multipliers.lifeMultiplier, multipliers.damageMultiplier });
                     if (isBoss) {
-                        g_mapActorBossId = actorId;
                         g_activeBossFormId.store(actorId, std::memory_order_release);
                     }
                     registered = true;
@@ -1014,15 +1071,25 @@ namespace SkyrimPoE::Runtime
             }
 
             const auto* arena = MapPackRuntime::FindForms(&MapPackRuntime::Manifest().arena);
-            if (!arena) {
-                return;
-            }
+            constexpr std::size_t kReinforcementCount = 2;
             std::size_t addedCount = 0;
-            for (std::size_t i = 0; i < 2 && i < arena->packAnchors.size(); ++i) {
-                const RE::NiPoint3 off{ (i == 0 ? 40.0f : -40.0f), 30.0f, 0.0f };
-                if (SpawnMapNpcAtAnchor(player, arena->packAnchors[i], arena->addNpcs[i % arena->addNpcs.size()], off, runId)) {
-                    ++addedCount;
+            if (arena && !arena->addNpcs.empty()) {
+                for (std::size_t i = 0; i < kReinforcementCount && i < arena->packAnchors.size(); ++i) {
+                    const RE::NiPoint3 off{ (i == 0 ? 40.0f : -40.0f), 30.0f, 0.0f };
+                    if (SpawnMapNpcAtAnchor(player, arena->packAnchors[i], arena->addNpcs[i % arena->addNpcs.size()], off, runId)) {
+                        ++addedCount;
+                    }
                 }
+            }
+            {
+                std::scoped_lock lk(g_mutex);
+                if (g_activeMap.active && g_activeMap.runId == runId && g_activeMap.bossRefFormId == bossFormId) {
+                    g_completedArenaPhase = std::max(g_completedArenaPhase, newPhase);
+                }
+            }
+            if (addedCount < kReinforcementCount) {
+                SKSE::log::warn("MapDeviceRuntime: arena run {} phase {} spawned {}/{} reinforcements.",
+                    runId, newPhase, addedCount, kReinforcementCount);
             }
             const auto msg = addedCount > 0
                 ? std::format("[4차 전직 결투장] 보스 {}페이즈 돌입! 증원군 출현!", newPhase)
@@ -1178,7 +1245,19 @@ namespace SkyrimPoE::Runtime
             g_deathEscapeInFlight.store(false, std::memory_order_release);
         }
 
-        bool CompleteEntry(RE::PlayerCharacter* player, const Core::MapTravelRequest& request, const TravelContext& context)
+        std::string Arena4EntryDenialMessage()
+        {
+            const auto entry = Core::MapSystem::GetArena4EntryStatus(SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask);
+            if (entry.denial == Core::Arena4EntryDenial::AlreadyCleared) {
+                return "이미 4차 전직 결투장을 정복했습니다.";
+            }
+            if (entry.denial == Core::Arena4EntryDenial::MissingMilestones) {
+                return std::format("1~3차 전직 이정표 {}/3 · 모두 달성하면 입장할 수 있습니다.", entry.milestonesCompleted);
+            }
+            return {};
+        }
+
+        MapActionResult CompleteEntry(RE::PlayerCharacter* player, const Core::MapTravelRequest& request, const TravelContext& context)
         {
             const auto kind = request.kind;
             const auto& origin = context.entryOrigin;
@@ -1186,7 +1265,7 @@ namespace SkyrimPoE::Runtime
             if (kind == MapTravelKind::Reenter) {
                 std::scoped_lock lk(g_mutex);
                 if (g_activeMap.runId != context.runId || !Core::MapSystem::TryConsumePortalForReenter(g_activeMap)) {
-                    return false;
+                    return { false, "재입장 포털을 소비하지 못했습니다." };
                 }
                 g_activeMap.returnCellFormId = origin.cell;
                 g_activeMap.returnWorldspaceFormId = origin.worldspace;
@@ -1202,11 +1281,17 @@ namespace SkyrimPoE::Runtime
                 const auto* dungeon = arena ? &pack.arena : (tier ? pack.ForTier(*tier) : nullptr);
                 auto* item = RE::TESForm::LookupByID<RE::TESBoundObject>(context.item);
                 if (!dungeon || !item) {
-                    return false;
+                    return { false, "입장 비용을 소비하지 못했습니다." };
                 }
 
                 bool committed = false;
                 SaveLoad::RunSerializedTransaction([&]() {
+                    if (arena) {
+                        message = Arena4EntryDenialMessage();
+                        if (!message.empty()) {
+                            return;
+                        }
+                    }
                     const auto beforeCount = player->GetItemCount(item);
                     if (beforeCount <= 0) {
                         return;
@@ -1254,22 +1339,15 @@ namespace SkyrimPoE::Runtime
                     committed = true;
                 });
                 if (!committed) {
-                    return false;
+                    return { false, message.empty() ? "입장 비용을 소비하지 못했습니다." : std::move(message) };
                 }
             }
 
-            RE::SendHUDMessage::ShowHUDMessage(message.c_str());
-            return true;
+            return { true, std::move(message) };
         }
 
         void CompleteReturn(MapTravelKind kind, std::uint64_t runId)
         {
-            if (runId != 0 && g_bossDeathPendingRunId.load(std::memory_order_acquire) == runId &&
-                g_queue && !MapDeviceRuntime::IsUninstallCleanupArmed()) {
-                // 보스 사망 처리(보상·bossKilled)가 큐에 먼저 들어가 있다. 그 뒤로 돌려 결정 175 판정이 그 결과를 보게 한다.
-                g_queue->Enqueue([kind, runId]() { CompleteReturn(kind, runId); });
-                return;
-            }
             if (kind == MapTravelKind::SafeEscape || kind == MapTravelKind::CancelledRun) {
                 RE::SendHUDMessage::ShowHUDMessage(kind == MapTravelKind::SafeEscape ? "안전 탈출을 완료했습니다." : "귀환을 완료했습니다.");
                 return;
@@ -1277,17 +1355,35 @@ namespace SkyrimPoE::Runtime
             bool endRun = false;
             std::uint8_t portals = 0;
             bool arena = false;
+            bool defer = false;
+            const auto bossId = kind == MapTravelKind::Return ? g_activeBossFormId.load(std::memory_order_acquire) : 0u;
+            const bool bossDeadNow = IsBossDeadNow(bossId);
             {
                 std::scoped_lock lk(g_mutex);
                 if (!g_activeMap.active || g_activeMap.runId != runId) {
+                    if (g_pendingReturnConfirmation && g_pendingReturnConfirmation->runId == runId) {
+                        g_pendingReturnConfirmation.reset();
+                    }
                     return;
                 }
-                g_retryReturnRunId = 0;
-                endRun = kind == MapTravelKind::Abandon || Core::MapSystem::ShouldEndOnReturn(g_activeMap);
-                portals = g_activeMap.portalsRemaining;
-                arena = g_activeMap.isArena4;
+                defer = g_queue && !MapDeviceRuntime::IsUninstallCleanupArmed() &&
+                    ShouldDeferBossDeathLocked(bossDeadNow && bossId == g_activeMap.bossRefFormId);
+                if (defer) {
+                    g_pendingReturnConfirmation = PendingReturnConfirmation{ runId, kind };
+                } else {
+                    g_retryReturnRunId = 0;
+                    endRun = kind == MapTravelKind::Abandon || Core::MapSystem::ShouldEndOnReturn(g_activeMap);
+                    portals = g_activeMap.portalsRemaining;
+                    arena = g_activeMap.isArena4;
+                    if (!endRun) {
+                        g_pendingReturnConfirmation.reset();
+                    }
+                }
             }
-            if (endRun) {
+            if (defer) {
+                // 귀환 요청 뒤에 확인된 보스 사망도 다음 프레임의 회차 처리까지 기다린다.
+                g_queue->Enqueue([kind, runId]() { CompleteReturn(kind, runId); });
+            } else if (endRun) {
                 EndRunOnMainThread();
             } else {
                 const auto message = std::format("귀환 완료 (남은 포털: {}/{})",
@@ -1345,9 +1441,12 @@ namespace SkyrimPoE::Runtime
             if (outcome == Core::MapTravelOutcome::Arrived) {
                 if (!Core::IsMapEntry(request->kind)) {
                     CompleteReturn(request->kind, context.runId);
-                } else if (!CompleteEntry(player, *request, context)) {
-                    RE::SendHUDMessage::ShowHUDMessage("입장 비용을 소비하지 못했습니다.");
-                    ShowMapMessage(RequestReturn(player, MapTravelKind::CancelledRun, context.entryOrigin, 0, "귀환을 요청했습니다."));
+                } else {
+                    const auto result = CompleteEntry(player, *request, context);
+                    ShowMapMessage(result);
+                    if (!result.ok) {
+                        ShowMapMessage(RequestReturn(player, MapTravelKind::CancelledRun, context.entryOrigin, 0, "귀환을 요청했습니다."));
+                    }
                 }
                 return;
             }
@@ -1366,38 +1465,32 @@ namespace SkyrimPoE::Runtime
             ReportTravelFailure(request->kind, context.runId);
         }
 
-        void ExecuteDeathEscapeOnMainThread()
+        void ExecuteDeathEscapeOnMainThread(std::uint64_t runId)
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
-            if (!player || MapDeviceRuntime::IsUninstallCleanupArmed()) {
-                g_deathEscapeInFlight.store(false, std::memory_order_release);
-                return;
-            }
-
             Core::MapTravelTarget saved;
-            std::uint64_t runId = 0;
             bool alreadyReturning = false;
             bool failedRun = false;
             bool arenaRun = false;
             {
                 std::scoped_lock lk(g_mutex);
-                const auto& pending = g_travel.Current();
-                if (!g_activeMap.active || (pending && Core::IsMapEntry(pending->kind))) {
+                const auto pending = PendingTravelKindLocked();
+                if (!g_activeMap.active || g_activeMap.runId != runId || !player ||
+                    MapDeviceRuntime::IsUninstallCleanupArmed() || (pending && Core::IsMapEntry(*pending))) {
                     g_deathEscapeInFlight.store(false, std::memory_order_release);
                     return;
                 }
-                // 사망으로 생긴 포털 변화와 실패는 즉시 반영한다. 회차 종료(정리)는 도착 때 확정하므로
-                // 실패한 회차도 귀환 좌표를 쓰도록 활성으로 두되, 보상·재입장은 failed로 막는다.
+                // 훅에서 실패를 먼저 표시한다. 여기서는 이미 실패한 회차도 스폰을 정리하고 귀환시킨다.
                 auto death = g_activeMap;
                 if (!Core::MapSystem::ConsumePortalOnDeathEscape(death)) {
-                    g_activeMap.failed = true;
                     failedRun = true;
                     arenaRun = g_activeMap.isArena4;
-                    RefreshMapActorsLocked();
+                    if (!std::exchange(g_activeMap.failed, true)) {
+                        RefreshMapActorsLocked();
+                    }
                 }
                 g_activeMap.portalsRemaining = death.portalsRemaining;
                 saved = SavedReturn(g_activeMap);
-                runId = g_activeMap.runId;
                 alreadyReturning = pending.has_value();
                 g_deathEscapeExitElapsedSec = 0.0;
             }
@@ -1446,7 +1539,11 @@ namespace SkyrimPoE::Runtime
                     const auto generation = g_queue->CurrentGeneration();
                     const auto cellId = MapPackRuntime::ReturnDoorCell(event->objectActivated->GetFormID());
                     if (cellId != 0) {
-                        g_queue->EnqueueForGeneration(generation, [cellId]() {
+                        const auto runId = MapDeviceRuntime::GetActiveRunId();
+                        g_queue->EnqueueForGeneration(generation, [cellId, runId]() {
+                            if (MapDeviceRuntime::GetActiveRunId() != runId) {
+                                return;
+                            }
                             auto* player = RE::PlayerCharacter::GetSingleton();
                             const auto observation = ObservePlayer(player);
                             if (observation.cell != cellId || observation.loading) {
@@ -1478,7 +1575,7 @@ namespace SkyrimPoE::Runtime
             }
             {
                 std::scoped_lock lk(g_mutex);
-                if (g_travel.Current()) {
+                if (PendingTravelKindLocked()) {
                     return "이동 중입니다. 도착 후 다시 시도하세요.";
                 }
                 if (kind != MapTravelKind::Reenter && g_activeMap.active) {
@@ -1645,7 +1742,7 @@ namespace SkyrimPoE::Runtime
             const auto access = GetEntryAccessLocked(observation);
             g_permittedCell = access.permittedCell;
             accessChanged = g_playerInActiveMapCell.exchange(access.inActiveMap, std::memory_order_acq_rel) != access.inActiveMap;
-            const auto& pending = g_travel.Current();
+            const auto pending = PendingTravelKindLocked();
             resetCandidates = CollectCellResetCandidatesLocked(observation);
             if (!observation.loading) {
                 if (!access.unauthorized) {
@@ -1766,6 +1863,9 @@ namespace SkyrimPoE::Runtime
         if (auto reason = EntryUnavailable(player, MapTravelKind::OpenArena); !reason.empty()) {
             return { false, std::move(reason) };
         }
+        if (auto reason = Arena4EntryDenialMessage(); !reason.empty()) {
+            return { false, std::move(reason) };
+        }
         const auto& dungeon = MapPackRuntime::Manifest().arena;
         const auto* forms = MapPackRuntime::FindForms(&dungeon);
         if (!forms) {
@@ -1813,7 +1913,7 @@ namespace SkyrimPoE::Runtime
         std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (g_travel.Current()) {
+            if (PendingTravelKindLocked()) {
                 return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
             }
             if (!g_activeMap.active) {
@@ -1838,7 +1938,7 @@ namespace SkyrimPoE::Runtime
         std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (g_travel.Current()) {
+            if (PendingTravelKindLocked()) {
                 return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
             }
             if (!g_activeMap.active) {
@@ -1874,8 +1974,7 @@ namespace SkyrimPoE::Runtime
     {
         const auto observation = ObservePlayer(player);
         std::scoped_lock lk(g_mutex);
-        const auto& pending = g_travel.Current();
-        return { pending ? std::optional(pending->kind) : std::nullopt, observation.inPackCell,
+        return { PendingTravelKindLocked(), observation.inPackCell,
             GetEntryAccessLocked(observation).unauthorized, g_retryReturnRunId != 0 };
     }
 
@@ -2065,21 +2164,8 @@ namespace SkyrimPoE::Runtime
         return { true, msg };
     }
 
-    void MapDeviceRuntime::OnActorKilled(RE::FormID actorId, std::uint64_t runId)
+    void MapDeviceRuntime::OnActorKilled(RE::FormID actorId, std::uint64_t runId, MapKillReward reward)
     {
-        if (runId != 0) {
-            // 그 회차의 보스(또는 이미 끝난 회차)의 처리일 때만 대기 표시를 푼다. 일반 적의 처리로 풀면
-            // 아직 큐에 있는 보스 처리보다 귀환 확정이 먼저 올 수 있다.
-            bool clearPending = false;
-            {
-                std::scoped_lock lk(g_mutex);
-                clearPending = !g_activeMap.active || g_activeMap.runId != runId || g_activeMap.bossRefFormId == actorId;
-            }
-            if (clearPending) {
-                auto expected = runId;
-                (void)g_bossDeathPendingRunId.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
-            }
-        }
         if (actorId == 0 || runId == 0 || g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
             return;
         }
@@ -2087,32 +2173,46 @@ namespace SkyrimPoE::Runtime
         std::uint8_t tier = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (!g_activeMap.active || g_activeMap.failed || g_activeMap.runId != runId ||
-                g_activeMap.bossRefFormId != actorId || g_activeMap.bossKilled) {
+            if (!g_activeMap.active || g_activeMap.runId != runId || g_activeMap.bossRefFormId != actorId) {
+                return;
+            }
+            if (g_activeMap.failed || g_activeMap.bossKilled) {
+                g_bossDeathPendingRunId = 0;
                 return;
             }
             g_activeMap.bossKilled = true;
+            g_bossDeathPendingRunId = 0;
             isArena4 = g_activeMap.isArena4;
             tier = g_activeMap.tier;
         }
+        if (reward != MapKillReward::Eligible) {
+            if (!isArena4) {
+                RE::SendHUDMessage::ShowHUDMessage(reward == MapKillReward::NoPlayerContribution
+                    ? "[지도 장치] 보스 처치로 회차 진행 · 플레이어 기여가 없어 아틀라스 보상 없음"
+                    : "[지도 장치] 보스 처치로 회차 진행 · 아틀라스 보상 자격 없음");
+            } else {
+                RE::SendHUDMessage::ShowHUDMessage(
+                    "[결투장] 보상 조건(3페이즈 처치·플레이어 기여)을 채우지 못해 4차 전직을 얻지 못했습니다.");
+            }
+            return;
+        }
         if (isArena4) {
-            bool unlocked4th = false;
+            auto denial = Core::Arena4EntryDenial::None;
             SaveLoad::UpdateState([&](PersistentState& st) {
-                if ((st.tree.ascendancyMilestonesBitmask & 0x8u) == 0u) {
-                    st.tree.ascendancyMilestonesBitmask |= 0x8u;
-                    unlocked4th = true;
-                    if (g_treeData && g_treeData->IsLoaded() && g_config) {
-                        const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                            *g_treeData, st.tree, st.exileLevel, *g_config, st.atlas.completedTierMask);
-                        st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
-                    }
+                denial = Core::MapSystem::TryUnlockArena4(st.tree.ascendancyMilestonesBitmask);
+                if (denial == Core::Arena4EntryDenial::None && g_treeData && g_treeData->IsLoaded() && g_config) {
+                    const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
+                        *g_treeData, st.tree, st.exileLevel, *g_config, st.atlas.completedTierMask);
+                    st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
                 }
             });
-            if (unlocked4th) {
+            if (denial == Core::Arena4EntryDenial::None) {
                 SaveLoad::SyncStateToStatEngine();
                 RE::SendHUDMessage::ShowHUDMessage(
                     "[SkyrimPoE] 4차 전직 결투장 정복! 전직 8/8, 패시브 +2, 기본 최대 정신력 220 해금!");
                 SKSE::log::info("MapDeviceRuntime: 4th Ascendancy Arena cleared -> bitmask |= 0x8 (8/8 asc, Spirit 220).");
+            } else if (denial == Core::Arena4EntryDenial::MissingMilestones) {
+                RE::SendHUDMessage::ShowHUDMessage("[결투장] 1~3차 전직 이정표가 부족해 4차 전직을 얻지 못했습니다.");
             } else {
                 RE::SendHUDMessage::ShowHUDMessage("[SkyrimPoE] 4차 전직 결투장 보스 처치 완료!");
             }
@@ -2152,7 +2252,7 @@ namespace SkyrimPoE::Runtime
         if (!boss || !std::isfinite(rawSkyrimDamage) || rawSkyrimDamage <= 0.0) {
             return std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
         }
-        if (!g_activeIsArena4.load(std::memory_order_acquire) ||
+        if (!g_queue || !g_activeIsArena4.load(std::memory_order_acquire) ||
             boss->GetFormID() != g_activeBossFormId.load(std::memory_order_acquire)) {
             return rawSkyrimDamage;
         }
@@ -2163,15 +2263,17 @@ namespace SkyrimPoE::Runtime
 
         Core::ArenaDamageClampResult clampRes{};
         const RE::FormID bossId = boss->GetFormID();
+        const auto generation = g_queue->CurrentGeneration();
         std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (!g_activeMap.active || g_activeMap.failed || !g_activeMap.isArena4 || g_activeMap.bossRefFormId != bossId) {
+            if (!g_activeMap.active || g_activeMap.failed || !g_activeMap.isArena4 || g_activeMap.bossRefFormId != bossId ||
+                g_activeMap.bossKilled || g_activeMap.endRequested) {
                 return rawSkyrimDamage;
             }
             clampRes = Core::MapSystem::ClampArenaBossDamage(
                 g_activeMap.arenaPhase,
-                g_arenaPhaseInvulnSec > 0.0,
+                IsArena4PhaseInvulnerableLocked(),
                 curHp,
                 maxHp,
                 rawSkyrimDamage * safeDiff);
@@ -2181,9 +2283,9 @@ namespace SkyrimPoE::Runtime
                 g_arenaPhaseInvulnSec = kArena4PhaseInvulnSec;
             }
         }
-        if (clampRes.triggeredNextPhase != 0 && g_queue) {
+        if (clampRes.triggeredNextPhase != 0) {
             const std::uint8_t nextPhase = clampRes.triggeredNextPhase;
-            g_queue->Enqueue([nextPhase, bossId, runId]() {
+            g_queue->EnqueueForGeneration(generation, [nextPhase, bossId, runId]() {
                 ExecuteArena4PhaseTransitionOnMainThread(nextPhase, bossId, runId);
             });
         }
@@ -2211,12 +2313,24 @@ namespace SkyrimPoE::Runtime
             return false;
         }
         if ((curHp - effectiveDamage) <= 1.0) {
-            bool expected = false;
-            if (g_deathEscapeInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                g_queue->EnqueueForGeneration(generation, []() {
-                    ExecuteDeathEscapeOnMainThread();
-                });
+            std::uint64_t runId = 0;
+            {
+                std::scoped_lock lk(g_mutex);
+                if (!g_activeMap.active || !g_playerInActiveMapCell.load(std::memory_order_relaxed)) {
+                    return false;
+                }
+                if (g_deathEscapeInFlight.exchange(true, std::memory_order_acq_rel)) {
+                    return true;
+                }
+                if (!g_activeMap.failed && (g_activeMap.isArena4 || g_activeMap.portalsRemaining == 0)) {
+                    g_activeMap.failed = true;
+                    RefreshMapActorsLocked();
+                }
+                runId = g_activeMap.runId;
             }
+            g_queue->EnqueueForGeneration(generation, [runId]() {
+                ExecuteDeathEscapeOnMainThread(runId);
+            });
             return true;
         }
         return false;
@@ -2258,6 +2372,13 @@ namespace SkyrimPoE::Runtime
                g_activeBossFormId.load(std::memory_order_acquire) == actorFormId;
     }
 
+    bool MapDeviceRuntime::IsArena4BossInvulnerable(RE::FormID actorId)
+    {
+        std::scoped_lock lk(g_mutex);
+        return actorId != 0 && g_activeMap.active && g_activeMap.isArena4 &&
+               g_activeMap.bossRefFormId == actorId && IsArena4PhaseInvulnerableLocked();
+    }
+
     bool MapDeviceRuntime::IsDeathEscapeInFlight() noexcept
     {
         return g_deathEscapeInFlight.load(std::memory_order_acquire);
@@ -2277,6 +2398,12 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lk(g_mutex);
         return g_activeMap;
+    }
+
+    std::uint64_t MapDeviceRuntime::GetActiveRunId()
+    {
+        std::scoped_lock lk(g_mutex);
+        return g_activeMap.active ? g_activeMap.runId : 0;
     }
 
     bool MapDeviceRuntime::IsRunActive(std::uint64_t runId)
@@ -2301,33 +2428,52 @@ namespace SkyrimPoE::Runtime
         return actor.value_or(Core::MapActorScaling{});
     }
 
-    MapKillContext MapDeviceRuntime::GetMapKillContext(RE::FormID actorId)
+    void MapDeviceRuntime::NoteArena4BossDeathStart(RE::FormID actorId)
     {
-        std::scoped_lock lk(g_mapActorsMutex);
-        if (!g_mapActors.Find(actorId)) {
-            return {};
-        }
-        auto context = g_mapKillContext;
-        context.isBoss = actorId == g_mapActorBossId;
-        // 결정 176 ④: 허가 없이 셀에 들어왔거나(재입장 포털 없이 처치) 실패한 회차의 처치는 지도 보상을 주지 않는다.
-        context.rewardBlocked = context.runFailed || !g_playerInActiveMapCell.load(std::memory_order_acquire);
-        return context;
-    }
-
-    void MapDeviceRuntime::NoteConfirmedMapKill(const MapKillContext& context)
-    {
-        if (context.runId == 0 || !context.isBoss) {
+        if (!IsActiveArena4Boss(actorId)) {
             return;
         }
         std::scoped_lock lk(g_mutex);
-        if (!g_activeMap.active || g_activeMap.runId != context.runId) {
+        if (g_activeMap.active && !g_activeMap.failed && g_activeMap.isArena4 && !g_activeMap.bossKilled &&
+            g_activeMap.bossRefFormId == actorId && !g_arenaBossDeathStart) {
+            g_arenaBossDeathStart = ArenaBossDeathStart{
+                g_activeMap.runId, { g_completedArenaPhase, IsArena4PhaseInvulnerableLocked() }
+            };
+        }
+    }
+
+    void MapDeviceRuntime::ClearArena4BossDeathStart(RE::FormID actorId)
+    {
+        if (!IsActiveArena4Boss(actorId)) {
             return;
         }
-        // 보상 자격이 있는 사망만 처치 큐가 끝날 때까지 귀환 확정을 미룬다(결정 175).
-        if (!context.rewardBlocked) {
-            g_bossDeathPendingRunId.store(context.runId, std::memory_order_release);
+        std::scoped_lock lk(g_mutex);
+        if (g_activeMap.active && g_activeMap.isArena4 && g_activeMap.bossRefFormId == actorId) {
+            g_arenaBossDeathStart.reset();
         }
-        g_bossDeathConfirmedRunId.store(context.runId, std::memory_order_release);
+    }
+
+    MapKillContext MapDeviceRuntime::GetMapKillContext(RE::FormID actorId, RE::FormID playerCellId)
+    {
+        std::scoped_lock lk(g_mutex);
+        return GetMapKillContextLocked(actorId, playerCellId);
+    }
+
+    std::optional<MapKillContext> MapDeviceRuntime::ConfirmMapKill(RE::FormID actorId, RE::FormID playerCellId)
+    {
+        std::scoped_lock lk(g_mutex);
+        const auto context = GetMapKillContextLocked(actorId, playerCellId);
+        if (context.isBoss) {
+            if (g_activeMap.bossKilled || g_bossDeathConfirmedRunId == context.runId) {
+                return std::nullopt;
+            }
+            // 결정 175·179: 허가와 관계없이 보스 처리가 끝날 때까지 귀환 확정을 미룬다.
+            if (!g_activeMap.failed) {
+                g_bossDeathPendingRunId = context.runId;
+            }
+            g_bossDeathConfirmedRunId = context.runId;
+        }
+        return context;
     }
 
     std::int32_t MapDeviceRuntime::CountPlayerTributes(RE::PlayerCharacter* player)
@@ -2440,6 +2586,7 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lk(g_mutex);
         auto snapshot = g_activeMap;
+        snapshot.arenaPhase = Core::MapSystem::Arena4PhaseForSave(snapshot.arenaPhase, g_completedArenaPhase);
         // 결정 176 ④: 도착 확인을 거친 허가만 저장한다. 허가 없이 셀에 있던 세이브는 불러와도 허가가 생기지 않는다.
         const auto activeCell = g_activeCellFormId.load(std::memory_order_acquire);
         snapshot.playerAuthorized = g_activeMap.active && activeCell != 0 && g_permittedCell == activeCell;
@@ -2475,6 +2622,7 @@ namespace SkyrimPoE::Runtime
         }
         g_spawnedForCurrentRun = g_activeMap.bossKilled || g_activeMap.bossRefFormId != 0 || !g_activeMap.spawnedRefFormIds.empty();
         g_pendingSpawnRunId = (g_activeMap.active && !g_spawnedForCurrentRun) ? g_activeMap.runId : 0;
+        g_completedArenaPhase = g_activeMap.arenaPhase;
         g_arenaPhaseInvulnSec = 0.0;
         g_deathEscapeExitElapsedSec = 0.0;
         g_deathEscapeInFlight.store(false, std::memory_order_release);
@@ -2492,6 +2640,11 @@ namespace SkyrimPoE::Runtime
             // 저장하지 않는 요청과 허가는 불러온 세이브에서 새로 시작한다.
             g_travel.Clear();
             g_travelContext = {};
+            g_pendingReturnConfirmation.reset();
+            g_bossDeathPendingRunId = 0;
+            g_bossDeathConfirmedRunId = 0;
+            g_firstBossDeathReturnDeferral.reset();
+            g_arenaBossDeathStart.reset();
             g_permittedCell = 0;
             g_warnedUnauthorizedCell = 0;
             g_retryReturnRunId = 0;
@@ -2545,9 +2698,13 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        const auto observedBossId = g_activeBossFormId.load(std::memory_order_acquire);
+        const bool bossDeadNow = IsBossDeadNow(observedBossId);
+        bool restoredBossKill = false;
         bool isArena4 = false;
         RE::FormID bossId = 0;
-        std::uint8_t arenaPhase = 1;
+        std::uint8_t arenaPhase = Core::kArena4FirstPhase;
+        std::uint64_t runId = 0;
         Core::MapModSummary summaryCopy{};
         bool endRunAfterLoad = false;
         {
@@ -2560,11 +2717,17 @@ namespace SkyrimPoE::Runtime
                 g_permittedCell = authorized ? forms->cellId : 0;
                 const bool inCell = authorized && cell == forms->cell;
                 g_playerInActiveMapCell.store(inCell, std::memory_order_release);
+                if (bossDeadNow && observedBossId == g_activeMap.bossRefFormId &&
+                    !g_activeMap.failed && !g_activeMap.bossKilled) {
+                    g_activeMap.bossKilled = true;
+                    restoredBossKill = true;
+                }
                 // 끝나야 할 회차인데 플레이어가 이미 지도 팩 밖이면, 귀환 확정 전에 저장된 것이다.
                 // 셀을 아직 못 읽었으면 Tick이 셀을 확인한 뒤 같은 판단을 한다.
                 endRunAfterLoad = cell && !inPackCell && Core::MapSystem::ShouldEndOnReturn(g_activeMap);
                 g_endCheckAfterLoad = !cell;
                 isArena4 = g_activeMap.isArena4;
+                runId = g_activeMap.runId;
                 bossId = g_activeMap.bossRefFormId;
                 arenaPhase = g_activeMap.arenaPhase;
                 summaryCopy = g_activeMap.summary;
@@ -2582,6 +2745,11 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        if (restoredBossKill) {
+            SKSE::log::info("MapDeviceRuntime: restored boss kill without rewards for run {} (boss 0x{:08X}).",
+                runId, bossId);
+            RE::SendHUDMessage::ShowHUDMessage("[지도 장치] 저장된 보스 처치를 반영했습니다. 보상 없음.");
+        }
         if (endRunAfterLoad) {
             EndRunOnMainThread();
             SKSE::log::info("MapDeviceRuntime: ended a run saved outside the pack with a pending end condition.");

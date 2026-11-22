@@ -13,6 +13,7 @@
 #include "core/Types.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,12 +34,21 @@ namespace SkyrimPoE::Runtime
         double bonusIirPct = 0.0;
         bool isBoss = false;
         bool runFailed = false;
-        // 결정 176 ④: 회차 액터이지만 허가 없이 셀에 있거나 실패한 회차라 지도 보상을 주지 않는다.
+        // 결정 176 ④: 플레이어가 허가된 회차 셀 안에 없으면 보상을 주지 않는다.
         bool rewardBlocked = false;
+        std::optional<Core::Arena4BossDeathState> arenaBossDeath;
+    };
+
+    enum class MapKillReward
+    {
+        Eligible,
+        NoPlayerContribution,
+        Ineligible
     };
 
     struct MapTravelStatus
     {
+        // 이동 요청이 도착한 뒤 보스 처치를 기다리는 동안에도 귀환 종류를 유지한다.
         std::optional<Core::MapTravelKind> kind;
         bool inPackCell = false;
         bool unauthorized = false;
@@ -106,8 +116,8 @@ namespace SkyrimPoE::Runtime
         // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차(검수 C-4: 완료 후 g_uninstallCleanupArmed=true로 재오염 차단)
         static MapActionResult RunSafeUninstallCleanup(RE::PlayerCharacter* player);
 
-        // 주 갱신 스레드 전용(DeathListener 호출): 지도 보스 클리어(아틀라스 +1) 및 4차 전직 보스 처치
-        static void OnActorKilled(RE::FormID actorId, std::uint64_t runId);
+        // 주 갱신 스레드 전용(DeathListener 호출): 보스 처치로 회차를 진행하고, 자격에 따라 보상을 반영한다.
+        static void OnActorKilled(RE::FormID actorId, std::uint64_t runId, MapKillReward reward);
 
         // 스레드 안전(CombatHooks / MonsterRuntime 호출): 4차 전직 3페이즈 보스 체력 하한 동기 클램프 + 전환 예약
         // rawSkyrimDamage는 난이도 배율 적용 전 피해량이며, diffMult는 실제 체력 차감 배율(fDiffMultHPByPC)이다.
@@ -116,7 +126,7 @@ namespace SkyrimPoE::Runtime
             double rawSkyrimDamage,
             double diffMult);
 
-        // 락프리 원자 조회(CombatHooks 워커 스레드 안전): 지도/결투장 내부 치명타 가로채기
+        // CombatHooks 워커 스레드 안전: 지도/결투장 내부 치명타 가로채기 및 회차별 귀환 예약
         // true 반환 시 호출부는 들어오는 피해를 즉시 0.0f로 무효화해야 한다.
         [[nodiscard]] static bool TryInterceptLethalHitFromHook(
             double curHp,
@@ -134,17 +144,23 @@ namespace SkyrimPoE::Runtime
         static void DisarmUninstallCleanup() noexcept;
 
         // 뮤텍스 보호 스냅샷 조회
+        [[nodiscard]] static bool IsArena4BossInvulnerable(RE::FormID actorId);
         [[nodiscard]] static Core::ActiveMapState GetActiveMapStateCopy();
+        [[nodiscard]] static std::uint64_t GetActiveRunId();
         [[nodiscard]] static bool IsRunActive(std::uint64_t runId);
         // 활성이고 실패하지 않은 회차(첫 공물 같은 보상 판정용)
         [[nodiscard]] static bool IsRunRewardable(std::uint64_t runId);
 
-        // 전용 잎 잠금으로 회차 소유와 해당 회차의 어픽스·보상 정보를 일관되게 읽는다.
+        // 전용 잎 잠금으로 액터 배율과 지도 어픽스를 읽는다.
         [[nodiscard]] static Core::MapActorScaling GetMapActorScaling(
             RE::FormID actorId, Core::MapModSummary* mods = nullptr);
-        [[nodiscard]] static MapKillContext GetMapKillContext(RE::FormID actorId);
-        // 사망 확정 때 DeathListener가 부른다. 보스 사망 확정과 보상 처리 대기를 각각 표시한다.
-        static void NoteConfirmedMapKill(const MapKillContext& context);
+        // 처치 보상은 회차 잠금과 액터 등록부 잠금으로 함께 확인한다.
+        [[nodiscard]] static MapKillContext GetMapKillContext(RE::FormID actorId, RE::FormID playerCellId);
+        static void NoteArena4BossDeathStart(RE::FormID actorId);
+        static void ClearArena4BossDeathStart(RE::FormID actorId);
+        // 사망 확정과 회차 처리 대기를 표시한다. 같은 회차 보스의 중복 확정은 건너뛴다.
+        [[nodiscard]] static std::optional<MapKillContext> ConfirmMapKill(
+            RE::FormID actorId, RE::FormID playerCellId);
 
         // 주 갱신 스레드 전용: 인벤토리 보유 지도 목록·4차 공물 수량·엔진 이동 요청
         [[nodiscard]] static std::vector<PlayerMapItemEntry> ListPlayerMaps(RE::PlayerCharacter* player);

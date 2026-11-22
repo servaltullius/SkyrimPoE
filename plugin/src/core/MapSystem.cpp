@@ -9,6 +9,47 @@
 
 namespace SkyrimPoE::Core
 {
+    bool MapSystem::IsMapKillRewardEligible(bool killRewardAwarded, bool rewardBlocked, bool runFailed) noexcept
+    {
+        return killRewardAwarded && !rewardBlocked && !runFailed;
+    }
+
+    bool MapSystem::IsArena4ClearEligible(bool mapKillRewardEligible, Arena4BossDeathState death) noexcept
+    {
+        return mapKillRewardEligible && death.completedPhase >= kArena4FinalPhase && !death.invulnerable;
+    }
+
+    Arena4EntryStatus MapSystem::GetArena4EntryStatus(std::uint32_t milestonesMask) noexcept
+    {
+        const auto prerequisites = milestonesMask & kArena4PrerequisiteMask;
+        const auto milestonesCompleted = std::popcount(prerequisites);
+        if ((milestonesMask & kArena4MilestoneBit) != 0u) {
+            return { Arena4EntryDenial::AlreadyCleared, milestonesCompleted };
+        }
+        return { prerequisites == kArena4PrerequisiteMask ? Arena4EntryDenial::None : Arena4EntryDenial::MissingMilestones,
+            milestonesCompleted };
+    }
+
+    Arena4EntryDenial MapSystem::TryUnlockArena4(std::uint32_t& milestonesMask) noexcept
+    {
+        const auto status = GetArena4EntryStatus(milestonesMask);
+        if (status.CanEnter()) {
+            milestonesMask |= kArena4MilestoneBit;
+        }
+        return status.denial;
+    }
+
+    bool MapSystem::IsArena4PhaseInvulnerable(
+        std::uint8_t requestedPhase, std::uint8_t completedPhase, double remainingSec) noexcept
+    {
+        return remainingSec > 0.0 || requestedPhase > completedPhase;
+    }
+
+    std::uint8_t MapSystem::Arena4PhaseForSave(std::uint8_t requestedPhase, std::uint8_t completedPhase) noexcept
+    {
+        return std::min(requestedPhase, completedPhase);
+    }
+
     namespace
     {
         // 결정 170 U-4: 상태이상 문턱 하한과 바닐라 타격 역산에 쓰는 스카이림 체력 기준값.

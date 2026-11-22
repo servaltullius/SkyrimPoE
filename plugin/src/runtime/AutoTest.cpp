@@ -44,6 +44,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace SkyrimPoE::Runtime
@@ -162,7 +163,13 @@ namespace SkyrimPoE::Runtime
             ScenarioH_BossKillWait,
             ScenarioH_PostMapAbandonWait,
             ScenarioH_CellResetWait,
+            ScenarioH_NoContributionMapEntryWait,
+            ScenarioH_NoContributionMapKillWait,
+            ScenarioH_NoContributionMapReturnWait,
+            ScenarioH_Arena4Prerequisites,
             ScenarioH_Arena4EntryWait,
+            ScenarioH_Arena4BypassKillWait,
+            ScenarioH_Arena4BypassReturnWait,
             ScenarioH_Arena4Phase2Wait,
             ScenarioH_Arena4Phase3Wait,
             ScenarioH_Arena4KillWait,
@@ -254,7 +261,13 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioH_BossKillWait: return "ScenarioH_BossKillWait";
             case Phase::ScenarioH_PostMapAbandonWait: return "ScenarioH_PostMapAbandonWait";
             case Phase::ScenarioH_CellResetWait: return "ScenarioH_CellResetWait";
+            case Phase::ScenarioH_NoContributionMapEntryWait: return "ScenarioH_NoContributionMapEntryWait";
+            case Phase::ScenarioH_NoContributionMapKillWait: return "ScenarioH_NoContributionMapKillWait";
+            case Phase::ScenarioH_NoContributionMapReturnWait: return "ScenarioH_NoContributionMapReturnWait";
+            case Phase::ScenarioH_Arena4Prerequisites: return "ScenarioH_Arena4Prerequisites";
             case Phase::ScenarioH_Arena4EntryWait: return "ScenarioH_Arena4EntryWait";
+            case Phase::ScenarioH_Arena4BypassKillWait: return "ScenarioH_Arena4BypassKillWait";
+            case Phase::ScenarioH_Arena4BypassReturnWait: return "ScenarioH_Arena4BypassReturnWait";
             case Phase::ScenarioH_Arena4Phase2Wait: return "ScenarioH_Arena4Phase2Wait";
             case Phase::ScenarioH_Arena4Phase3Wait: return "ScenarioH_Arena4Phase3Wait";
             case Phase::ScenarioH_Arena4KillWait: return "ScenarioH_Arena4KillWait";
@@ -323,9 +336,12 @@ namespace SkyrimPoE::Runtime
         constexpr double kMapEntryWaitSec = 150.0;
         constexpr double kMapReturnWaitSec = 780.0;
         constexpr double kMapFallWaitSec = 10.0;
+        constexpr double kMapBossKillWaitSec = 8.0;
+        constexpr double kMapBossLoadWaitSec = 15.0;
+        constexpr double kArenaPhase3InvulnerabilityWaitSec = 8.0;
         // 셀이 떨어진 뒤 보내고 VM 콜백까지 기다린다(콜백 시간 초과 10초로 다시 보내는 경우 포함).
         constexpr double kMapResetWaitSec = 60.0;
-        constexpr int kExpectedAutoTestChecks = 61;  // A~F 45건, G 5건, H 11건
+        constexpr int kExpectedAutoTestChecks = 64;  // A~F 45건, G 5건, H 14건
         RE::FormID g_hMapCellId = 0;
         std::size_t g_hResetCountBeforeMap = 0;
         std::size_t g_hResetCompletedBeforeMap = 0;
@@ -341,6 +357,13 @@ namespace SkyrimPoE::Runtime
         bool g_hMovedToMapBossForH4 = false;
         int g_hDeathInterceptHitsSent = 0;
         bool g_hMovedToMapBoss = false;
+        constexpr auto kH14MapTier = Core::kMinMapTier;
+        constexpr auto kH14AtlasTierBit = static_cast<std::uint16_t>(1u << (kH14MapTier - 1u));
+        std::optional<Core::AtlasState> g_hAtlasBeforeNoContributionKill;
+        bool g_hTestArenaBypass = false;
+        bool g_hArenaBypassPrimed = false;
+        std::int32_t g_hTributesBeforeArena = 0;
+        std::uint64_t g_hXpBeforeArenaBypass = 0;
         std::uint32_t g_hSpiritBeforeArena4 = 0;
         std::int32_t g_hAscPtsBeforeArena4 = 0;
         RE::FormID g_hArenaBossFormId = 0;
@@ -514,6 +537,18 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        void RestoreH14AtlasTier()
+        {
+            const auto before = std::exchange(g_hAtlasBeforeNoContributionKill, std::nullopt);
+            if (before) {
+                SaveLoad::UpdateState([&](PersistentState& st) {
+                    const auto originalBit = before->completedTierMask & kH14AtlasTierBit;
+                    st.atlas.completedTierMask = static_cast<std::uint16_t>(
+                        (st.atlas.completedTierMask & ~kH14AtlasTierBit) | originalBit);
+                });
+            }
+        }
+
         void FinishAndScheduleQuit(const std::string& reason)
         {
             if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
@@ -524,6 +559,7 @@ namespace SkyrimPoE::Runtime
                 CycloneRuntime::StopNowOnMainThread(player);
             }
             UiBridge::ClosePanelOnMainThread();
+            RestoreH14AtlasTier();
             RevertTempEnergyShield();
             // U2 확정(2026-11-20): AutoTest 실행 중 임시 비활성화한 enforceGemRequirements를 원래 INI 값으로 원복
             if (g_config && g_hasSavedEnforceGemReq) {
@@ -4365,7 +4401,7 @@ namespace SkyrimPoE::Runtime
                 ? RE::TESForm::LookupByID<RE::Actor>(active.bossRefFormId)
                 : nullptr;
             // 결정 169, 170: 지도 입장 후에도 플레이어 생명 기준이 유지되고 스폰마다 회차 난이도와 보상이 붙는다.
-            const auto bossReward = MapDeviceRuntime::GetMapKillContext(active.bossRefFormId);
+            const auto bossReward = MapDeviceRuntime::GetMapKillContext(active.bossRefFormId, curCellId);
             const bool rewardOk = bossReward.isBoss && bossReward.runId == active.runId &&
                                   bossReward.rewardMonsterLevel == 77u && bossReward.dropMapTier == 10u;
             bool scalingOk = false;
@@ -4750,16 +4786,144 @@ namespace SkyrimPoE::Runtime
             if (player->IsInCombat()) {
                 player->StopCombat();
             }
-            if (MapDeviceRuntime::CountPlayerTributes(player) <= 0) {
-                if (auto* trib = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute)) {
-                    player->AddObjectToContainer(trib, nullptr, 1, nullptr);
+            auto* map = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(kH14MapTier));
+            if (!map) {
+                Check("H14_MapBossWithoutContribution", false, "The test tier's map item was unavailable.");
+                EnterPhase(Phase::ScenarioH_Arena4Prerequisites);
+                break;
+            }
+            player->AddObjectToContainer(map, nullptr, 1, nullptr);
+            const auto open = MapDeviceRuntime::OpenNormalMap(player, {}, map->GetFormID());
+            if (!open.ok) {
+                Check("H14_MapBossWithoutContribution", false, open.message);
+                EnterPhase(Phase::ScenarioH_Arena4Prerequisites);
+                break;
+            }
+            g_hMovedToMapBoss = false;
+            EnterPhase(Phase::ScenarioH_NoContributionMapEntryWait);
+            break;
+        }
+
+        case Phase::ScenarioH_NoContributionMapEntryWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto run = MapDeviceRuntime::GetActiveMapStateCopy();
+            const bool ready = player && run.active && !run.isArena4 && run.bossRefFormId != 0 &&
+                MapDeviceRuntime::IsPlayerInActiveMapCell();
+            if (WaitForMapTravel(player, ready, kMapEntryWaitSec)) {
+                break;
+            }
+            auto* boss = ready ? RE::TESForm::LookupByID<RE::Actor>(run.bossRefFormId) : nullptr;
+            if (!boss || boss->IsDead() || MapDeviceRuntime::GetTravelStatus(player).kind) {
+                Check("H14_MapBossWithoutContribution", false, "The separate map boss was unavailable before the kill.");
+                (void)MapDeviceRuntime::AbandonActiveMap(player);
+                EnterPhase(Phase::ScenarioH_NoContributionMapReturnWait);
+                break;
+            }
+            RestorePlayerVitals(player, true, true);
+            if (!boss->Is3DLoaded()) {
+                if (!g_hMovedToMapBoss) {
+                    player->MoveTo(boss);
+                    g_hMovedToMapBoss = true;
+                }
+                if (PhaseElapsedSec() < kMapBossLoadWaitSec) {
+                    break;
                 }
             }
-            // 1~3차 이정표까지 모두 켜진 상태에서 4차 완료 시 정확히 전직 8/8 · 정신력 220 도달을 검증한다.
+            // 16/16 아틀라스에서도 이 처치가 새 완료를 기록하는지 검사한다. 패시브 포인트는 다시 계산하지 않는다.
             SaveLoad::UpdateState([](PersistentState& st) {
-                st.tree.ascendancyMilestonesBitmask |= 0x7u;
-                st.tree.ascendancyMilestonesBitmask &= ~0x8u;
+                g_hAtlasBeforeNoContributionKill = st.atlas;
+                st.atlas.completedTierMask = static_cast<std::uint16_t>(st.atlas.completedTierMask & ~kH14AtlasTierBit);
             });
+            // 플레이어 피해를 주지 않고 엔진 사망 이벤트로 회차만 진행시키는지 확인한다.
+            boss->KillImmediate();
+            EnterPhase(Phase::ScenarioH_NoContributionMapKillWait);
+            break;
+        }
+
+        case Phase::ScenarioH_NoContributionMapKillWait: {
+            const auto run = MapDeviceRuntime::GetActiveMapStateCopy();
+            if (!run.bossKilled && PhaseElapsedSec() < kMapBossKillWaitSec) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto atlas = SaveLoad::GetStateCopy().atlas;
+            const auto before = *g_hAtlasBeforeNoContributionKill;
+            const auto testMask = static_cast<std::uint16_t>(before.completedTierMask & ~kH14AtlasTierBit);
+            RestoreH14AtlasTier();
+            const auto rec = g_killTracker ? g_killTracker->GetActorRecordSnapshot(run.bossRefFormId)
+                : Core::ActorKillRecordSnapshot{};
+            const auto returned = MapDeviceRuntime::ReturnPortal(player);
+            Check("H14_MapBossWithoutContribution",
+                run.bossKilled && !rec.playerContributed && returned.ok &&
+                atlas.completedTierMask == testMask && atlas.totalMapsCleared == before.totalMapsCleared,
+                std::format("bossKilled={}, contribution={}, atlasMask={:04X}->{:04X}, mapsCleared={}->{}, return={}",
+                    run.bossKilled, rec.playerContributed, testMask,
+                    atlas.completedTierMask, before.totalMapsCleared, atlas.totalMapsCleared, returned.message));
+            if (!returned.ok || !run.bossKilled) {
+                (void)MapDeviceRuntime::AbandonActiveMap(player);
+            }
+            EnterPhase(Phase::ScenarioH_NoContributionMapReturnWait);
+            break;
+        }
+
+        case Phase::ScenarioH_NoContributionMapReturnWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool closed = !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
+            if (WaitForMapTravel(player, closed, kMapReturnWaitSec)) {
+                break;
+            }
+            if (!closed || travel.kind) {
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "The no-contribution map did not close.");
+                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
+                break;
+            }
+            EnterPhase(Phase::ScenarioH_Arena4Prerequisites);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4Prerequisites: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                Check("H12_Arena4Prerequisites", false, "Player unavailable before testing arena entry.");
+                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
+                break;
+            }
+            RestorePlayerVitals(player, true, true);
+            if (player->IsInCombat()) {
+                player->StopCombat();
+            }
+            constexpr std::int32_t kArenaTestEntries = 2;
+            const auto tributesNeeded = kArenaTestEntries - MapDeviceRuntime::CountPlayerTributes(player);
+            if (tributesNeeded > 0) {
+                if (auto* trib = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute)) {
+                    player->AddObjectToContainer(trib, nullptr, tributesNeeded, nullptr);
+                }
+            }
+            const auto savedMask = SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask;
+            const auto arenaReadyMask = (savedMask | Core::kArena4PrerequisiteMask) & ~Core::kArena4MilestoneBit;
+            const auto tributeCount = MapDeviceRuntime::CountPlayerTributes(player);
+            constexpr std::uint32_t kThirdMilestoneBit = 1u << 2u;
+            const auto setMask = [](std::uint32_t mask) {
+                SaveLoad::UpdateState([mask](PersistentState& st) { st.tree.ascendancyMilestonesBitmask = mask; });
+            };
+            // 두 요청 사이에는 마스크만 바꾸고 포인트나 스탯을 다시 계산하지 않는다.
+            setMask(arenaReadyMask & ~kThirdMilestoneBit);
+            const auto missing = MapDeviceRuntime::OpenArena4(player);
+            const auto tributeAfterMissing = MapDeviceRuntime::CountPlayerTributes(player);
+            setMask(arenaReadyMask | Core::kArena4MilestoneBit);
+            const auto cleared = MapDeviceRuntime::OpenArena4(player);
+            const auto tributeAfterCleared = MapDeviceRuntime::CountPlayerTributes(player);
+            setMask(savedMask);
+            Check("H12_Arena4Prerequisites",
+                tributeCount > 0 && !missing.ok && missing.message.find("2/3") != std::string::npos &&
+                !cleared.ok && cleared.message.starts_with("이미 4차 전직") &&
+                tributeAfterMissing == tributeCount && tributeAfterCleared == tributeCount &&
+                SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask == savedMask,
+                std::format("savedMask=0x{:X}, missing='{}', cleared='{}', tributes={}->{}->{}",
+                    savedMask, missing.message, cleared.message, tributeCount, tributeAfterMissing, tributeAfterCleared));
+            // 두 결투장 회차에 필요한 이정표를 이 시험에서 명시적으로 설정한다.
+            setMask(arenaReadyMask);
             SaveLoad::SyncStateToStatEngine();
             if (g_dataPack && g_dataPack->IsLoaded()) {
                 (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
@@ -4773,10 +4937,12 @@ namespace SkyrimPoE::Runtime
             g_hArenaPhase2Clamped = false;
             g_hArenaBossFormId = 0;
             g_hMovedToArenaBoss = false;
+            g_hTestArenaBypass = true;
+            g_hTributesBeforeArena = tributeCount;
 
             const auto a4Res = MapDeviceRuntime::OpenArena4(player);
             if (!a4Res.ok) {
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, std::format("OpenArena4 failed: {}", a4Res.message));
+                Check("H13_Arena4EarlyKillNoReward", false, std::format("OpenArena4 failed: {}", a4Res.message));
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }
@@ -4796,7 +4962,8 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!ready || MapDeviceRuntime::GetTravelStatus(player).kind) {
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Arena arrival and boss spawn were not confirmed.");
+                Check(g_hTestArenaBypass ? "H13_Arena4EarlyKillNoReward" : "H6_Arena4ThreePhaseBossAndSpirit220",
+                    false, "Arena arrival and boss spawn were not confirmed.");
                 (void)MapDeviceRuntime::AbandonActiveMap(player);
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
@@ -4813,6 +4980,25 @@ namespace SkyrimPoE::Runtime
                         break;
                     }
                 }
+                if (g_hTestArenaBypass) {
+                    // 기여가 있어도 1페이즈의 직접 사망은 해금 및 처치 보상 자격을 얻을 수 없다.
+                    (void)SkillExecution::DealDirectSkillDamage(boss, 1.0, Core::DamageType::Physical, true, true);
+                    const auto rec = g_killTracker ? g_killTracker->GetActorRecordSnapshot(g_hArenaBossFormId)
+                        : Core::ActorKillRecordSnapshot{};
+                    const auto* playerCell = player->GetParentCell();
+                    const auto killContext = MapDeviceRuntime::GetMapKillContext(
+                        g_hArenaBossFormId, playerCell ? playerCell->GetFormID() : 0);
+                    const bool eligibleBeforePhaseCheck = Core::MapSystem::IsMapKillRewardEligible(
+                        rec.playerContributed && rec.wasHostileOnFirstHit, killContext.rewardBlocked, killContext.runFailed);
+                    g_hArenaBypassPrimed = killContext.runId == act.runId && killContext.isBoss &&
+                        eligibleBeforePhaseCheck && !boss->IsDead() &&
+                        MapDeviceRuntime::GetActiveMapStateCopy().arenaPhase == Core::kArena4FirstPhase &&
+                        MapDeviceRuntime::CountPlayerTributes(player) == g_hTributesBeforeArena - 1;
+                    g_hXpBeforeArenaBypass = SaveLoad::GetStateCopy().exileXp;
+                    boss->KillImmediate();
+                    EnterPhase(Phase::ScenarioH_Arena4BypassKillWait);
+                    break;
+                }
                 const auto* av = boss->AsActorValueOwner();
                 const double maxHp = av ? std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
                 // 1타 원샷 시도 -> Phase 1 하한(66.5%) 클램프 + Phase 2 전환 + 0.8초 무적
@@ -4826,7 +5012,69 @@ namespace SkyrimPoE::Runtime
                 const double hpAfterInv = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
                 g_hArenaInvulnBlocked = !boss->IsDead() && (std::abs(hpAfterInv - hpAfter1) < 1.0);
             }
+            if (g_hTestArenaBypass) {
+                Check("H13_Arena4EarlyKillNoReward", false, "The arena boss was unavailable before the bypass kill.");
+                (void)MapDeviceRuntime::AbandonActiveMap(player);
+                EnterPhase(Phase::ScenarioH_Arena4BypassReturnWait);
+                break;
+            }
             EnterPhase(Phase::ScenarioH_Arena4Phase2Wait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4BypassKillWait: {
+            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
+            if (!act.bossKilled && PhaseElapsedSec() < kMapBossKillWaitSec) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto state = SaveLoad::GetStateCopy();
+            const bool unlocked = (state.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) != 0u;
+            const auto tributeCount = MapDeviceRuntime::CountPlayerTributes(player);
+            const auto returned = MapDeviceRuntime::ReturnPortal(player);
+            Check("H13_Arena4EarlyKillNoReward",
+                g_hArenaBypassPrimed && act.bossKilled && !unlocked && returned.ok &&
+                tributeCount == g_hTributesBeforeArena - 1 && state.exileXp == g_hXpBeforeArenaBypass,
+                std::format("authorizedPhase1WithContribution={}, bossKilled={}, bit8={}, tributesBeforeEntry={}, tributesAfterKill={}, xp={}->{}, return={}",
+                    g_hArenaBypassPrimed, act.bossKilled, unlocked, g_hTributesBeforeArena, tributeCount,
+                    g_hXpBeforeArenaBypass, state.exileXp, returned.message));
+            if (!returned.ok) {
+                (void)MapDeviceRuntime::AbandonActiveMap(player);
+            }
+            EnterPhase(Phase::ScenarioH_Arena4BypassReturnWait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4BypassReturnWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool closed = !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
+            if (WaitForMapTravel(player, closed, kMapReturnWaitSec)) {
+                break;
+            }
+            if (!player || !closed || travel.kind) {
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "The arena bypass run did not close.");
+                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
+                break;
+            }
+            const auto* arena = MapPackRuntime::FindForms(&MapPackRuntime::Manifest().arena);
+            if (arena && MapDeviceRuntime::GetCellResetStatus(arena->cellId).pending &&
+                PhaseElapsedSec() < kMapResetWaitSec) {
+                break;
+            }
+            RestorePlayerVitals(player, true, true);
+            if (player->IsInCombat()) {
+                player->StopCombat();
+            }
+            const auto a4Res = MapDeviceRuntime::OpenArena4(player);
+            if (!a4Res.ok) {
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, std::format("OpenArena4 failed: {}", a4Res.message));
+                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
+                break;
+            }
+            g_hTestArenaBypass = false;
+            g_hMovedToArenaBoss = false;
+            EnterPhase(Phase::ScenarioH_Arena4EntryWait);
             break;
         }
 
@@ -4852,10 +5100,19 @@ namespace SkyrimPoE::Runtime
         }
 
         case Phase::ScenarioH_Arena4Phase3Wait: {
-            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
                 RestorePlayerVitals(player, true, true);
             }
             if (g_unpausedAccumSec < 1.0 && PhaseElapsedSec() < 4.0) {
+                break;
+            }
+            if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
+                if (PhaseElapsedSec() >= kArenaPhase3InvulnerabilityWaitSec) {
+                    Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Arena boss immunity did not end before the phase 3 kill.");
+                    (void)MapDeviceRuntime::AbandonActiveMap(player);
+                    EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
+                }
                 break;
             }
             auto* boss = (g_hArenaBossFormId != 0) ? RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId) : nullptr;
@@ -4863,6 +5120,9 @@ namespace SkyrimPoE::Runtime
                 // Phase 3 처치 허용
                 (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
                 if (!boss->IsDead()) {
+                    if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
+                        break;
+                    }
                     boss->KillImmediate();
                 }
             }
@@ -4876,7 +5136,7 @@ namespace SkyrimPoE::Runtime
                 RestorePlayerVitals(player, true, true);
             }
             const auto stNow = SaveLoad::GetStateCopy();
-            const bool asc4Done = (stNow.tree.ascendancyMilestonesBitmask & 0x8u) != 0u;
+            const bool asc4Done = (stNow.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) != 0u;
             if (!asc4Done && g_unpausedAccumSec < 5.0 && PhaseElapsedSec() < 8.0) {
                 break;
             }

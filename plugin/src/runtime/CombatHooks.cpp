@@ -210,13 +210,14 @@ namespace SkyrimPoE::Runtime
             if (!g_queue) {
                 return;
             }
-            g_queue->Enqueue([reflectedFireSkyrim]() {
+            const auto runId = MapDeviceRuntime::GetActiveRunId();
+            g_queue->Enqueue([reflectedFireSkyrim, runId]() {
                 if (g_statEngine) {
                     g_statEngine->UpdateLayer2([](Core::Layer2Input& l2) {
                         l2.moltenShellBonusArmour = 0.0;
                     });
                 }
-                if (reflectedFireSkyrim > 0.0) {
+                if (reflectedFireSkyrim > 0.0 && MapDeviceRuntime::GetActiveRunId() == runId) {
                     if (auto* pl = RE::PlayerCharacter::GetSingleton()) {
                         // 검수 M4: 용암 방패 반사는 화염(Fire) 피해 및 만료 폭발과 동일한 320u 반경 적용
                         (void)SkillExecution::ExecuteAoESpell(
@@ -335,7 +336,11 @@ namespace SkyrimPoE::Runtime
                         const RE::ActorHandle targetHandle = target->GetHandle();
                         const double rawHitDmg = baseHitDmg;
                         const std::uint32_t exileLevel = snap->exileLevel;
-                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, exileLevel]() {
+                        const auto runId = MapDeviceRuntime::GetMapActorScaling(target->GetFormID()).runId;
+                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, exileLevel, runId]() {
+                            if (runId != 0 && !MapDeviceRuntime::IsRunRewardable(runId)) {
+                                return;
+                            }
                             auto ptr = targetHandle.get();
                             auto* tgt = ptr.get();
                             if (!tgt || tgt->IsDead() || !g_dataPack) {
@@ -629,6 +634,7 @@ namespace SkyrimPoE::Runtime
         };
 
         // ---- 4. 받는 마법 피해 (ValueModifierEffect::ModifyActorValue, ID 35086) ----
+        // 효과의 ActorValue 변경을 실행하는 자리다. AddTarget의 크기/저항 계산이나 HitData 예측과는 별개다.
         struct MagicDamageMapping
         {
             Core::DamageType type = Core::DamageType::Fire;
@@ -678,6 +684,10 @@ namespace SkyrimPoE::Runtime
                 return value;
             }
 
+            const auto* baseEffect = self->effect ? self->effect->baseEffect : nullptr;
+            const bool recoversOnExpiry = baseEffect &&
+                baseEffect->data.flags.all(RE::EffectSetting::EffectSettingData::Flag::kRecover);
+
             // (A) 플레이어가 적에게 거는 바닐라 주문·마법부여·독: 사전 적대 선기록 + C-23 승격 적 ES/감전/희귀 증폭 반영
             if (!actor->IsPlayerRef()) {
                 if (const auto caster = self->GetCasterActor(); caster && caster.get() == player) {
@@ -687,9 +697,8 @@ namespace SkyrimPoE::Runtime
                     }
                     // 결정 81·172: kRecover(만료 때 엔진이 원래 크기로 되돌리는 일시 체력 감소)는 피해가 아니므로
                     // 생명 배율·ES·희귀도 보정을 걸지 않는다. 걸 때만 줄이면 되돌릴 때 체력이 늘어난 채 남는다.
-                    if (value < 0.0f && self->effect && self->effect->baseEffect && self->effect->baseEffect->IsDetrimental() &&
-                        !self->effect->baseEffect->data.flags.all(RE::EffectSetting::EffectSettingData::Flag::kRecover)) {
-                        const auto mapping = ClassifyMagicDamage(self->effect->baseEffect);
+                    if (baseEffect && baseEffect->IsDetrimental() && !recoversOnExpiry) {
+                        const auto mapping = ClassifyMagicDamage(baseEffect);
                         double magDmg = static_cast<double>(-value);
                         const double shockMult = AilmentRuntime::ShockDamageMultiplier(targetId);
                         magDmg *= shockMult;
@@ -712,7 +721,7 @@ namespace SkyrimPoE::Runtime
                         }
                         return -static_cast<float>(std::max(0.0, hitRes.remainingHealthDamage));
                     }
-                } else if (value < 0.0f && MapDeviceRuntime::IsActiveArena4Boss(actor->GetFormID())) {
+                } else if (!recoversOnExpiry && MapDeviceRuntime::IsActiveArena4Boss(actor->GetFormID())) {
                     // 6단계(검수 C-5): 동료/NPC 마법도 4차 전직 보스 페이즈 하한을 건너뛰지 못하도록 동기 클램프
                     const double clamped = MapDeviceRuntime::FilterArena4BossIncomingDamage(
                         actor, static_cast<double>(-value), 1.0);
@@ -729,7 +738,7 @@ namespace SkyrimPoE::Runtime
             if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
                 return 0.0f;
             }
-            if (!self->spell || !self->effect || !self->effect->baseEffect) {
+            if (!self->spell || !baseEffect) {
                 // 6단계(검수 C-2): 주문/효과 정보 없는 마법·환경 체력 피해라도 지도 내부 치명타면 사망 가로채기 적용
                 if (MapDeviceRuntime::IsPlayerInActiveMapCell()) {
                     const double diffMultEnv = SkillExecution::GetDifficultyMultiplier(true);
@@ -742,9 +751,8 @@ namespace SkyrimPoE::Runtime
                 // 결정 77: 그 외 환경 피해는 엔진 그대로 둔다
                 return value;
             }
-            const auto* baseEffect = self->effect->baseEffect;
             // 결정 81: kRecover(일시 체력 증가 만료 되돌림)은 피해로 보지 않는다
-            if (baseEffect->data.flags.all(RE::EffectSetting::EffectSettingData::Flag::kRecover)) {
+            if (recoversOnExpiry) {
                 return value;
             }
             if (!baseEffect->IsDetrimental()) {

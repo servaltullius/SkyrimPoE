@@ -256,17 +256,22 @@ namespace SkyrimPoE::Runtime
         }
 
         // 결정 113, 134, 140 + C-15: 피격 직전 적대 선기록 → 실제 피해 실행 → 0 감소(무적 등)면 기여 확정 생략!
-        const bool targetAlive = !target->IsDead();
+        const bool wasHostile = g_killTracker && target->IsHostileToActor(player);
+        auto* av = target->AsActorValueOwner();
+        const double hpBefore = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
+        const bool targetAlive = !target->IsDead() && (!av || hpBefore > 0.0);
+        if (!targetAlive) {
+            return false;
+        }
         if (g_killTracker) {
-            g_killTracker->RecordFirstHitHostility(targetId, target->IsHostileToActor(player), targetAlive);
+            g_killTracker->RecordFirstHitHostility(targetId, wasHostile, targetAlive);
         }
 
         double actualHpLoss = 0.0;
         if (hitRes.remainingHealthDamage > 0.0) {
-            auto* av = target->AsActorValueOwner();
-            const double hpBefore = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
             {
                 const DirectDamageScope scope;
+                const Core::KillTracker::DirectHitScope contribution(g_killTracker, targetId);
                 (void)target->DoDamage(static_cast<float>(hitRes.remainingHealthDamage), player, true);
             }
             const double hpAfter = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;

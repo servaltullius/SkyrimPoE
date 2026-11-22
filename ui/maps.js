@@ -94,6 +94,9 @@
     const portalsTotal = Number(act.portalsTotal || (act.isArena4 ? 1 : 6));
     const areaLv = Number(act.areaLevel || 68);
     const bossDone = Boolean(act.bossKilled);
+    const arenaStatus = bossDone
+      ? (maps.ascendancy4Unlocked ? "결투장 정복" : "결투장 보스 처치 · 4차 미획득")
+      : `4차 결투장 P${Number(act.arenaPhase || 1)}`;
     const inCell = Boolean(act.inMapCell);
 
     // 실패하거나 포기를 접수한 회차는 귀환이 끝나면 닫힌다. 그때까지 진행 중으로 보이지 않게 한다.
@@ -103,7 +106,7 @@
       : abandoning
         ? (act.isArena4 ? "결투장 포기 · 귀환 대기" : `T${Number(act.tier || 1)} 포기 · 귀환 대기`)
         : act.isArena4
-          ? (bossDone ? "결투장 정복" : `4차 결투장 P${Number(act.arenaPhase || 1)}`)
+          ? arenaStatus
           : (bossDone ? `T${Number(act.tier || 1)} 보스 처치` : `T${Number(act.tier || 1)} 진행 중`);
     activeBadge.className = (act.failed || abandoning) ? "badge badge-guard" : "badge badge-aura";
 
@@ -146,6 +149,8 @@
   function renderArena4(maps) {
     const trib = Number((maps && maps.tributeCount) || 0);
     const unlocked = Boolean(maps && maps.ascendancy4Unlocked);
+    const canEnter = Boolean(maps && maps.arena4CanEnter);
+    const milestones = Number((maps && maps.arena4MilestonesCompleted) || 0);
     const act = (maps && maps.active) || {};
     const armed = Boolean(maps && maps.uninstallCleanupArmed);
 
@@ -158,12 +163,14 @@
     if (arena4Status) {
       arena4Status.textContent = unlocked
         ? "정복 완료 · 전직 8/8 · 기본 최대 정신력 220 해금"
-        : "미정복 · T6+ 지도 보스 처치 시 4차 전직의 공물 획득";
+        : canEnter
+          ? "미정복 · T6+ 지도 보스에서 공물 획득 가능 (첫 보상 자격 충족 시 확정)"
+          : `1~3차 전직 이정표 ${milestones}/3 · 모두 달성하면 입장 가능`;
       if (act.active) arena4Status.appendChild(el("div", "", activeRunReason));
       arena4Status.classList.toggle("done", unlocked);
     }
     if (btnOpenArena4) {
-      btnOpenArena4.disabled = !maps.packAvailable || armed || act.active ||
+      btnOpenArena4.disabled = !canEnter || !maps.packAvailable || armed || act.active ||
         maps.inPackCell || maps.travelInProgress || trib <= 0;
     }
   }

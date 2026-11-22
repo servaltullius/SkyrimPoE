@@ -68,6 +68,7 @@ namespace SkyrimPoE::Runtime
 
                 const auto actorId = actor->GetFormID();
                 if (!event->dead) {
+                    MapDeviceRuntime::NoteArena4BossDeathStart(actorId);
                     // 결정 114, 115: 사망 시작(dead=false) 시 소환/되살림/지배 상태 고정.
                     // 듀얼 SE+AE 안전 규칙: IsReanimated()는 반드시 AsActorState()를 거쳐 호출한다.
                     const auto* actorState = actor->AsActorState();
@@ -82,14 +83,18 @@ namespace SkyrimPoE::Runtime
                 if (!g_config || !g_queue) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
+                const auto generation = g_queue->CurrentGeneration();
                 auto* player = RE::PlayerCharacter::GetSingleton();
+                const auto* playerCell = player ? player->GetParentCell() : nullptr;
                 const std::uint32_t enemyLvl = actor->GetLevel();
                 const std::uint32_t playerLvl = player ? player->GetLevel() : 1;
                 const bool isDragon = IsDragonActor(actor);
                 // 결정 116, 170 U-4: 사망 확정 때 희생자의 회차와 보상 조건을 함께 캡처한다.
-                const auto mapKill = MapDeviceRuntime::GetMapKillContext(actorId);
-                // 보상 자격으로 분기하기 전에 사망 확정을 알린다. 자격 없는 보스도 귀환 보류가 풀려야 한다.
-                MapDeviceRuntime::NoteConfirmedMapKill(mapKill);
+                const auto confirmed = MapDeviceRuntime::ConfirmMapKill(actorId, playerCell ? playerCell->GetFormID() : 0);
+                if (!confirmed) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                const auto& mapKill = *confirmed;
                 const bool isBoss = IsBossActor(actor) || mapKill.isBoss;
                 // 검수 M5 + 6단계: 이정표 보스 카운트는 오픈월드 바닐라 LocTypeBoss만 인정(동적 지도/결투장 보스는 아틀라스·4차 전용)
                 const bool isMilestoneBoss = !isDragon && mapKill.runId == 0 && HasLocationBossRefType(actor);
@@ -117,55 +122,76 @@ namespace SkyrimPoE::Runtime
                 // 검수 M5 & 4단계 검수 M2: reward.awarded가 참이면 XP가 0(유배자 Lv.100 등)이어도
                 // 1~3차 보스 이정표 및 전리품 드랍 판정을 항상 수행한다.
                 // 결정 176 ④: 허가 없이 회차 셀에 있거나 실패한 회차의 액터는 경험치·드랍·클리어를 주지 않는다.
-                const bool mapRewardBlocked = mapKill.runId != 0 && mapKill.rewardBlocked;
-                if (!reward.awarded || mapRewardBlocked) {
-                    // 보상 대상이 아닌 사망자도 상태이상(SpeedMult 원복)·승격 테이블 정리 + 동적 보스 처치(동료 마무리 등) 누락 방지
-                    g_queue->Enqueue([actorId, corpseHandle, runId = mapRewardBlocked ? std::uint64_t{ 0 } : mapKill.runId]() {
+                const bool mapRewardEligible = Core::MapSystem::IsMapKillRewardEligible(
+                    reward.awarded, mapKill.rewardBlocked, mapKill.runFailed);
+                const bool killRewardEligible = mapKill.arenaBossDeath
+                    ? Core::MapSystem::IsArena4ClearEligible(mapRewardEligible, *mapKill.arenaBossDeath)
+                    : mapRewardEligible;
+                if (!killRewardEligible) {
+                    const auto eligibility = reward.playerContributed ? MapKillReward::Ineligible : MapKillReward::NoPlayerContribution;
+                    g_queue->EnqueueForGeneration(generation, [actorId, corpseHandle, runId = mapKill.runId, eligibility]() {
                         if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
                             return;
+                        }
+                        if (MapDeviceRuntime::IsRunActive(runId)) {
+                            MapDeviceRuntime::OnActorKilled(actorId, runId, eligibility);
                         }
                         MonsterRuntime::OnActorReset(actorId);
                         auto corpsePtr = corpseHandle.get();
                         AilmentRuntime::OnActorKilled(actorId, corpsePtr.get(), false);
-                        MapDeviceRuntime::OnActorKilled(actorId, runId);
                     });
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 const bool hasXp = (reward.exileXpGained > 0 || reward.gemXpGained > 0);
 
                 // 상태 갱신·드랍 판정·참 충전·전령 폭발·헤드헌터·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
-                g_queue->Enqueue([actorId, reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle, mapKill]() {
+                g_queue->EnqueueForGeneration(generation, [actorId, reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle, mapKill]() {
                     if (!g_config || MapDeviceRuntime::IsUninstallCleanupArmed()) {
                         return;
+                    }
+                    const auto currentRunId = MapDeviceRuntime::GetActiveRunId();
+                    const bool activeRun = mapKill.runId != 0 && mapKill.runId == currentRunId;
+                    const auto atlasTierMaskBeforeBoss = activeRun && mapKill.isBoss && mapKill.dropMapTier != 0
+                        ? SaveLoad::GetStateCopy().atlas.completedTierMask : std::uint16_t{ 0 };
+                    // 드랍이나 전령 등 후속 처치 효과가 실패해도 보스의 사망은 회차에 반영한다.
+                    if (activeRun) {
+                        MapDeviceRuntime::OnActorKilled(actorId, mapKill.runId, MapKillReward::Eligible);
                     }
                     auto corpsePtr = corpseHandle.get();
                     auto* victim = corpsePtr.get();
                     const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
 
-                    // 5단계(결정 163, 164): 처치 시 몬스터 승격 정리(헤드헌터 훔치기), 상태이상 원복(베렉 전파), 전령 폭발, 참 충전
-                    const bool wasChilledOrFrozen =
-                        AilmentRuntime::IsFrozen(actorId) || (AilmentRuntime::ChillSlowRatio(actorId) > 0.0);
-                    const auto killedProf = MonsterRuntime::OnMonsterKilled(actorId, snap && snap->headhunter);
-                    AilmentRuntime::OnActorKilled(actorId, victim, snap && snap->berekProlif);
+                    // 종료된 회차의 시체도 승격·상태이상·SpeedMult를 여기서 정리한다.
+                    const bool allowKillEffects = mapKill.runId == 0 || MapDeviceRuntime::IsRunRewardable(mapKill.runId);
+                    const bool wasChilledOrFrozen = allowKillEffects &&
+                        (AilmentRuntime::IsFrozen(actorId) || AilmentRuntime::ChillSlowRatio(actorId) > 0.0);
+                    const auto killedProf = MonsterRuntime::OnMonsterKilled(actorId, allowKillEffects && snap && snap->headhunter);
+                    AilmentRuntime::OnActorKilled(actorId, victim, allowKillEffects && snap && snap->berekProlif);
 
-                    if (victim && snap) {
-                        if (snap->heraldOfIceActive && wasChilledOrFrozen) {
-                            ProjectileRuntime::TriggerHeraldOfIceBurst(victim->GetPosition(), *snap);
-                        }
-                        if (snap->heraldOfAshActive) {
-                            double overkillEst = 25.0;
-                            if (auto* av = victim->AsActorValueOwner()) {
-                                const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
-                                const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
-                                overkillEst = (curHp < 0.0) ? std::max(-curHp, maxHp * 0.20) : (maxHp * 0.20);
-                            }
-                            ProjectileRuntime::TriggerHeraldOfAshBurst(victim->GetPosition(), overkillEst, *snap);
-                        }
+                    if (mapKill.runId != 0 && !activeRun && currentRunId != 0) {
+                        return;
                     }
+                    // 5단계(결정 163, 164): 전령 폭발과 참 충전
+                    if (allowKillEffects) {
+                        if (victim && snap) {
+                            if (snap->heraldOfIceActive && wasChilledOrFrozen) {
+                                ProjectileRuntime::TriggerHeraldOfIceBurst(victim->GetPosition(), *snap);
+                            }
+                            if (snap->heraldOfAshActive) {
+                                double overkillEst = 25.0;
+                                if (auto* av = victim->AsActorValueOwner()) {
+                                    const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
+                                    const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
+                                    overkillEst = (curHp < 0.0) ? std::max(-curHp, maxHp * 0.20) : (maxHp * 0.20);
+                                }
+                                ProjectileRuntime::TriggerHeraldOfAshBurst(victim->GetPosition(), overkillEst, *snap);
+                            }
+                        }
 
-                    if (g_charmSystem) {
-                        g_charmSystem->OnKillRecharge(killedProf.rarity, isBoss, isDragon);
-                        SaveLoad::PersistCharmSlotsFromSystem();
+                        if (g_charmSystem) {
+                            g_charmSystem->OnKillRecharge(killedProf.rarity, isBoss, isDragon);
+                            SaveLoad::PersistCharmSlotsFromSystem();
+                        }
                     }
 
                     Core::ExileLevelUpResult exileRes;
@@ -210,17 +236,17 @@ namespace SkyrimPoE::Runtime
                     }
 
                     // 4~6단계(결정 16, 157~159, 164, 166): 지도·아틀라스 IIQ/IIR 반영 시체/바닥 드랍 + 지도/결투장 보스 처치 처리
-                    const bool activeRun = MapDeviceRuntime::IsRunActive(mapKill.runId);
-                    if (mapKill.runId == 0 || activeRun) {
+                    if (mapKill.runId == 0 || MapDeviceRuntime::IsRunRewardable(mapKill.runId)) {
                         const auto curSt = SaveLoad::GetStateCopy();
                         double mapIiq = mapKill.bonusIiqPct;
                         double mapIir = mapKill.bonusIirPct + (snap ? snap->itemRarityPct : 0.0);
                         if (mapKill.dropMapTier != 0) {
-                            mapIiq += Core::MapSystem::AtlasBonusIiqPct(curSt.atlas.completedTierMask);
-                            mapIir += Core::MapSystem::AtlasBonusIirPct(curSt.atlas.completedTierMask);
+                            const auto tierMask = mapKill.isBoss ? atlasTierMaskBeforeBoss : curSt.atlas.completedTierMask;
+                            mapIiq += Core::MapSystem::AtlasBonusIiqPct(tierMask);
+                            mapIir += Core::MapSystem::AtlasBonusIirPct(tierMask);
                         }
                         const bool guarantee = Core::MapSystem::ShouldGuaranteeFirstTribute(
-                            activeRun && MapDeviceRuntime::IsRunRewardable(mapKill.runId), mapKill.isBoss, mapKill.rewardBlocked, mapKill.dropMapTier, curSt.atlas.firstTributeGiven);
+                            activeRun, mapKill.isBoss, mapKill.rewardBlocked, mapKill.dropMapTier, curSt.atlas.firstTributeGiven);
                         const bool tributeCreated = WorldDropTracker::OnKillAwarded(
                             corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon, killedProf.rarity,
                             mapKill.dropMapTier, mapIiq, mapIir, guarantee);
@@ -231,8 +257,6 @@ namespace SkyrimPoE::Runtime
                             RE::SendHUDMessage::ShowHUDMessage("[SkyrimPoE] 4차 전직의 공물을 획득했습니다!");
                         }
                     }
-                    MapDeviceRuntime::OnActorKilled(actorId, mapKill.runId);
-
                     // 5단계(결정 161): 보스 이정표 달성 시 최대 정신력 +30 즉시 반영을 위해 StatEngine 동기화
                     if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0 || unlockedTier > 0) {
                         SaveLoad::SyncStateToStatEngine();
@@ -280,13 +304,15 @@ namespace SkyrimPoE::Runtime
                 RE::BSTEventSource<RE::TESResetEvent>*) override
             {
                 if (event && event->object) {
+                    const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
                     const auto id = event->object->GetFormID();
+                    MapDeviceRuntime::ClearArena4BossDeathStart(id);
                     if (g_killTracker) {
                         g_killTracker->OnActorReset(id);
                     }
                     if (g_queue) {
                         // 검수 Major 1: MonsterRuntime::OnActorReset도 Hasted SpeedMult 원복(엔진 API)을 수행하므로 주 갱신 큐로 이연
-                        g_queue->Enqueue([id]() {
+                        g_queue->EnqueueForGeneration(generation, [id]() {
                             MonsterRuntime::OnActorReset(id);
                             AilmentRuntime::OnActorReset(id);
                             // 재검수 R-9: 리셋으로 엔진이 임시 수정치를 지웠으므로 맡겨 둔 원복(위 두 호출이 맡긴 것 포함)을 버린다.

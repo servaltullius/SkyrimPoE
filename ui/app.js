@@ -551,8 +551,10 @@
       if (hudMapChip) {
         if (h.mapActive) {
           if (h.mapIsArena4) {
-            const st = h.mapBossKilled ? "정복" : `P${Number(h.mapArenaPhase || 1)}`;
-            hudMapChip.textContent = `4차 결투장 Lv.${Number(h.mapAreaLevel || 75)} · ${st}`;
+            const st = h.mapBossKilled
+              ? (h.mapArena4Unlocked ? "결투장 정복" : "결투장 보스 처치 · 4차 미획득")
+              : `4차 결투장 P${Number(h.mapArenaPhase || 1)}`;
+            hudMapChip.textContent = `${st} · Lv.${Number(h.mapAreaLevel || 75)}`;
           } else {
             const st = h.mapBossKilled ? "보스 처치" : `포털 ${Number(h.mapPortalsRemaining || 0)}/${Number(h.mapPortalsTotal || 6)}`;
             hudMapChip.textContent = `지도 T${Number(h.mapTier || 1)} Lv.${Number(h.mapAreaLevel || 68)} · ${st}`;

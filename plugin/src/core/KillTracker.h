@@ -12,6 +12,7 @@ namespace SkyrimPoE::Core
     struct KillRewardResult
     {
         bool awarded = false;
+        bool playerContributed = false;
         std::uint32_t effectiveMonsterLevel = 1;
         double xpMultiplier = 1.0;
         std::uint64_t exileXpGained = 0;
@@ -47,6 +48,21 @@ namespace SkyrimPoE::Core
     class KillTracker
     {
     public:
+        // DoDamage 중 동기로 사망 확정이 도착할 수 있다. 실제 감소의 사후 기록은 별도로 유지한다.
+        class DirectHitScope
+        {
+        public:
+            DirectHitScope(KillTracker* tracker, std::uint32_t actorFormId);
+            ~DirectHitScope();
+            DirectHitScope(const DirectHitScope&) = delete;
+            DirectHitScope& operator=(const DirectHitScope&) = delete;
+
+        private:
+            KillTracker* tracker_;
+            std::uint32_t actorFormId_;
+            std::uint64_t scopeId_ = 0;
+        };
+
         // 피해 적용 직전: 이번 삶에서 첫 피격이면 적대 여부를 기록한다(결정 134, 140, 148).
         // C-12: actorAliveForNewLife=true이고 직전 삶이 이미 보상 종료(rewardClaimed)된 상태면
         // 리셋 없이 부활했거나 FF 참조 FormID가 재사용된 새 삶으로 보고 lifeGeneration을 전진한다.
@@ -116,6 +132,8 @@ namespace SkyrimPoE::Core
         {
             std::uint32_t lifeGeneration = 1;
             std::uint64_t lastTouchedSeq = 0;
+            std::uint64_t directHitScopeId = 0;
+            std::size_t directHitDepth = 0;
             bool firstHostilityRecorded = false;
             bool wasHostileOnFirstHit = false;
             bool playerContributed = false;
