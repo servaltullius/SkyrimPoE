@@ -113,6 +113,8 @@ namespace SkyrimPoE::Runtime
         std::uint32_t g_fallRecoveryStreak = 0;
         double g_fallRecoveryCooldownSec = 0.0;
         std::size_t g_fallRecoveryCount = 0;
+        std::atomic<std::uint64_t> g_deathEscapeRequestCount{ 0 };
+        MapDeathEscapeRequestObservation g_lastDeathEscapeRequest;  // g_mutex
         // 셀이 막 바뀐 프레임(위치가 아직 옛 좌표일 수 있음)에는 낙하를 판정하지 않는다.
         RE::FormID g_lastObservedCell = 0;
         struct IncompatibleSavedRun
@@ -1432,14 +1434,16 @@ namespace SkyrimPoE::Runtime
             g_deathEscapeRunId.store(0, std::memory_order_release);
         }
 
-        std::string Arena4EntryDenialMessage()
+        MapActionResult GetArena4EntryRejection()
         {
             const auto entry = Core::MapSystem::GetArena4EntryStatus(SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask);
             if (entry.denial == Core::Arena4EntryDenial::AlreadyCleared) {
-                return "이미 4차 전직 결투장을 정복했습니다.";
+                return { false, "이미 4차 전직 결투장을 정복했습니다.", MapEntryDenial::ArenaAlreadyCleared };
             }
             if (entry.denial == Core::Arena4EntryDenial::MissingMilestones) {
-                return std::format("1~3차 전직 이정표 {}/3 · 모두 달성하면 입장할 수 있습니다.", entry.milestonesCompleted);
+                return { false,
+                    std::format("1~3차 전직 이정표 {}/3 · 모두 달성하면 입장할 수 있습니다.", entry.milestonesCompleted),
+                    MapEntryDenial::ArenaMissingMilestones };
             }
             return {};
         }
@@ -1474,8 +1478,9 @@ namespace SkyrimPoE::Runtime
                 bool committed = false;
                 SaveLoad::RunSerializedTransaction([&]() {
                     if (arena) {
-                        message = Arena4EntryDenialMessage();
-                        if (!message.empty()) {
+                        auto rejection = GetArena4EntryRejection();
+                        if (rejection.entryDenial != MapEntryDenial::None) {
+                            message = std::move(rejection.message);
                             return;
                         }
                     }
@@ -2114,8 +2119,8 @@ namespace SkyrimPoE::Runtime
         if (auto reason = EntryUnavailable(player, MapTravelKind::OpenArena); !reason.empty()) {
             return { false, std::move(reason) };
         }
-        if (auto reason = Arena4EntryDenialMessage(); !reason.empty()) {
-            return { false, std::move(reason) };
+        if (auto rejection = GetArena4EntryRejection(); rejection.entryDenial != MapEntryDenial::None) {
+            return rejection;
         }
         const auto& dungeon = MapPackRuntime::Manifest().arena;
         const auto* forms = MapPackRuntime::FindForms(&dungeon);
@@ -2140,10 +2145,10 @@ namespace SkyrimPoE::Runtime
         {
             std::scoped_lock lk(g_mutex);
             if (!g_activeMap.active || g_activeMap.failed || g_activeMap.isArena4 || g_activeMap.endRequested) {
-                return { false, "재입장 가능한 활성 지도가 없습니다." };
+                return { false, "재입장 가능한 활성 지도가 없습니다.", MapEntryDenial::NoReenterableRun };
             }
             if (g_activeMap.portalsRemaining == 0) {
-                return { false, "남은 포털이 없습니다." };
+                return { false, "남은 포털이 없습니다.", MapEntryDenial::NoPortals };
             }
             forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
             runId = g_activeMap.runId;
@@ -2232,6 +2237,11 @@ namespace SkyrimPoE::Runtime
     double MapDeviceRuntime::GetTravelArrivalRadius() noexcept
     {
         return g_travelSettings.arrivalRadius;
+    }
+
+    Core::MapTravelSettings MapDeviceRuntime::GetTravelSettings() noexcept
+    {
+        return g_travelSettings;
     }
 
     double MapDeviceRuntime::GetFallMargin() noexcept
@@ -2670,50 +2680,90 @@ namespace SkyrimPoE::Runtime
         return std::max(0.0, clampRes.clampedDamage / safeDiff);
     }
 
-    bool MapDeviceRuntime::TryInterceptLethalHitFromHook(
-        double curHp,
-        double effectiveDamage,
-        std::uint64_t generation)
+    namespace
     {
-        if (!g_queue || !g_config || !g_config->mapDeathInterceptEnabled) {
-            return false;
-        }
-        if (IsUninstallCleanupActive() || generation != g_queue->CurrentGeneration()) {
-            return false;
-        }
-        if (!g_playerInActiveMapCell.load(std::memory_order_acquire)) {
-            return false;
-        }
-        if (g_deathEscapeRunId.load(std::memory_order_acquire) != 0) {
-            return true;
-        }
-        if (!std::isfinite(curHp) || !std::isfinite(effectiveDamage) || effectiveDamage <= 0.0) {
-            return false;
-        }
-        if ((curHp - effectiveDamage) <= 1.0) {
-            std::uint64_t runId = 0;
-            {
-                std::scoped_lock lk(g_mutex);
-                if (IsUninstallCleanupActive() || generation != g_queue->CurrentGeneration() ||
-                    !g_activeMap.active || !g_playerInActiveMapCell.load(std::memory_order_relaxed)) {
-                    return false;
-                }
-                runId = g_activeMap.runId;
-                if (g_deathEscapeRunId.load(std::memory_order_relaxed) == runId) {
-                    return true;
-                }
-                g_deathEscapeRunId.store(runId, std::memory_order_release);
-                if (!g_activeMap.failed && (g_activeMap.isArena4 || g_activeMap.portalsRemaining == 0)) {
-                    g_activeMap.failed = true;
-                    RefreshMapActorsLocked();
-                }
+        enum class DeathHitDecision { Ignore, ClampInFlight, RequestEscape };
+
+        DeathHitDecision GetDeathHitDecision(
+            bool enabled, double curHp, double effectiveDamage, std::uint64_t generation) noexcept
+        {
+            if (!enabled || !g_queue || !g_config ||
+                MapDeviceRuntime::IsUninstallCleanupActive() || generation != g_queue->CurrentGeneration() ||
+                !g_playerInActiveMapCell.load(std::memory_order_acquire)) {
+                return DeathHitDecision::Ignore;
             }
-            g_queue->EnqueueForGeneration(generation, [runId]() {
-                ExecuteDeathEscapeOnMainThread(runId);
-            });
-            return true;
+            if (g_deathEscapeRunId.load(std::memory_order_acquire) != 0) {
+                return DeathHitDecision::ClampInFlight;
+            }
+            constexpr double kEscapeHealthFloor = 1.0;
+            return std::isfinite(curHp) && std::isfinite(effectiveDamage) && effectiveDamage > 0.0 &&
+                (curHp - effectiveDamage) <= kEscapeHealthFloor ? DeathHitDecision::RequestEscape : DeathHitDecision::Ignore;
         }
-        return false;
+
+        bool CanRequestDeathEscapeLocked(std::uint64_t generation) noexcept
+        {
+            return !MapDeviceRuntime::IsUninstallCleanupActive() && generation == g_queue->CurrentGeneration() &&
+                g_activeMap.active && g_playerInActiveMapCell.load(std::memory_order_relaxed);
+        }
+    }
+
+    bool MapDeviceRuntime::WouldInterceptLethalHit(
+        bool enabled, double curHp, double effectiveDamage, std::uint64_t generation)
+    {
+        const auto decision = GetDeathHitDecision(enabled, curHp, effectiveDamage, generation);
+        if (decision != DeathHitDecision::RequestEscape) {
+            return decision == DeathHitDecision::ClampInFlight;
+        }
+        std::scoped_lock lk(g_mutex);
+        return CanRequestDeathEscapeLocked(generation);
+    }
+
+    bool MapDeviceRuntime::TryInterceptLethalHitFromHook(
+        double curHp, double effectiveDamage, std::uint64_t generation, RE::FormID attackerId)
+    {
+        if (!g_config) {
+            return false;
+        }
+        const bool enabled = std::atomic_ref<const bool>(
+            g_config->mapDeathInterceptEnabled).load(std::memory_order_relaxed);
+        const auto decision = GetDeathHitDecision(enabled, curHp, effectiveDamage, generation);
+        if (decision != DeathHitDecision::RequestEscape) {
+            return decision == DeathHitDecision::ClampInFlight;
+        }
+
+        std::uint64_t runId = 0;
+        {
+            std::scoped_lock lk(g_mutex);
+            if (!CanRequestDeathEscapeLocked(generation)) {
+                return false;
+            }
+            runId = g_activeMap.runId;
+            if (g_deathEscapeRunId.load(std::memory_order_relaxed) == runId) {
+                return true;
+            }
+            g_deathEscapeRunId.store(runId, std::memory_order_release);
+            const auto requestCount = g_deathEscapeRequestCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            g_lastDeathEscapeRequest = { requestCount, attackerId, std::chrono::steady_clock::now() };
+            if (!g_activeMap.failed && (g_activeMap.isArena4 || g_activeMap.portalsRemaining == 0)) {
+                g_activeMap.failed = true;
+                RefreshMapActorsLocked();
+            }
+        }
+        g_queue->EnqueueForGeneration(generation, [runId]() {
+            ExecuteDeathEscapeOnMainThread(runId);
+        });
+        return true;
+    }
+
+    MapDeathEscapeRequestObservation MapDeviceRuntime::GetLastDeathEscapeRequest()
+    {
+        std::scoped_lock lk(g_mutex);
+        return g_lastDeathEscapeRequest;
+    }
+
+    std::uint64_t MapDeviceRuntime::GetDeathEscapeRequestCount() noexcept
+    {
+        return g_deathEscapeRequestCount.load(std::memory_order_relaxed);
     }
 
     bool MapDeviceRuntime::IsPlayerInActiveMapCell() noexcept

@@ -63,7 +63,7 @@ namespace SkyrimPoE::Core
             dungeon.returnDoors = ReadIds(entry, "returnDoors", true);
             (void)ReadIds(entry, "sealedDoors", true);
             for (const auto& exit : entry.at("autoExits").get_ref<const json::array_t&>()) {
-                (void)ReadFormId(exit.at("id"), "autoExits.id", true);
+                const auto id = ReadFormId(exit.at("id"), "autoExits.id", true);
                 const auto leads = ReadText(exit, "leads");
                 if (leads != "interior" && leads != "exterior") {
                     throw std::runtime_error("autoExits.leads 값이 잘못되었습니다.");
@@ -76,6 +76,8 @@ namespace SkyrimPoE::Core
                         throw std::runtime_error(std::format("autoExits.{} 좌표가 잘못되었습니다.", field));
                     }
                 }
+                dungeon.autoExits.push_back({ id, exit.at("position").get<std::array<float, 3>>(),
+                    exit.at("rotation").at(2).get<float>() });
             }
         }
 

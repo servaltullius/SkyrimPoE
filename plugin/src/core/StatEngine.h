@@ -178,7 +178,8 @@ namespace SkyrimPoE::Core
         std::uint8_t maxPowerCharges = 3;
 
         // 5단계(결정 161~164): 정신력·오라·전령·고유 특수 효과·참 면역
-        std::uint32_t maxSpirit = 100;
+        std::uint32_t baseMaxSpirit = Config::kDefaultSpiritBase;  // 기본 이정표 진행분, INI와 장비 제외
+        std::uint32_t maxSpirit = Config::kDefaultSpiritBase;
         std::uint32_t reservedSpirit = 0;
         std::uint16_t effectiveActiveAuraMask = 0;
         bool heraldOfIceActive = false;

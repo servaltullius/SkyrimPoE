@@ -2,6 +2,7 @@
 
 #include "core/MapTypes.h"
 
+#include <array>
 #include <istream>
 #include <string>
 #include <string_view>
@@ -14,6 +15,13 @@ namespace SkyrimPoE::Core
     inline constexpr auto kMapsSourceMaster = "Skyrim.esm";
     inline constexpr int kMapsManifestFormat = 3;
 
+    struct MapAutoExit
+    {
+        std::uint32_t localId;
+        std::array<float, 3> position;
+        float rotationZ;
+    };
+
     struct MapDungeonDef
     {
         std::string key;
@@ -23,6 +31,7 @@ namespace SkyrimPoE::Core
         double navmeshMinZ = 0.0;
         std::uint32_t entryMarker = 0;
         std::vector<std::uint32_t> returnDoors;
+        std::vector<MapAutoExit> autoExits;
         std::uint32_t bossAnchor = 0;
         std::vector<std::uint32_t> packAnchors;
         std::uint32_t bossNpc = 0;

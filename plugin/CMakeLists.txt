@@ -118,12 +118,14 @@ add_executable(skyrimpoe_tests
     tests/test_gem_transaction.cpp
     tests/test_passive_tree.cpp
     tests/test_passive_stats.cpp
+    tests/test_spirit_breakdown.cpp
     tests/test_items.cpp
     tests/test_stage5.cpp
     tests/test_world_stamp_link.cpp
     tests/test_stage6.cpp
     tests/test_map_difficulty.cpp
     tests/test_map_pack.cpp
+    tests/test_map_auto_exits.cpp
     tests/test_map_save.cpp
     tests/test_map_runtime_rules.cpp
     tests/test_map_kill_rewards.cpp

@@ -23,6 +23,7 @@ namespace SkyrimPoE::Runtime
         const Core::DataPack* g_dataPack = nullptr;
         const Core::Config* g_config = nullptr;
         bool g_installed = false;
+        std::atomic_bool g_allHooksInstalled{ false };
 
         thread_local CycloneHitContext t_cycloneCtx{};
         thread_local std::mt19937 t_rng{ std::random_device{}() };
@@ -68,6 +69,10 @@ namespace SkyrimPoE::Runtime
 
         // 진단·자동 시험용: 플레이어->동료 실제 체력 피해 누적 횟수
         std::atomic<std::uint64_t> g_playerToTeammateHits{ 0 };
+        std::atomic<std::uint64_t> g_mapPhysicalDeathClamps{ 0 };
+        std::atomic<std::uint64_t> g_mapMagicDeathClamps{ 0 };
+        std::atomic<std::uint64_t> g_mapPhysicalDeathRepeatClamps{ 0 };
+        std::atomic<std::uint64_t> g_mapMagicDeathRepeatClamps{ 0 };
 
         bool CanApplyCombatEffects(std::uint64_t generation) noexcept
         {
@@ -153,6 +158,12 @@ namespace SkyrimPoE::Runtime
                 return false;
             }
             return true;
+        }
+
+        bool WasRel32CallInstalled(std::uintptr_t site, std::uintptr_t previous) noexcept
+        {
+            std::uintptr_t current = 0;
+            return previous != 0 && ReadRel32Target(site, 0, current) && current != previous;
         }
 
         void EnqueueCharmBonusSync(std::uint64_t generation, const char* toastMsg)
@@ -380,6 +391,10 @@ namespace SkyrimPoE::Runtime
             // 6단계(검수 C-2 + Minor #1): siteIdx==7(task_queue) 포함 탈출 진행 중 무효화 + 지연 치명타 가로채기
             if (target->IsPlayerRef() && siteIdx == 7) {
                 if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    if (hit->totalDamage > 0.0f && !hit->flags.any(RE::HitData::Flag::kPredictDamage)) {
+                        g_mapPhysicalDeathClamps.fetch_add(1, std::memory_order_relaxed);
+                        g_mapPhysicalDeathRepeatClamps.fetch_add(1, std::memory_order_relaxed);
+                    }
                     hit->totalDamage = 0.0f;
                     return;
                 }
@@ -389,7 +404,9 @@ namespace SkyrimPoE::Runtime
                     const double diffMult7 = SkillExecution::GetDifficultyMultiplier(true);
                     const auto* pav = player->AsActorValueOwner();
                     const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(hit->totalDamage) * diffMult7, generation)) {
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp,
+                            static_cast<double>(hit->totalDamage) * diffMult7, generation, aggressor ? aggressor->GetFormID() : 0)) {
+                        g_mapPhysicalDeathClamps.fetch_add(1, std::memory_order_relaxed);
                         hit->totalDamage = 0.0f;
                     }
                 }
@@ -402,6 +419,10 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
                 if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    if (hit->totalDamage > 0.0f) {
+                        g_mapPhysicalDeathClamps.fetch_add(1, std::memory_order_relaxed);
+                        g_mapPhysicalDeathRepeatClamps.fetch_add(1, std::memory_order_relaxed);
+                    }
                     hit->totalDamage = 0.0f;
                     return;
                 }
@@ -529,7 +550,9 @@ namespace SkyrimPoE::Runtime
                 if (remainingRaw > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
                     const auto* pav = player->AsActorValueOwner();
                     const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, remainingRaw * diffMult, generation)) {
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(
+                            curHp, remainingRaw * diffMult, generation, aggressor ? aggressor->GetFormID() : 0)) {
+                        g_mapPhysicalDeathClamps.fetch_add(1, std::memory_order_relaxed);
                         hit->totalDamage = 0.0f;
                         return;
                     }
@@ -576,7 +599,7 @@ namespace SkyrimPoE::Runtime
             ApplyHitHook<SiteIdx>::originalAddr.store(preTarget, std::memory_order_release);
             const auto previous = trampoline.write_call<5>(site, ApplyHitHook<SiteIdx>::Thunk);
             ApplyHitHook<SiteIdx>::originalAddr.store(previous, std::memory_order_release);
-            return true;
+            return WasRel32CallInstalled(site, previous);
         }
 
         // ---- 2. 폭발 비율 훅 (44004+0xC1 -> 44016) ----
@@ -760,6 +783,10 @@ namespace SkyrimPoE::Runtime
                 return value;
             }
             if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                if (self->spell && baseEffect && baseEffect->IsDetrimental() && !recoversOnExpiry) {
+                    g_mapMagicDeathClamps.fetch_add(1, std::memory_order_relaxed);
+                    g_mapMagicDeathRepeatClamps.fetch_add(1, std::memory_order_relaxed);
+                }
                 return 0.0f;
             }
             if (!self->spell || !baseEffect) {
@@ -768,7 +795,9 @@ namespace SkyrimPoE::Runtime
                     const double diffMultEnv = SkillExecution::GetDifficultyMultiplier(true);
                     const auto* pav = player->AsActorValueOwner();
                     const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(-value) * diffMultEnv, generation)) {
+                    const auto caster = self->GetCasterActor();
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp,
+                            static_cast<double>(-value) * diffMultEnv, generation, caster ? caster->GetFormID() : 0)) {
                         return 0.0f;
                     }
                 }
@@ -825,7 +854,8 @@ namespace SkyrimPoE::Runtime
             if (std::isfinite(skyrimRes) && skyrimRes > 1e-4f && skyrimRes < 10.0f) {
                 preResistD /= static_cast<double>(skyrimRes);
             }
-            if (const auto caster = self->GetCasterActor(); caster && !caster->IsPlayerRef()) {
+            const auto caster = self->GetCasterActor();
+            if (caster && !caster->IsPlayerRef()) {
                 const auto monOut = MonsterRuntime::GetOutgoingModifier(caster->GetFormID());
                 preResistD *= monOut.damageMultiplier;
                 if (monOut.isDeadly) {
@@ -987,7 +1017,9 @@ namespace SkyrimPoE::Runtime
             if (finalRaw > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
                 const auto* pav = player->AsActorValueOwner();
                 const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, finalRaw * diffMult, generation)) {
+                if (MapDeviceRuntime::TryInterceptLethalHitFromHook(
+                        curHp, finalRaw * diffMult, generation, caster ? caster->GetFormID() : 0)) {
+                    g_mapMagicDeathClamps.fetch_add(1, std::memory_order_relaxed);
                     return 0.0f;
                 }
             }
@@ -1051,7 +1083,8 @@ namespace SkyrimPoE::Runtime
             MagicModifyHook<I>::originalAddr.store(currentTarget, std::memory_order_release);
             const auto prev = vtable.write_vfunc(Addresses::kModifyActorValueVtableSlot, MagicModifyHook<I>::Thunk);
             MagicModifyHook<I>::originalAddr.store(prev, std::memory_order_release);
-            return true;
+            return prev != 0 &&
+                *reinterpret_cast<const std::uintptr_t*>(slotAddr) == reinterpret_cast<std::uintptr_t>(MagicModifyHook<I>::Thunk);
         }
 
         template <std::size_t I>
@@ -1074,7 +1107,7 @@ namespace SkyrimPoE::Runtime
             MagicModifyHook<HookIdx>::originalAddr.store(preTarget, std::memory_order_release);
             const auto prev = trampoline.write_call<5>(site, MagicModifyHook<HookIdx>::Thunk);
             MagicModifyHook<HookIdx>::originalAddr.store(prev, std::memory_order_release);
-            return true;
+            return WasRel32CallInstalled(site, prev);
         }
 
         // ---- 5. 실제 체력 감소 기여 확정 (HandleHealthDamage, vtable 0x104) ----
@@ -1108,7 +1141,7 @@ namespace SkyrimPoE::Runtime
         };
 
         template <std::size_t Which>
-        void InstallHandleHealthDamage(const REL::VariantID& vtableId)
+        bool InstallHandleHealthDamage(const REL::VariantID& vtableId)
         {
             REL::Relocation<std::uintptr_t> vtable{ vtableId };
             const auto slotAddr = vtable.address() + Addresses::kHandleHealthDamageVtableSlot * sizeof(std::uintptr_t);
@@ -1116,6 +1149,8 @@ namespace SkyrimPoE::Runtime
             HandleHealthDamageHook<Which>::originalAddr.store(current, std::memory_order_release);
             const auto prev = vtable.write_vfunc(Addresses::kHandleHealthDamageVtableSlot, HandleHealthDamageHook<Which>::Thunk);
             HandleHealthDamageHook<Which>::originalAddr.store(prev, std::memory_order_release);
+            return prev != 0 &&
+                *reinterpret_cast<const std::uintptr_t*>(slotAddr) == reinterpret_cast<std::uintptr_t>(HandleHealthDamageHook<Which>::Thunk);
         }
 
         template <std::size_t... Is>
@@ -1199,7 +1234,7 @@ namespace SkyrimPoE::Runtime
                 ExplosionStepsHook::originalAddr.store(preTarget, std::memory_order_release);
                 const auto prev = SKSE::GetTrampoline().write_call<5>(site, ExplosionStepsHook::Thunk);
                 ExplosionStepsHook::originalAddr.store(prev, std::memory_order_release);
-                explInstalled = true;
+                explInstalled = WasRel32CallInstalled(site, prev);
             }
         }
 
@@ -1212,15 +1247,15 @@ namespace SkyrimPoE::Runtime
                 SetEffectivenessHook::originalAddr.store(preTarget, std::memory_order_release);
                 const auto prev = SKSE::GetTrampoline().write_call<5>(site, SetEffectivenessHook::Thunk);
                 SetEffectivenessHook::originalAddr.store(prev, std::memory_order_release);
-                effInstalled = true;
+                effInstalled = WasRel32CallInstalled(site, prev);
             }
         }
 
         const auto magicVtInstalled = InstallAllMagicVtables(std::make_index_sequence<kMagicVtables.size()>{});
         const auto magicCallInstalled = InstallAllMagicCalls(std::make_index_sequence<Addresses::kAeMagicDirectCalls.size()>{});
 
-        InstallHandleHealthDamage<0>(RE::VTABLE_Character[0]);
-        InstallHandleHealthDamage<1>(RE::VTABLE_PlayerCharacter[0]);
+        const bool characterHealthInstalled = InstallHandleHealthDamage<0>(RE::VTABLE_Character[0]);
+        const bool playerHealthInstalled = InstallHandleHealthDamage<1>(RE::VTABLE_PlayerCharacter[0]);
 
         SaveLoad::AddRevertCallback([]() {
             {
@@ -1241,13 +1276,24 @@ namespace SkyrimPoE::Runtime
         });
 
         g_installed = true;
+        g_allHooksInstalled.store(
+            hitInstalled == Addresses::kAeApplyHitSites.size() && explInstalled && effInstalled &&
+            magicVtInstalled == kMagicVtables.size() && magicCallInstalled == Addresses::kAeMagicDirectCalls.size() &&
+            characterHealthInstalled && playerHealthInstalled,
+            std::memory_order_release);
         SKSE::log::info(
-            "CombatHooks: installed ApplyHit={}/{}, ExplosionSteps={}, SetEffectiveness={}, MagicVtable={}/{}, MagicCalls={}/{}, HandleHealthDamage=2/2.",
+            "CombatHooks: installed ApplyHit={}/{}, ExplosionSteps={}, SetEffectiveness={}, MagicVtable={}/{}, MagicCalls={}/{}, HandleHealthDamage={}/2.",
             hitInstalled, Addresses::kAeApplyHitSites.size(),
             explInstalled, effInstalled,
             magicVtInstalled, kMagicVtables.size(),
-            magicCallInstalled, Addresses::kAeMagicDirectCalls.size());
+            magicCallInstalled, Addresses::kAeMagicDirectCalls.size(),
+            static_cast<unsigned>(characterHealthInstalled) + static_cast<unsigned>(playerHealthInstalled));
         return true;
+    }
+
+    bool CombatHooks::AreAllHooksInstalled() noexcept
+    {
+        return g_allHooksInstalled.load(std::memory_order_acquire);
     }
 
     void CombatHooks::TickPlayerPools(double deltaSec, bool gamePaused)
@@ -1412,5 +1458,15 @@ namespace SkyrimPoE::Runtime
     std::uint64_t CombatHooks::GetPlayerToTeammateHitCount() noexcept
     {
         return g_playerToTeammateHits.load(std::memory_order_relaxed);
+    }
+
+    std::uint64_t CombatHooks::GetMapDeathDamageClampCount(bool magic) noexcept
+    {
+        return (magic ? g_mapMagicDeathClamps : g_mapPhysicalDeathClamps).load(std::memory_order_relaxed);
+    }
+
+    std::uint64_t CombatHooks::GetMapDeathRepeatClampCount(bool magic) noexcept
+    {
+        return (magic ? g_mapMagicDeathRepeatClamps : g_mapPhysicalDeathRepeatClamps).load(std::memory_order_relaxed);
     }
 }

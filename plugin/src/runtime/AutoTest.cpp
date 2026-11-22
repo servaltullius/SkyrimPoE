@@ -39,6 +39,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -59,6 +60,9 @@ namespace SkyrimPoE::Runtime
         constexpr auto kMarkerFilename = "SkyrimPoE.autotest";
         constexpr auto kReportFilename = "SkyrimPoE.autotest.log";
         constexpr auto kPrevReportFilename = "SkyrimPoE.autotest.previous.log";
+        constexpr auto kHCheckpointSuffix = "_h_restore";
+        constexpr unsigned kHCheckpointSaveCandidates = 16;
+        constexpr unsigned kHCheckpointRestoreAttempts = 2;
 
         // houseCARL로 대조 검증한 바닐라 Skyrim.esm 폼 ID
         constexpr RE::FormID kIronSwordId = 0x00012EB7;      // IronSword
@@ -67,6 +71,7 @@ namespace SkyrimPoE::Runtime
         constexpr RE::FormID kIronHelmetId = 0x00012E4D;     // IronHelmet (E4 장비 스탯 반영용)
         constexpr RE::FormID kEncSkeeverId = 0x00023AB7;     // EncSkeever (Skyrim.esm 순정, Aggressive, Lv1)
         constexpr RE::FormID kNeutralNpcId = 0x0010D13E;     // AADeleteWhenDoneTestJeremyRegular (순정, 무팩션·Unaggressive·NoCrime)
+        constexpr RE::FormID kFireboltId = 0x00012FD0;       // Skyrim.esm Firebolt (프로토타입 6 대조 주문)
         constexpr auto kFrenzyPlugin = "BerserkerFrenzy.esp"sv;
         constexpr RE::FormID kFrenzyEffectLocalId = 0x800;
 
@@ -78,13 +83,16 @@ namespace SkyrimPoE::Runtime
             (void)fn(attacker, target, projectile, leftHand);
         }
 
+        // A~G의 저장 왕복, H의 이동·셀 초기화, 새 포털/경로 시험을 포함한 벽시계 예산.
+        constexpr double kDefaultAutoTestTimeoutSec = 1500.0;
+
         struct AutoTestConfig
         {
             std::string baselineSave;
             std::string tempSave = "SkyrimPoE_autotest";
             bool quitWhenDone = true;
             bool consumeMarker = true;
-            double globalTimeoutSec = 420.0;
+            double globalTimeoutSec = kDefaultAutoTestTimeoutSec;
         };
 
         enum class Phase : std::uint8_t
@@ -153,6 +161,12 @@ namespace SkyrimPoE::Runtime
             ScenarioG_AwaitReload,
             ScenarioG_ReloadSettle,
             ScenarioH_Start,
+            ScenarioH_IndoorStartWait,
+            ScenarioH_DungeonStart,
+            ScenarioH_DungeonEntryWait,
+            ScenarioH_DungeonCloseWait,
+            ScenarioH_DungeonRecoveryWait,
+            ScenarioH_OutdoorStartWait,
             ScenarioH_MapEntryWait,
             ScenarioH_FallRecoveryWait,
             ScenarioH_DeathInterceptTrigger,
@@ -168,18 +182,21 @@ namespace SkyrimPoE::Runtime
             ScenarioH_NoContributionMapKillWait,
             ScenarioH_NoContributionMapReturnWait,
             ScenarioH_Arena4Prerequisites,
+            ScenarioH_Arena4NegativeStart,
             ScenarioH_Arena4EntryWait,
-            ScenarioH_Arena4BypassKillWait,
-            ScenarioH_Arena4BypassReturnWait,
+            ScenarioH_Arena4NegativeKillWait,
+            ScenarioH_Arena4NegativeReturnWait,
             ScenarioH_Arena4Phase2Wait,
             ScenarioH_Arena4Phase3Wait,
             ScenarioH_Arena4KillWait,
+            ScenarioH_Arena4ReturnWait,
             ScenarioH_PostArenaReturnWait,
             ScenarioH_CosaveMapEntryWait,
             ScenarioH_SavePump,
             ScenarioH_SaveWaitBeforeLoad,
             ScenarioH_AwaitReload,
             ScenarioH_ReloadSettle,
+            ScenarioH_Contract,
             ScenarioH_UninstallPrepare,
             ScenarioH_UninstallVerifyWait,
             QuitDelay,
@@ -253,6 +270,12 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioG_AwaitReload: return "ScenarioG_AwaitReload";
             case Phase::ScenarioG_ReloadSettle: return "ScenarioG_ReloadSettle";
             case Phase::ScenarioH_Start: return "ScenarioH_Start";
+            case Phase::ScenarioH_IndoorStartWait: return "ScenarioH_IndoorStartWait";
+            case Phase::ScenarioH_DungeonStart: return "ScenarioH_DungeonStart";
+            case Phase::ScenarioH_DungeonEntryWait: return "ScenarioH_DungeonEntryWait";
+            case Phase::ScenarioH_DungeonCloseWait: return "ScenarioH_DungeonCloseWait";
+            case Phase::ScenarioH_DungeonRecoveryWait: return "ScenarioH_DungeonRecoveryWait";
+            case Phase::ScenarioH_OutdoorStartWait: return "ScenarioH_OutdoorStartWait";
             case Phase::ScenarioH_MapEntryWait: return "ScenarioH_MapEntryWait";
             case Phase::ScenarioH_FallRecoveryWait: return "ScenarioH_FallRecoveryWait";
             case Phase::ScenarioH_DeathInterceptTrigger: return "ScenarioH_DeathInterceptTrigger";
@@ -268,18 +291,21 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioH_NoContributionMapKillWait: return "ScenarioH_NoContributionMapKillWait";
             case Phase::ScenarioH_NoContributionMapReturnWait: return "ScenarioH_NoContributionMapReturnWait";
             case Phase::ScenarioH_Arena4Prerequisites: return "ScenarioH_Arena4Prerequisites";
+            case Phase::ScenarioH_Arena4NegativeStart: return "ScenarioH_Arena4NegativeStart";
             case Phase::ScenarioH_Arena4EntryWait: return "ScenarioH_Arena4EntryWait";
-            case Phase::ScenarioH_Arena4BypassKillWait: return "ScenarioH_Arena4BypassKillWait";
-            case Phase::ScenarioH_Arena4BypassReturnWait: return "ScenarioH_Arena4BypassReturnWait";
+            case Phase::ScenarioH_Arena4NegativeKillWait: return "ScenarioH_Arena4NegativeKillWait";
+            case Phase::ScenarioH_Arena4NegativeReturnWait: return "ScenarioH_Arena4NegativeReturnWait";
             case Phase::ScenarioH_Arena4Phase2Wait: return "ScenarioH_Arena4Phase2Wait";
             case Phase::ScenarioH_Arena4Phase3Wait: return "ScenarioH_Arena4Phase3Wait";
             case Phase::ScenarioH_Arena4KillWait: return "ScenarioH_Arena4KillWait";
+            case Phase::ScenarioH_Arena4ReturnWait: return "ScenarioH_Arena4ReturnWait";
             case Phase::ScenarioH_PostArenaReturnWait: return "ScenarioH_PostArenaReturnWait";
             case Phase::ScenarioH_CosaveMapEntryWait: return "ScenarioH_CosaveMapEntryWait";
             case Phase::ScenarioH_SavePump: return "ScenarioH_SavePump";
             case Phase::ScenarioH_SaveWaitBeforeLoad: return "ScenarioH_SaveWaitBeforeLoad";
             case Phase::ScenarioH_AwaitReload: return "ScenarioH_AwaitReload";
             case Phase::ScenarioH_ReloadSettle: return "ScenarioH_ReloadSettle";
+            case Phase::ScenarioH_Contract: return "ScenarioH_Contract";
             case Phase::ScenarioH_UninstallPrepare: return "ScenarioH_UninstallPrepare";
             case Phase::ScenarioH_UninstallVerifyWait: return "ScenarioH_UninstallVerifyWait";
             case Phase::QuitDelay: return "QuitDelay";
@@ -331,6 +357,139 @@ namespace SkyrimPoE::Runtime
         // 6단계 시나리오 H (지도 장치·아틀라스·4차 결투장·안전 제거) 전용 상태
         RE::FormID g_hPreMapCellId = 0;
         RE::FormID g_hPreMapWsId = 0;
+        RE::NiPoint3 g_hPreMapPosition{};
+        bool g_hOutdoorMap = false;
+        bool g_hIndoorReturnOk = false;
+        std::string g_hIndoorReturnDetail;
+        constexpr RE::FormID kHIndoorStartMarker = 0x00032AFB;   // Skyrim.esm QASmoke
+        constexpr RE::FormID kHOutdoorStartMarker = 0x000215D4;  // Skyrim.esm COCMarkerWhiterun
+        constexpr std::uint8_t kHMapTier = 10;
+        constexpr std::uint8_t kHEntryPortals = 5;
+        constexpr std::uint8_t kHReentryPortals = 4;
+        constexpr std::uint16_t kHAtlasTierBit = 1u << (kHMapTier - 1u);
+        constexpr std::uint32_t kHMapRewardLevel = 77;
+        constexpr float kHSpawnMinDistance = 600.0f;
+        constexpr double kHSpawnSettleSec = 0.5;
+        constexpr double kHOriginWaitSec = 30.0;
+        constexpr double kHDeathTriggerWaitSec = 10.0;
+        constexpr float kHDeathProbeHealth = 2.0f;
+        constexpr float kHDeathProbeHealthTolerance = 0.5f;
+        constexpr double kHGuardClearSec = 30.0;
+        constexpr double kHCombatStopWaitSec = 10.0;
+        constexpr double kHAffixDamagePct = 25.0;
+        constexpr double kHAffixReducedTakenPct = 20.0;
+        constexpr double kHAffixIiqPct = 22.0;  // MonsterDamage 12 + MonsterLife 10
+        constexpr double kHAffixProbeHit = 100.0;
+        constexpr double kHDamageTolerance = 1e-4;
+        constexpr double kHPlayerLifeTolerance = 1e-3;
+        constexpr double kHArenaHitDamage = 99999.0;
+        constexpr double kHMapBossHitDamage = 50000.0;
+        constexpr double kHContributionHitDamage = 1.0;
+        constexpr double kHBossHitIntervalSec = 0.25;
+        constexpr double kHArenaFloorFirst = 0.665;
+        constexpr double kHArenaFloorSecond = 0.335;
+        constexpr double kHArenaHealthRatioTolerance = 0.015;
+        constexpr float kHArenaSaveTimerMax = 0.60f;
+        constexpr float kHArenaSaveTimerMin = 0.20f;
+        constexpr float kHArenaSaveTimerTolerance = 1e-3f;
+        constexpr double kHSaveWaitSec = 25.0;
+        constexpr double kHSaveBeforeLoadSec = 1.0;
+        constexpr double kHReloadWaitSec = 90.0;
+        constexpr double kHReloadSettleSec = 2.0;
+        constexpr double kHReloadSettleLimitSec = 8.0;
+        constexpr auto kHSaveRetryDelay = std::chrono::seconds(2);
+        constexpr std::uint8_t kHArenaSecondPhase = 2;
+        constexpr std::size_t kHArenaInitialReinforcements = 2;
+        constexpr std::int32_t kHArenaExpectedAscendancyPoints = 8;
+        constexpr std::uint32_t kHArenaExpectedBaseSpirit = 220;
+        constexpr std::uint32_t kHAtlasPointBaselineLevel = 1;
+        constexpr auto kHOutdoorReturnCheck = "H4_MapDeathInterceptAndPortalReturn";
+        constexpr auto kHAffixCheck = "H2_MapAffixesAfterEntry";
+        constexpr auto kHDungeonCheck = "H3_MapEntryTeleportAndAsyncSpawn";
+        constexpr auto kHArenaCheck = "H6_Arena4ThreePhaseBossAndSpirit220";
+        constexpr auto kHArenaCosaveCheck = "H7_ArenaPhase2CosaveRoundTrip";
+        constexpr auto kHCompanionCheck = "H13_Arena4CompanionKillNoReward";
+        constexpr auto kHBypassCheck = "H13_Arena4EarlyKillNoReward";
+        constexpr auto kHPortalCheck = "H15_SixPortalEntries";
+        constexpr auto kHNormalReturnCheck = "H16_NormalReturnKeepsPortals";
+        constexpr auto kHLastPortalCheck = "H17_LastPortalSaveLoadDeath";
+        constexpr auto kHArenaDeathCheck = "H18_ArenaSingleAttemptDeath";
+        constexpr auto kHPhysicalBurstCheck = "H19_PhysicalLethalBurst";
+        constexpr auto kHMagicBurstCheck = "H20_MagicLethalBurst";
+        constexpr auto kHIniOffCheck = "H21_MapDeathInterceptDisabled";
+        constexpr auto kHOpenWorldCheck = "H22_OpenWorldDeathNotIntercepted";
+        constexpr auto kHCleanupCheck = "H23_MapCleanup20Runs";
+        constexpr auto kHReentrySpawnsCheck = "H24_ReentryPreservesSpawns";
+        constexpr auto kHFreshRunCheck = "H25_FreshRunAfterCellReset";
+        constexpr auto kHBossRouteCheck = "H26_BossAnchorLanding";
+        constexpr auto kHExitRouteCheck = "H27_AutoExitFallProbes";
+        constexpr std::size_t kOriginalHCheckCount = 17;
+        constexpr std::array<std::string_view, kOriginalHCheckCount + 13> kHChecks = {
+            "H1_Stage6Esp192FormsAndMapKey", "H2_MapCraftingAndItemLevel", kHAffixCheck, kHDungeonCheck,
+            kHOutdoorReturnCheck, "H5_MapReenterBossKillAndAtlasPoint", kHArenaCheck,
+            "H7_MapsAndTreeCosaveRoundTrip", kHArenaCosaveCheck, "H8_SafeUninstallCleanupAndNoReapply",
+            "H9_UnauthorizedEntryAndSafeEscape", "H10_MapFallRecovery", "H11_ClosedMapCellResetDispatch",
+            "H12_Arena4Prerequisites", kHBypassCheck, kHCompanionCheck, "H14_MapBossWithoutContribution",
+            kHPortalCheck, kHNormalReturnCheck, kHLastPortalCheck, kHArenaDeathCheck, kHPhysicalBurstCheck,
+            kHMagicBurstCheck, kHIniOffCheck, kHOpenWorldCheck, kHCleanupCheck, kHReentrySpawnsCheck,
+            kHFreshRunCheck, kHBossRouteCheck, kHExitRouteCheck
+        };
+        std::array<bool, kHChecks.size()> g_hChecksReported{};
+        std::optional<bool> g_hDeathInterceptBefore;
+        std::optional<bool> g_hRouteGodModeBefore;
+        struct HAffixProbe
+        {
+            double outgoing = 0.0;
+            double incoming = 0.0;
+            double iiq = 0.0;
+        };
+        std::optional<HAffixProbe> g_hPlainAffixProbe;
+        std::size_t g_hDungeonIndex = 0;
+        std::uint8_t g_hDungeonTier = 0;
+        bool g_hDungeonsOk = true;
+        std::string g_hDungeonsDetail;
+        bool g_hDungeonOk = false;
+        bool g_hDungeonMeasured = false;
+        bool g_hDungeonCloseRetried = false;
+        std::optional<Clock::time_point> g_hDungeonClosedAt;
+        std::string g_hDungeonDetail;
+        bool g_hDungeonResetExpected = false;
+        std::string g_hArenaSpawnsDetail;
+        std::optional<bool> g_hArenaSpawnsOk;
+        std::optional<Clock::time_point> g_hBossWaitStartedAt;
+        std::optional<Clock::time_point> g_hBossMoveRequestedAt;
+        std::optional<Clock::time_point> g_hBossReadySince;
+        std::optional<Clock::time_point> g_hDeathAttackStartedAt;
+        std::string g_hDeathTriggerDetail;
+        std::uint64_t g_hDeathRunId = 0;
+        std::int32_t g_hEarnedTributeBagCount = 0;
+        bool g_hEarnedTributeAvailable = false;
+        bool g_hMapBossDamageKill = false;
+        bool g_hArenaDamageKill = false;
+        double g_hNextBossHitSec = 0.0;
+        enum class HArenaTrial { EarnedTribute, Bypass, Companion };
+        HArenaTrial g_hArenaTrial = HArenaTrial::EarnedTribute;
+        std::optional<std::uint32_t> g_hMaskBeforeNegativeArena;
+        std::size_t g_hArenaGateIndex = 0;
+        bool g_hArenaGateOk = true;
+        std::string g_hArenaGateDetail;
+        bool g_hNegativeTributeOutstanding = false;
+        std::int32_t g_hNegativeTributeBaseline = 0;
+        std::uint8_t g_hCompanionAttackPhase = 0;
+        bool g_hCompanionAttackPowerSet = false;
+        RE::ActorHandle g_hArenaCompanion;
+        RE::FormID g_hCompanionBase = 0;
+        RE::FormID g_hCompanionCell = 0;
+        std::optional<Clock::time_point> g_hCompanionCleanupStarted;
+        bool g_hCompanionDisabled = false;
+        bool g_hCompanionCleanupOk = false;
+        constexpr double kHCompanionCleanupWaitSec = 15.0;
+        bool g_hArenaCosaveInProgress = false;
+        bool g_hArenaCosaveAttempted = false;
+        bool g_hWatchArenaCoSave = false;  // g_msgMutex
+        std::optional<float> g_hArenaTimerAtSave;  // g_msgMutex
+        std::optional<float> g_hArenaTimerAtLoad;  // g_msgMutex
+        double g_hArenaHealthBeforeSave = 0.0;
         double g_hPreMapPoeLife = 0.0;
         RE::FormID g_hEntryItemId = 0;
         Core::InventoryItemKey g_hEntryItemKey{};
@@ -346,7 +505,8 @@ namespace SkyrimPoE::Runtime
         constexpr double kArenaPhase3InvulnerabilityWaitSec = 8.0;
         // 셀이 떨어진 뒤 보내고 VM 콜백까지 기다린다(콜백 시간 초과 10초로 다시 보내는 경우 포함).
         constexpr double kMapResetWaitSec = 60.0;
-        constexpr int kExpectedAutoTestChecks = 64;  // A~F 45건, G 5건, H 14건
+        constexpr int kExpectedAutoTestChecks = 80;  // A~F 45건, G 5건, H 30건
+        static_assert(kExpectedAutoTestChecks == 50 + kHChecks.size());
         RE::FormID g_hMapCellId = 0;
         std::size_t g_hResetCountBeforeMap = 0;
         std::size_t g_hResetCompletedBeforeMap = 0;
@@ -357,26 +517,56 @@ namespace SkyrimPoE::Runtime
         std::int32_t g_hAvailPtsBeforeBoss = 0;
         RE::FormID g_hMapBossFormId = 0;
         RE::FormID g_hTributeCellId = 0;
-        std::optional<std::int64_t> g_hTributeCountBeforeBoss;
+        struct HTributeCounts
+        {
+            struct FloorDrop
+            {
+                std::int32_t count;
+                RE::ObjectRefHandle handle;
+            };
+            std::int64_t bag = 0;
+            std::int64_t corpse = 0;
+            std::int64_t floor = 0;
+            std::unordered_map<RE::FormID, FloorDrop> floorDrops;
+            [[nodiscard]] std::int64_t Total() const { return bag + corpse + floor; }
+        };
+        std::optional<HTributeCounts> g_hTributeCountBeforeBoss;
         bool g_hDeathEscapeIntercepted = false;
-        bool g_hMovedToMapBossForH4 = false;
         int g_hDeathInterceptHitsSent = 0;
-        bool g_hMovedToMapBoss = false;
         constexpr auto kH14MapTier = Core::kMinMapTier;
         constexpr auto kH14AtlasTierBit = static_cast<std::uint16_t>(1u << (kH14MapTier - 1u));
         std::optional<Core::AtlasState> g_hAtlasBeforeNoContributionKill;
-        bool g_hTestArenaBypass = false;
         bool g_hArenaBypassPrimed = false;
         std::int32_t g_hTributesBeforeArena = 0;
-        std::uint64_t g_hXpBeforeArenaBypass = 0;
+        std::uint64_t g_hXpBeforeNegativeKill = 0;
+        std::uint32_t g_hLevelBeforeNegativeKill = 0;
+        struct HGemProgress
+        {
+            std::uint64_t instanceId;
+            std::uint8_t level;
+            std::uint64_t xp;
+            bool operator==(const HGemProgress&) const = default;
+        };
+        std::vector<HGemProgress> g_hGemsBeforeNegativeKill;
+        std::int64_t g_hCorpseItemsBeforeNegativeKill = 0;
+        std::array<Core::CharmSlotState, Core::kMaxCharmSlots> g_hCharmsBeforeNegativeKill{};
+        constexpr float kHCompanionSpawnDistance = 70.0f;
+        constexpr float kHCompanionReach = 200.0f;
+        constexpr float kHCompanionUnarmedDamage = 99999.0f;
+        constexpr double kHCompanionKillWaitSec = 20.0;
+        constexpr double kHArenaPhaseHealthUnchangedTolerance = 1e-3;
         std::uint32_t g_hSpiritBeforeArena4 = 0;
         std::int32_t g_hAscPtsBeforeArena4 = 0;
         RE::FormID g_hArenaBossFormId = 0;
-        bool g_hMovedToArenaBoss = false;
+        bool g_hArenaReturnRequested = false;
+        Core::ActiveMapState g_hArenaReturnState;
+        std::optional<bool> g_hArenaResultBeforeReturn;
+        std::string g_hArenaResultDetail;
         bool g_hArenaPhase1Clamped = false;
         bool g_hArenaInvulnBlocked = false;
         bool g_hArenaPhase2Clamped = false;
         Core::AtlasState g_hAtlasBeforeCosave;
+        std::uint32_t g_hMilestonesBeforeCosave = 0;
         Core::ActiveMapState g_hRunBeforeCosave;
         double g_hHpDeltaBeforeUninstall = 0.0;
         double g_hMpDeltaBeforeUninstall = 0.0;
@@ -400,13 +590,25 @@ namespace SkyrimPoE::Runtime
         int g_passCount = 0;
         int g_failCount = 0;
         int g_warnCount = 0;
+        bool g_runError = false;
+        bool g_globalTimeoutReported = false;
 
         // SKSE 메시징 스레드 <-> 주 갱신 스레드 공유 상태
         std::mutex g_msgMutex;
         bool g_postLoadSignaled = false;
         bool g_postLoadSucceeded = false;
+        std::string g_expectedLoadStem;
+        bool g_preLoadMatched = false;
         std::string g_expectedSaveStem;
         bool g_saveMatched = false;
+        struct HSaveFiles
+        {
+            fs::path ess;
+            fs::path cosave;
+            std::optional<fs::file_time_type> essBefore;
+            std::optional<fs::file_time_type> cosaveBefore;
+        };
+        std::optional<HSaveFiles> g_hSaveFiles;
 
         // 세이브 재시도 상태(프로토타입 5 검증: NPC 대화 등으로 Save()가 무시되면 2초마다 재시도)
         Clock::time_point g_nextSaveRetryAt{};
@@ -504,6 +706,14 @@ namespace SkyrimPoE::Runtime
         }
         void Check(std::string_view name, bool ok, const std::string& detail)
         {
+            const auto hCheck = std::ranges::find(kHChecks, name);
+            if (hCheck != kHChecks.end()) {
+                auto& reported = g_hChecksReported[static_cast<std::size_t>(hCheck - kHChecks.begin())];
+                if (std::exchange(reported, true)) {
+                    LogWarn(std::format("{} was reported twice.", name));
+                    return;
+                }
+            }
             if (ok) {
                 ++g_passCount;
                 WriteLine("PASS", std::format("{}: {}", name, detail));
@@ -608,6 +818,10 @@ namespace SkyrimPoE::Runtime
             g_phase = next;
             g_phaseEnteredAt = Clock::now();
             g_mapTravelSettledAtSec = -1.0;
+            g_hBossWaitStartedAt.reset();
+            g_hBossMoveRequestedAt.reset();
+            g_hBossReadySince.reset();
+            g_hDungeonClosedAt.reset();
             g_unpausedAccumSec = 0.0;
             g_equipRequested = false;
             g_drawRequested = false;
@@ -645,9 +859,109 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        void CaptureHCompanionOwnership(RE::FormID cellId)
+        {
+            g_hCompanionBase = kNeutralNpcId;
+            g_hCompanionCell = cellId;
+            g_hCompanionCleanupStarted.reset();
+            g_hCompanionDisabled = false;
+            g_hCompanionCleanupOk = false;
+        }
+
+        void BeginHCompanionCleanup()
+        {
+            if (g_hArenaCompanion && !g_hCompanionCleanupStarted) {
+                g_hCompanionCleanupStarted = Clock::now();
+            }
+        }
+
+        bool IsHCompanionCleanupPending()
+        {
+            return g_hCompanionCleanupStarted.has_value();
+        }
+
+        bool WasHCompanionCleanupSuccessful()
+        {
+            return g_hCompanionCleanupOk;
+        }
+
+        void PumpHCompanionCleanup(bool canModify)
+        {
+            if (!g_hCompanionCleanupStarted) {
+                return;
+            }
+            const auto actor = canModify ? g_hArenaCompanion.get() : RE::NiPointer<RE::Actor>{};
+            const auto* base = actor ? actor->GetBaseObject() : nullptr;
+            const auto* cell = actor ? actor->GetParentCell() : nullptr;
+            if (actor && base && cell && base->GetFormID() == g_hCompanionBase && cell->GetFormID() == g_hCompanionCell) {
+                if (!g_hCompanionDisabled) {
+                    actor->Disable();
+                    g_hCompanionDisabled = true;
+                    return;
+                }
+                if (actor->IsDisabled()) {
+                    actor->SetDelete(true);
+                    g_hCompanionCleanupOk = true;
+                }
+            }
+            if (!g_hCompanionCleanupOk &&
+                std::chrono::duration<double>(Clock::now() - *g_hCompanionCleanupStarted).count() < kHCompanionCleanupWaitSec) {
+                return;
+            }
+            if (!g_hCompanionCleanupOk) {
+                LogInfo("H13 companion cleanup expired without proving ownership and disabling the actor.");
+            }
+            g_hCompanionCleanupStarted.reset();
+            g_hArenaCompanion = {};
+        }
+
+        void ClearHNegativeArenaFixture(RE::PlayerCharacter* player)
+        {
+            if (g_hNegativeTributeOutstanding) {
+                if (auto* item = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+                    player && item && !MapDeviceRuntime::GetTravelStatus(player).kind) {
+                    if (MapDeviceRuntime::CountPlayerTributes(player) > g_hNegativeTributeBaseline) {
+                        player->RemoveItem(item, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                    }
+                    g_hNegativeTributeOutstanding = MapDeviceRuntime::CountPlayerTributes(player) > g_hNegativeTributeBaseline;
+                }
+            }
+            BeginHCompanionCleanup();
+        }
+
+        void ReportMissingHChecks(const std::string& reason)
+        {
+            for (std::size_t i = 0; i < kHChecks.size(); ++i) {
+                if (!g_hChecksReported[i]) {
+                    Check(kHChecks[i], false, std::format("Skipped in {}. {}", PhaseName(g_phase), reason));
+                }
+            }
+        }
+
+        bool ScheduleHCheckpointRestore(const std::string& reason);
+
+        bool RestoreHGodMode(RE::PlayerCharacter* player)
+        {
+            if (!g_hRouteGodModeBefore) {
+                return true;
+            }
+            if (!player) {
+                return false;
+            }
+            player->SetGodMode(*g_hRouteGodModeBefore);
+            if (RE::PlayerCharacter::IsGodMode() != *g_hRouteGodModeBefore) {
+                return false;
+            }
+            g_hRouteGodModeBefore.reset();
+            return true;
+        }
+
         void FinishAndScheduleQuit(const std::string& reason)
         {
             if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
+                return;
+            }
+            if (ScheduleHCheckpointRestore(reason)) {
                 return;
             }
             CycloneRuntime::SetAutoTestHeld(false);
@@ -655,7 +969,16 @@ namespace SkyrimPoE::Runtime
                 CycloneRuntime::StopNowOnMainThread(player);
             }
             UiBridge::ClosePanelOnMainThread();
+            ReportMissingHChecks(reason);
             RestoreH14AtlasTier();
+            ClearHNegativeArenaFixture(RE::PlayerCharacter::GetSingleton());
+            if (const auto enabled = std::exchange(g_hDeathInterceptBefore, std::nullopt); enabled && g_config) {
+                std::atomic_ref<bool>(g_config->mapDeathInterceptEnabled).store(*enabled, std::memory_order_relaxed);
+            }
+            (void)RestoreHGodMode(RE::PlayerCharacter::GetSingleton());
+            if (const auto mask = std::exchange(g_hMaskBeforeNegativeArena, std::nullopt)) {
+                SaveLoad::UpdateState([mask](PersistentState& st) { st.tree.ascendancyMilestonesBitmask = *mask; });
+            }
             const bool restoreTestStats = !MapDeviceRuntime::IsUninstallCleanupArmed();
             if (restoreTestStats) {
                 RevertTempEnergyShield();
@@ -674,15 +997,18 @@ namespace SkyrimPoE::Runtime
             }
             {
                 std::scoped_lock lock(g_msgMutex);
+                g_expectedLoadStem.clear();
+                g_preLoadMatched = false;
                 g_expectedSaveStem.clear();
                 g_saveMatched = false;
+                g_hWatchArenaCoSave = false;
             }
 
             if (!reason.empty()) {
                 LogInfo(reason);
             }
             // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
-            const bool overallOk = (g_failCount == 0 && g_warnCount == 0 && g_passCount == kExpectedAutoTestChecks);
+            const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == kExpectedAutoTestChecks;
             const auto summary = std::format(
                 "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={} ===",
                 g_passCount, kExpectedAutoTestChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL");
@@ -701,11 +1027,18 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void FinishHAfterCosaveFailure(const std::string& detail)
+        void StartHContractAfterCosave(RE::PlayerCharacter* player);
+
+        void ContinueHAfterCosaveFailure(const std::string& detail)
         {
-            Check("H7_MapsAndTreeCosaveRoundTrip", false, detail);
-            Check("H8_SafeUninstallCleanupAndNoReapply", false, "건너뜀(H7 실패)");
-            FinishAndScheduleQuit("Scenario H co-save round trip failed.");
+            Check(g_hArenaCosaveInProgress ? kHArenaCosaveCheck : "H7_MapsAndTreeCosaveRoundTrip", false, detail);
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem.clear();
+                g_hWatchArenaCoSave = false;
+            }
+            g_hArenaCosaveInProgress = false;
+            StartHContractAfterCosave(RE::PlayerCharacter::GetSingleton());
         }
 
         std::string SaveStemFromMessage(const SKSE::MessagingInterface::Message& msg)
@@ -715,6 +1048,83 @@ namespace SkyrimPoE::Runtime
             }
             const std::string_view raw(static_cast<const char*>(msg.data), msg.dataLen);
             return StripSaveStem(raw);
+        }
+
+        fs::path HSaveDirectory()
+        {
+            // Keep the game's INI-relative path, including MO2's virtual profile save directory.
+            const auto* local = RE::GetINISetting("sLocalSavePath:General");
+            const char* subdir = local && local->GetType() == RE::Setting::Type::kString ? local->GetString() : nullptr;
+            return g_reportPath.parent_path().parent_path() / (subdir && *subdir ? subdir : "Saves");
+        }
+
+        bool ReadHSaveTimestamp(const fs::path& path, std::optional<fs::file_time_type>& timestamp)
+        {
+            std::error_code error;
+            const auto status = fs::status(path, error);
+            if (status.type() == fs::file_type::not_found) {
+                timestamp.reset();
+                return true;
+            }
+            if (error || !fs::is_regular_file(status)) {
+                return false;
+            }
+            const auto modified = fs::last_write_time(path, error);
+            if (error) {
+                return false;
+            }
+            timestamp = modified;
+            return true;
+        }
+
+        std::optional<HSaveFiles> ObserveHSaveFiles(const std::string& stem)
+        {
+            const auto dir = HSaveDirectory();
+            HSaveFiles files{ dir / (stem + ".ess"), dir / (stem + ".skse"), {}, {} };
+            if (!ReadHSaveTimestamp(files.ess, files.essBefore) || !ReadHSaveTimestamp(files.cosave, files.cosaveBefore)) {
+                return std::nullopt;
+            }
+            return files;
+        }
+
+        bool BeginHVerifiedSave(const std::string& stem)
+        {
+            g_hSaveFiles = ObserveHSaveFiles(stem);
+            std::scoped_lock lock(g_msgMutex);
+            g_expectedSaveStem = stem;
+            g_saveMatched = false;
+            return g_hSaveFiles.has_value();
+        }
+
+        bool IsHSaveWritten(const std::string& stem)
+        {
+            {
+                std::scoped_lock lock(g_msgMutex);
+                if (!g_saveMatched || g_expectedSaveStem != stem || !g_hSaveFiles) {
+                    return false;
+                }
+            }
+            std::optional<fs::file_time_type> essTime;
+            std::optional<fs::file_time_type> cosaveTime;
+            const auto& files = *g_hSaveFiles;
+            return ReadHSaveTimestamp(files.ess, essTime) && essTime && essTime != files.essBefore &&
+                ReadHSaveTimestamp(files.cosave, cosaveTime) && cosaveTime && cosaveTime != files.cosaveBefore;
+        }
+
+        std::optional<std::string> FindUnusedHCheckpointStem()
+        {
+            const auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+            for (unsigned i = 0; i < kHCheckpointSaveCandidates; ++i) {
+                auto stem = std::format("{}{}_{}_{}", g_cfg.tempSave, kHCheckpointSuffix, timestamp, i);
+                if (ToLowerAscii(stem) == ToLowerAscii(g_cfg.baselineSave)) {
+                    continue;
+                }
+                const auto files = ObserveHSaveFiles(stem);
+                if (files && !files->essBefore && !files->cosaveBefore) {
+                    return stem;
+                }
+            }
+            return std::nullopt;
         }
 
         bool ParseMarkerFile(const fs::path& markerPath, AutoTestConfig& out)
@@ -769,9 +1179,9 @@ namespace SkyrimPoE::Runtime
             }
             // T-5: 임시 세이브가 기준 사용자 세이브를 덮어쓰지 못하게 거부
             if (!out.baselineSave.empty() && !out.tempSave.empty() &&
-                ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave)) {
-                SKSE::log::error("AutoTest: refusing marker where temp_save '{}' equals baseline save '{}' (T-5).",
-                    out.tempSave, out.baselineSave);
+                (ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave) ||
+                    ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave + kHCheckpointSuffix))) {
+                SKSE::log::error("AutoTest: refusing marker where a temporary save stem equals the baseline save (T-5).");
                 return false;
             }
             return true;
@@ -814,25 +1224,262 @@ namespace SkyrimPoE::Runtime
             return now - g_mapTravelSettledAtSec < kMapTravelSettleSec;
         }
 
-        std::optional<std::int64_t> CountMapBossTributes(
+        enum class HBossReadiness { Waiting, Ready, Unavailable };
+
+        HBossReadiness PrepareHBoss(RE::PlayerCharacter* player, RE::Actor* boss, bool approach = false)
+        {
+            const auto now = Clock::now();
+            if (!g_hBossWaitStartedAt) {
+                g_hBossWaitStartedAt = now;
+            }
+            if (boss && (boss->IsDead() || boss->IsDisabled() || boss->IsDeleted())) {
+                return HBossReadiness::Unavailable;
+            }
+            auto* values = boss ? boss->AsActorValueOwner() : nullptr;
+            const auto health = values ? values->GetPermanentActorValue(RE::ActorValue::kHealth) : 0.0f;
+            const bool withinReach = player && boss && player->GetParentCell() == boss->GetParentCell() &&
+                (player->GetPosition() - boss->GetPosition()).Length() <= kHCompanionReach;
+            if (player && boss && !g_hBossMoveRequestedAt && (!boss->Is3DLoaded() || (approach && !withinReach))) {
+                player->MoveTo(boss);
+                g_hBossMoveRequestedAt = now;
+                return HBossReadiness::Waiting;
+            }
+            if (player && boss && player->GetParentCell() == boss->GetParentCell() &&
+                boss->Is3DLoaded() && std::isfinite(health) && health > 0.0f &&
+                IsPlayerReadyInWorld() && (!approach || withinReach)) {
+                if (!g_hBossReadySince) {
+                    g_hBossReadySince = now;
+                }
+                if (std::chrono::duration<double>(now - *g_hBossReadySince).count() >= kHSpawnSettleSec) {
+                    return HBossReadiness::Ready;
+                }
+            } else {
+                g_hBossReadySince.reset();
+            }
+            const auto since = g_hBossMoveRequestedAt.value_or(*g_hBossWaitStartedAt);
+            return std::chrono::duration<double>(now - since).count() < kMapBossLoadWaitSec
+                ? HBossReadiness::Waiting : HBossReadiness::Unavailable;
+        }
+
+        struct HSpawnLayout
+        {
+            std::vector<RE::FormID> ids;
+            std::size_t bosses = 0;
+            std::size_t adds = 0;
+            std::size_t invalid = 0;
+            float nearest = std::numeric_limits<float>::infinity();
+            bool matchesRegistry = false;
+
+            [[nodiscard]] bool Meets(std::size_t expectedAdds) const
+            {
+                return matchesRegistry && bosses == 1 && adds == expectedAdds && invalid == 0 &&
+                    nearest >= kHSpawnMinDistance;
+            }
+        };
+
+        HSpawnLayout ObserveHSpawnLayout(const MapPackRuntime::DungeonForms* forms, const Core::ActiveMapState& run)
+        {
+            HSpawnLayout observed;
+            if (!forms || !forms->cell || !forms->cell->IsAttached() || !forms->entryMarker) {
+                return observed;
+            }
+            const auto& addBases = run.isArena4 ? forms->addNpcs : forms->packNpcs;
+            const auto entry = forms->entryMarker->GetPosition();
+            forms->cell->ForEachReference([&](RE::TESObjectREFR* ref) {
+                auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
+                if (!actor || (actor->GetFormID() >> 24) != 0xFF || actor->GetParentCell() != forms->cell ||
+                    actor->IsDeleted() || actor->IsDisabled()) {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                const auto* base = actor->GetBaseObject();
+                if (base == forms->bossNpc) {
+                    ++observed.bosses;
+                    if (actor->GetFormID() != run.bossRefFormId || !SkillExecution::IsBossOrDragon(actor)) {
+                        ++observed.invalid;
+                    }
+                } else if (std::ranges::find(addBases, base) != addBases.end()) {
+                    ++observed.adds;
+                } else {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                observed.ids.push_back(actor->GetFormID());
+                const float distance = (actor->GetPosition() - entry).Length();
+                if (actor->IsDead() || !std::isfinite(distance)) {
+                    ++observed.invalid;
+                } else {
+                    observed.nearest = std::min(observed.nearest, distance);
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            auto registered = run.spawnedRefFormIds;
+            std::ranges::sort(registered);
+            std::ranges::sort(observed.ids);
+            observed.matchesRegistry = registered == observed.ids;
+            return observed;
+        }
+
+        std::optional<HAffixProbe> ProbeHMapAffixes(
+            RE::Actor* boss, const Core::ActiveMapState& run, RE::FormID playerCellId)
+        {
+            if (!boss || boss->IsDead() || run.tier != kHMapTier) {
+                return std::nullopt;
+            }
+            const auto kill = MapDeviceRuntime::GetMapKillContext(run.bossRefFormId, playerCellId);
+            if (!kill.isBoss || kill.runId != run.runId || kill.rewardBlocked || kill.runFailed) {
+                return std::nullopt;
+            }
+            const auto out = MonsterRuntime::GetOutgoingModifier(run.bossRefFormId);
+            // 지도 보스의 Armoured 프로필은 고정이다. ES를 우회하고 엔진에 피해를 주지 않는다.
+            const auto in = MonsterRuntime::ApplyPlayerHitToMonster(
+                run.bossRefFormId, kHAffixProbeHit, Core::DamageType::Physical, true, boss);
+            return HAffixProbe{ out.damageMultiplier, in.remainingHealthDamage, kill.bonusIiqPct };
+        }
+
+        bool MoveToHOrigin(RE::PlayerCharacter* player, RE::FormID markerId)
+        {
+            auto* marker = RE::TESForm::LookupByID<RE::TESObjectREFR>(markerId);
+            if (!player || !marker || marker->IsDeleted()) {
+                return false;
+            }
+            player->MoveTo(marker);
+            return true;
+        }
+
+        bool AtHOrigin(RE::PlayerCharacter* player, RE::FormID markerId, bool outdoor)
+        {
+            const auto* marker = RE::TESForm::LookupByID<RE::TESObjectREFR>(markerId);
+            const auto* cell = player ? player->GetParentCell() : nullptr;
+            if (!marker || !cell || cell->IsInteriorCell() == outdoor || !IsPlayerReadyInWorld()) {
+                return false;
+            }
+            return (outdoor ? player->GetWorldspace() && player->GetWorldspace() == marker->GetWorldspace()
+                            : cell == marker->GetParentCell()) &&
+                (player->GetPosition() - marker->GetPosition()).Length() <= MapDeviceRuntime::GetTravelArrivalRadius();
+        }
+
+        void CloseHRun(RE::PlayerCharacter* player)
+        {
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            if (!travel.kind && IsPlayerReadyInWorld()) {
+                if (MapDeviceRuntime::IsActiveMapRun()) {
+                    (void)MapDeviceRuntime::AbandonActiveMap(player);
+                } else if (travel.unauthorized) {
+                    (void)MapDeviceRuntime::SafeEscape(player);
+                }
+            }
+        }
+
+        std::optional<HTributeCounts> CountMapBossTributes(
             RE::PlayerCharacter* player, RE::Actor* boss, const RE::TESObjectCELL* cell)
         {
             auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
             if (!player || !boss || !cell || !tribute) {
                 return std::nullopt;
             }
-            std::int64_t total = MapDeviceRuntime::CountPlayerTributes(player);
+            HTributeCounts result;
+            result.bag = MapDeviceRuntime::CountPlayerTributes(player);
             const auto counts = boss->GetInventoryCounts([tribute](RE::TESBoundObject& item) { return &item == tribute; });
             if (const auto it = counts.find(tribute); it != counts.end()) {
-                total += it->second;
+                result.corpse = it->second;
             }
             cell->ForEachReference([&](RE::TESObjectREFR* ref) {
                 if (ref && !ref->IsDeleted() && !ref->IsDisabled() && ref->GetBaseObject() == tribute) {
-                    total += std::max<std::int32_t>(1, ref->extraList.GetCount());
+                    const auto count = std::max<std::int32_t>(1, ref->extraList.GetCount());
+                    result.floor += count;
+                    result.floorDrops.emplace(ref->GetFormID(), HTributeCounts::FloorDrop{ count, ref->CreateRefHandle() });
                 }
                 return RE::BSContainer::ForEachResult::kContinue;
             });
-            return total;
+            return result;
+        }
+
+        double BossHealthRatio(RE::Actor* boss)
+        {
+            const auto* values = boss ? boss->AsActorValueOwner() : nullptr;
+            const double max = values ? values->GetPermanentActorValue(RE::ActorValue::kHealth) : 0.0;
+            return max > 0.0 ? values->GetActorValue(RE::ActorValue::kHealth) / max
+                : std::numeric_limits<double>::quiet_NaN();
+        }
+
+        bool ArenaBossAtFloor(RE::Actor* boss, double floor, std::uint8_t phase)
+        {
+            const double ratio = BossHealthRatio(boss);
+            return boss && !boss->IsDead() && ratio >= floor - kHArenaHealthRatioTolerance &&
+                ratio <= floor + kHArenaHealthRatioTolerance && MapDeviceRuntime::GetActiveMapStateCopy().arenaPhase == phase;
+        }
+
+        std::int64_t CountArenaCorpseItems(RE::Actor* boss)
+        {
+            std::int64_t count = 0;
+            if (boss) {
+                const auto loot = boss->GetInventoryCounts([](RE::TESBoundObject& item) {
+                    return FormIds::ResolveLocalFormIdIfOurs(item.GetFormID()) != 0;
+                });
+                for (const auto& [item, amount] : loot) {
+                    if (item && amount > 0) {
+                        count += amount;
+                    }
+                }
+            }
+            return count;
+        }
+
+        const char* NegativeArenaCheck()
+        {
+            return g_hArenaTrial == HArenaTrial::Bypass ? kHBypassCheck : kHCompanionCheck;
+        }
+
+        std::vector<HGemProgress> ObserveHGemProgress(const PersistentState& state)
+        {
+            std::vector<HGemProgress> result;
+            const auto gather = [&](const auto& self, const Core::GemInstance& gem) -> void {
+                result.push_back({ gem.instanceId, gem.level, gem.xp });
+                for (const auto& socketed : gem.socketedGems) {
+                    self(self, socketed);
+                }
+            };
+            for (const auto& slot : state.slots) {
+                if (slot.occupied) {
+                    gather(gather, slot.gem);
+                }
+            }
+            return result;
+        }
+
+        void BeginHArenaNegativeKill(RE::Actor* boss)
+        {
+            const auto state = SaveLoad::GetStateCopy();
+            g_hXpBeforeNegativeKill = state.exileXp;
+            g_hLevelBeforeNegativeKill = state.exileLevel;
+            g_hGemsBeforeNegativeKill = ObserveHGemProgress(state);
+            g_hCorpseItemsBeforeNegativeKill = CountArenaCorpseItems(boss);
+            g_hCharmsBeforeNegativeKill = g_charmSystem ? g_charmSystem->Slots()
+                : std::array<Core::CharmSlotState, Core::kMaxCharmSlots>{};
+        }
+
+        bool StartHCosave(Core::ActiveMapState run, bool arena)
+        {
+            if (!BeginHVerifiedSave(g_cfg.tempSave)) {
+                return false;
+            }
+            g_hArenaCosaveInProgress = arena;
+            const auto state = SaveLoad::GetStateCopy();
+            g_hAtlasBeforeCosave = state.atlas;
+            g_hMilestonesBeforeCosave = state.tree.ascendancyMilestonesBitmask;
+            g_hRunBeforeCosave = std::move(run);
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_hWatchArenaCoSave = arena;
+                g_hArenaTimerAtSave.reset();
+                g_hArenaTimerAtLoad.reset();
+            }
+            if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                mgr->Save(g_cfg.tempSave.c_str());
+            }
+            g_saveAttempts = 1;
+            g_nextSaveRetryAt = Clock::now() + kHSaveRetryDelay;
+            EnterPhase(Phase::ScenarioH_SavePump);
+            return true;
         }
 
         // 인벤토리에서 gemId에 해당하는 순정(0:0) 또는 빈 추적 젬 키를 우선 반환해 중복/가득 찬 소켓 오염을 피한다.
@@ -958,6 +1605,51 @@ namespace SkyrimPoE::Runtime
                     av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka, -dmg);
                 }
             }
+        }
+
+        MapActionResult OpenHMap(RE::PlayerCharacter* player, std::uint8_t tier, bool fixedAffixes)
+        {
+            auto* item = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(tier));
+            if (!player || !item) {
+                return { false, "Map item or player unavailable." };
+            }
+            RestorePlayerVitals(player, true, true);
+            player->StopCombat();
+            const auto* cell = player->GetParentCell();
+            const auto* world = player->GetWorldspace();
+            g_hPreMapCellId = cell ? cell->GetFormID() : 0;
+            g_hPreMapWsId = world ? world->GetFormID() : 0;
+            g_hPreMapPosition = player->GetPosition();
+            const auto stats = g_statEngine->GetSnapshot();
+            g_hPreMapPoeLife = stats ? stats->poeMaxLife : 0.0;
+            Core::InventoryItemKey key{};
+            if (fixedAffixes) {
+                key = ItemTracker::AddObjectWithTrackedUniqueId(player, item, UniqueIdUtil::CreateGameExtraDataList());
+                if (!key.IsValid()) {
+                    return { false, "Cannot create a tracked map fixture." };
+                }
+                Core::PoEItemRecord record{};
+                record.baseFormId = item->GetFormID();
+                record.rarity = Core::ItemRarity::Rare;
+                record.itemLevel = Core::MapSystem::MonsterLevelForTier(tier);
+                record.slotGroup = Core::TokenSlotGroup::Map;
+                record.affixes = {
+                    { "MapMod_MonsterDamage", { kHAffixDamagePct } },
+                    { "MapMod_MonsterLife", { kHAffixReducedTakenPct } }
+                };
+                ItemTracker::Upsert(key, record);
+            } else {
+                player->AddObjectToContainer(item, nullptr, 1, nullptr);
+            }
+            g_hEntryItemId = item->GetFormID();
+            g_hEntryItemKey = key;
+            g_hEntryItemCount = player->GetItemCount(item);
+            const auto opened = MapDeviceRuntime::OpenNormalMap(player, key, g_hEntryItemId);
+            g_hEntryPendingWithoutConsumption = opened.ok &&
+                MapDeviceRuntime::GetTravelStatus(player).kind == Core::MapTravelKind::OpenMap &&
+                !MapDeviceRuntime::IsActiveMapRun() && player->GetItemCount(item) == g_hEntryItemCount &&
+                (!key.IsValid() || ItemTracker::FindByKey(key).has_value());
+            return opened;
         }
 
         bool HasMeleeWeaponEquipped(RE::PlayerCharacter* player)
@@ -1092,12 +1784,1296 @@ namespace SkyrimPoE::Runtime
             }
             {
                 std::scoped_lock lock(g_msgMutex);
+                g_expectedLoadStem = ToLowerAscii(saveStem);
+                g_preLoadMatched = false;
                 g_postLoadSignaled = false;
                 g_postLoadSucceeded = false;
             }
             // 누락 모드 경고 모달로 멈추지 않도록 a_checkForMods=false로 로드한다.
             mgr->Load(saveStem.c_str(), false);
             return true;
+        }
+
+
+        // Default budget covers the portal sequence, 20 closures/reattachments and 17 landings.
+        constexpr double kHContractBaseBudgetSec = 1050.0;
+        constexpr double kHContractLongTravelBudgetMultiplier = 2.0;
+        constexpr double kHContractTravelMarginSec = 20.0;
+        constexpr double kHContractResetSec = 45.0;
+        constexpr double kHRouteObserveSec = 3.0;
+        constexpr double kHRouteProbeSec = 10.0;
+        constexpr unsigned kHRouteMinHeightSamples = 8;
+        constexpr std::size_t kHRouteProbesPerExit = 3;
+        constexpr float kHRouteExitOffset = 150.0f;
+        constexpr float kHRouteMaxDrop = 300.0f;
+        constexpr float kHRouteArrivalAbove = 128.0f;
+        constexpr float kHRouteArrivalXY = 192.0f;
+        constexpr float kHContractLowHealth = 2.0f;
+        constexpr float kHContractMagicMagnitude = 1000.0f;
+        constexpr float kHOtherHostileRadius = 1200.0f;
+        constexpr unsigned kHDeathBurstHits = 3;
+        constexpr unsigned kHCleanupCycles = 20;
+        constexpr std::uint8_t kHRegressionMapTier = 1;
+        constexpr std::array<std::uint8_t, 6> kHExpectedPortalSequence{ 5, 4, 3, 2, 1, 0 };  // Decision 166.
+        constexpr std::array<std::pair<std::string_view, std::size_t>, 5> kHExpectedAutoExits{{
+            { "embershard", 1 }, { "pinemoon", 1 }, { "ironbind", 1 }, { "raldbthar", 0 }, { "shrouded_grove", 1 }
+        }};
+
+        double HContractTravelSec()
+        {
+            const auto settings = MapDeviceRuntime::GetTravelSettings();
+            return settings.timeoutSec * (settings.maxAttempts + 1) + kHContractTravelMarginSec;
+        }
+
+        enum class HContractStage
+        {
+            PrepareCheckpoint, SaveCheckpoint, ClosePriorRun, OutdoorProbe, IndoorOrigin, Open, Entry,
+            Return, Reenter, SaveLastPortal, ExhaustedReentry, LoadLastPortal, Damage, DeathReturn,
+            PartialKill, Close, Reset, VerifyEmptyCell, LeaveVerifiedCell, RecoverCleanup, RoutePrepare,
+            RouteStart, RouteEntry, RouteObserve, RouteRecover, CloseRoutes,
+            RestoreCheckpoint, AwaitCheckpoint
+        };
+
+        enum class HContractTrial { Portals, Arena, Physical, Magic, Cleanup };
+
+        struct HMapSpawn
+        {
+            RE::FormID id;
+            RE::FormID base;
+            RE::ActorHandle handle;
+            bool dead;
+            bool operator==(const HMapSpawn& other) const
+            {
+                return id == other.id && base == other.base && dead == other.dead;
+            }
+        };
+
+        struct HRouteSpot
+        {
+            const Core::MapDungeonDef* dungeon;
+            RE::NiPoint3 position;
+            RE::FormID exitId;  // zero for the boss anchor
+            float exitOffset;
+        };
+
+        struct HCheckpoint
+        {
+            RE::FormID cell = 0;
+            RE::FormID world = 0;
+            RE::NiPoint3 position{};
+            Core::AtlasState atlas;
+            std::uint32_t milestones = 0;
+            std::array<std::int32_t, FormIds::kMapItemForms.size()> maps{};
+            std::vector<Core::PoEItemRecord> trackedMaps;
+            std::int32_t tributes = 0;
+        };
+
+        HCheckpoint ObserveHCheckpoint(RE::PlayerCharacter* player)
+        {
+            HCheckpoint checkpoint;
+            if (const auto* cell = player->GetParentCell()) {
+                checkpoint.cell = cell->GetFormID();
+            }
+            if (const auto* world = player->GetWorldspace()) {
+                checkpoint.world = world->GetFormID();
+            }
+            checkpoint.position = player->GetPosition();
+            const auto state = SaveLoad::GetStateCopy();
+            checkpoint.atlas = state.atlas;
+            checkpoint.milestones = state.tree.ascendancyMilestonesBitmask;
+            for (std::size_t i = 0; i < checkpoint.maps.size(); ++i) {
+                if (auto* item = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kMapItemForms[i])) {
+                    checkpoint.maps[i] = player->GetItemCount(item);
+                }
+            }
+            for (const auto& entry : ItemTracker::TakeSnapshotForSave()) {
+                if (!entry.isWorld && entry.key.ownerFormId == player->GetFormID() &&
+                    entry.record.slotGroup == Core::TokenSlotGroup::Map) {
+                    auto* base = RE::TESForm::LookupByID<RE::TESBoundObject>(entry.record.baseFormId);
+                    if (base && ItemTracker::FindExtraListByKey(player, base, entry.key)) {
+                        checkpoint.trackedMaps.push_back(entry.record);
+                    }
+                }
+            }
+            checkpoint.tributes = MapDeviceRuntime::CountPlayerTributes(player);
+            return checkpoint;
+        }
+
+        bool HCheckpointMatches(const HCheckpoint& observed, const HCheckpoint& saved)
+        {
+            const auto sameMap = [](const Core::PoEItemRecord& a, const Core::PoEItemRecord& b) {
+                return a.baseFormId == b.baseFormId && a.rarity == b.rarity && a.itemLevel == b.itemLevel &&
+                    a.implicitAffixes == b.implicitAffixes && a.affixes == b.affixes;
+            };
+            return observed.cell == saved.cell && observed.world == saved.world &&
+                (observed.position - saved.position).Length() <= MapDeviceRuntime::GetTravelArrivalRadius() &&
+                observed.atlas.completedTierMask == saved.atlas.completedTierMask &&
+                observed.atlas.totalMapsCleared == saved.atlas.totalMapsCleared &&
+                observed.atlas.highestTierCleared == saved.atlas.highestTierCleared &&
+                observed.atlas.firstTributeGiven == saved.atlas.firstTributeGiven &&
+                observed.milestones == saved.milestones && observed.maps == saved.maps && observed.tributes == saved.tributes &&
+                std::ranges::is_permutation(observed.trackedMaps, saved.trackedMaps, sameMap);
+        }
+
+        struct HContractState
+        {
+            HContractStage stage = HContractStage::PrepareCheckpoint;
+            HContractTrial trial = HContractTrial::Portals;
+            Clock::time_point started = Clock::now();
+            Clock::time_point stageStarted = started;
+            std::string checkpointStem;
+            HCheckpoint checkpoint;
+            bool checkpointSaved = false;
+            bool restoreFinished = false;
+            unsigned restoreAttempts = 0;
+            std::string finishReason;
+            bool openWorldRejected = false;
+            bool zeroPortalRejected = false;
+            std::uint64_t runId = 0;
+            std::uint8_t entryCount = 0;
+            unsigned normalReturns = 0;
+            unsigned cleanupCycles = 0;
+            std::uint64_t lastCleanupRunId = 0;
+            bool cleanupOk = true;
+            bool cleanupCycleOk = true;
+            std::vector<HMapSpawn> priorCleanupSpawns;
+            std::vector<HMapSpawn> cleanupSpawns;
+            bool reentering = false;
+            std::size_t resetCompletedBefore = 0;
+            std::optional<Clock::time_point> cleanupReattachedAt;
+            std::uint8_t portalsBeforeDeath = 0;
+            std::uint64_t deathRequestsBefore = 0;
+            std::uint64_t deathClampsBefore = 0;
+            std::uint64_t deathRepeatClampsBefore = 0;
+            Clock::time_point firstDamageAt{};
+            bool deathMarkedFailed = false;
+            bool movedToBoss = false;
+            double attackWindowStarted = -1.0;
+            unsigned damageRequests = 0;
+            unsigned magicEffectsAccepted = 0;
+            double nextDamageAt = 0.0;
+            std::int32_t tributeBefore = 0;
+            Core::ActiveMapState lastPortalSave;
+            Core::ActiveMapState enteredRun;
+            std::size_t expectedCorpses = 0;
+            std::vector<HMapSpawn> spawnsBeforeReturn;
+            std::vector<HRouteSpot> route;
+            std::size_t routeIndex = 0;
+            std::size_t bossSpotsPassed = 0;
+            std::size_t exitSpotsPassed = 0;
+            bool exitCountsMatch = true;
+            double routeObservedSec = 0.0;
+            float lowestZ = 0.0f;
+            bool routeArrivalSeen = false;
+            unsigned routeHeightSamples = 0;
+            std::optional<float> routeRecoveryZ;
+            double routeRecoveryStableSec = 0.0;
+            std::size_t fallRecoveryBefore = 0;
+        };
+
+        HContractState g_hContract;
+
+        void EnterHContract(HContractStage stage)
+        {
+            constexpr std::array names{
+                "PrepareCheckpoint", "SaveCheckpoint", "ClosePriorRun", "OutdoorProbe", "IndoorOrigin", "Open", "Entry",
+                "Return", "Reenter", "SaveLastPortal", "ExhaustedReentry", "LoadLastPortal", "Damage", "DeathReturn",
+                "PartialKill", "Close", "Reset", "VerifyEmptyCell", "LeaveVerifiedCell", "RecoverCleanup", "RoutePrepare",
+                "RouteStart", "RouteEntry", "RouteObserve", "RouteRecover", "CloseRoutes",
+                "RestoreCheckpoint", "AwaitCheckpoint"
+            };
+            static_assert(names.size() == static_cast<std::size_t>(HContractStage::AwaitCheckpoint) + 1);
+            g_hContract.stage = stage;
+            g_hContract.stageStarted = Clock::now();
+            LogInfo(std::format("H contract: {}.", names[static_cast<std::size_t>(stage)]));
+        }
+
+        bool BeginHContractSave(const std::string& stem, HContractStage stage)
+        {
+            if (!BeginHVerifiedSave(stem)) {
+                return false;
+            }
+            g_nextSaveRetryAt = Clock::now();
+            EnterHContract(stage);
+            return true;
+        }
+
+        bool PumpHContractSave(const std::string& stem)
+        {
+            const auto now = Clock::now();
+            if (IsHSaveWritten(stem)) {
+                return true;
+            }
+            if (now >= g_nextSaveRetryAt) {
+                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    mgr->Save(stem.c_str());
+                }
+                g_nextSaveRetryAt = now + kHSaveRetryDelay;
+            }
+            return false;
+        }
+
+        bool ScheduleHCheckpointRestore(const std::string& reason)
+        {
+            if (!g_hContract.checkpointSaved || g_hContract.restoreFinished) {
+                return false;
+            }
+            if (g_phase == Phase::ScenarioH_Contract && g_hContract.stage >= HContractStage::RestoreCheckpoint) {
+                return true;
+            }
+            g_hContract.finishReason = reason;
+            ReportMissingHChecks(reason);
+            ClearHNegativeArenaFixture(RE::PlayerCharacter::GetSingleton());
+            EnterPhase(Phase::ScenarioH_Contract);
+            EnterHContract(HContractStage::RestoreCheckpoint);
+            return true;
+        }
+
+        void AbortHContract(const std::string& reason)
+        {
+            g_runError = true;
+            LogInfo(reason);
+            FinishAndScheduleQuit(reason);
+        }
+
+        void StartHContractAfterCosave(RE::PlayerCharacter* player)
+        {
+            CloseHRun(player);
+            g_hContract.started = Clock::now();
+            EnterPhase(Phase::ScenarioH_Contract);
+            EnterHContract(HContractStage::ClosePriorRun);
+        }
+
+        bool IsHMapSpawn(const RE::Actor* actor, const MapPackRuntime::DungeonForms& forms)
+        {
+            if (!actor || (actor->GetFormID() >> 24) != 0xFF || actor->GetParentCell() != forms.cell ||
+                actor->IsDeleted() || actor->IsDisabled()) {
+                return false;
+            }
+            const auto* base = actor->GetBaseObject();
+            return base == forms.bossNpc || std::ranges::find(forms.packNpcs, base) != forms.packNpcs.end() ||
+                std::ranges::find(forms.addNpcs, base) != forms.addNpcs.end();
+        }
+
+        std::optional<std::vector<HMapSpawn>> ObserveHMapSpawns(const MapPackRuntime::DungeonForms& forms)
+        {
+            if (!forms.cell || !forms.cell->IsAttached()) {
+                return std::nullopt;
+            }
+            std::vector<HMapSpawn> spawns;
+            forms.cell->ForEachReference([&](RE::TESObjectREFR* reference) {
+                if (auto* actor = reference ? reference->As<RE::Actor>() : nullptr; IsHMapSpawn(actor, forms)) {
+                    spawns.push_back({ actor->GetFormID(), actor->GetBaseObject()->GetFormID(), actor->GetHandle(), actor->IsDead() });
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            std::ranges::sort(spawns, {}, &HMapSpawn::id);
+            return spawns;
+        }
+
+        bool HAllSpawnsBelongToRun(const std::vector<HMapSpawn>& spawns, const Core::ActiveMapState& run)
+        {
+            auto expected = Core::MapSystem::MapSpawnCleanupIds(run);
+            std::ranges::sort(expected);
+            return !spawns.empty() && std::ranges::equal(spawns, expected, {}, &HMapSpawn::id);
+        }
+
+        bool HHasPriorSpawn(const std::vector<HMapSpawn>& current, const std::vector<HMapSpawn>& prior)
+        {
+            return std::ranges::any_of(prior, [&](const HMapSpawn& old) {
+                const auto oldActor = old.handle.get();
+                return std::ranges::any_of(current, [&](const HMapSpawn& spawn) {
+                    if (spawn.id != old.id || spawn.base != old.base) {
+                        return false;
+                    }
+                    // A recycled FormID is acceptable if the handles distinguish the two references.
+                    const auto actor = spawn.handle.get();
+                    return !old.handle || !actor || actor.get() == oldActor.get();
+                });
+            });
+        }
+
+        bool HHasOtherNearbyHostile(RE::PlayerCharacter* player, const RE::Actor* boss)
+        {
+            bool found = false;
+            player->GetParentCell()->ForEachReference([&](RE::TESObjectREFR* ref) {
+                auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
+                if (actor && actor != boss && actor != player && !actor->IsDead() && !actor->IsDisabled() &&
+                    !actor->IsDeleted() && actor->IsHostileToActor(player) &&
+                    (actor->GetPosition() - player->GetPosition()).Length() <= kHOtherHostileRadius) {
+                    found = true;
+                    return RE::BSContainer::ForEachResult::kStop;
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            return found;
+        }
+
+        bool HAtSavedReturn(RE::PlayerCharacter* player, const Core::ActiveMapState& run)
+        {
+            if (!player || !player->GetParentCell()) {
+                return false;
+            }
+            if (player->GetParentCell()->IsInteriorCell()) {
+                return player->GetParentCell()->GetFormID() == run.returnCellFormId;
+            }
+            const auto* world = player->GetWorldspace();
+            const RE::NiPoint3 position{ run.returnPos[0], run.returnPos[1], run.returnPos[2] };
+            return world && world->GetFormID() == run.returnWorldspaceFormId &&
+                (player->GetPosition() - position).Length() <= MapDeviceRuntime::GetTravelArrivalRadius();
+        }
+
+        bool ApplyHFirebolt(RE::Actor* caster, RE::PlayerCharacter* player)
+        {
+            auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(kFireboltId);
+            auto* target = player->AsMagicTarget();
+            if (!spell || !target) {
+                return false;
+            }
+            // Feed the stock effect straight to AddTarget so projectile aim and travel time
+            // can't turn the magic damage trial into a different test.
+            for (auto* effect : spell->effects) {
+                const auto* base = effect ? effect->baseEffect : nullptr;
+                if (!base || !base->IsDetrimental() || base->data.primaryAV != RE::ActorValue::kHealth ||
+                    base->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kRecover)) {
+                    continue;
+                }
+                RE::MagicTarget::AddTargetData data{};
+                data.caster = caster;
+                data.magicItem = spell;
+                data.effect = effect;
+                data.magnitude = kHContractMagicMagnitude;
+                data.power = 1.0f;
+                data.castingSource = RE::MagicSystem::CastingSource::kInstant;
+                return target->AddTarget(data);
+            }
+            return false;
+        }
+
+        void BeginHDamageTrial(const Core::ActiveMapState& run)
+        {
+            auto& test = g_hContract;
+            test.damageRequests = 0;
+            test.magicEffectsAccepted = 0;
+            test.movedToBoss = false;
+            test.attackWindowStarted = -1.0;
+            test.firstDamageAt = {};
+            test.portalsBeforeDeath = run.portalsRemaining;
+            test.nextDamageAt = 0.0;
+            if (!CombatHooks::AreAllHooksInstalled()) {
+                const char* check = test.trial == HContractTrial::Portals ? kHLastPortalCheck :
+                    test.trial == HContractTrial::Arena ? kHArenaDeathCheck :
+                    test.trial == HContractTrial::Magic ? kHMagicBurstCheck : kHPhysicalBurstCheck;
+                Check(check, false, "Combat hook installation is incomplete; no lethal damage was attempted.");
+                EnterHContract(HContractStage::Close);
+                return;
+            }
+            EnterHContract(HContractStage::Damage);
+        }
+
+        void FailHCleanupCycle(const std::string& reason)
+        {
+            g_hContract.cleanupCycleOk = false;
+            LogInfo(std::format("H cleanup cycle {}: {}", g_hContract.cleanupCycles + 1, reason));
+        }
+
+        void AdvanceHCleanupCycle()
+        {
+            auto& test = g_hContract;
+            test.cleanupOk = test.cleanupOk && test.cleanupCycleOk;
+            test.priorCleanupSpawns = test.cleanupCycleOk ? std::move(test.cleanupSpawns) : std::vector<HMapSpawn>{};
+            test.lastCleanupRunId = test.runId;
+            ++test.cleanupCycles;
+            test.cleanupCycleOk = true;
+            test.cleanupSpawns.clear();
+            test.runId = 0;
+            if (test.cleanupCycles == kHCleanupCycles) {
+                Check(kHCleanupCheck, test.cleanupOk,
+                    std::format("{} cleanup cycles attempted; each must close, reset and show no active actors after reattachment.",
+                        test.cleanupCycles));
+                EnterHContract(HContractStage::RoutePrepare);
+            } else {
+                EnterHContract(HContractStage::Open);
+            }
+        }
+
+        void RecoverHCleanupCycle(const std::string& reason)
+        {
+            FailHCleanupCycle(reason);
+            if (!RequestLoadSave(g_hContract.checkpointStem)) {
+                AbortHContract("H cleanup recovery load could not be requested.");
+                return;
+            }
+            EnterHContract(HContractStage::RecoverCleanup);
+        }
+
+        void RecordHRouteSpot(bool ok, std::string_view reason, bool awaitRecovery = false)
+        {
+            auto& test = g_hContract;
+            const auto& spot = test.route[test.routeIndex];
+            LogInfo(std::format("H route {} {} 0x{:06X} offset={:+.0f}: {} ({}; startZ={:.1f}, minZ={:.1f}, samples={})",
+                spot.dungeon->key, spot.exitId ? "exit" : "boss", spot.exitId, spot.exitOffset,
+                ok ? "PASS" : "FAIL", reason, spot.position.z, test.lowestZ, test.routeHeightSamples));
+            if (ok) {
+                ++(spot.exitId ? test.exitSpotsPassed : test.bossSpotsPassed);
+            }
+            test.routeRecoveryZ.reset();
+            test.routeRecoveryStableSec = 0.0;
+            ++test.routeIndex;
+            EnterHContract(awaitRecovery ? HContractStage::RouteRecover : HContractStage::RouteStart);
+        }
+
+        void TickHContract(bool paused, double deltaSec)
+        {
+            auto& test = g_hContract;
+            using Stage = HContractStage;
+            using Trial = HContractTrial;
+            const auto now = Clock::now();
+            const double elapsed = std::chrono::duration<double>(now - test.stageStarted).count();
+            const double travelSec = HContractTravelSec();
+            const double contractBudgetSec = std::max(kHContractBaseBudgetSec, travelSec * kHContractLongTravelBudgetMultiplier);
+            if (test.stage >= Stage::ClosePriorRun && test.stage < Stage::RestoreCheckpoint &&
+                std::chrono::duration<double>(now - test.started).count() >= contractBudgetSec) {
+                AbortHContract("H contract exceeded its time budget.");
+                return;
+            }
+
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const auto run = MapDeviceRuntime::GetActiveMapStateCopy();
+            const bool ready = player && !paused && IsPlayerReadyInWorld() && !travel.kind && !player->IsDead();
+            const bool outside = ready && !travel.inPackCell;
+            const auto& manifest = MapPackRuntime::Manifest();
+            const auto* dungeon = test.trial == Trial::Arena ? &manifest.arena : manifest.ForTier(kHRegressionMapTier);
+            const auto* forms = MapPackRuntime::FindForms(dungeon);
+            const bool entered = ready && forms && player->GetParentCell() == forms->cell &&
+                run.active && MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const bool failedTrial = test.trial == Trial::Portals || test.trial == Trial::Arena;
+            const auto failTrial = [&](const std::string& reason) {
+                if (test.trial == Trial::Cleanup) {
+                    FailHCleanupCycle(reason);
+                    EnterHContract(Stage::Close);
+                } else {
+                    AbortHContract(reason);
+                }
+            };
+
+            switch (test.stage) {
+            case Stage::PrepareCheckpoint:
+                if (outside && !run.active) {
+                    const auto stem = FindUnusedHCheckpointStem();
+                    if (!stem || !BeginHContractSave(*stem, Stage::SaveCheckpoint)) {
+                        AbortHContract("H could not allocate an unused checkpoint save name.");
+                        break;
+                    }
+                    test.checkpointStem = *stem;
+                    test.checkpoint = ObserveHCheckpoint(player);
+                } else if (elapsed >= travelSec) {
+                    AbortHContract("H could not confirm a ready player outside any map run before checkpoint creation.");
+                }
+                break;
+
+            case Stage::SaveCheckpoint:
+                if (PumpHContractSave(test.checkpointStem)) {
+                    test.checkpointSaved = true;
+                    LogInfo(std::format("H pre-scenario checkpoint written: {}.", test.checkpointStem));
+                    EnterPhase(Phase::ScenarioH_Start);
+                } else if (elapsed >= kHSaveWaitSec) {
+                    AbortHContract("H checkpoint save/co-save did not reach disk.");
+                }
+                break;
+
+            case Stage::ClosePriorRun:
+                if (outside && !run.active) {
+                    if (!MoveToHOrigin(player, kHOutdoorStartMarker)) {
+                        AbortHContract("H contract could not move to the outdoor probe.");
+                        break;
+                    }
+                    EnterHContract(Stage::OutdoorProbe);
+                } else if (elapsed >= travelSec) {
+                    AbortHContract("H contract could not confirm closure of the H7 run.");
+                } else if (ready) {
+                    CloseHRun(player);
+                }
+                break;
+
+            case Stage::OutdoorProbe:
+                if (outside && AtHOrigin(player, kHOutdoorStartMarker, true) && !run.active) {
+                    test.openWorldRejected = !MapDeviceRuntime::WouldInterceptLethalHit(
+                        true, kHContractLowHealth, kHContractLowHealth, g_queue->CurrentGeneration());
+                    if (!MoveToHOrigin(player, kHIndoorStartMarker)) {
+                        AbortHContract("H contract could not move to its indoor origin.");
+                        break;
+                    }
+                    EnterHContract(Stage::IndoorOrigin);
+                } else if (elapsed >= kHOriginWaitSec) {
+                    AbortHContract("H contract could not confirm the outdoor probe position.");
+                }
+                break;
+
+            case Stage::IndoorOrigin:
+                if (outside && AtHOrigin(player, kHIndoorStartMarker, false)) {
+                    EnterHContract(Stage::Open);
+                } else if (elapsed >= kHOriginWaitSec) {
+                    AbortHContract("H contract could not confirm its indoor origin.");
+                }
+                break;
+
+            case Stage::Open: {
+                if (!forms || elapsed >= travelSec) {
+                    failTrial("H contract could not prepare the next map or arena entry.");
+                    break;
+                }
+                if (!outside || run.active || MapDeviceRuntime::GetCellResetStatus(forms->cellId).pending) {
+                    break;
+                }
+                if (player->IsInCombat()) {
+                    player->StopCombat();
+                    break;
+                }
+                test.runId = 0;
+                test.reentering = false;
+                test.resetCompletedBefore = MapDeviceRuntime::GetCellResetStatus(forms->cellId).completed;
+                MapActionResult result;
+                if (test.trial == Trial::Arena) {
+                    auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+                    if (!tribute) {
+                        AbortHContract("H contract arena tribute form was unavailable.");
+                        break;
+                    }
+                    SaveLoad::UpdateState([](PersistentState& state) {
+                        state.tree.ascendancyMilestonesBitmask =
+                            (state.tree.ascendancyMilestonesBitmask | Core::kArena4PrerequisiteMask) &
+                            ~Core::kArena4MilestoneBit;
+                    });
+                    const auto baseline = MapDeviceRuntime::CountPlayerTributes(player);
+                    player->AddObjectToContainer(tribute, nullptr, 1, nullptr);
+                    test.tributeBefore = MapDeviceRuntime::CountPlayerTributes(player);
+                    if (test.tributeBefore != baseline + 1) {
+                        AbortHContract("H contract could not add exactly one arena tribute.");
+                        break;
+                    }
+                    result = MapDeviceRuntime::OpenArena4(player);
+                } else {
+                    result = OpenHMap(player, kHRegressionMapTier, false);
+                }
+                if (!result.ok) {
+                    failTrial(std::format("H contract entry was rejected: {}", result.message));
+                    break;
+                }
+                EnterHContract(Stage::Entry);
+                break;
+            }
+
+            case Stage::Entry: {
+                if (!entered || !run.bossRefFormId || run.spawnedRefFormIds.empty()) {
+                    if (elapsed >= travelSec) {
+                        failTrial("H contract did not reach an authorized, populated map or arena.");
+                    }
+                    break;
+                }
+                const auto expected = run.isArena4 ? 0u :
+                    kHExpectedPortalSequence[test.trial == Trial::Portals ? test.entryCount : test.reentering ? 1u : 0u];
+                if (run.isArena4 != (test.trial == Trial::Arena) || run.portalsRemaining != expected ||
+                    run.failed || run.bossKilled ||
+                    (test.reentering && run.runId != test.runId)) {
+                    failTrial(std::format("H contract entry state mismatch: run={}, portals={}/{}.",
+                        run.runId, run.portalsRemaining, expected));
+                    break;
+                }
+                test.runId = run.runId;
+                test.enteredRun = run;
+                if (test.trial == Trial::Cleanup) {
+                    const auto spawns = ObserveHMapSpawns(*forms);
+                    if (!spawns) {
+                        if (elapsed >= travelSec) {
+                            failTrial("H cleanup could not observe the attached populated cell.");
+                        }
+                        break;
+                    }
+                    if (test.reentering) {
+                        Check(kHReentrySpawnsCheck, *spawns == test.spawnsBeforeReturn,
+                            std::format("Active actors (including corpses) before/after reentry={}/{}.",
+                                test.spawnsBeforeReturn.size(), spawns->size()));
+                        EnterHContract(Stage::Close);
+                    } else {
+                        const bool priorActorSurvived = HHasPriorSpawn(*spawns, test.priorCleanupSpawns);
+                        const bool onlyCurrent = run.runId != test.lastCleanupRunId && !priorActorSurvived && HAllSpawnsBelongToRun(*spawns, run);
+                        if (test.cleanupCycles == 1) {
+                            Check(kHFreshRunCheck, onlyCurrent && !test.priorCleanupSpawns.empty(),
+                                std::format("Run {} -> {}, prior actors={}, current actors={}, prior actor survived={}; registration matched={}",
+                                    test.lastCleanupRunId, run.runId, test.priorCleanupSpawns.size(), spawns->size(), priorActorSurvived,
+                                    HAllSpawnsBelongToRun(*spawns, run)));
+                        }
+                        test.cleanupSpawns = *spawns;
+                        if (!onlyCurrent) {
+                            failTrial("H cleanup found missing or foreign-run actors in the cell.");
+                            break;
+                        }
+                        if (test.cleanupCycles != 0) {
+                            EnterHContract(Stage::Close);
+                            break;
+                        }
+                        const auto pack = spawns->size() - 1;
+                        if (pack < 2 || std::ranges::any_of(*spawns, &HMapSpawn::dead)) {
+                            failTrial("H cleanup needs a living boss and at least two living pack actors.");
+                            break;
+                        }
+                        test.expectedCorpses = pack / 2;
+                        auto remaining = test.expectedCorpses;
+                        for (const auto& spawn : *spawns) {
+                            if (remaining && spawn.id != run.bossRefFormId) {
+                                if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(spawn.id)) {
+                                    actor->KillImmediate();
+                                    --remaining;
+                                }
+                            }
+                        }
+                        EnterHContract(Stage::PartialKill);
+                    }
+                    break;
+                }
+                if (test.trial != Trial::Portals) {
+                    if (test.trial == Trial::Arena && MapDeviceRuntime::CountPlayerTributes(player) != test.tributeBefore - 1) {
+                        AbortHContract("H arena entry did not consume one tribute.");
+                        break;
+                    }
+                    BeginHDamageTrial(run);
+                    break;
+                }
+                ++test.entryCount;
+                LogInfo(std::format("H portal entry {}: {} remaining, run={}.", test.entryCount, run.portalsRemaining, run.runId));
+                if (test.entryCount == 1) {
+                    const auto generation = g_queue->CurrentGeneration();
+                    const bool disabled = MapDeviceRuntime::WouldInterceptLethalHit(
+                        false, kHContractLowHealth, kHContractLowHealth, generation);
+                    const bool enabled = MapDeviceRuntime::WouldInterceptLethalHit(
+                        true, kHContractLowHealth, kHContractLowHealth, generation);
+                    Check(kHIniOffCheck, !disabled && enabled,
+                        std::format("Authorized cell: setting off={}, same position with setting on={}.", disabled, enabled));
+                    test.openWorldRejected = test.openWorldRejected && enabled;
+                }
+                if (test.entryCount == kHExpectedPortalSequence.size()) {
+                    test.lastPortalSave = MapDeviceRuntime::TakeSnapshotForSave();
+                    if (!BeginHContractSave(g_cfg.tempSave, Stage::SaveLastPortal)) {
+                        AbortHContract("H could not observe the last-portal save files before writing.");
+                    }
+                } else if (const auto result = MapDeviceRuntime::ReturnPortal(player); result.ok) {
+                    EnterHContract(Stage::Return);
+                } else {
+                    AbortHContract(std::format("H normal return was rejected: {}", result.message));
+                }
+                break;
+            }
+
+            case Stage::PartialKill: {
+                if (!entered || !forms) {
+                    failTrial("H partial kill lost the authorized map.");
+                    break;
+                }
+                auto spawns = ObserveHMapSpawns(*forms);
+                if (spawns && HAllSpawnsBelongToRun(*spawns, run) &&
+                    static_cast<std::size_t>(std::ranges::count(*spawns, true, &HMapSpawn::dead)) == test.expectedCorpses &&
+                    std::ranges::none_of(*spawns, [&](const HMapSpawn& spawn) {
+                        return spawn.dead && spawn.id == run.bossRefFormId;
+                    })) {
+                    test.spawnsBeforeReturn = std::move(*spawns);
+                    const auto result = MapDeviceRuntime::ReturnPortal(player);
+                    if (result.ok) {
+                        EnterHContract(Stage::Return);
+                    } else {
+                        failTrial(std::format("H preservation return was rejected: {}", result.message));
+                    }
+                } else if (elapsed >= kMapBossKillWaitSec) {
+                    failTrial("H preservation could not confirm the partial pack kill.");
+                }
+                break;
+            }
+
+            case Stage::Return:
+                if (outside && HAtSavedReturn(player, test.enteredRun) && run.active && run.runId == test.runId &&
+                    !run.failed && run.portalsRemaining == test.enteredRun.portalsRemaining) {
+                    if (test.trial == Trial::Portals) {
+                        ++test.normalReturns;
+                        if (test.normalReturns == 1) {
+                            const bool intercepted = MapDeviceRuntime::WouldInterceptLethalHit(
+                                true, kHContractLowHealth, kHContractLowHealth, g_queue->CurrentGeneration());
+                            Check(kHOpenWorldCheck, test.openWorldRejected && !intercepted,
+                                std::format("Inactive and authorized-cell controls passed={}, open run outside intercepted={}.",
+                                    test.openWorldRejected, intercepted));
+                        }
+                        if (test.normalReturns == kHExpectedPortalSequence.size() - 1) {
+                            Check(kHNormalReturnCheck, true,
+                                std::format("{} normal returns preserved the active run and its portal count.", test.normalReturns));
+                        }
+                    }
+                    EnterHContract(Stage::Reenter);
+                } else if (elapsed >= travelSec) {
+                    failTrial(std::format("H normal return did not preserve the run and its {} portals (observed {}).",
+                        test.enteredRun.portalsRemaining, run.portalsRemaining));
+                }
+                break;
+
+            case Stage::Reenter:
+                if (elapsed >= kHCombatStopWaitSec) {
+                    failTrial("H reentry could not clear combat.");
+                } else if (outside && !player->IsInCombat()) {
+                    const auto result = MapDeviceRuntime::ReenterActiveMap(player);
+                    if (result.ok) {
+                        test.reentering = true;
+                        EnterHContract(Stage::Entry);
+                    } else {
+                        failTrial(std::format("H positive reentry was rejected: {}", result.message));
+                    }
+                } else if (outside) {
+                    player->StopCombat();
+                }
+                break;
+
+            case Stage::SaveLastPortal:
+                if (PumpHContractSave(g_cfg.tempSave)) {
+                    if (!MoveToHOrigin(player, kHIndoorStartMarker)) {
+                        AbortHContract("H could not step outside the active zero-portal run.");
+                        break;
+                    }
+                    EnterHContract(Stage::ExhaustedReentry);
+                } else if (elapsed >= kHSaveWaitSec) {
+                    AbortHContract("H last-portal save/co-save did not reach disk.");
+                }
+                break;
+
+            case Stage::ExhaustedReentry:
+                if (outside && !player->IsInCombat() && AtHOrigin(player, kHIndoorStartMarker, false)) {
+                    if (run.active && run.runId == test.runId && run.portalsRemaining == 0 && !run.failed) {
+                        const auto rejected = MapDeviceRuntime::ReenterActiveMap(player);
+                        test.zeroPortalRejected = !rejected.ok && rejected.entryDenial == MapEntryDenial::NoPortals &&
+                            !MapDeviceRuntime::GetTravelStatus(player).kind;
+                    }
+                } else if (elapsed < travelSec) {
+                    if (outside && player->IsInCombat()) {
+                        player->StopCombat();
+                    }
+                    break;
+                }
+                Check(kHPortalCheck, test.entryCount == kHExpectedPortalSequence.size() && test.zeroPortalRejected,
+                    std::format("Entries={}, zero-portal reentry rejected while the run was active={}.", test.entryCount, test.zeroPortalRejected));
+                if (RequestLoadSave(g_cfg.tempSave)) {
+                    EnterHContract(Stage::LoadLastPortal);
+                } else {
+                    AbortHContract("H last-portal reload request failed.");
+                }
+                break;
+
+            case Stage::LoadLastPortal: {
+                bool loaded = false;
+                bool failed = false;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    loaded = g_postLoadSignaled && g_postLoadSucceeded;
+                    failed = g_postLoadSignaled && !g_postLoadSucceeded;
+                }
+                const auto& saved = test.lastPortalSave;
+                const auto versions = SaveLoad::GetLoadedMapRecordVersions();
+                if (loaded && entered && saved.playerAuthorized && run.runId == saved.runId && run.portalsRemaining == 0 &&
+                    run.dungeonKey == saved.dungeonKey && !run.bossKilled && !run.failed &&
+                    run.bossRefFormId == saved.bossRefFormId && run.returnCellFormId == saved.returnCellFormId &&
+                    run.returnWorldspaceFormId == saved.returnWorldspaceFormId &&
+                    run.returnPos == saved.returnPos && run.returnAngle == saved.returnAngle && versions.maps == SaveLoad::kMapsVersion) {
+                    test.resetCompletedBefore = MapDeviceRuntime::GetCellResetStatus(forms->cellId).completed;
+                    test.enteredRun = run;
+                    BeginHDamageTrial(run);
+                } else if (failed || elapsed >= kHReloadWaitSec) {
+                    AbortHContract("H reload did not restore the authorized last-portal run and its return target.");
+                }
+                break;
+            }
+
+            case Stage::Damage: {
+                if (MapDeviceRuntime::IsDeathEscapeInFlight() && test.damageRequests != 0) {
+                    test.deathMarkedFailed = run.failed;
+                    EnterHContract(Stage::DeathReturn);
+                    break;
+                }
+                if (!player || player->IsDead() ||
+                    (test.attackWindowStarted < 0.0 ? elapsed >= kMapBossLoadWaitSec :
+                        elapsed - test.attackWindowStarted >= kHDeathTriggerWaitSec)) {
+                    AbortHContract(std::format("H lethal damage did not trigger the escape (requests={}, effects accepted={}).",
+                        test.damageRequests, test.magicEffectsAccepted));
+                    break;
+                }
+                if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    AbortHContract("H death escape was already in flight before the test's first hit.");
+                    break;
+                }
+                if (!entered || elapsed < test.nextDamageAt) {
+                    break;
+                }
+                auto* boss = RE::TESForm::LookupByID<RE::Actor>(run.bossRefFormId);
+                if (!boss || boss->IsDead()) {
+                    break;
+                }
+                if (!boss->Is3DLoaded()) {
+                    if (!test.movedToBoss) {
+                        player->MoveTo(boss);
+                        test.movedToBoss = true;
+                    }
+                    break;
+                }
+                auto* av = player->AsActorValueOwner();
+                if (!av) {
+                    break;
+                }
+                if (!failedTrial && HHasOtherNearbyHostile(player, boss)) {
+                    Check(test.trial == Trial::Magic ? kHMagicBurstCheck : kHPhysicalBurstCheck, false,
+                        "Another hostile actor was within the test's isolation radius; no lethal damage was applied on this tick.");
+                    EnterHContract(Stage::Close);
+                    break;
+                }
+                if (test.attackWindowStarted < 0.0) {
+                    test.attackWindowStarted = elapsed;
+                }
+                if (g_esPool) {
+                    g_esPool->Clear();
+                }
+                if (g_skillSystem) {
+                    (void)g_skillSystem->TickGuardShield(kHOriginWaitSec, false);
+                }
+                const float hp = av->GetActorValue(RE::ActorValue::kHealth);
+                if (hp > kHContractLowHealth) {
+                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, kHContractLowHealth - hp);
+                }
+                if (test.damageRequests == 0) {
+                    const bool magic = test.trial == Trial::Magic;
+                    test.deathRequestsBefore = MapDeviceRuntime::GetDeathEscapeRequestCount();
+                    test.deathClampsBefore = CombatHooks::GetMapDeathDamageClampCount(magic);
+                    test.deathRepeatClampsBefore = CombatHooks::GetMapDeathRepeatClampCount(magic);
+                    test.firstDamageAt = Clock::now();
+                }
+                // Keep delivery in one tick so the main queue cannot drain between repeated hits.
+                const unsigned hits = failedTrial ? 1u : kHDeathBurstHits;
+                for (unsigned i = 0; i < hits && !player->IsDead(); ++i) {
+                    ++test.damageRequests;
+                    if (test.trial == Trial::Magic) {
+                        test.magicEffectsAccepted += ApplyHFirebolt(boss, player) ? 1u : 0u;
+                    } else {
+                        CallDealDamage(boss, player, nullptr, false);
+                    }
+                }
+                if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    test.deathMarkedFailed = MapDeviceRuntime::GetActiveMapStateCopy().failed;
+                    EnterHContract(Stage::DeathReturn);
+                }
+                test.nextDamageAt = elapsed + kHBossHitIntervalSec;
+                break;
+            }
+
+            case Stage::DeathReturn: {
+                const bool returned = outside && !MapDeviceRuntime::IsDeathEscapeInFlight();
+                if (!returned && elapsed < travelSec) {
+                    break;
+                }
+                if (test.trial == Trial::Portals && returned && player->IsInCombat() && elapsed < travelSec) {
+                    player->StopCombat();
+                    break;
+                }
+                const auto acceptance = MapDeviceRuntime::GetLastDeathEscapeRequest();
+                const auto requests = acceptance.count - test.deathRequestsBefore;
+                const bool magic = test.trial == Trial::Magic;
+                const auto clamped = CombatHooks::GetMapDeathDamageClampCount(magic) - test.deathClampsBefore;
+                const auto repeats = CombatHooks::GetMapDeathRepeatClampCount(magic) - test.deathRepeatClampsBefore;
+                const bool acceptedTestAttack = test.damageRequests != 0 && acceptance.acceptedAt >= test.firstDamageAt &&
+                    acceptance.attackerId == test.enteredRun.bossRefFormId;
+                const bool sameOrigin = HAtSavedReturn(player, test.enteredRun);
+                const bool ok = returned && sameOrigin && requests == 1 && acceptedTestAttack &&
+                    (failedTrial ? clamped >= 1 : repeats >= 1) && test.deathMarkedFailed == failedTrial &&
+                    (failedTrial ? !run.active : run.active && run.runId == test.runId &&
+                        run.portalsRemaining == test.portalsBeforeDeath && !run.failed);
+                const auto detail = std::format("damage requests={}, effects accepted={}, damage clamped={}, repeat clamps={}, escape requests={}, test attack accepted={}, failed={}, active={}, portals={}/{}, returned={}, origin={}",
+                    test.damageRequests, test.magicEffectsAccepted, clamped, repeats, requests, acceptedTestAttack, test.deathMarkedFailed, run.active,
+                    run.portalsRemaining, test.portalsBeforeDeath, returned, sameOrigin);
+                if (test.trial == Trial::Portals) {
+                    Check(kHLastPortalCheck, ok, detail);
+                } else if (test.trial == Trial::Arena) {
+                    const bool milestoneLocked =
+                        (SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) == 0;
+                    const auto tributes = MapDeviceRuntime::CountPlayerTributes(player);
+                    Check(kHArenaDeathCheck, ok && milestoneLocked && tributes == test.tributeBefore - 1,
+                        std::format("{}; fourth milestone locked={}, tributes={} (before entry {}).",
+                            detail, milestoneLocked, tributes, test.tributeBefore));
+                } else {
+                    Check(magic ? kHMagicBurstCheck : kHPhysicalBurstCheck, ok, detail);
+                }
+                if (!returned || (failedTrial && run.active)) {
+                    AbortHContract("H death return did not leave a usable outside-map state.");
+                } else {
+                    RestorePlayerVitals(player, true, true);
+                    EnterHContract(Stage::Close);
+                }
+                break;
+            }
+
+            case Stage::Close:
+                if (outside && !run.active) {
+                    if (test.trial == Trial::Cleanup && !test.runId) {
+                        AdvanceHCleanupCycle();
+                    } else {
+                        EnterHContract(Stage::Reset);
+                    }
+                } else if (elapsed >= travelSec) {
+                    if (test.trial == Trial::Cleanup) {
+                        RecoverHCleanupCycle("Could not close the trial run; restoring a usable outside-map state.");
+                    } else {
+                        AbortHContract("H contract could not close the trial run.");
+                    }
+                } else if (ready) {
+                    CloseHRun(player);
+                }
+                break;
+
+            case Stage::Reset: {
+                if (!outside || run.active) {
+                    if (elapsed >= kHContractResetSec) {
+                        if (test.trial == Trial::Cleanup) {
+                            RecoverHCleanupCycle("Lost outside-map state during reset.");
+                        } else {
+                            AbortHContract("H contract lost the outside-map position during the cell reset.");
+                        }
+                    }
+                    break;
+                }
+                if (!forms) {
+                    if (test.trial == Trial::Cleanup) {
+                        RecoverHCleanupCycle("The cleanup cell is unavailable for reset and reattachment.");
+                    } else {
+                        AbortHContract("The trial cell is unavailable for reset.");
+                    }
+                    break;
+                }
+                const auto reset = MapDeviceRuntime::GetCellResetStatus(forms->cellId);
+                if (reset.pending || reset.completed <= test.resetCompletedBefore) {
+                    if (elapsed >= kHContractResetSec) {
+                        if (test.trial == Trial::Cleanup) {
+                            RecoverHCleanupCycle("No completed Reset callback; prior actor state remains unverified.");
+                        } else {
+                            AbortHContract("H contract did not receive the closed cell's Reset callback.");
+                        }
+                    }
+                    break;
+                }
+                switch (test.trial) {
+                case Trial::Portals: test.trial = Trial::Arena; break;
+                case Trial::Arena: test.trial = Trial::Physical; break;
+                case Trial::Physical: test.trial = Trial::Magic; break;
+                case Trial::Magic:
+                    test.trial = Trial::Cleanup;
+                    test.runId = 0;
+                    break;
+                case Trial::Cleanup:
+                    test.cleanupReattachedAt.reset();
+                    player->MoveTo(forms->entryMarker);
+                    EnterHContract(Stage::VerifyEmptyCell);
+                    break;
+                }
+                if (test.stage == Stage::Reset) {
+                    EnterHContract(Stage::Open);
+                }
+                break;
+            }
+
+            case Stage::VerifyEmptyCell:
+                if (ready && !run.active && player->GetParentCell() == forms->cell && forms->cell->IsAttached()) {
+                    if (!test.cleanupReattachedAt) {
+                        test.cleanupReattachedAt = now;
+                    }
+                    if (std::chrono::duration<double>(now - *test.cleanupReattachedAt).count() >= kHSpawnSettleSec) {
+                        const auto residual = ObserveHMapSpawns(*forms);
+                        if (!residual) {
+                            test.cleanupReattachedAt.reset();
+                            break;
+                        }
+                        if (!residual->empty()) {
+                            FailHCleanupCycle(std::format("{} active actors remained in the reattached cell.", residual->size()));
+                        } else {
+                            LogInfo(std::format("H cleanup cycle {}/{}: attached cell observed with zero active actors after Reset.",
+                                test.cleanupCycles + 1, kHCleanupCycles));
+                        }
+                        CloseHRun(player);
+                        EnterHContract(Stage::LeaveVerifiedCell);
+                        break;
+                    }
+                } else {
+                    test.cleanupReattachedAt.reset();
+                }
+                if (elapsed >= travelSec) {
+                    RecoverHCleanupCycle("Could not confirm cell reattachment; active residuals remain unverified.");
+                }
+                break;
+
+            case Stage::LeaveVerifiedCell:
+                if (outside && !run.active) {
+                    AdvanceHCleanupCycle();
+                } else if (elapsed >= travelSec) {
+                    RecoverHCleanupCycle("Could not leave the reattached cell.");
+                } else if (ready) {
+                    CloseHRun(player);
+                }
+                break;
+
+            case Stage::RecoverCleanup: {
+                bool loaded = false;
+                bool failed = false;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    loaded = g_postLoadSignaled && g_postLoadSucceeded;
+                    failed = g_postLoadSignaled && !g_postLoadSucceeded;
+                }
+                if (loaded && outside && !run.active) {
+                    test.runId = 0;
+                    AdvanceHCleanupCycle();
+                } else if (failed || elapsed >= kHReloadWaitSec) {
+                    AbortHContract("H cleanup recovery load failed; attempting final checkpoint restoration.");
+                }
+                break;
+            }
+
+            case Stage::RoutePrepare: {
+                if (!ready) {
+                    if (elapsed >= travelSec) {
+                        AbortHContract("H route setup could not obtain a ready player.");
+                    }
+                    break;
+                }
+                std::vector<const Core::MapDungeonDef*> dungeons;
+                for (const auto& map : manifest.maps) {
+                    dungeons.push_back(&map);
+                }
+                dungeons.push_back(&manifest.arena);
+                for (const auto& [key, expectedExits] : kHExpectedAutoExits) {
+                    const auto found = std::ranges::find_if(dungeons, [key](const auto* dungeon) { return dungeon->key == key; });
+                    const auto* routeForms = found == dungeons.end() ? nullptr : MapPackRuntime::FindForms(*found);
+                    if (!routeForms || !routeForms->bossAnchor || !routeForms->entryMarker) {
+                        LogInfo(std::format("H route markers missing for {}.", key));
+                        test.exitCountsMatch = false;
+                        continue;
+                    }
+                    const auto* routeDungeon = *found;
+                    test.exitCountsMatch = test.exitCountsMatch && routeDungeon->autoExits.size() == expectedExits;
+                    test.route.push_back({ routeDungeon, routeForms->bossAnchor->GetPosition(), 0, 0.0f });
+                    for (const auto& exit : routeDungeon->autoExits) {
+                        for (float offset : { 0.0f, kHRouteExitOffset, -kHRouteExitOffset }) {
+                            test.route.push_back({ routeDungeon, {
+                                exit.position[0] + std::sin(exit.rotationZ) * offset,
+                                exit.position[1] + std::cos(exit.rotationZ) * offset,
+                                exit.position[2] }, exit.localId, offset });
+                        }
+                    }
+                    LogInfo(std::format("H route {}: automatic exits={}/{}.", key, routeDungeon->autoExits.size(), expectedExits));
+                }
+                g_hRouteGodModeBefore = RE::PlayerCharacter::IsGodMode();
+                player->SetGodMode(true);
+                if (!RE::PlayerCharacter::IsGodMode()) {
+                    Check(kHBossRouteCheck, false, "God mode could not be verified before the boss landing probes.");
+                    Check(kHExitRouteCheck, false, "God mode could not be verified before the exit landing probes.");
+                    EnterHContract(Stage::CloseRoutes);
+                } else {
+                    EnterHContract(Stage::RouteStart);
+                }
+                break;
+            }
+
+            case Stage::RouteStart: {
+                if (test.routeIndex == test.route.size()) {
+                    constexpr auto expectedBosses = kHExpectedAutoExits.size();
+                    constexpr auto expectedExitProbes = [] {
+                        std::size_t total = 0;
+                        for (const auto& dungeon : kHExpectedAutoExits) {
+                            total += dungeon.second * kHRouteProbesPerExit;
+                        }
+                        return total;
+                    }();
+                    Check(kHBossRouteCheck, test.bossSpotsPassed == expectedBosses,
+                        std::format("Boss anchor placements passed {}/{}.", test.bossSpotsPassed, expectedBosses));
+                    Check(kHExitRouteCheck, test.exitCountsMatch && test.exitSpotsPassed == expectedExitProbes,
+                        std::format("Automatic exit placements passed {}/{}; per-dungeon exit counts matched={}.",
+                            test.exitSpotsPassed, expectedExitProbes, test.exitCountsMatch));
+                    EnterHContract(Stage::CloseRoutes);
+                    break;
+                }
+                const auto& spot = test.route[test.routeIndex];
+                const auto* routeForms = MapPackRuntime::FindForms(spot.dungeon);
+                if (!ready) {
+                    if (elapsed >= travelSec) {
+                        AbortHContract("H route could not recover a ready player between placements.");
+                    }
+                    break;
+                }
+                if (!spot.exitId || player->GetParentCell() != routeForms->cell) {
+                    player->MoveTo(routeForms->entryMarker);
+                }
+                EnterHContract(Stage::RouteEntry);
+                break;
+            }
+
+            case Stage::RouteEntry: {
+                const auto& spot = test.route[test.routeIndex];
+                const auto* routeForms = MapPackRuntime::FindForms(spot.dungeon);
+                const bool inCell = ready && player->GetParentCell() == routeForms->cell;
+                const bool atEntry = inCell &&
+                    (player->GetPosition() - routeForms->entryMarker->GetPosition()).Length() <=
+                        MapDeviceRuntime::GetTravelArrivalRadius();
+                if (inCell && (spot.exitId || atEntry)) {
+                    test.fallRecoveryBefore = MapDeviceRuntime::GetFallRecoveryCount();
+                    test.lowestZ = spot.position.z;
+                    test.routeArrivalSeen = false;
+                    test.routeHeightSamples = 0;
+                    test.routeObservedSec = 0.0;
+                    if (!MapDeviceRuntime::MovePlayerToSpace(player, routeForms->cell, nullptr, spot.position, player->GetAngle())) {
+                        RecordHRouteSpot(false, "placement request rejected");
+                    } else {
+                        EnterHContract(Stage::RouteObserve);
+                    }
+                } else if (elapsed >= travelSec) {
+                    RecordHRouteSpot(false, "entry marker not reached");
+                }
+                break;
+            }
+
+            case Stage::RouteObserve: {
+                const auto& spot = test.route[test.routeIndex];
+                const auto* routeForms = MapPackRuntime::FindForms(spot.dungeon);
+                if (travel.kind || MapDeviceRuntime::GetFallRecoveryCount() != test.fallRecoveryBefore) {
+                    RecordHRouteSpot(false, "fall recovery intervened", true);
+                    break;
+                }
+                if (ready) {
+                    if (player->GetParentCell() != routeForms->cell) {
+                        RecordHRouteSpot(false, "cell changed during placement", true);
+                        break;
+                    }
+                    const auto pos = player->GetPosition();
+                    if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) {
+                        RecordHRouteSpot(false, "non-finite player position");
+                        break;
+                    }
+                    const auto dx = pos.x - spot.position.x;
+                    const auto dy = pos.y - spot.position.y;
+                    const bool closeXY = std::hypot(dx, dy) <= kHRouteArrivalXY;
+                    if (!test.routeArrivalSeen && closeXY && pos.z <= spot.position.z + kHRouteArrivalAbove) {
+                        test.routeArrivalSeen = true;
+                    }
+                    if (test.routeArrivalSeen) {
+                        ++test.routeHeightSamples;
+                        test.lowestZ = std::min(test.lowestZ, pos.z);
+                        if (std::isfinite(deltaSec) && deltaSec > 0.0) {
+                            test.routeObservedSec += deltaSec;
+                        }
+                    }
+                    if (spot.position.z - test.lowestZ > kHRouteMaxDrop) {
+                        RecordHRouteSpot(false, "fell more than 300 units", true);
+                        break;
+                    }
+                    if (test.routeHeightSamples >= kHRouteMinHeightSamples && test.routeObservedSec >= kHRouteObserveSec) {
+                        RecordHRouteSpot(true, "placement reached and observed");
+                        break;
+                    }
+                }
+                if (elapsed >= kHRouteProbeSec) {
+                    RecordHRouteSpot(false, "placement or observation timed out");
+                }
+                break;
+            }
+
+            case Stage::RouteRecover: {
+                const auto* priorDungeon = test.route[test.routeIndex - 1].dungeon;
+                const auto* priorForms = MapPackRuntime::FindForms(priorDungeon);
+                const auto settings = MapDeviceRuntime::GetTravelSettings();
+                if (ready) {
+                    constexpr float kStableZTolerance = 1.0f;
+                    const auto pos = player->GetPosition();
+                    const bool atEntry = (pos - priorForms->entryMarker->GetPosition()).Length() <= settings.arrivalRadius;
+                    const bool recoveryTriggered = MapDeviceRuntime::GetFallRecoveryCount() != test.fallRecoveryBefore;
+                    const bool validZ = std::isfinite(pos.z) && pos.z >= priorDungeon->navmeshMinZ - settings.fallMargin;
+                    const bool stableZ = test.routeRecoveryZ && std::abs(pos.z - *test.routeRecoveryZ) <= kStableZTolerance;
+                    test.routeRecoveryZ = pos.z;
+                    if (!recoveryTriggered && validZ && stableZ && std::isfinite(deltaSec) && deltaSec > 0.0) {
+                        test.routeRecoveryStableSec += deltaSec;
+                    } else {
+                        test.routeRecoveryStableSec = 0.0;
+                    }
+                    if (player->GetParentCell() != priorForms->cell || (recoveryTriggered && validZ && atEntry) ||
+                        test.routeRecoveryStableSec >= kHSpawnSettleSec) {
+                        EnterHContract(Stage::RouteStart);
+                        break;
+                    }
+                }
+                if (elapsed >= travelSec) {
+                    AbortHContract("H route fall recovery did not settle before the next landing probe.");
+                }
+                break;
+            }
+
+            case Stage::CloseRoutes:
+                if (outside && !run.active && RestoreHGodMode(player)) {
+                    EnterPhase(Phase::ScenarioH_UninstallPrepare);
+                } else if (elapsed >= travelSec) {
+                    AbortHContract("H route exit or God mode restoration did not settle before H8.");
+                } else if (ready) {
+                    CloseHRun(player);
+                }
+                break;
+
+            case Stage::RestoreCheckpoint:
+                if (IsHCompanionCleanupPending()) {
+                    break;
+                }
+                (void)RestoreHGodMode(player);
+                if (travel.kind && elapsed < travelSec) {
+                    break;
+                }
+                if (test.restoreAttempts >= kHCheckpointRestoreAttempts) {
+                    test.restoreFinished = true;
+                    g_runError = true;
+                    FinishAndScheduleQuit("H checkpoint could not be restored and verified after two attempts.");
+                    break;
+                }
+                ++test.restoreAttempts;
+                if (RequestLoadSave(test.checkpointStem)) {
+                    EnterHContract(Stage::AwaitCheckpoint);
+                } else {
+                    LogInfo("H checkpoint restore request failed.");
+                }
+                break;
+
+            case Stage::AwaitCheckpoint: {
+                bool loaded = false;
+                bool failed = false;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    loaded = g_postLoadSignaled && g_postLoadSucceeded;
+                    failed = g_postLoadSignaled && !g_postLoadSucceeded;
+                }
+                if (loaded && outside && !run.active) {
+                    if (!RestoreHGodMode(player) || !HCheckpointMatches(ObserveHCheckpoint(player), test.checkpoint) ||
+                        MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                        if (elapsed >= kHReloadSettleLimitSec) {
+                            LogInfo("H restored state did not match the checkpoint after settling.");
+                            EnterHContract(Stage::RestoreCheckpoint);
+                        }
+                        break;
+                    }
+                    test.restoreFinished = true;
+                    g_hNegativeTributeOutstanding = false;
+                    g_hMaskBeforeNegativeArena.reset();
+                    g_hAtlasBeforeNoContributionKill.reset();
+                    LogInfo("H checkpoint restored and verified, including tracked map rarity and affixes.");
+                    FinishAndScheduleQuit(test.finishReason);
+                } else if (failed || elapsed >= kHReloadWaitSec) {
+                    LogInfo("H checkpoint restore load failed or timed out.");
+                    EnterHContract(Stage::RestoreCheckpoint);
+                }
+                break;
+            }
+            }
         }
 
         void BeginScenarioC_Es()
@@ -1358,6 +3334,7 @@ namespace SkyrimPoE::Runtime
         g_report.open(g_reportPath, std::ios::out | std::ios::trunc);
 
         g_passCount = 0;
+        g_hChecksReported.fill(false);
         g_failCount = 0;
         g_warnCount = 0;
         g_startedAt = Clock::now();
@@ -1387,12 +3364,14 @@ namespace SkyrimPoE::Runtime
         return g_enabled.load(std::memory_order_acquire);
     }
 
-    void AutoTest::OnPreLoadGame()
+    void AutoTest::OnPreLoadGame(const SKSE::MessagingInterface::Message& msg)
     {
         if (!IsEnabled()) {
             return;
         }
+        const auto stem = ToLowerAscii(SaveStemFromMessage(msg));
         std::scoped_lock lock(g_msgMutex);
+        g_preLoadMatched = !g_expectedLoadStem.empty() && stem == g_expectedLoadStem;
         g_postLoadSignaled = false;
         g_postLoadSucceeded = false;
     }
@@ -1403,6 +3382,13 @@ namespace SkyrimPoE::Runtime
             return;
         }
         std::scoped_lock lock(g_msgMutex);
+        if (!std::exchange(g_preLoadMatched, false)) {
+            return;
+        }
+        g_expectedLoadStem.clear();
+        if (succeeded && g_hWatchArenaCoSave) {
+            g_hArenaTimerAtLoad = MapDeviceRuntime::TakeSnapshotForSave().arenaPhaseInvulnSec;
+        }
         g_postLoadSignaled = true;
         g_postLoadSucceeded = succeeded;
     }
@@ -1418,6 +3404,9 @@ namespace SkyrimPoE::Runtime
         }
         std::scoped_lock lock(g_msgMutex);
         if (!g_expectedSaveStem.empty() && ToLowerAscii(stem) == ToLowerAscii(g_expectedSaveStem)) {
+            if (g_hWatchArenaCoSave && !g_saveMatched) {
+                g_hArenaTimerAtSave = MapDeviceRuntime::TakeSnapshotForSave().arenaPhaseInvulnSec;
+            }
             g_saveMatched = true;
         }
     }
@@ -1440,15 +3429,22 @@ namespace SkyrimPoE::Runtime
         }
 
         const double totalSec = std::chrono::duration<double>(Clock::now() - g_startedAt).count();
-        if (totalSec > g_cfg.globalTimeoutSec) {
-            Check("GlobalTimeout", false, std::format("Exceeded {:.0f}s in phase {} ({})",
-                g_cfg.globalTimeoutSec, PhaseName(g_phase), static_cast<int>(g_phase)));
-            FinishAndScheduleQuit("Global timeout reached.");
-            return;
+        if (totalSec > g_cfg.globalTimeoutSec && !g_globalTimeoutReported) {
+            g_globalTimeoutReported = true;
+            g_runError = true;
+            const auto detail = std::format("GlobalTimeout exceeded {:.0f}s in {}.", g_cfg.globalTimeoutSec, PhaseName(g_phase));
+            WriteLine("ERROR", detail);
+            FinishAndScheduleQuit(detail);
+            if (g_phase != Phase::ScenarioH_Contract) {
+                return;
+            }
         }
 
         auto* ui = RE::UI::GetSingleton();
         const bool paused = ui && ui->GameIsPaused();
+        if (IsHCompanionCleanupPending()) {
+            PumpHCompanionCleanup(!paused && IsPlayerReadyInWorld());
+        }
         // MainUpdateHook의 0.25s 상한과 동일한 deltaSec를 그대로 누적해 EnergyShieldPool::Tick과 시계 편차를 없앤다.
         if (!paused && std::isfinite(deltaSec) && deltaSec > 0.0) {
             g_unpausedAccumSec += deltaSec;
@@ -4365,21 +6361,25 @@ namespace SkyrimPoE::Runtime
 
         // ================= SCENARIO H (6단계: 지도 장치·아틀라스·4차 결투장·안전 제거) =================
         case Phase::ScenarioH_Start: {
+            if (!g_hContract.checkpointSaved) {
+                EnterPhase(Phase::ScenarioH_Contract);
+                EnterHContract(HContractStage::PrepareCheckpoint);
+                break;
+            }
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player || !g_config || !g_itemData || !g_statEngine || !g_treeData) {
                 Check("H1_Stage6Esp192FormsAndMapKey", false, "Core singletons unavailable.");
                 FinishAndScheduleQuit("Scenario H aborted.");
                 break;
             }
+            g_hDeathInterceptBefore = std::atomic_ref<bool>(g_config->mapDeathInterceptEnabled)
+                .exchange(true, std::memory_order_relaxed);
             RestorePlayerVitals(player, true, true);
             if (player->IsInCombat()) {
                 player->StopCombat();
             }
             g_hDeathEscapeIntercepted = false;
-            g_hMovedToMapBossForH4 = false;
             g_hDeathInterceptHitsSent = 0;
-            g_hMovedToMapBoss = false;
-            g_hMovedToArenaBoss = false;
 
             // H1: 6단계 신규 18폼(0x8AE..0x8BF, 총 192 ESL) + MapPanelKey(0x16 U) ControlMap 비충돌 + maps UI JSON
             std::size_t s6Found = 0;
@@ -4417,71 +6417,300 @@ namespace SkyrimPoE::Runtime
                     s6Found, mapKey, mapKeyCollides, mapsJsonOk));
 
             // H2: T10 지도(0x0008B7) 지급 + 연금술 오브 제작 -> Rare, iLvl=77, MapMod_* 격리 확인
-            auto* t10Misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(10));
+            auto* t10Misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(kHMapTier));
             auto* alchOrb = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CurrencyLocalFormId(Core::CurrencyKind::Alchemy));
             bool h2Ok = false;
             std::string h2Detail = "missing forms";
-            Core::InventoryItemKey craftedMapKey{};
-            RE::FormID craftedMapBaseId = t10Misc ? t10Misc->GetFormID() : 0u;
+            const RE::FormID craftedMapBaseId = t10Misc ? t10Misc->GetFormID() : 0u;
             if (t10Misc && alchOrb) {
                 player->AddObjectToContainer(t10Misc, nullptr, 1, nullptr);
                 player->AddObjectToContainer(alchOrb, nullptr, 1, nullptr);
                 const auto craftRes = CraftingRuntime::ApplyOrbToItem(
                     Core::CurrencyKind::Alchemy, craftedMapBaseId, 0, false);
-                const auto mapsList = MapDeviceRuntime::ListPlayerMaps(player);
-                for (const auto& m : mapsList) {
-                    if (m.tier == 10 && m.tracked && m.rarity == Core::ItemRarity::Rare && m.modLines.size() >= 4) {
-                        craftedMapKey = m.key;
-                        if (const auto rec = ItemTracker::FindByKey(m.key)) {
-                            bool allMapMods = !rec->affixes.empty();
-                            for (const auto& af : rec->affixes) {
-                                if (!af.affixId.starts_with("MapMod_")) {
-                                    allMapMods = false;
-                                }
-                            }
-                            h2Ok = craftRes.ok && allMapMods && (rec->itemLevel == 77u) && (m.summary.bonusIiqPct > 0.0);
-                            h2Detail = std::format("craftOk={}, iLvl={}, mods={}, allMapMods={}, iiq={:.0f}",
-                                craftRes.ok, rec->itemLevel, rec->affixes.size(), allMapMods, m.summary.bonusIiqPct);
-                        }
-                        break;
+                h2Detail = craftRes.message;
+                if (craftRes.ok && craftRes.resultKey.IsValid()) {
+                    const auto maps = MapDeviceRuntime::ListPlayerMaps(player);
+                    const auto map = std::ranges::find_if(maps, [&](const auto& candidate) {
+                        return candidate.tracked && candidate.key == craftRes.resultKey;
+                    });
+                    const auto record = ItemTracker::FindByKey(craftRes.resultKey);
+                    if (map != maps.end() && record) {
+                        constexpr std::size_t kCraftedRareMinMods = 4;
+                        const bool allMapMods = std::ranges::all_of(record->affixes, [](const auto& affix) {
+                            return affix.affixId.starts_with("MapMod_");
+                        });
+                        h2Ok = map->tier == kHMapTier && map->rarity == Core::ItemRarity::Rare &&
+                            record->itemLevel == kHMapRewardLevel && allMapMods &&
+                            record->affixes.size() >= kCraftedRareMinMods && map->summary.bonusIiqPct > 0.0;
+                        h2Detail = std::format("key={:08X}:{:04X}, iLvl={}, mods={}, allMapMods={}, iiq={:.0f}",
+                            craftRes.resultKey.ownerFormId, craftRes.resultKey.uniqueId, record->itemLevel,
+                            record->affixes.size(), allMapMods, map->summary.bonusIiqPct);
                     }
                 }
             }
             Check("H2_MapCraftingAndItemLevel", h2Ok, h2Detail);
 
-            // H3 준비: T10 지도 개방 및 MoveTo_Impl 텔레포트 + 비동기 셀 로드 스폰 대기
-            g_hPreMapCellId = player->GetParentCell() ? player->GetParentCell()->GetFormID() : 0u;
-            g_hPreMapWsId = player->GetWorldspace() ? player->GetWorldspace()->GetFormID() : 0u;
-            const auto preSnap = g_statEngine->GetSnapshot();
-            g_hPreMapPoeLife = preSnap ? preSnap->poeMaxLife : 0.0;
-            if (craftedMapBaseId != 0 && (!h2Ok || !craftedMapKey.IsValid())) {
-                if (t10Misc) {
-                    player->AddObjectToContainer(t10Misc, nullptr, 1, nullptr);
-                }
-                craftedMapKey = {};
+            g_hOutdoorMap = false;
+            g_hIndoorReturnOk = false;
+            g_hIndoorReturnDetail = "Indoor death return did not run.";
+            g_hDungeonIndex = 0;
+            g_hDungeonsOk = true;
+            g_hDungeonsDetail.clear();
+            g_hArenaSpawnsOk.reset();
+            g_hArenaSpawnsDetail = "No arena spawn observation.";
+            g_hArenaGateIndex = 0;
+            g_hArenaGateOk = true;
+            g_hArenaGateDetail.clear();
+            g_hPlainAffixProbe.reset();
+            g_hEarnedTributeAvailable = false;
+            if (MoveToHOrigin(player, kHIndoorStartMarker)) {
+                EnterPhase(Phase::ScenarioH_IndoorStartWait);
+            } else {
+                g_hIndoorReturnDetail = "Indoor start marker unavailable.";
+                EnterPhase(Phase::ScenarioH_DungeonStart);
             }
-            g_hEntryItemId = craftedMapBaseId;
-            g_hEntryItemKey = craftedMapKey;
-            g_hEntryItemCount = t10Misc ? player->GetItemCount(t10Misc) : 0;
-            const auto* t10Forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForTier(10));
-            g_hMapCellId = t10Forms ? t10Forms->cellId : 0;
-            g_hResetCountBeforeMap = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId).dispatched;
-            g_hResetCompletedBeforeMap = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId).completed;
-            g_hExpectMapReset = false;
-            const auto openRes = MapDeviceRuntime::OpenNormalMap(player, craftedMapKey, craftedMapBaseId);
-            if (!openRes.ok) {
-                Check("H3_MapEntryTeleportAndAsyncSpawn", false, std::format("OpenNormalMap failed: {}", openRes.message));
-                Check("H4_MapDeathInterceptAndPortalReturn", false, "Skipped due to H3 failure.");
-                Check("H5_MapReenterBossKillAndAtlasPoint", false, "Skipped due to H3 failure.");
-                Check("H9_UnauthorizedEntryAndSafeEscape", false, "Skipped due to H3 failure.");
-                Check("H10_MapFallRecovery", false, "Skipped due to H3 failure.");
+            break;
+        }
+
+        case Phase::ScenarioH_IndoorStartWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (AtHOrigin(player, kHIndoorStartMarker, false) || PhaseElapsedSec() >= kHOriginWaitSec) {
+                EnterPhase(Phase::ScenarioH_DungeonStart);
+            }
+            break;
+        }
+
+        case Phase::ScenarioH_DungeonStart: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto& pack = MapPackRuntime::Manifest();
+            if (g_hDungeonIndex == pack.maps.size()) {
+                g_hDungeonResetExpected = false;
+                g_hDungeonCloseRetried = false;
+                const auto* forms = MapPackRuntime::FindForms(pack.ForTier(kHMapTier));
+                g_hMapCellId = forms ? forms->cellId : 0;
+                const auto reset = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
+                if (reset.pending && PhaseElapsedSec() < kMapResetWaitSec) {
+                    break;
+                }
+                g_hResetCompletedBeforeMap = reset.completed;
+                const auto opened = OpenHMap(player, kHMapTier, true);
+                if (opened.ok) {
+                    EnterPhase(Phase::ScenarioH_MapEntryWait);
+                } else {
+                    Check(kHAffixCheck, false, opened.message);
+                    Check("H10_MapFallRecovery", false, "The fixed-affix map did not open.");
+                    g_hIndoorReturnDetail = opened.message;
+                    EnterPhase(Phase::ScenarioH_DungeonCloseWait);
+                }
+                break;
+            }
+            const auto* dungeon = &pack.maps[g_hDungeonIndex];
+            const auto* forms = MapPackRuntime::FindForms(dungeon);
+            g_hDungeonOk = false;
+            g_hDungeonMeasured = false;
+            g_hDungeonCloseRetried = false;
+            g_hDungeonResetExpected = false;
+            g_hMapCellId = forms ? forms->cellId : 0;
+            const auto reset = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
+            if (reset.pending && PhaseElapsedSec() < kMapResetWaitSec) {
+                break;
+            }
+            g_hResetCompletedBeforeMap = reset.completed;
+            g_hDungeonTier = 0;
+            // 같은 던전의 무어픽스 T10을 H2 대조군으로도 쓴다.
+            if (pack.ForTier(kHMapTier) == dungeon) {
+                g_hDungeonTier = kHMapTier;
+            } else {
+                for (auto tier = Core::kMinMapTier; tier <= Core::kMaxMapTier; ++tier) {
+                    if (pack.ForTier(tier) == dungeon) {
+                        g_hDungeonTier = tier;
+                        break;
+                    }
+                }
+            }
+            const auto opened = g_hDungeonTier != 0
+                ? OpenHMap(player, g_hDungeonTier, false)
+                : MapActionResult{ false, "No selectable tier for the manifest dungeon." };
+            g_hDungeonDetail = opened.message;
+            EnterPhase(opened.ok ? Phase::ScenarioH_DungeonEntryWait : Phase::ScenarioH_DungeonCloseWait);
+            break;
+        }
+
+        case Phase::ScenarioH_DungeonEntryWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                RestorePlayerVitals(player, true, true);
+            }
+            const auto run = MapDeviceRuntime::GetActiveMapStateCopy();
+            const auto& pack = MapPackRuntime::Manifest();
+            const auto* dungeon = &pack.maps[g_hDungeonIndex];
+            const auto* forms = MapPackRuntime::FindForms(dungeon);
+            const bool entered = player && forms && player->GetParentCell() == forms->cell &&
+                pack.ForRun(run) == dungeon && MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const bool spawned = run.bossRefFormId != 0;
+            if (WaitForMapTravel(player, entered && spawned, kMapEntryWaitSec)) {
+                break;
+            }
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool ready = entered && spawned && !travel.kind && IsPlayerReadyInWorld();
+            if (!g_hDungeonMeasured) {
+                g_hDungeonMeasured = true;
+                g_hDungeonResetExpected = run.active;
+                const auto layout = ObserveHSpawnLayout(ready ? forms : nullptr, run);
+                const auto expectedPack = Core::MapSystem::MapPackActorCount(g_config->mapBasePackCount, 0.0);
+                bool scalingOk = g_dataPack && g_dataPack->IsLoaded();
+                const auto rewardLevel = Core::MapSystem::MonsterLevelForTier(g_hDungeonTier);
+                const auto expectedScaling = scalingOk
+                    ? Core::MapSystem::GetMapMonsterMultipliers(rewardLevel, *g_dataPack) : Core::MapMonsterMultipliers{};
+                for (const auto id : layout.ids) {
+                    const auto scaling = MapDeviceRuntime::GetMapActorScaling(id);
+                    scalingOk = scalingOk && scaling.runId == run.runId &&
+                        std::abs(scaling.lifeMultiplier - expectedScaling.lifeMultiplier) < kHDamageTolerance &&
+                        std::abs(scaling.damageMultiplier - expectedScaling.damageMultiplier) < kHDamageTolerance;
+                }
+                if (g_dataPack && g_dataPack->IsLoaded()) {
+                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                }
+                const auto snap = g_statEngine->GetSnapshot();
+                const bool playerStatsOk = snap && snap->inActiveMap &&
+                    std::abs(snap->poeMaxLife - g_hPreMapPoeLife) < kHPlayerLifeTolerance;
+                const auto reward = MapDeviceRuntime::GetMapKillContext(run.bossRefFormId, forms ? forms->cellId : 0);
+                const bool rewardOk = reward.isBoss && reward.runId == run.runId && !reward.rewardBlocked &&
+                    reward.rewardMonsterLevel == rewardLevel && reward.dropMapTier == g_hDungeonTier;
+                auto* item = RE::TESForm::LookupByID<RE::TESBoundObject>(g_hEntryItemId);
+                const bool consumed = player && item && player->GetItemCount(item) == g_hEntryItemCount - 1;
+                g_hDungeonOk = ready && layout.Meets(expectedPack) && scalingOk && playerStatsOk && rewardOk &&
+                    run.mods.empty() && run.portalsRemaining == kHEntryPortals && g_hEntryPendingWithoutConsumption && consumed;
+                g_hDungeonDetail = std::format(
+                    "T{} ready={}, bosses={}, pack={}/{}, invalid={}, minDist={:.1f}, registry={}, scaling={}, reward={}, life={}, portals={}, pendingUnchanged={}, consumed={}",
+                    g_hDungeonTier, ready, layout.bosses, layout.adds, expectedPack, layout.invalid, layout.nearest,
+                    layout.matchesRegistry, scalingOk, rewardOk, playerStatsOk, run.portalsRemaining,
+                    g_hEntryPendingWithoutConsumption, consumed);
+            }
+            if (ready && run.mods.empty() && g_hDungeonTier == kHMapTier) {
+                auto* boss = RE::TESForm::LookupByID<RE::Actor>(run.bossRefFormId);
+                const auto prepared = PrepareHBoss(player, boss);
+                if (prepared == HBossReadiness::Waiting) {
+                    break;
+                }
+                if (prepared == HBossReadiness::Ready) {
+                    g_hPlainAffixProbe = ProbeHMapAffixes(boss, run, forms->cellId);
+                }
+            }
+            CloseHRun(player);
+            EnterPhase(Phase::ScenarioH_DungeonCloseWait);
+            break;
+        }
+
+        case Phase::ScenarioH_DungeonCloseWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool closed = !travel.kind && !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun() &&
+                IsPlayerReadyInWorld();
+            const auto reset = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
+            const bool resetDone = !reset.pending &&
+                (!g_hDungeonResetExpected || reset.completed > g_hResetCompletedBeforeMap);
+            if (!closed && PhaseElapsedSec() < HContractTravelSec()) {
+                CloseHRun(player);
+                break;
+            }
+            if (closed && !resetDone) {
+                const auto now = Clock::now();
+                if (!g_hDungeonClosedAt) {
+                    g_hDungeonClosedAt = now;
+                }
+                if (std::chrono::duration<double>(now - *g_hDungeonClosedAt).count() < kMapResetWaitSec) {
+                    break;
+                }
+            }
+            const auto& pack = MapPackRuntime::Manifest();
+            if (!closed || !resetDone) {
+                if (!g_hDungeonCloseRetried) {
+                    g_hDungeonCloseRetried = true;
+                    CloseHRun(player);
+                    EnterPhase(Phase::ScenarioH_DungeonCloseWait);
+                    break;
+                }
+                g_hDungeonsOk = false;
+                const bool sweeping = g_hDungeonIndex < pack.maps.size();
+                const auto key = sweeping ? pack.maps[g_hDungeonIndex].key : "fixed-affix map";
+                g_hDungeonsDetail += std::format("{} [{}; closed={}, reset={}]; ",
+                    key, g_hDungeonDetail, closed, resetDone);
+                if (sweeping) {
+                    ++g_hDungeonIndex;
+                } else {
+                    g_hOutdoorMap = true;
+                }
+                if (RequestLoadSave(g_hContract.checkpointStem)) {
+                    LogInfo("Restoring the verified H checkpoint before continuing the dungeon sweep.");
+                    EnterPhase(Phase::ScenarioH_DungeonRecoveryWait);
+                } else {
+                    FinishAndScheduleQuit("Scenario H could not request a checkpoint load after an unsettled dungeon.");
+                }
+                break;
+            }
+            if (g_hDungeonIndex < pack.maps.size()) {
+                g_hDungeonsOk = g_hDungeonsOk && g_hDungeonOk;
+                g_hDungeonsDetail += std::format("{} [{}; closed={}, reset={}]; ",
+                    pack.maps[g_hDungeonIndex].key, g_hDungeonDetail, closed, resetDone);
+                ++g_hDungeonIndex;
+                EnterPhase(Phase::ScenarioH_DungeonStart);
+                break;
+            }
+            // 실내 회차 종료 뒤 새 야외 회차를 열어 귀환 목표를 다시 기록한다.
+            g_hOutdoorMap = true;
+            if (!closed || !MoveToHOrigin(player, kHOutdoorStartMarker)) {
+                Check(kHOutdoorReturnCheck, false, std::format("Indoor: {}. Could not set up outdoor start.", g_hIndoorReturnDetail));
                 EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
                 break;
             }
-            // MapDeviceRuntime::Tick은 이 프레임에 이미 실행됐다. 다음 틱까지 소비나 회차 확정이 없어야 한다.
-            g_hEntryPendingWithoutConsumption = MapDeviceRuntime::GetTravelStatus(player).kind == Core::MapTravelKind::OpenMap &&
-                !MapDeviceRuntime::IsActiveMapRun() && t10Misc && player->GetItemCount(t10Misc) == g_hEntryItemCount &&
-                (!craftedMapKey.IsValid() || ItemTracker::FindByKey(craftedMapKey).has_value());
+            EnterPhase(Phase::ScenarioH_OutdoorStartWait);
+            break;
+        }
+
+        case Phase::ScenarioH_DungeonRecoveryWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            bool loaded = false;
+            bool failed = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                loaded = g_postLoadSignaled && g_postLoadSucceeded;
+                failed = g_postLoadSignaled && !g_postLoadSucceeded;
+            }
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            if (loaded && IsPlayerReadyInWorld() && !travel.kind && !travel.inPackCell &&
+                !MapDeviceRuntime::IsActiveMapRun()) {
+                const auto marker = g_hOutdoorMap ? kHOutdoorStartMarker : kHIndoorStartMarker;
+                if (MoveToHOrigin(player, marker)) {
+                    EnterPhase(g_hOutdoorMap ? Phase::ScenarioH_OutdoorStartWait : Phase::ScenarioH_IndoorStartWait);
+                } else {
+                    FinishAndScheduleQuit("Scenario H could not move to its next origin after dungeon recovery.");
+                }
+            } else if (failed || PhaseElapsedSec() >= kHReloadWaitSec) {
+                FinishAndScheduleQuit("Scenario H could not verify recovery to an outside, inactive dungeon state.");
+            }
+            break;
+        }
+
+        case Phase::ScenarioH_OutdoorStartWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const bool atOrigin = AtHOrigin(player, kHOutdoorStartMarker, true);
+            if (!atOrigin && PhaseElapsedSec() < kHOriginWaitSec) {
+                break;
+            }
+            const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForTier(kHMapTier));
+            g_hMapCellId = forms ? forms->cellId : 0;
+            const auto reset = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
+            g_hResetCountBeforeMap = reset.dispatched;
+            g_hResetCompletedBeforeMap = reset.completed;
+            g_hExpectMapReset = false;
+            const auto opened = atOrigin ? OpenHMap(player, kHMapTier, false)
+                : MapActionResult{ false, "Fixed outdoor start was not reached." };
+            if (!opened.ok) {
+                Check(kHOutdoorReturnCheck, false, std::format("Indoor: {}. Outdoor: {}", g_hIndoorReturnDetail, opened.message));
+                EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
+                break;
+            }
             EnterPhase(Phase::ScenarioH_MapEntryWait);
             break;
         }
@@ -4489,59 +6718,54 @@ namespace SkyrimPoE::Runtime
         case Phase::ScenarioH_MapEntryWait: {
             auto* player = RE::PlayerCharacter::GetSingleton();
             const auto active = MapDeviceRuntime::GetActiveMapStateCopy();
-            const auto& pack = MapPackRuntime::Manifest();
-            const auto* dungeon = pack.ForTier(10);
+            const auto* dungeon = MapPackRuntime::Manifest().ForTier(kHMapTier);
             const auto* forms = MapPackRuntime::FindForms(dungeon);
-            const RE::FormID targetCellId = forms ? forms->cell->GetFormID() : 0u;
-            const RE::FormID curCellId = (player && player->GetParentCell()) ? player->GetParentCell()->GetFormID() : 0u;
-            const bool inTargetCell = targetCellId != 0 && curCellId == targetCellId &&
-                                      pack.ForRun(active) == dungeon && MapDeviceRuntime::IsPlayerInActiveMapCell();
-            const bool spawned = (active.bossRefFormId != 0) && (active.spawnedRefFormIds.size() >= 4u);
-
+            const bool inTargetCell = forms && player && player->GetParentCell() == forms->cell &&
+                MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const bool spawned = active.bossRefFormId != 0;
             if (WaitForMapTravel(player, inTargetCell && spawned, kMapEntryWaitSec)) {
                 break;
             }
-            if (g_dataPack && g_dataPack->IsLoaded()) {
-                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            const bool ready = inTargetCell && spawned && !MapDeviceRuntime::GetTravelStatus(player).kind;
+            g_hMapBossFormId = ready ? active.bossRefFormId : 0;
+            g_hDeathRunId = ready ? active.runId : 0;
+            g_hDeathEscapeIntercepted = false;
+            g_hDeathInterceptHitsSent = 0;
+            if (g_hOutdoorMap) {
+                g_hDeathAttackStartedAt.reset();
+                g_hDeathTriggerDetail.clear();
+                EnterPhase(Phase::ScenarioH_DeathInterceptTrigger);
+                break;
             }
-            const auto snap = g_statEngine->GetSnapshot();
-            auto* bossActor = active.bossRefFormId != 0
-                ? RE::TESForm::LookupByID<RE::Actor>(active.bossRefFormId)
-                : nullptr;
-            // 결정 169, 170: 지도 입장 후에도 플레이어 생명 기준이 유지되고 스폰마다 회차 난이도와 보상이 붙는다.
-            const auto bossReward = MapDeviceRuntime::GetMapKillContext(active.bossRefFormId, curCellId);
-            const bool rewardOk = bossReward.isBoss && bossReward.runId == active.runId &&
-                                  bossReward.rewardMonsterLevel == 77u && bossReward.dropMapTier == 10u;
-            bool scalingOk = false;
-            if (spawned && g_dataPack && g_dataPack->IsLoaded()) {
-                const auto expected = Core::MapSystem::GetMapMonsterMultipliers(77u, *g_dataPack);
-                scalingOk = std::ranges::all_of(active.spawnedRefFormIds, [&](RE::FormID id) {
-                    const auto scaling = MapDeviceRuntime::GetMapActorScaling(id);
-                    return scaling.runId == active.runId &&
-                           std::abs(scaling.lifeMultiplier - expected.lifeMultiplier) < 1e-4 &&
-                           std::abs(scaling.damageMultiplier - expected.damageMultiplier) < 1e-4;
-                });
-            }
-            const bool playerStatsOk = snap && snap->inActiveMap &&
-                                       std::abs(snap->poeMaxLife - g_hPreMapPoeLife) < 1e-3;
-            const bool bossRecognized = bossActor && SkillExecution::IsBossOrDragon(bossActor);
-            g_hMapBossFormId = active.bossRefFormId;
 
-            auto* entryItem = RE::TESForm::LookupByID<RE::TESBoundObject>(g_hEntryItemId);
-            const bool consumedOnArrival = player && entryItem && player->GetItemCount(entryItem) == g_hEntryItemCount - 1 &&
-                (!g_hEntryItemKey.IsValid() || !ItemTracker::FindByKey(g_hEntryItemKey));
-            Check("H3_MapEntryTeleportAndAsyncSpawn",
-                inTargetCell && spawned && rewardOk && scalingOk && playerStatsOk &&
-                    bossRecognized && (active.portalsRemaining == 5u) &&
-                    g_hEntryPendingWithoutConsumption && consumedOnArrival,
-                std::format("cell=0x{:08X}/0x{:08X}, spawns={}, boss=0x{:08X}, bossRec={}, rewardLv={}, scaling={}, playerStats={}, portals={}, pendingUnchanged={}, consumedOnArrival={}",
-                    curCellId, targetCellId, active.spawnedRefFormIds.size(), active.bossRefFormId,
-                    bossRecognized, bossReward.rewardMonsterLevel, scalingOk, playerStatsOk, active.portalsRemaining,
-                    g_hEntryPendingWithoutConsumption, consumedOnArrival));
+            auto* boss = ready ? RE::TESForm::LookupByID<RE::Actor>(active.bossRefFormId) : nullptr;
+            const auto prepared = ready ? PrepareHBoss(player, boss) : HBossReadiness::Unavailable;
+            if (prepared == HBossReadiness::Waiting) {
+                break;
+            }
+            const auto modified = prepared == HBossReadiness::Ready
+                ? ProbeHMapAffixes(boss, active, forms->cellId) : std::nullopt;
+            auto* item = RE::TESForm::LookupByID<RE::TESBoundObject>(g_hEntryItemId);
+            const bool consumed = player && item && player->GetItemCount(item) == g_hEntryItemCount - 1 &&
+                g_hEntryItemKey.IsValid() && !ItemTracker::FindByKey(g_hEntryItemKey);
+            const auto plain = g_hPlainAffixProbe.value_or(HAffixProbe{});
+            const auto fixed = modified.value_or(HAffixProbe{});
+            const bool outgoingOk = plain.outgoing > 0.0 && std::abs(
+                fixed.outgoing - plain.outgoing * (1.0 + kHAffixDamagePct / 100.0)) < kHDamageTolerance;
+            const bool incomingOk = plain.incoming > 0.0 && std::abs(
+                fixed.incoming - plain.incoming * (1.0 - kHAffixReducedTakenPct / 100.0)) < kHDamageTolerance;
+            const bool iiqOk = std::abs(plain.iiq) < kHDamageTolerance &&
+                std::abs(fixed.iiq - plain.iiq - kHAffixIiqPct) < kHDamageTolerance;
+            Check(kHAffixCheck, g_hPlainAffixProbe && modified && outgoingOk && incomingOk && iiqOk &&
+                g_hEntryPendingWithoutConsumption && consumed,
+                std::format("out={:.4f}->{:.4f}, in={:.4f}->{:.4f}, IIQ={:.1f}->{:.1f}, pendingUnchanged={}, consumed={}, pair={}/{}",
+                    plain.outgoing, fixed.outgoing, plain.incoming, fixed.incoming, plain.iiq, fixed.iiq,
+                    g_hEntryPendingWithoutConsumption, consumed, g_hPlainAffixProbe.has_value(), modified.has_value()));
+            g_hDungeonResetExpected = active.active;
 
             // H10: 같은 셀의 낙하 문턱 아래로 옮긴다. 위치는 다음 프레임 이후에 반영될 수 있으므로,
             // 판정은 낙하 복귀 횟수가 늘고 입구 근처로 돌아왔는지로 한다.
-            if (player && inTargetCell && spawned && forms && forms->entryMarker) {
+            if (ready && forms->entryMarker) {
                 constexpr double kFallProbeDepth = 256.0;
                 auto* entry = forms->entryMarker;
                 auto belowFloor = entry->GetPosition();
@@ -4556,6 +6780,8 @@ namespace SkyrimPoE::Runtime
                 }
             }
             Check("H10_MapFallRecovery", false, "Could not place the player below the fall threshold in the authorized cell.");
+            g_hDeathAttackStartedAt.reset();
+            g_hDeathTriggerDetail.clear();
             EnterPhase(Phase::ScenarioH_DeathInterceptTrigger);
             break;
         }
@@ -4586,70 +6812,88 @@ namespace SkyrimPoE::Runtime
                     fallDetected, aboveThreshold, sameCell, authorized, travel.kind.has_value(), distance, active.runId, g_hFallRunId,
                     active.portalsRemaining, g_hFallPortals));
             g_hDeathEscapeIntercepted = false;
-            g_hMovedToMapBossForH4 = false;
             g_hDeathInterceptHitsSent = 0;
+            g_hDeathAttackStartedAt.reset();
+            g_hDeathTriggerDetail.clear();
             EnterPhase(Phase::ScenarioH_DeathInterceptTrigger);
             break;
         }
 
         case Phase::ScenarioH_DeathInterceptTrigger: {
             auto* player = RE::PlayerCharacter::GetSingleton();
-            if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
-                g_hDeathEscapeIntercepted = true;
+            const auto finishTrigger = [&](std::string detail) {
+                g_hDeathTriggerDetail = std::move(detail);
+                g_hDeathEscapeIntercepted = MapDeviceRuntime::IsDeathEscapeInFlight();
+                if (!g_hDeathEscapeIntercepted && player && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+                    RestorePlayerVitals(player, true, true);
+                    (void)MapDeviceRuntime::ReturnPortal(player);
+                }
                 EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+            };
+            if (player && player->IsDead()) {
+                Check(kHOutdoorReturnCheck, false, "Player died during an H4 lethal-hit trial.");
+                FinishAndScheduleQuit("Scenario H interrupted by player death.");
+                break;
+            }
+            if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                finishTrigger("Death escape accepted.");
+                break;
+            }
+            if (!CombatHooks::AreAllHooksInstalled()) {
+                finishTrigger("Combat hooks incomplete. No lethal damage sent.");
                 break;
             }
             if (!player || !MapDeviceRuntime::IsPlayerInActiveMapCell()) {
-                if (PhaseElapsedSec() >= 10.0) {
-                    g_hDeathEscapeIntercepted = MapDeviceRuntime::IsDeathEscapeInFlight();
-                    EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+                if (PhaseElapsedSec() >= kMapBossLoadWaitSec) {
+                    finishTrigger("Player was unavailable in the authorized map cell.");
                 }
                 break;
             }
-            if (!IsPlayerReadyInWorld() && PhaseElapsedSec() < 10.0) {
+            auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId);
+            const auto prepared = PrepareHBoss(player, boss, true);
+            if (prepared == HBossReadiness::Waiting) {
                 break;
             }
-            auto* boss = (g_hMapBossFormId != 0)
-                ? RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId)
-                : nullptr;
-            if (!boss || boss->IsDead()) {
-                g_hDeathEscapeIntercepted = MapDeviceRuntime::IsDeathEscapeInFlight();
-                EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+            if (prepared == HBossReadiness::Unavailable) {
+                finishTrigger("Boss 3D or permanent health was unavailable.");
                 break;
             }
-            if (!boss->Is3DLoaded()) {
-                if (!g_hMovedToMapBossForH4) {
-                    player->MoveTo(boss);
-                    g_hMovedToMapBossForH4 = true;
-                }
-                if (PhaseElapsedSec() < 10.0) {
-                    break;
-                }
+            const auto now = Clock::now();
+            if (!g_hDeathAttackStartedAt) {
+                g_hDeathAttackStartedAt = now;
+                g_hNextBossHitSec = PhaseElapsedSec();
             }
-            if (boss->Is3DLoaded()) {
-                if (g_esPool) {
-                    g_esPool->Clear();
-                }
-                if (g_skillSystem) {
-                    (void)g_skillSystem->TickGuardShield(30.0, false);
-                }
-                if (auto* av = player->AsActorValueOwner()) {
-                    const float curHp = av->GetActorValue(RE::ActorValue::kHealth);
-                    if (curHp > 2.5f) {
-                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, -(curHp - 2.0f));
-                    }
-                }
-                CallDealDamage(boss, player, nullptr, false);
-                ++g_hDeathInterceptHitsSent;
-                if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
-                    g_hDeathEscapeIntercepted = true;
-                    EnterPhase(Phase::ScenarioH_DeathEscapeWait);
-                    break;
-                }
+            if (std::chrono::duration<double>(now - *g_hDeathAttackStartedAt).count() >= kHDeathTriggerWaitSec) {
+                finishTrigger("Lethal-hit window expired.");
+                break;
             }
-            if (PhaseElapsedSec() >= 10.0) {
-                g_hDeathEscapeIntercepted = MapDeviceRuntime::IsDeathEscapeInFlight();
-                EnterPhase(Phase::ScenarioH_DeathEscapeWait);
+            if (PhaseElapsedSec() < g_hNextBossHitSec) {
+                break;
+            }
+            auto* values = player->AsActorValueOwner();
+            if (!values) {
+                finishTrigger("Player health values unavailable.");
+                break;
+            }
+            g_hNextBossHitSec = PhaseElapsedSec() + kHBossHitIntervalSec;
+            if (g_esPool) {
+                g_esPool->Clear();
+            }
+            if (g_skillSystem) {
+                (void)g_skillSystem->TickGuardShield(kHGuardClearSec, false);
+            }
+            const auto health = values->GetActorValue(RE::ActorValue::kHealth);
+            if (health > kHDeathProbeHealth + kHDeathProbeHealthTolerance) {
+                values->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth,
+                    kHDeathProbeHealth - health);
+            }
+            CallDealDamage(boss, player, nullptr, false);
+            ++g_hDeathInterceptHitsSent;
+            if (player->IsDead()) {
+                Check(kHOutdoorReturnCheck, false, "The engine attack killed the player.");
+                FinishAndScheduleQuit("Scenario H interrupted by player death.");
+            } else if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                finishTrigger("Death escape accepted.");
             }
             break;
         }
@@ -4664,15 +6908,34 @@ namespace SkyrimPoE::Runtime
             }
             const RE::FormID curCell = (player && player->GetParentCell()) ? player->GetParentCell()->GetFormID() : 0u;
             const RE::FormID curWs = (player && player->GetWorldspace()) ? player->GetWorldspace()->GetFormID() : 0u;
-            const bool locMatched = (g_hPreMapWsId != 0) ? (curWs == g_hPreMapWsId) : (curCell == g_hPreMapCellId);
+            const auto* cell = player ? player->GetParentCell() : nullptr;
+            const auto* origin = RE::TESForm::LookupByID<RE::TESObjectREFR>(
+                g_hOutdoorMap ? kHOutdoorStartMarker : kHIndoorStartMarker);
+            const auto distance = player ? (player->GetPosition() - g_hPreMapPosition).Length() : -1.0f;
+            const bool locMatched = g_hOutdoorMap
+                ? cell && !cell->IsInteriorCell() && g_hPreMapWsId != 0 && curWs == g_hPreMapWsId &&
+                    distance >= 0.0f && distance <= MapDeviceRuntime::GetTravelArrivalRadius()
+                : cell && cell->IsInteriorCell() && origin && cell == origin->GetParentCell() && curCell == g_hPreMapCellId;
             const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
             const bool alive = player && !player->IsDead();
-            Check("H4_MapDeathInterceptAndPortalReturn",
-                g_hDeathEscapeIntercepted && returnedOut && escapeCleared && locMatched && alive &&
-                act.active && (act.portalsRemaining == 5u),
-                std::format("intercepted={}, hits={}, out={}, cleared={}, locMatch={} (cell=0x{:08X}, ws=0x{:08X}), alive={}, portals={}",
-                    g_hDeathEscapeIntercepted, g_hDeathInterceptHitsSent, returnedOut, escapeCleared,
-                    locMatched, curCell, curWs, alive, act.portalsRemaining));
+            const bool ok = g_hDeathEscapeIntercepted && g_hDeathInterceptHitsSent > 0 && returnedOut && escapeCleared &&
+                locMatched && alive && IsPlayerReadyInWorld() && act.active && act.runId == g_hDeathRunId &&
+                act.portalsRemaining == kHEntryPortals;
+            const auto detail = std::format(
+                "intercepted={}, hits={}, out={}, cleared={}, locMatch={}, cell=0x{:08X}, ws=0x{:08X}, distance={:.1f}, alive={}, portals={}, run={}/{}. {}",
+                g_hDeathEscapeIntercepted, g_hDeathInterceptHitsSent, returnedOut, escapeCleared,
+                locMatched, curCell, curWs, distance, alive, act.portalsRemaining, act.runId, g_hDeathRunId,
+                g_hDeathTriggerDetail);
+            if (!g_hOutdoorMap) {
+                g_hIndoorReturnOk = ok;
+                g_hIndoorReturnDetail = detail;
+                CloseHRun(player);
+                EnterPhase(Phase::ScenarioH_DungeonCloseWait);
+                break;
+            }
+            Check(kHOutdoorReturnCheck, g_hIndoorReturnOk && ok,
+                std::format("Indoor: {}. Outdoor: {} (radius={:.1f}).", g_hIndoorReturnDetail, detail,
+                    MapDeviceRuntime::GetTravelArrivalRadius()));
 
             // H9: 활성 회차의 셀에 이동 요청 없이 넣어, 셀 ID만 같아도 허가되지 않는지 검증한다.
             const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(act));
@@ -4748,16 +7011,11 @@ namespace SkyrimPoE::Runtime
 
         case Phase::ScenarioH_ReenterStart: {
             auto* player = RE::PlayerCharacter::GetSingleton();
-            if (player && player->IsInCombat() && PhaseElapsedSec() < 10.0) {
+            if (player && player->IsInCombat() && PhaseElapsedSec() < kHCombatStopWaitSec) {
                 player->StopCombat();
                 break;
             }
             // H5: 재입장(5->4) 후 보스 처치 -> 아틀라스 T10 첫 클리어 +1P & 첫 T6+ 공물 확정
-            const auto stBefore = SaveLoad::GetStateCopy();
-            g_hAvailPtsBeforeBoss = (g_treeData && g_treeData->IsLoaded())
-                ? Core::PassiveTree::ComputeAvailableNormalPoints(
-                      *g_treeData, stBefore.tree, stBefore.exileLevel, *g_config, stBefore.atlas.completedTierMask)
-                : static_cast<std::int32_t>(stBefore.unallocatedPassivePoints);
             const auto reenterRes = MapDeviceRuntime::ReenterActiveMap(player);
             if (!reenterRes.ok) {
                 Check("H5_MapReenterBossKillAndAtlasPoint", false, std::format("ReenterActiveMap failed: {}", reenterRes.message));
@@ -4765,7 +7023,13 @@ namespace SkyrimPoE::Runtime
                 EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
                 break;
             }
-            g_hMovedToMapBoss = false;
+            SaveLoad::UpdateState([](PersistentState& state) {
+                state.atlas.completedTierMask = static_cast<std::uint16_t>(state.atlas.completedTierMask & ~kHAtlasTierBit);
+                state.atlas.firstTributeGiven = false;
+            });
+            const auto stBefore = SaveLoad::GetStateCopy();
+            g_hAvailPtsBeforeBoss = Core::PassiveTree::ComputeAvailableNormalPoints(
+                *g_treeData, stBefore.tree, kHAtlasPointBaselineLevel, *g_config, stBefore.atlas.completedTierMask);
             g_hTributeCellId = 0;
             g_hTributeCountBeforeBoss.reset();
             EnterPhase(Phase::ScenarioH_ReenterWait);
@@ -4787,26 +7051,17 @@ namespace SkyrimPoE::Runtime
             auto* boss = (g_hMapBossFormId != 0)
                 ? RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId)
                 : nullptr;
-            if (boss && !boss->IsDead() && player) {
-                if (!boss->Is3DLoaded()) {
-                    if (!g_hMovedToMapBoss) {
-                        player->MoveTo(boss);
-                        g_hMovedToMapBoss = true;
-                    }
-                    if (PhaseElapsedSec() < 15.0) {
-                        break;
-                    }
-                }
+            const auto prepared = PrepareHBoss(player, boss);
+            if (prepared == HBossReadiness::Waiting) {
+                break;
+            }
+            if (prepared == HBossReadiness::Ready) {
                 const auto* bossCell = boss->GetParentCell();
                 g_hTributeCellId = bossCell ? bossCell->GetFormID() : 0;
                 g_hTributeCountBeforeBoss = CountMapBossTributes(player, boss, bossCell);
-                // 공물은 처치 보상에서 지급한다. 사망 이벤트 전에 생존 타격으로 기여를 기록한다.
-                (void)SkillExecution::DealDirectSkillDamage(boss, 1.0, Core::DamageType::Physical, true, true);
-                (void)SkillExecution::DealDirectSkillDamage(boss, 50000.0, Core::DamageType::Physical, true, true);
-                if (!boss->IsDead()) {
-                    boss->KillImmediate();
-                }
             }
+            g_hMapBossDamageKill = false;
+            g_hNextBossHitSec = 0.0;
             EnterPhase(Phase::ScenarioH_BossKillWait);
             break;
         }
@@ -4816,37 +7071,67 @@ namespace SkyrimPoE::Runtime
             if (player) {
                 RestorePlayerVitals(player, true, true);
             }
+            auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId);
+            const auto* bossCell = RE::TESForm::LookupByID<RE::TESObjectCELL>(g_hTributeCellId);
+            if (!g_hMapBossDamageKill && boss && boss->Is3DLoaded() && !boss->IsDead() && g_hTributeCountBeforeBoss &&
+                PhaseElapsedSec() >= g_hNextBossHitSec && PhaseElapsedSec() < kMapBossKillWaitSec) {
+                g_hNextBossHitSec = PhaseElapsedSec() + kHBossHitIntervalSec;
+                const bool applied = SkillExecution::DealDirectSkillDamage(
+                    boss, kHMapBossHitDamage, Core::DamageType::Physical, true, true);
+                g_hMapBossDamageKill = applied && (boss->IsDead() || BossHealthRatio(boss) <= 0.0);
+            }
             const auto stNow = SaveLoad::GetStateCopy();
-            const bool t10Cleared = (stNow.atlas.completedTierMask & static_cast<std::uint16_t>(1u << 9u)) != 0u;
-            if (!t10Cleared && g_unpausedAccumSec < 5.0 && PhaseElapsedSec() < 8.0) {
+            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
+            const bool t10Cleared = (stNow.atlas.completedTierMask & kHAtlasTierBit) != 0u;
+            const auto tributeAfter = CountMapBossTributes(player, boss, bossCell);
+            const auto& tributeBefore = g_hTributeCountBeforeBoss;
+            const bool oneTributeGranted = tributeBefore && tributeAfter &&
+                tributeAfter->Total() == tributeBefore->Total() + 1;
+            if (!(g_hMapBossDamageKill && act.bossKilled && t10Cleared &&
+                stNow.atlas.firstTributeGiven && oneTributeGranted) && PhaseElapsedSec() < kMapBossKillWaitSec) {
                 break;
             }
-            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
-            const auto availAfter = (g_treeData && g_treeData->IsLoaded())
-                ? Core::PassiveTree::ComputeAvailableNormalPoints(
-                      *g_treeData, stNow.tree, stNow.exileLevel, *g_config, stNow.atlas.completedTierMask)
-                : static_cast<std::int32_t>(stNow.unallocatedPassivePoints);
-            auto* boss = g_hMapBossFormId ? RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId) : nullptr;
-            const auto* bossCell = g_hTributeCellId ? RE::TESForm::LookupByID<RE::TESObjectCELL>(g_hTributeCellId) : nullptr;
-            const auto tributeCountAfter = CountMapBossTributes(player, boss, bossCell);
-            const bool oneTributeGranted = g_hTributeCountBeforeBoss && tributeCountAfter &&
-                *tributeCountAfter == *g_hTributeCountBeforeBoss + 1;
-            // 결정 175: 보스를 처치한 뒤 귀환하면 포털이 남아 있어도 회차가 끝난다(다음 단계에서 닫힘을 확인).
+            const auto availAfter = Core::PassiveTree::ComputeAvailableNormalPoints(
+                *g_treeData, stNow.tree, kHAtlasPointBaselineLevel, *g_config, stNow.atlas.completedTierMask);
+            // 보상이 회차 정리 때 지워지기 전에 실제 드랍을 주워 결투장 입장에 쓴다.
+            if (oneTributeGranted && g_hMapBossDamageKill && act.bossKilled && player) {
+                auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+                if (tribute && tributeAfter->corpse == tributeBefore->corpse + 1) {
+                    boss->RemoveItem(tribute, 1, RE::ITEM_REMOVE_REASON::kStoreInContainer, nullptr, player);
+                } else if (tributeAfter->floor == tributeBefore->floor + 1) {
+                    for (const auto& [id, candidate] : tributeAfter->floorDrops) {
+                        const auto previous = tributeBefore->floorDrops.find(id);
+                        const auto countBefore = previous == tributeBefore->floorDrops.end() ? 0 : previous->second.count;
+                        if (candidate.count == countBefore + 1) {
+                            if (auto drop = candidate.handle.get()) {
+                                player->PickUpObject(drop.get(), 1, false, false);
+                            }
+                            break;
+                        }
+                    }
+                }
+                g_hEarnedTributeBagCount = MapDeviceRuntime::CountPlayerTributes(player);
+                g_hEarnedTributeAvailable = g_hEarnedTributeBagCount == tributeBefore->bag + 1;
+            }
+            // 결정 175: 보스 처치 후 귀환하면 남은 포털 수와 관계없이 회차가 끝난다.
             const auto resetBeforeReturn = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
-            const auto returnRes = MapDeviceRuntime::ReturnPortal(player);
-            Check("H5_MapReenterBossKillAndAtlasPoint",
-                t10Cleared && act.bossKilled && (act.portalsRemaining == 4u) &&
-                (availAfter == g_hAvailPtsBeforeBoss + 1) && stNow.atlas.firstTributeGiven && oneTributeGranted && returnRes.ok,
-                std::format("t10Bit={}, bossKilled={}, portals={}, pts={}->{}, firstTrib={}, tributes={}->{}, return={}",
-                    t10Cleared, act.bossKilled, act.portalsRemaining, g_hAvailPtsBeforeBoss, availAfter,
-                    stNow.atlas.firstTributeGiven,
-                    g_hTributeCountBeforeBoss ? std::to_string(*g_hTributeCountBeforeBoss) : "unavailable",
-                    tributeCountAfter ? std::to_string(*tributeCountAfter) : "unavailable", returnRes.message));
+            const auto returnRes = act.bossKilled ? MapDeviceRuntime::ReturnPortal(player)
+                : MapActionResult{ false, "Boss did not die from the test attack in time." };
+            const bool h5Ok = g_hMapBossDamageKill && t10Cleared && act.bossKilled &&
+                act.portalsRemaining == kHReentryPortals && availAfter == g_hAvailPtsBeforeBoss + 1 &&
+                stNow.atlas.firstTributeGiven && oneTributeGranted && returnRes.ok;
+            g_hEarnedTributeAvailable = g_hEarnedTributeAvailable && h5Ok;
+            Check("H5_MapReenterBossKillAndAtlasPoint", h5Ok,
+                std::format("damageKill={}, t10Bit={}, bossKilled={}, portals={}, pts={}->{}, firstTrib={}, tributes={}->{}, collected={}, return={}",
+                    g_hMapBossDamageKill, t10Cleared, act.bossKilled, act.portalsRemaining, g_hAvailPtsBeforeBoss, availAfter,
+                    stNow.atlas.firstTributeGiven, tributeBefore ? std::to_string(tributeBefore->Total()) : "unavailable",
+                    tributeAfter ? std::to_string(tributeAfter->Total()) : "unavailable",
+                    g_hEarnedTributeAvailable, returnRes.message));
 
             g_hExpectMapReset = act.bossKilled && returnRes.ok && !resetBeforeReturn.pending &&
                 resetBeforeReturn.dispatched == g_hResetCountBeforeMap;
             if (!returnRes.ok) {
-                (void)MapDeviceRuntime::AbandonActiveMap(player);
+                CloseHRun(player);
             }
             EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
             break;
@@ -4905,7 +7190,6 @@ namespace SkyrimPoE::Runtime
                 EnterPhase(Phase::ScenarioH_Arena4Prerequisites);
                 break;
             }
-            g_hMovedToMapBoss = false;
             EnterPhase(Phase::ScenarioH_NoContributionMapEntryWait);
             break;
         }
@@ -4926,14 +7210,15 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             RestorePlayerVitals(player, true, true);
-            if (!boss->Is3DLoaded()) {
-                if (!g_hMovedToMapBoss) {
-                    player->MoveTo(boss);
-                    g_hMovedToMapBoss = true;
-                }
-                if (PhaseElapsedSec() < kMapBossLoadWaitSec) {
-                    break;
-                }
+            const auto prepared = PrepareHBoss(player, boss);
+            if (prepared == HBossReadiness::Waiting) {
+                break;
+            }
+            if (prepared == HBossReadiness::Unavailable) {
+                Check("H14_MapBossWithoutContribution", false, "The separate map boss did not become ready before the kill.");
+                CloseHRun(player);
+                EnterPhase(Phase::ScenarioH_NoContributionMapReturnWait);
+                break;
             }
             // 16/16 아틀라스에서도 이 처치가 새 완료를 기록하는지 검사한다. 패시브 포인트는 다시 계산하지 않는다.
             SaveLoad::UpdateState([](PersistentState& st) {
@@ -4990,70 +7275,140 @@ namespace SkyrimPoE::Runtime
 
         case Phase::ScenarioH_Arena4Prerequisites: {
             auto* player = RE::PlayerCharacter::GetSingleton();
-            if (!player) {
-                Check("H12_Arena4Prerequisites", false, "Player unavailable before testing arena entry.");
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Skipped because arena prerequisites could not be tested.");
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool closed = !travel.kind && !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
+            if (!closed && PhaseElapsedSec() < kMapReturnWaitSec) {
+                CloseHRun(player);
+                break;
+            }
+            auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+            if (!player || !closed || !tribute) {
+                Check("H12_Arena4Prerequisites", false, "Player, tribute form, or closed prior run unavailable for the gate probes.");
+                Check(kHArenaCheck, false, "Arena entry setup was unavailable.");
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }
             RestorePlayerVitals(player, true, true);
-            if (player->IsInCombat()) {
-                player->StopCombat();
-            }
-            constexpr std::int32_t kArenaTestEntries = 2;
-            const auto tributesNeeded = kArenaTestEntries - MapDeviceRuntime::CountPlayerTributes(player);
-            if (tributesNeeded > 0) {
-                if (auto* trib = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute)) {
-                    player->AddObjectToContainer(trib, nullptr, tributesNeeded, nullptr);
-                }
-            }
+            player->StopCombat();
             const auto savedMask = SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask;
+            if (!g_hMaskBeforeNegativeArena) {
+                g_hMaskBeforeNegativeArena = savedMask;
+            }
             const auto arenaReadyMask = (savedMask | Core::kArena4PrerequisiteMask) & ~Core::kArena4MilestoneBit;
-            const auto tributeCount = MapDeviceRuntime::CountPlayerTributes(player);
-            constexpr std::uint32_t kThirdMilestoneBit = 1u << 2u;
             const auto setMask = [](std::uint32_t mask) {
                 SaveLoad::UpdateState([mask](PersistentState& st) { st.tree.ascendancyMilestonesBitmask = mask; });
             };
-            // 두 요청 사이에는 마스크만 바꾸고 포인트나 스탯을 다시 계산하지 않는다.
-            setMask(arenaReadyMask & ~kThirdMilestoneBit);
-            const auto missing = MapDeviceRuntime::OpenArena4(player);
-            const auto tributeAfterMissing = MapDeviceRuntime::CountPlayerTributes(player);
-            setMask(arenaReadyMask | Core::kArena4MilestoneBit);
-            const auto cleared = MapDeviceRuntime::OpenArena4(player);
-            const auto tributeAfterCleared = MapDeviceRuntime::CountPlayerTributes(player);
-            setMask(savedMask);
-            Check("H12_Arena4Prerequisites",
-                tributeCount > 0 && !missing.ok && missing.message.find("2/3") != std::string::npos &&
-                !cleared.ok && cleared.message.starts_with("이미 4차 전직") &&
-                tributeAfterMissing == tributeCount && tributeAfterCleared == tributeCount &&
-                SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask == savedMask,
-                std::format("savedMask=0x{:X}, missing='{}', cleared='{}', tributes={}->{}->{}",
-                    savedMask, missing.message, cleared.message, tributeCount, tributeAfterMissing, tributeAfterCleared));
-            // 두 결투장 회차에 필요한 이정표를 이 시험에서 명시적으로 설정한다.
+            constexpr std::array<std::uint32_t, 3> kMissingMilestones{ 1u << 0u, 1u << 1u, 1u << 2u };
+            constexpr std::size_t kGateProbeCount = kMissingMilestones.size() + 1;
+            if (g_hArenaGateIndex < kGateProbeCount) {
+                const bool fixtureForGate = MapDeviceRuntime::CountPlayerTributes(player) == 0;
+                if (fixtureForGate) {
+                    player->AddObjectToContainer(tribute, nullptr, 1, nullptr);
+                }
+                const auto tributeCount = MapDeviceRuntime::CountPlayerTributes(player);
+                const bool alreadyCleared = g_hArenaGateIndex == kMissingMilestones.size();
+                const auto testMask = alreadyCleared ? arenaReadyMask | Core::kArena4MilestoneBit
+                    : arenaReadyMask & ~kMissingMilestones[g_hArenaGateIndex];
+                const auto expected = alreadyCleared ? MapEntryDenial::ArenaAlreadyCleared : MapEntryDenial::ArenaMissingMilestones;
+                setMask(testMask);
+                const auto rejected = MapDeviceRuntime::OpenArena4(player);
+                const auto tributeAfterProbe = MapDeviceRuntime::CountPlayerTributes(player);
+                setMask(savedMask);
+                const bool fixtureRemoved = !fixtureForGate || tributeAfterProbe == 0 ||
+                    UniqueIdUtil::RemovePlainItem(player, tribute, 1);
+                const bool gateOk = tributeCount > 0 && !rejected.ok && rejected.entryDenial == expected &&
+                    tributeAfterProbe == tributeCount && fixtureRemoved;
+                g_hArenaGateOk = g_hArenaGateOk && gateOk;
+                g_hArenaGateDetail += std::format("mask=0x{:X}, accepted={}, reason={}/{}, tribute={}->{}, fixtureRemoved={}; ",
+                    testMask, rejected.ok, static_cast<unsigned>(rejected.entryDenial), static_cast<unsigned>(expected),
+                    tributeCount, tributeAfterProbe, fixtureRemoved);
+                ++g_hArenaGateIndex;
+                if (rejected.ok) {
+                    CloseHRun(player);
+                }
+                break;
+            }
+            Check("H12_Arena4Prerequisites", g_hArenaGateOk, g_hArenaGateDetail);
+            g_hArenaTrial = HArenaTrial::EarnedTribute;
+            g_hArenaCosaveAttempted = false;
+            if (!g_hEarnedTributeAvailable || MapDeviceRuntime::CountPlayerTributes(player) != g_hEarnedTributeBagCount) {
+                Check(kHArenaCheck, false, "The tribute earned and collected by H5 is unavailable.");
+                g_hArenaTrial = HArenaTrial::Bypass;
+                EnterPhase(Phase::ScenarioH_Arena4NegativeStart);
+                break;
+            }
             setMask(arenaReadyMask);
             SaveLoad::SyncStateToStatEngine();
             if (g_dataPack && g_dataPack->IsLoaded()) {
                 (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
             }
-            const auto stBeforeA4 = SaveLoad::GetStateCopy();
-            const auto snapBeforeA4 = g_statEngine->GetSnapshot();
-            g_hSpiritBeforeArena4 = snapBeforeA4 ? snapBeforeA4->maxSpirit : 190u;
-            g_hAscPtsBeforeArena4 = Core::PassiveTree::ComputeEarnedAscendancyPoints(stBeforeA4.tree, *g_config);
+            const auto st = SaveLoad::GetStateCopy();
+            const auto snap = g_statEngine->GetSnapshot();
+            g_hSpiritBeforeArena4 = snap ? snap->baseMaxSpirit : 0u;
+            g_hAscPtsBeforeArena4 = Core::PassiveTree::ComputeEarnedAscendancyPoints(st.tree, *g_config);
             g_hArenaPhase1Clamped = false;
             g_hArenaInvulnBlocked = false;
             g_hArenaPhase2Clamped = false;
-            g_hArenaBossFormId = 0;
-            g_hMovedToArenaBoss = false;
-            g_hTestArenaBypass = true;
-            g_hTributesBeforeArena = tributeCount;
-
-            const auto a4Res = MapDeviceRuntime::OpenArena4(player);
-            if (!a4Res.ok) {
-                Check("H13_Arena4EarlyKillNoReward", false, std::format("OpenArena4 failed: {}", a4Res.message));
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Skipped because the early-kill arena could not be opened.");
-                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
+            g_hArenaDamageKill = false;
+            g_hArenaResultBeforeReturn.reset();
+            g_hTributesBeforeArena = g_hEarnedTributeBagCount;
+            const auto opened = MapDeviceRuntime::OpenArena4(player);
+            if (!opened.ok) {
+                Check(kHArenaCheck, false, opened.message);
+                g_hArenaTrial = HArenaTrial::Bypass;
+                EnterPhase(Phase::ScenarioH_Arena4NegativeStart);
                 break;
             }
+            EnterPhase(Phase::ScenarioH_Arena4EntryWait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4NegativeStart: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool closed = !travel.kind && !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
+            if (WaitForMapTravel(player, closed, kMapReturnWaitSec)) {
+                if (!closed) {
+                    CloseHRun(player);
+                }
+                break;
+            }
+            const auto* arena = MapPackRuntime::FindForms(&MapPackRuntime::Manifest().arena);
+            if (arena && MapDeviceRuntime::GetCellResetStatus(arena->cellId).pending &&
+                PhaseElapsedSec() < kMapResetWaitSec) {
+                break;
+            }
+            auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+            if (!player || !closed || !IsPlayerReadyInWorld() || !tribute) {
+                Check(NegativeArenaCheck(), false, "Cannot set up an independent arena run or its tribute fixture.");
+                EnterPhase(Phase::ScenarioH_Arena4NegativeReturnWait);
+                break;
+            }
+            const auto mask = SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask;
+            if (!g_hMaskBeforeNegativeArena) {
+                g_hMaskBeforeNegativeArena = mask;
+            }
+            SaveLoad::UpdateState([mask](PersistentState& st) {
+                st.tree.ascendancyMilestonesBitmask = (mask | Core::kArena4PrerequisiteMask) & ~Core::kArena4MilestoneBit;
+            });
+            player->StopCombat();
+            RestorePlayerVitals(player, true, true);
+            g_hNegativeTributeBaseline = MapDeviceRuntime::CountPlayerTributes(player);
+            g_hArenaResultBeforeReturn.reset();
+            player->AddObjectToContainer(tribute, nullptr, 1, nullptr);
+            g_hTributesBeforeArena = MapDeviceRuntime::CountPlayerTributes(player);
+            g_hNegativeTributeOutstanding = g_hTributesBeforeArena == g_hNegativeTributeBaseline + 1;
+            const auto opened = g_hNegativeTributeOutstanding ? MapDeviceRuntime::OpenArena4(player)
+                : MapActionResult{ false, "A separate negative-test tribute was not added." };
+            if (!opened.ok) {
+                Check(NegativeArenaCheck(), false, opened.message);
+                EnterPhase(Phase::ScenarioH_Arena4NegativeReturnWait);
+                break;
+            }
+            g_hArenaDamageKill = false;
+            g_hArenaBypassPrimed = false;
+            g_hCompanionAttackPhase = 0;
+            g_hCompanionAttackPowerSet = false;
             EnterPhase(Phase::ScenarioH_Arena4EntryWait);
             break;
         }
@@ -5064,180 +7419,134 @@ namespace SkyrimPoE::Runtime
                 RestorePlayerVitals(player, true, true);
             }
             const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
-            const bool ready = IsPlayerReadyInWorld() && MapDeviceRuntime::IsPlayerInActiveMapCell() &&
-                               act.active && act.isArena4 && (act.bossRefFormId != 0);
+            const bool ready = MapDeviceRuntime::IsPlayerInActiveMapCell() && act.active && act.isArena4 && act.bossRefFormId != 0;
             if (WaitForMapTravel(player, ready, kMapEntryWaitSec)) {
                 break;
             }
-            if (!ready || MapDeviceRuntime::GetTravelStatus(player).kind) {
-                if (g_hTestArenaBypass) {
-                    Check("H13_Arena4EarlyKillNoReward", false, "Arena arrival and boss spawn were not confirmed.");
+            const bool earned = g_hArenaTrial == HArenaTrial::EarnedTribute;
+            auto* boss = ready ? RE::TESForm::LookupByID<RE::Actor>(act.bossRefFormId) : nullptr;
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            if (ready && !travel.kind && !g_hArenaSpawnsOk.has_value()) {
+                const auto* forms = MapPackRuntime::FindForms(&MapPackRuntime::Manifest().arena);
+                const auto layout = ObserveHSpawnLayout(forms, act);
+                g_hArenaSpawnsOk = layout.Meets(kHArenaInitialReinforcements);
+                g_hArenaSpawnsDetail = std::format(
+                    "Arena phase 1: bosses={}, reinforcements={}/{}, invalid={}, minDist={:.1f}, registry={}",
+                    layout.bosses, layout.adds, kHArenaInitialReinforcements, layout.invalid, layout.nearest, layout.matchesRegistry);
+                Check(kHDungeonCheck, !MapPackRuntime::Manifest().maps.empty() && g_hDungeonsOk && *g_hArenaSpawnsOk,
+                    g_hDungeonsDetail + g_hArenaSpawnsDetail);
+            }
+            const auto prepared = ready && !travel.kind
+                ? PrepareHBoss(player, boss, g_hArenaTrial == HArenaTrial::Companion) : HBossReadiness::Unavailable;
+            if (prepared == HBossReadiness::Waiting) {
+                break;
+            }
+            const auto count = MapDeviceRuntime::CountPlayerTributes(player);
+            const bool consumed = count == g_hTributesBeforeArena - 1;
+            if (prepared != HBossReadiness::Ready || !consumed || act.arenaPhase != Core::kArena4FirstPhase) {
+                Check(earned ? kHArenaCheck : NegativeArenaCheck(), false,
+                    std::format("Phase 1 boss/arrival unavailable or tribute not consumed ({} -> {}).", g_hTributesBeforeArena, count));
+                CloseHRun(player);
+                if (earned) {
+                    g_hArenaTrial = HArenaTrial::Bypass;
+                    EnterPhase(Phase::ScenarioH_Arena4NegativeStart);
+                } else {
+                    EnterPhase(Phase::ScenarioH_Arena4NegativeReturnWait);
                 }
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, g_hTestArenaBypass
-                    ? "Skipped because the early-kill arena arrival failed."
-                    : "Arena arrival and boss spawn were not confirmed.");
-                (void)MapDeviceRuntime::AbandonActiveMap(player);
-                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }
             g_hArenaBossFormId = act.bossRefFormId;
-            auto* boss = (g_hArenaBossFormId != 0) ? RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId) : nullptr;
-            if (boss && player && !boss->IsDead()) {
-                if (!boss->Is3DLoaded()) {
-                    if (!g_hMovedToArenaBoss) {
-                        player->MoveTo(boss);
-                        g_hMovedToArenaBoss = true;
-                    }
-                    if (PhaseElapsedSec() < 25.0) {
-                        break;
-                    }
-                }
-                if (g_hTestArenaBypass) {
-                    // 기여가 있어도 1페이즈의 직접 사망은 해금 및 처치 보상 자격을 얻을 수 없다.
-                    (void)SkillExecution::DealDirectSkillDamage(boss, 1.0, Core::DamageType::Physical, true, true);
-                    const auto rec = g_killTracker ? g_killTracker->GetActorRecordSnapshot(g_hArenaBossFormId)
-                        : Core::ActorKillRecordSnapshot{};
-                    const auto* playerCell = player->GetParentCell();
-                    const auto killContext = MapDeviceRuntime::GetMapKillContext(
-                        g_hArenaBossFormId, playerCell ? playerCell->GetFormID() : 0);
-                    const bool eligibleBeforePhaseCheck = Core::MapSystem::IsMapKillRewardEligible(
-                        rec.playerContributed && rec.wasHostileOnFirstHit, killContext.rewardBlocked, killContext.runFailed);
-                    g_hArenaBypassPrimed = killContext.runId == act.runId && killContext.isBoss &&
-                        eligibleBeforePhaseCheck && !boss->IsDead() &&
-                        MapDeviceRuntime::GetActiveMapStateCopy().arenaPhase == Core::kArena4FirstPhase &&
-                        MapDeviceRuntime::CountPlayerTributes(player) == g_hTributesBeforeArena - 1;
-                    g_hXpBeforeArenaBypass = SaveLoad::GetStateCopy().exileXp;
-                    boss->KillImmediate();
-                    EnterPhase(Phase::ScenarioH_Arena4BypassKillWait);
-                    break;
-                }
-                const auto* av = boss->AsActorValueOwner();
-                const double maxHp = av ? std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
-                // 1타 원샷 시도 -> Phase 1 하한(66.5%) 클램프 + Phase 2 전환 + 0.8초 무적
-                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
-                const double hpAfter1 = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
-                const auto actAfter1 = MapDeviceRuntime::GetActiveMapStateCopy();
-                g_hArenaPhase1Clamped = !boss->IsDead() && (hpAfter1 >= maxHp * 0.60) && (actAfter1.arenaPhase == 2u);
-
-                // 즉시 무적 중 2타 -> 피해 0 차단 확인
-                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
-                const double hpAfterInv = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
-                g_hArenaInvulnBlocked = !boss->IsDead() && (std::abs(hpAfterInv - hpAfter1) < 1.0);
-            }
-            if (g_hTestArenaBypass) {
-                Check("H13_Arena4EarlyKillNoReward", false, "The arena boss was unavailable before the bypass kill.");
-                (void)MapDeviceRuntime::AbandonActiveMap(player);
-                EnterPhase(Phase::ScenarioH_Arena4BypassReturnWait);
+            if (g_hArenaTrial == HArenaTrial::Bypass) {
+                // 기여가 생긴 1페이즈에서 의도적으로 엔진 즉사를 사용한다.
+                (void)SkillExecution::DealDirectSkillDamage(
+                    boss, kHContributionHitDamage, Core::DamageType::Physical, true, true);
+                const auto rec = g_killTracker ? g_killTracker->GetActorRecordSnapshot(g_hArenaBossFormId)
+                    : Core::ActorKillRecordSnapshot{};
+                const auto killContext = MapDeviceRuntime::GetMapKillContext(
+                    g_hArenaBossFormId, player->GetParentCell()->GetFormID());
+                g_hArenaBypassPrimed = killContext.runId == act.runId && killContext.isBoss && !boss->IsDead() &&
+                    Core::MapSystem::IsMapKillRewardEligible(
+                        rec.playerContributed && rec.wasHostileOnFirstHit, killContext.rewardBlocked, killContext.runFailed) &&
+                    MapDeviceRuntime::GetActiveMapStateCopy().arenaPhase == Core::kArena4FirstPhase;
+                BeginHArenaNegativeKill(boss);
+                boss->KillImmediate();
+                EnterPhase(Phase::ScenarioH_Arena4NegativeKillWait);
                 break;
             }
-            EnterPhase(Phase::ScenarioH_Arena4Phase2Wait);
-            break;
-        }
-
-        case Phase::ScenarioH_Arena4BypassKillWait: {
-            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
-            if (!act.bossKilled && PhaseElapsedSec() < kMapBossKillWaitSec) {
+            if (earned) {
+                const bool hit = SkillExecution::DealDirectSkillDamage(
+                    boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
+                g_hArenaPhase1Clamped = hit && ArenaBossAtFloor(boss, kHArenaFloorFirst, kHArenaSecondPhase);
+                const auto ratio = BossHealthRatio(boss);
+                const bool blocked = MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId) &&
+                    !SkillExecution::DealDirectSkillDamage(boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
+                g_hArenaInvulnBlocked = blocked && !boss->IsDead() &&
+                    std::abs(BossHealthRatio(boss) - ratio) <= kHArenaPhaseHealthUnchangedTolerance;
+                EnterPhase(Phase::ScenarioH_Arena4Phase2Wait);
                 break;
             }
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            const auto state = SaveLoad::GetStateCopy();
-            const bool unlocked = (state.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) != 0u;
-            const auto tributeCount = MapDeviceRuntime::CountPlayerTributes(player);
-            const auto returned = MapDeviceRuntime::ReturnPortal(player);
-            Check("H13_Arena4EarlyKillNoReward",
-                g_hArenaBypassPrimed && act.bossKilled && !unlocked && returned.ok &&
-                tributeCount == g_hTributesBeforeArena - 1 && state.exileXp == g_hXpBeforeArenaBypass,
-                std::format("authorizedPhase1WithContribution={}, bossKilled={}, bit8={}, tributesBeforeEntry={}, tributesAfterKill={}, xp={}->{}, return={}",
-                    g_hArenaBypassPrimed, act.bossKilled, unlocked, g_hTributesBeforeArena, tributeCount,
-                    g_hXpBeforeArenaBypass, state.exileXp, returned.message));
-            if (!returned.ok) {
-                (void)MapDeviceRuntime::AbandonActiveMap(player);
-            }
-            EnterPhase(Phase::ScenarioH_Arena4BypassReturnWait);
-            break;
-        }
-
-        case Phase::ScenarioH_Arena4BypassReturnWait: {
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
-            const bool closed = !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
-            if (WaitForMapTravel(player, closed, kMapReturnWaitSec)) {
+            if (!CombatHooks::AreAllHooksInstalled()) {
+                Check(kHCompanionCheck, false, "Combat hooks incomplete. No NPC attack sent.");
+                CloseHRun(player);
+                EnterPhase(Phase::ScenarioH_Arena4NegativeReturnWait);
                 break;
             }
-            if (!player || !closed || travel.kind) {
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "The arena bypass run did not close.");
-                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
-                break;
-            }
-            const auto* arena = MapPackRuntime::FindForms(&MapPackRuntime::Manifest().arena);
-            if (arena && MapDeviceRuntime::GetCellResetStatus(arena->cellId).pending &&
-                PhaseElapsedSec() < kMapResetWaitSec) {
-                break;
-            }
-            RestorePlayerVitals(player, true, true);
-            if (player->IsInCombat()) {
-                player->StopCombat();
-            }
-            const auto a4Res = MapDeviceRuntime::OpenArena4(player);
-            if (!a4Res.ok) {
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, std::format("OpenArena4 failed: {}", a4Res.message));
-                EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
-                break;
-            }
-            g_hTestArenaBypass = false;
-            g_hMovedToArenaBoss = false;
-            EnterPhase(Phase::ScenarioH_Arena4EntryWait);
+            // 공격력은 시험 NPC 인스턴스에만 부여한다. 실제 타격은 엔진으로 보낸다.
+            g_hArenaCompanion = SpawnNpcInFrontOfPlayer(player, kNeutralNpcId, kHCompanionSpawnDistance, 0.0f, 0.0f, false);
+            CaptureHCompanionOwnership(player->GetParentCell()->GetFormID());
+            BeginHArenaNegativeKill(boss);
+            g_hNextBossHitSec = 0.0;
+            EnterPhase(Phase::ScenarioH_Arena4NegativeKillWait);
             break;
         }
 
         case Phase::ScenarioH_Arena4Phase2Wait: {
-            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
                 RestorePlayerVitals(player, true, true);
             }
-            if (g_unpausedAccumSec < 1.0 && PhaseElapsedSec() < 4.0) {
+            auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId);
+            if (!g_hArenaCosaveAttempted) {
+                const auto run = MapDeviceRuntime::TakeSnapshotForSave();
+                const bool ready = run.playerAuthorized && run.isArena4 && run.arenaPhase == kHArenaSecondPhase &&
+                    boss && !boss->IsDead() && boss->Is3DLoaded() && IsPlayerReadyInWorld();
+                if (ready && run.arenaPhaseInvulnSec >= kHArenaSaveTimerMin && run.arenaPhaseInvulnSec <= kHArenaSaveTimerMax) {
+                    g_hArenaHealthBeforeSave = BossHealthRatio(boss);
+                    g_hArenaCosaveAttempted = true;
+                    if (!StartHCosave(run, true)) {
+                        Check(kHArenaCosaveCheck, false, "Could not record the prior save-file state.");
+                    }
+                    break;
+                }
+                if (boss && !boss->IsDead() && PhaseElapsedSec() < kMapBossKillWaitSec &&
+                    MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
+                    break;
+                }
+                Check(kHArenaCosaveCheck, false, "Could not request a save with a living phase 2 boss and a partial immunity timer.");
+                g_hArenaCosaveAttempted = true;
+            }
+            if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId) &&
+                PhaseElapsedSec() < kArenaPhase3InvulnerabilityWaitSec) {
                 break;
             }
-            auto* boss = (g_hArenaBossFormId != 0) ? RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId) : nullptr;
             if (boss && !boss->IsDead()) {
-                const auto* av = boss->AsActorValueOwner();
-                const double maxHp = av ? std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
-                // Phase 2 원샷 시도 -> 33.5% 클램프 + Phase 3 전환
-                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
-                const double hpAfter2 = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
-                const auto actAfter2 = MapDeviceRuntime::GetActiveMapStateCopy();
-                g_hArenaPhase2Clamped = !boss->IsDead() && (hpAfter2 >= maxHp * 0.30) && (actAfter2.arenaPhase == 3u);
+                const bool hit = SkillExecution::DealDirectSkillDamage(
+                    boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
+                g_hArenaPhase2Clamped = hit && ArenaBossAtFloor(boss, kHArenaFloorSecond, Core::kArena4FinalPhase);
             }
             EnterPhase(Phase::ScenarioH_Arena4Phase3Wait);
             break;
         }
 
         case Phase::ScenarioH_Arena4Phase3Wait: {
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            if (player) {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
                 RestorePlayerVitals(player, true, true);
             }
-            if (g_unpausedAccumSec < 1.0 && PhaseElapsedSec() < 4.0) {
+            if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId) &&
+                PhaseElapsedSec() < kArenaPhase3InvulnerabilityWaitSec) {
                 break;
             }
-            if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
-                if (PhaseElapsedSec() >= kArenaPhase3InvulnerabilityWaitSec) {
-                    Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Arena boss immunity did not end before the phase 3 kill.");
-                    (void)MapDeviceRuntime::AbandonActiveMap(player);
-                    EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
-                }
-                break;
-            }
-            auto* boss = (g_hArenaBossFormId != 0) ? RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId) : nullptr;
-            if (boss && !boss->IsDead()) {
-                // Phase 3 처치 허용
-                (void)SkillExecution::DealDirectSkillDamage(boss, 99999.0, Core::DamageType::Physical, true, true);
-                if (!boss->IsDead()) {
-                    if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
-                        break;
-                    }
-                    boss->KillImmediate();
-                }
-            }
+            g_hNextBossHitSec = 0.0;
             EnterPhase(Phase::ScenarioH_Arena4KillWait);
             break;
         }
@@ -5247,35 +7556,187 @@ namespace SkyrimPoE::Runtime
             if (player) {
                 RestorePlayerVitals(player, true, true);
             }
+            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
+            auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId);
+            if (!g_hArenaDamageKill && boss && !boss->IsDead() && g_hArenaPhase2Clamped && PhaseElapsedSec() >= g_hNextBossHitSec &&
+                PhaseElapsedSec() < kMapBossKillWaitSec && act.arenaPhase == Core::kArena4FinalPhase &&
+                !MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
+                g_hNextBossHitSec = PhaseElapsedSec() + kHBossHitIntervalSec;
+                const bool hit = SkillExecution::DealDirectSkillDamage(
+                    boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
+                g_hArenaDamageKill = hit && (boss->IsDead() || BossHealthRatio(boss) <= 0.0);
+            }
             const auto stNow = SaveLoad::GetStateCopy();
             const bool asc4Done = (stNow.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) != 0u;
-            if (!asc4Done && g_unpausedAccumSec < 5.0 && PhaseElapsedSec() < 8.0) {
+            if (!(g_hArenaDamageKill && act.bossKilled && asc4Done) && PhaseElapsedSec() < kMapBossKillWaitSec) {
                 break;
             }
             if (g_dataPack && g_dataPack->IsLoaded()) {
                 (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
             }
-            const auto snapAfter = g_statEngine->GetSnapshot();
+            const auto snap = g_statEngine->GetSnapshot();
             const auto ascAfter = Core::PassiveTree::ComputeEarnedAscendancyPoints(stNow.tree, *g_config);
-            const std::uint32_t spiritAfter = snapAfter ? snapAfter->maxSpirit : 0u;
+            const std::uint32_t spiritAfter = snap ? snap->baseMaxSpirit : 0u;
+            const auto returned = act.bossKilled ? MapDeviceRuntime::ReturnPortal(player)
+                : MapActionResult{ false, "Boss death not confirmed." };
+            g_hArenaReturnRequested = returned.ok;
+            g_hArenaReturnState = act;
+            g_hArenaResultBeforeReturn = g_hArenaPhase1Clamped && g_hArenaInvulnBlocked && g_hArenaPhase2Clamped &&
+                g_hArenaDamageKill && act.bossKilled && asc4Done && ascAfter == kHArenaExpectedAscendancyPoints &&
+                spiritAfter == kHArenaExpectedBaseSpirit;
+            g_hArenaResultDetail = std::format(
+                "p1Clamp={}, invulnBlocked={}, p2Clamp={}, damageKill={}, bossKilled={}, bit8={}, asc={}->{}, baseSpirit={}->{}, return={}",
+                g_hArenaPhase1Clamped, g_hArenaInvulnBlocked, g_hArenaPhase2Clamped, g_hArenaDamageKill, act.bossKilled,
+                asc4Done, g_hAscPtsBeforeArena4, ascAfter, g_hSpiritBeforeArena4, spiritAfter, returned.message);
+            if (!returned.ok) {
+                CloseHRun(player);
+            }
+            EnterPhase(Phase::ScenarioH_Arena4ReturnWait);
+            break;
+        }
 
-            const auto returnRes = MapDeviceRuntime::ReturnPortal(player);
-            Check("H6_Arena4ThreePhaseBossAndSpirit220",
-                g_hArenaPhase1Clamped && g_hArenaInvulnBlocked && g_hArenaPhase2Clamped &&
-                asc4Done && (ascAfter == 8) && (spiritAfter == 220u) && returnRes.ok,
-                std::format("p1Clamp={}, invulnBlk={}, p2Clamp={}, bit8={}, asc={}->{}, spirit={}->{}, return={}",
-                    g_hArenaPhase1Clamped, g_hArenaInvulnBlocked, g_hArenaPhase2Clamped,
-                    asc4Done, g_hAscPtsBeforeArena4, ascAfter, g_hSpiritBeforeArena4, spiritAfter, returnRes.message));
+        case Phase::ScenarioH_Arena4ReturnWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool closed = !travel.kind && !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
+            if (WaitForMapTravel(player, closed, kMapReturnWaitSec)) {
+                break;
+            }
+            const bool atOrigin = IsPlayerReadyInWorld() && HAtSavedReturn(player, g_hArenaReturnState);
+            Check(kHArenaCheck, g_hArenaResultBeforeReturn.value_or(false) && g_hArenaReturnRequested && closed && atOrigin,
+                std::format("{}, closed={}, atOrigin={}", g_hArenaResultDetail, closed, atOrigin));
+            g_hArenaResultBeforeReturn.reset();
+            g_hArenaReturnRequested = false;
+            g_hArenaTrial = HArenaTrial::Bypass;
+            EnterPhase(Phase::ScenarioH_Arena4NegativeStart);
+            break;
+        }
 
-            if (!returnRes.ok) {
-                // 결정 175: 결투장은 포털 0이라 귀환하면 회차가 끝나야 한다. 거절되면 실패로 남기고 포기로 정리한다.
-                (void)MapDeviceRuntime::AbandonActiveMap(player);
+        case Phase::ScenarioH_Arena4NegativeKillWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                RestorePlayerVitals(player, true, true);
+            }
+            auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId);
+            const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
+            const bool bypass = g_hArenaTrial == HArenaTrial::Bypass;
+            const auto timeout = bypass ? kMapBossKillWaitSec : kHCompanionKillWaitSec;
+            if (!bypass && !g_hArenaDamageKill && player && boss && !boss->IsDead() && act.active && !act.failed &&
+                MapDeviceRuntime::IsPlayerInActiveMapCell() && !MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId) &&
+                PhaseElapsedSec() >= g_hNextBossHitSec && PhaseElapsedSec() < timeout) {
+                auto attacker = g_hArenaCompanion.get();
+                const auto* base = attacker ? attacker->GetBaseObject() : nullptr;
+                if (attacker && !attacker->IsDead() && attacker->Is3DLoaded() && attacker.get() != player &&
+                    boss->Is3DLoaded() && attacker->GetParentCell() == boss->GetParentCell() &&
+                    base && base->GetFormID() == kNeutralNpcId) {
+                    if (!g_hCompanionAttackPowerSet) {
+                        if (auto* values = attacker->AsActorValueOwner()) {
+                            values->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kUnarmedDamage,
+                                kHCompanionUnarmedDamage);
+                            g_hCompanionAttackPowerSet = true;
+                        }
+                    }
+                    g_hNextBossHitSec = PhaseElapsedSec() + kHBossHitIntervalSec;
+                    g_hCompanionAttackPhase = act.arenaPhase;
+                    CallDealDamage(attacker.get(), boss, nullptr, false);
+                    g_hArenaDamageKill = boss->IsDead() || BossHealthRatio(boss) <= 0.0;
+                }
+            }
+            if (!act.bossKilled && PhaseElapsedSec() < timeout) {
+                break;
+            }
+            if (!g_hArenaResultBeforeReturn.has_value()) {
+                const auto state = SaveLoad::GetStateCopy();
+                const bool unlocked = (state.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) != 0u;
+                const auto rec = g_killTracker ? g_killTracker->GetActorRecordSnapshot(g_hArenaBossFormId)
+                    : Core::ActorKillRecordSnapshot{};
+                const auto drops = WorldDropTracker::TakeSnapshotForSave();
+                const bool noGroundLoot = std::ranges::none_of(drops, [](const auto& drop) {
+                    return drop.corpseRefFormId == g_hArenaBossFormId;
+                });
+                const bool noCorpseLoot = boss && CountArenaCorpseItems(boss) == g_hCorpseItemsBeforeNegativeKill;
+                bool noCharmCharge = g_charmSystem != nullptr;
+                if (g_charmSystem) {
+                    const auto charms = g_charmSystem->Slots();
+                    for (std::size_t i = 0; i < charms.size(); ++i) {
+                        noCharmCharge = noCharmCharge && charms[i].charges <= g_hCharmsBeforeNegativeKill[i].charges;
+                    }
+                }
+                const bool sameGemProgress = ObserveHGemProgress(state) == g_hGemsBeforeNegativeKill;
+                const bool qualifiedTrial = bypass ? g_hArenaBypassPrimed : !rec.playerContributed &&
+                    g_hArenaDamageKill && g_hCompanionAttackPhase == Core::kArena4FinalPhase;
+                g_hArenaResultBeforeReturn = qualifiedTrial && act.bossKilled && !unlocked &&
+                    state.exileXp == g_hXpBeforeNegativeKill && state.exileLevel == g_hLevelBeforeNegativeKill &&
+                    sameGemProgress && noCorpseLoot && noGroundLoot && noCharmCharge;
+                g_hArenaResultDetail = std::format(
+                    "trialReady={}, bossKilled={}, npcDamageKill={}, npcPhase={}, contribution={}, bit8={}, xp={}->{}, level={}->{}, gemsUnchanged={}, noCorpseLoot={}, noGroundLoot={}, noCharmCharge={}",
+                    qualifiedTrial, act.bossKilled, g_hArenaDamageKill, g_hCompanionAttackPhase, rec.playerContributed,
+                    unlocked, g_hXpBeforeNegativeKill, state.exileXp, g_hLevelBeforeNegativeKill, state.exileLevel,
+                    sameGemProgress, noCorpseLoot, noGroundLoot, noCharmCharge);
+                BeginHCompanionCleanup();
+            }
+            if (IsHCompanionCleanupPending()) {
+                break;
+            }
+            const auto returned = act.bossKilled ? MapDeviceRuntime::ReturnPortal(player)
+                : MapActionResult{ false, "Boss death not confirmed within the trial window." };
+            g_hArenaReturnRequested = returned.ok;
+            g_hArenaReturnState = act;
+            g_hArenaResultDetail += std::format(", return={}", returned.message);
+            if (!returned.ok) {
+                CloseHRun(player);
+            }
+            EnterPhase(Phase::ScenarioH_Arena4NegativeReturnWait);
+            break;
+        }
+
+        case Phase::ScenarioH_Arena4NegativeReturnWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const bool closed = !travel.kind && !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
+            if (WaitForMapTravel(player, closed, kMapReturnWaitSec)) {
+                if (!g_hArenaReturnRequested) {
+                    CloseHRun(player);
+                }
+                break;
+            }
+            if (g_hArenaResultBeforeReturn.has_value()) {
+                const bool atOrigin = IsPlayerReadyInWorld() && HAtSavedReturn(player, g_hArenaReturnState);
+                const bool companionCleaned = g_hArenaTrial == HArenaTrial::Bypass || WasHCompanionCleanupSuccessful();
+                const auto tributeCount = MapDeviceRuntime::CountPlayerTributes(player);
+                const auto state = SaveLoad::GetStateCopy();
+                const bool noDelayedRewards = (state.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) == 0 &&
+                    state.exileXp == g_hXpBeforeNegativeKill && state.exileLevel == g_hLevelBeforeNegativeKill &&
+                    ObserveHGemProgress(state) == g_hGemsBeforeNegativeKill;
+                Check(NegativeArenaCheck(), *g_hArenaResultBeforeReturn && g_hArenaReturnRequested && closed && atOrigin &&
+                        companionCleaned && noDelayedRewards && tributeCount == g_hNegativeTributeBaseline,
+                    std::format("{}, closed={}, atOrigin={}, cleanup={}, noDelayedRewards={}, tribute={}/{}", g_hArenaResultDetail,
+                        closed, atOrigin, companionCleaned, noDelayedRewards, tributeCount, g_hNegativeTributeBaseline));
+                g_hArenaResultBeforeReturn.reset();
+            }
+            ClearHNegativeArenaFixture(player);
+            if (IsHCompanionCleanupPending()) {
+                break;
+            }
+            g_hArenaReturnRequested = false;
+            if (g_hArenaTrial == HArenaTrial::Bypass) {
+                g_hArenaTrial = HArenaTrial::Companion;
+                EnterPhase(Phase::ScenarioH_Arena4NegativeStart);
+                break;
+            }
+            if (const auto mask = std::exchange(g_hMaskBeforeNegativeArena, std::nullopt)) {
+                SaveLoad::UpdateState([mask](PersistentState& st) { st.tree.ascendancyMilestonesBitmask = *mask; });
+                SaveLoad::SyncStateToStatEngine();
             }
             EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
             break;
         }
 
         case Phase::ScenarioH_PostArenaReturnWait: {
+            if (!g_hArenaSpawnsOk.has_value()) {
+                g_hArenaSpawnsOk = false;
+                Check(kHDungeonCheck, false, g_hDungeonsDetail + g_hArenaSpawnsDetail);
+            }
             auto* player = RE::PlayerCharacter::GetSingleton();
             const auto travel = MapDeviceRuntime::GetTravelStatus(player);
             const bool outsideClosedRun = !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
@@ -5283,7 +7744,7 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!player || !outsideClosedRun || travel.kind || !IsPlayerReadyInWorld()) {
-                FinishHAfterCosaveFailure("Could not confirm arena return and closure before the map round trip.");
+                ContinueHAfterCosaveFailure("Could not confirm arena return and closure before the map round trip.");
                 break;
             }
             constexpr auto kCosaveMapTier = Core::kMinMapTier;
@@ -5292,19 +7753,9 @@ namespace SkyrimPoE::Runtime
                 PhaseElapsedSec() < kMapResetWaitSec) {
                 break;
             }
-            auto* map = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(kCosaveMapTier));
-            if (!map) {
-                FinishHAfterCosaveFailure("The co-save test map item was unavailable.");
-                break;
-            }
-            RestorePlayerVitals(player, true, true);
-            if (player->IsInCombat()) {
-                player->StopCombat();
-            }
-            player->AddObjectToContainer(map, nullptr, 1, nullptr);
-            const auto open = MapDeviceRuntime::OpenNormalMap(player, {}, map->GetFormID());
+            const auto open = OpenHMap(player, kCosaveMapTier, true);
             if (!open.ok) {
-                FinishHAfterCosaveFailure(open.message);
+                ContinueHAfterCosaveFailure(open.message);
                 break;
             }
             EnterPhase(Phase::ScenarioH_CosaveMapEntryWait);
@@ -5316,42 +7767,50 @@ namespace SkyrimPoE::Runtime
             auto run = MapDeviceRuntime::TakeSnapshotForSave();
             const bool ready = run.active && run.playerAuthorized && run.bossRefFormId != 0 &&
                 !run.bossKilled && !run.failed && MapDeviceRuntime::IsPlayerInActiveMapCell();
-            if (WaitForMapTravel(player, ready, kMapBossLoadWaitSec)) {
+            if (WaitForMapTravel(player, ready, kMapEntryWaitSec)) {
                 break;
             }
             if (!player || !ready || !IsPlayerReadyInWorld()) {
-                FinishHAfterCosaveFailure("The active run was unavailable for saving.");
+                ContinueHAfterCosaveFailure("The active run was unavailable for saving.");
                 break;
             }
             RestorePlayerVitals(player, true, true);
-            g_hAtlasBeforeCosave = SaveLoad::GetStateCopy().atlas;
-            g_hRunBeforeCosave = std::move(run);
-            {
-                std::scoped_lock lock(g_msgMutex);
-                g_expectedSaveStem = g_cfg.tempSave;
-                g_saveMatched = false;
+            if (!StartHCosave(std::move(run), false)) {
+                ContinueHAfterCosaveFailure("Could not record the prior save-file state.");
             }
-            if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
-                mgr->Save(g_cfg.tempSave.c_str());
-            }
-            g_saveAttempts = 1;
-            g_nextSaveRetryAt = Clock::now() + std::chrono::seconds(2);
-            EnterPhase(Phase::ScenarioH_SavePump);
             break;
         }
 
         case Phase::ScenarioH_SavePump: {
-            bool matched = false;
+            const bool written = IsHSaveWritten(g_cfg.tempSave);
+            std::optional<float> timerAtSave;
             {
                 std::scoped_lock lock(g_msgMutex);
-                matched = g_saveMatched;
+                timerAtSave = g_hArenaTimerAtSave;
+                if (written) {
+                    g_expectedSaveStem.clear();
+                }
             }
-            if (matched) {
+            if (written && (!g_hArenaCosaveInProgress ||
+                            (timerAtSave && *timerAtSave > 0.0f && *timerAtSave <= kHArenaSaveTimerMax))) {
+                EnterPhase(Phase::ScenarioH_SaveWaitBeforeLoad);
+                break;
+            }
+            if (g_hArenaCosaveInProgress) {
+                // 무적 만료 후 같은 이름으로 다시 저장하면 다른 상태가 시험을 통과할 수 있다.
+                if (!written && PhaseElapsedSec() <= kHSaveWaitSec) {
+                    break;
+                }
                 {
                     std::scoped_lock lock(g_msgMutex);
                     g_expectedSaveStem.clear();
+                    g_hWatchArenaCoSave = false;
                 }
-                EnterPhase(Phase::ScenarioH_SaveWaitBeforeLoad);
+                Check(kHArenaCosaveCheck, false,
+                    std::format("No verified save with a live immunity timer (written={}, timer={:.3f}s).",
+                        written, timerAtSave.value_or(0.0f)));
+                g_hArenaCosaveInProgress = false;
+                EnterPhase(Phase::ScenarioH_Arena4Phase2Wait);
                 break;
             }
             if (Clock::now() >= g_nextSaveRetryAt) {
@@ -5359,27 +7818,27 @@ namespace SkyrimPoE::Runtime
                 if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
                     mgr->Save(g_cfg.tempSave.c_str());
                 } else {
-                    FinishHAfterCosaveFailure("BGSSaveLoadManager unavailable.");
+                    ContinueHAfterCosaveFailure("BGSSaveLoadManager unavailable.");
                     break;
                 }
-                g_nextSaveRetryAt = Clock::now() + std::chrono::seconds(2);
+                g_nextSaveRetryAt = Clock::now() + kHSaveRetryDelay;
             }
-            if (PhaseElapsedSec() > 25.0) {
+            if (PhaseElapsedSec() > kHSaveWaitSec) {
                 {
                     std::scoped_lock lock(g_msgMutex);
                     g_expectedSaveStem.clear();
                 }
-                FinishHAfterCosaveFailure("Timed out waiting for Scenario H kSaveGame.");
+                ContinueHAfterCosaveFailure("Timed out waiting for the Scenario H save files to update.");
             }
             break;
         }
 
         case Phase::ScenarioH_SaveWaitBeforeLoad: {
-            if (PhaseElapsedSec() < 1.0) {
+            if (PhaseElapsedSec() < kHSaveBeforeLoadSec) {
                 break;
             }
             if (!RequestLoadSave(g_cfg.tempSave)) {
-                FinishHAfterCosaveFailure("Scenario H reload request failed.");
+                ContinueHAfterCosaveFailure("Scenario H reload request failed.");
                 break;
             }
             EnterPhase(Phase::ScenarioH_AwaitReload);
@@ -5395,13 +7854,13 @@ namespace SkyrimPoE::Runtime
                 ok = g_postLoadSucceeded;
             }
             if (signaled && !ok) {
-                FinishHAfterCosaveFailure("kPostLoadGame failed on Scenario H reload.");
+                ContinueHAfterCosaveFailure("kPostLoadGame failed on Scenario H reload.");
                 return;
             }
             if (signaled && ok && IsPlayerReadyInWorld()) {
                 EnterPhase(Phase::ScenarioH_ReloadSettle);
-            } else if (PhaseElapsedSec() > 90.0) {
-                FinishHAfterCosaveFailure("Timed out waiting for Scenario H reload.");
+            } else if (PhaseElapsedSec() > kHReloadWaitSec) {
+                ContinueHAfterCosaveFailure("Timed out waiting for Scenario H reload.");
             }
             break;
         }
@@ -5411,19 +7870,16 @@ namespace SkyrimPoE::Runtime
             if (player) {
                 RestorePlayerVitals(player, true, true);
             }
-            if (g_unpausedAccumSec < 2.0 && PhaseElapsedSec() < 8.0) {
+            if (!g_hArenaCosaveInProgress && g_unpausedAccumSec < kHReloadSettleSec &&
+                PhaseElapsedSec() < kHReloadSettleLimitSec) {
                 break;
             }
             const auto st = SaveLoad::GetStateCopy();
-            const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
-            const bool t10Ok = (st.atlas.completedTierMask & static_cast<std::uint16_t>(1u << 9u)) != 0u;
-            const bool asc4Ok = (st.tree.ascendancyMilestonesBitmask & 0x8u) != 0u;
-            const bool spiritOk = snap && (snap->maxSpirit == 220u);
+            const bool milestonesRestored = st.tree.ascendancyMilestonesBitmask == g_hMilestonesBeforeCosave;
             const auto versions = SaveLoad::GetLoadedMapRecordVersions();
             const auto run = MapDeviceRuntime::TakeSnapshotForSave();
             const auto& expected = g_hRunBeforeCosave;
             const bool atlasRestored = st.atlas.completedTierMask == g_hAtlasBeforeCosave.completedTierMask &&
-                st.atlas.totalMapsCleared >= 1 &&
                 st.atlas.totalMapsCleared == g_hAtlasBeforeCosave.totalMapsCleared &&
                 st.atlas.highestTierCleared == g_hAtlasBeforeCosave.highestTierCleared &&
                 st.atlas.firstTributeGiven == g_hAtlasBeforeCosave.firstTributeGiven;
@@ -5437,27 +7893,58 @@ namespace SkyrimPoE::Runtime
                 run.mods == expected.mods && run.returnCellFormId == expected.returnCellFormId &&
                 run.returnWorldspaceFormId == expected.returnWorldspaceFormId &&
                 run.returnPos == expected.returnPos && run.returnAngle == expected.returnAngle;
-            const bool cosaveOk = versions.atlas == SaveLoad::kAtlasVersion && versions.maps == SaveLoad::kMapsVersion &&
-                atlasRestored && runRestored && t10Ok && asc4Ok && spiritOk && st.atlas.firstTributeGiven;
+            const bool versionsOk = versions.atlas == SaveLoad::kAtlasVersion && versions.maps == SaveLoad::kMapsVersion;
+            if (g_hArenaCosaveInProgress) {
+                auto* boss = RE::TESForm::LookupByID<RE::Actor>(run.bossRefFormId);
+                const auto profile = MonsterRuntime::GetProfileCopy(run.bossRefFormId);
+                const bool phaseModsRestored = profile && profile->HasMod(Core::MonsterModKind::Hasted) &&
+                    profile->HasMod(Core::MonsterModKind::ExtraFire);
+                if ((!runRestored || !boss || !boss->Is3DLoaded() || !phaseModsRestored) &&
+                    PhaseElapsedSec() < kHReloadSettleLimitSec) {
+                    break;
+                }
+                std::optional<float> savedTimer;
+                std::optional<float> loadedTimer;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_hWatchArenaCoSave = false;
+                    savedTimer = g_hArenaTimerAtSave;
+                    loadedTimer = g_hArenaTimerAtLoad;
+                }
+                const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(run));
+                const double ratio = BossHealthRatio(boss);
+                const bool livingPhase2 = forms && boss && boss->Is3DLoaded() && !boss->IsDead() && !boss->IsDisabled() &&
+                    boss->GetParentCell() == forms->cell && run.arenaPhase == kHArenaSecondPhase && !run.bossKilled &&
+                    std::abs(ratio - g_hArenaHealthBeforeSave) <= kHArenaHealthRatioTolerance;
+                // SKSE의 저장 메시지는 엔진 저장 직전, 로드 완료 메시지는 로드 반환 직후에 온다.
+                // 무적 타이머가 메인 틱에서 다시 감소하기 전 두 시점의 값을 대조한다.
+                const bool timerRestored = savedTimer && loadedTimer && *loadedTimer > 0.0f &&
+                    std::abs(*loadedTimer - *savedTimer) <= kHArenaSaveTimerTolerance;
+                Check(kHArenaCosaveCheck, versionsOk && atlasRestored && milestonesRestored && runRestored &&
+                        livingPhase2 && timerRestored && phaseModsRestored,
+                    std::format("ATLS v{}, MAPS v{}, atlas={}, run={}, runId={}/{}, phase={}, boss=0x{:08X}, alivePhase2={}, health={:.4f}->{:.4f}, immunity request/save/load={:.3f}/{:.3f}/{:.3f}s, phaseMods={}, milestones={}",
+                        versions.atlas, versions.maps, atlasRestored, runRestored, run.runId, expected.runId, run.arenaPhase,
+                        run.bossRefFormId, livingPhase2, g_hArenaHealthBeforeSave, ratio, expected.arenaPhaseInvulnSec,
+                        savedTimer.value_or(0.0f), loadedTimer.value_or(0.0f), phaseModsRestored, milestonesRestored));
+                g_hArenaCosaveInProgress = false;
+                EnterPhase(Phase::ScenarioH_Arena4Phase2Wait);
+                break;
+            }
+            const bool cosaveOk = versionsOk && atlasRestored && milestonesRestored && runRestored && !expected.mods.empty();
             const auto detail = std::format(
-                "ATLS v{}, MAPS v{}, atlasMask=0x{:04X}, cleared={}, trib={}, msMask=0x{:X}, spirit={}, atlasRestored={}, runRestored={}",
+                "ATLS v{}, MAPS v{}, atlasMask=0x{:04X}, cleared={}, trib={}, msMask=0x{:X}, atlasRestored={}, milestonesRestored={}, runRestored={}, mods={}/{}",
                 versions.atlas, versions.maps,
                 st.atlas.completedTierMask, st.atlas.totalMapsCleared, st.atlas.firstTributeGiven,
-                st.tree.ascendancyMilestonesBitmask, snap ? snap->maxSpirit : 0u, atlasRestored, runRestored);
-            if (!cosaveOk) {
-                FinishHAfterCosaveFailure(detail);
-                break;
-            }
-            Check("H7_MapsAndTreeCosaveRoundTrip", true, detail);
-
-            if (run.active && !MapDeviceRuntime::AbandonActiveMap(player).ok) {
-                Check("H8_SafeUninstallCleanupAndNoReapply", false, "Could not abandon the co-save run before cleanup.");
-                FinishAndScheduleQuit("Scenario H cleanup setup failed.");
-                break;
-            }
-            EnterPhase(Phase::ScenarioH_UninstallPrepare);
+                st.tree.ascendancyMilestonesBitmask, atlasRestored, milestonesRestored, runRestored,
+                run.mods.size(), expected.mods.size());
+            Check("H7_MapsAndTreeCosaveRoundTrip", cosaveOk, detail);
+            StartHContractAfterCosave(player);
             break;
         }
+
+        case Phase::ScenarioH_Contract:
+            TickHContract(paused, deltaSec);
+            break;
 
         case Phase::ScenarioH_UninstallPrepare: {
             // H8 (반드시 최후반 — 이후 저장 금지!): 안전 제거 정리 + 다음 프레임 미재오염 확인

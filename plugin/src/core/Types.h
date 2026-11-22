@@ -241,8 +241,10 @@ namespace SkyrimPoE::Core
         bool lootSoundEnabled = true;
 
         // [Spirit] (5단계: 결정 161)
-        std::uint32_t spiritBase = 100;
-        std::uint32_t spiritPerMilestone = 30;
+        static constexpr std::uint32_t kDefaultSpiritBase = 100;
+        static constexpr std::uint32_t kDefaultSpiritPerMilestone = 30;
+        std::uint32_t spiritBase = kDefaultSpiritBase;
+        std::uint32_t spiritPerMilestone = kDefaultSpiritPerMilestone;
 
         // [Charms] (5단계: 결정 162)
         bool enableCharms = true;

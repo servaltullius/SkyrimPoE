@@ -12,6 +12,7 @@
 #include "core/StatEngine.h"
 #include "core/Types.h"
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -21,10 +22,27 @@ namespace SkyrimPoE::Runtime
 {
     struct PersistentState;
 
+    enum class MapEntryDenial
+    {
+        None,
+        ArenaMissingMilestones,
+        ArenaAlreadyCleared,
+        NoReenterableRun,
+        NoPortals
+    };
+
     struct MapActionResult
     {
         bool ok = false;
         std::string message;
+        MapEntryDenial entryDenial = MapEntryDenial::None;
+    };
+
+    struct MapDeathEscapeRequestObservation
+    {
+        std::uint64_t count = 0;
+        RE::FormID attackerId = 0;
+        std::chrono::steady_clock::time_point acceptedAt{};
     };
 
     struct UninstallCleanupRemaining
@@ -118,6 +136,7 @@ namespace SkyrimPoE::Runtime
         static MapActionResult AbandonActiveMap(RE::PlayerCharacter* player);
         static MapActionResult SafeEscape(RE::PlayerCharacter* player);
         [[nodiscard]] static MapTravelStatus GetTravelStatus(RE::PlayerCharacter* player);
+        [[nodiscard]] static Core::MapTravelSettings GetTravelSettings() noexcept;
         [[nodiscard]] static double GetTravelArrivalRadius() noexcept;
         [[nodiscard]] static double GetFallMargin() noexcept;
         // 입구로 옮긴 낙하 복귀 횟수(자동 시험 H10)
@@ -144,7 +163,11 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static bool TryInterceptLethalHitFromHook(
             double curHp,
             double effectiveDamage,
-            std::uint64_t generation);
+            std::uint64_t generation,
+            RE::FormID attackerId);
+        [[nodiscard]] static bool WouldInterceptLethalHit(
+            bool enabled, double curHp, double effectiveDamage, std::uint64_t generation);
+        [[nodiscard]] static MapDeathEscapeRequestObservation GetLastDeathEscapeRequest();
 
         // 락프리 원자 상태 조회
         [[nodiscard]] static bool IsPlayerInActiveMapCell() noexcept;
@@ -154,6 +177,7 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static bool IsActiveMapOrArenaBoss(RE::FormID actorFormId) noexcept;
         [[nodiscard]] static bool IsActiveArena4Boss(RE::FormID actorFormId) noexcept;
         [[nodiscard]] static bool IsDeathEscapeInFlight() noexcept;
+        [[nodiscard]] static std::uint64_t GetDeathEscapeRequestCount() noexcept;
         [[nodiscard]] static bool IsUninstallCleanupArmed() noexcept;
         [[nodiscard]] static bool IsUninstallCleanupActive() noexcept;
         static void DisarmUninstallCleanup() noexcept;

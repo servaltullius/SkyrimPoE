@@ -294,7 +294,7 @@ namespace
                 Runtime::MapDeviceRuntime::DisarmUninstallCleanup();
                 Runtime::UiBridge::ClosePanelOnMainThread();
                 (void)g_commandQueue.BumpGenerationAndClear();
-                Runtime::AutoTest::OnPreLoadGame();
+                Runtime::AutoTest::OnPreLoadGame(*msg);
                 break;
             case SKSE::MessagingInterface::kNewGame:
                 Runtime::SaveLoad::SchedulePostLoadOrNewGameInit(true);

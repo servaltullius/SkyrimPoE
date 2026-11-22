@@ -37,7 +37,7 @@ namespace SkyrimPoE::Runtime
         static void Tick(RE::Main* main, double deltaSec);
 
         // SKSE 메시징 콜백에서 호출(비활성 시 즉시 반환, 원자/뮤텍스 플래그만 갱신)
-        static void OnPreLoadGame();
+        static void OnPreLoadGame(const SKSE::MessagingInterface::Message& msg);
         static void OnPostLoadGame(bool succeeded);
         static void OnSaveGame(const SKSE::MessagingInterface::Message& msg);
     };

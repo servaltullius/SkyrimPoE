@@ -920,6 +920,7 @@ namespace SkyrimPoE::Core
         // 5~6단계(결정 161, 166): 정신력 상한 계산(1~4차 이정표 각 +30, 기본 최대 220) + 활성 오라/전령 중복 제거
         const std::uint32_t milestoneCount = std::min<std::uint32_t>(l1.completedMilestoneCount, 4u);
         const std::uint32_t gearSpirit = static_cast<std::uint32_t>(std::max(0.0, std::floor(gear.flatSpirit + 1e-6)));
+        snap.baseMaxSpirit = Config::kDefaultSpiritBase + milestoneCount * Config::kDefaultSpiritPerMilestone;
         snap.maxSpirit = config.spiritBase + milestoneCount * config.spiritPerMilestone + gearSpirit;
 
         struct ActiveAuraPick
