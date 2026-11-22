@@ -65,6 +65,7 @@ namespace SkyrimPoE::Core
         bool failed = false;
         // 저장 순간 플레이어가 허가된 입장으로 회차 셀에 있었는지(결정 176 ④). 저장 스냅숏에서만 쓴다.
         bool playerAuthorized = false;
+        bool endRequested = false;
         std::uint64_t runId = 0;
         std::uint8_t tier = 1;                // 1..16 (결투장은 8 표시, 레벨 75)
         std::string dungeonKey;

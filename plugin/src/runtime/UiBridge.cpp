@@ -1074,6 +1074,7 @@ namespace SkyrimPoE::Runtime
                     { "inMapCell", MapDeviceRuntime::IsPlayerInActiveMapCell() },
                     { "bossKilled", activeMap.bossKilled },
                     { "failed", activeMap.failed },
+                    { "endRequested", activeMap.endRequested },
                     { "tier", activeMap.tier },
                     { "areaLevel", activeMap.active ? (activeMap.isArena4 ? Core::kArena4MonsterLevel : Core::MapSystem::MonsterLevelForTier(activeMap.tier)) : 0u },
                     { "dungeonName", activeDungeon ? activeDungeon->name : "" },

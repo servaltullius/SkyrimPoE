@@ -28,7 +28,8 @@ namespace SkyrimPoE::Runtime
         static void Initialize(const Core::ItemData* itemData, const Core::Config* config);
 
         // DeathListener 주 갱신 콜백에서 호출: 처치 드랍 판정 및 시체/바닥 배출 (6단계 지도 티어·IIQ·IIR 연동)
-        static void OnKillAwarded(
+        // 공물이 실제로 생겼으면 true. 첫 공물 보장 시 일반 드랍이 꺼졌거나 시체가 없으면 가방에 넣는다.
+        [[nodiscard]] static bool OnKillAwarded(
             RE::ActorHandle corpseHandle,
             std::uint32_t effectiveMonsterLevel,
             bool isBoss,

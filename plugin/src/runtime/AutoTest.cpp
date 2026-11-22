@@ -40,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -334,6 +335,8 @@ namespace SkyrimPoE::Runtime
         std::uint8_t g_hFallPortals = 0;
         std::int32_t g_hAvailPtsBeforeBoss = 0;
         RE::FormID g_hMapBossFormId = 0;
+        RE::FormID g_hTributeCellId = 0;
+        std::optional<std::int64_t> g_hTributeCountBeforeBoss;
         bool g_hDeathEscapeIntercepted = false;
         bool g_hMovedToMapBossForH4 = false;
         int g_hDeathInterceptHitsSent = 0;
@@ -665,6 +668,27 @@ namespace SkyrimPoE::Runtime
                 g_mapTravelSettledAtSec = now;
             }
             return now - g_mapTravelSettledAtSec < kMapTravelSettleSec;
+        }
+
+        std::optional<std::int64_t> CountMapBossTributes(
+            RE::PlayerCharacter* player, RE::Actor* boss, const RE::TESObjectCELL* cell)
+        {
+            auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+            if (!player || !boss || !cell || !tribute) {
+                return std::nullopt;
+            }
+            std::int64_t total = MapDeviceRuntime::CountPlayerTributes(player);
+            const auto counts = boss->GetInventoryCounts([tribute](RE::TESBoundObject& item) { return &item == tribute; });
+            if (const auto it = counts.find(tribute); it != counts.end()) {
+                total += it->second;
+            }
+            cell->ForEachReference([&](RE::TESObjectREFR* ref) {
+                if (ref && !ref->IsDeleted() && !ref->IsDisabled() && ref->GetBaseObject() == tribute) {
+                    total += std::max<std::int32_t>(1, ref->extraList.GetCount());
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            return total;
         }
 
         // 인벤토리에서 gemId에 해당하는 순정(0:0) 또는 빈 추적 젬 키를 우선 반환해 중복/가득 찬 소켓 오염을 피한다.
@@ -4598,6 +4622,8 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             g_hMovedToMapBoss = false;
+            g_hTributeCellId = 0;
+            g_hTributeCountBeforeBoss.reset();
             EnterPhase(Phase::ScenarioH_ReenterWait);
             break;
         }
@@ -4627,6 +4653,11 @@ namespace SkyrimPoE::Runtime
                         break;
                     }
                 }
+                const auto* bossCell = boss->GetParentCell();
+                g_hTributeCellId = bossCell ? bossCell->GetFormID() : 0;
+                g_hTributeCountBeforeBoss = CountMapBossTributes(player, boss, bossCell);
+                // 공물은 처치 보상에서 지급한다. 사망 이벤트 전에 생존 타격으로 기여를 기록한다.
+                (void)SkillExecution::DealDirectSkillDamage(boss, 1.0, Core::DamageType::Physical, true, true);
                 (void)SkillExecution::DealDirectSkillDamage(boss, 50000.0, Core::DamageType::Physical, true, true);
                 if (!boss->IsDead()) {
                     boss->KillImmediate();
@@ -4651,12 +4682,19 @@ namespace SkyrimPoE::Runtime
                 ? Core::PassiveTree::ComputeAvailableNormalPoints(
                       *g_treeData, stNow.tree, stNow.exileLevel, *g_config, stNow.atlas.completedTierMask)
                 : static_cast<std::int32_t>(stNow.unallocatedPassivePoints);
+            auto* boss = g_hMapBossFormId ? RE::TESForm::LookupByID<RE::Actor>(g_hMapBossFormId) : nullptr;
+            const auto* bossCell = g_hTributeCellId ? RE::TESForm::LookupByID<RE::TESObjectCELL>(g_hTributeCellId) : nullptr;
+            const auto tributeCountAfter = CountMapBossTributes(player, boss, bossCell);
+            const bool oneTributeGranted = g_hTributeCountBeforeBoss && tributeCountAfter &&
+                *tributeCountAfter == *g_hTributeCountBeforeBoss + 1;
             Check("H5_MapReenterBossKillAndAtlasPoint",
                 t10Cleared && act.bossKilled && (act.portalsRemaining == 4u) &&
-                (availAfter == g_hAvailPtsBeforeBoss + 1) && stNow.atlas.firstTributeGiven,
-                std::format("t10Bit={}, bossKilled={}, portals={}, pts={}->{}, firstTrib={}",
+                (availAfter == g_hAvailPtsBeforeBoss + 1) && stNow.atlas.firstTributeGiven && oneTributeGranted,
+                std::format("t10Bit={}, bossKilled={}, portals={}, pts={}->{}, firstTrib={}, tributes={}->{}",
                     t10Cleared, act.bossKilled, act.portalsRemaining, g_hAvailPtsBeforeBoss, availAfter,
-                    stNow.atlas.firstTributeGiven));
+                    stNow.atlas.firstTributeGiven,
+                    g_hTributeCountBeforeBoss ? std::to_string(*g_hTributeCountBeforeBoss) : "unavailable",
+                    tributeCountAfter ? std::to_string(*tributeCountAfter) : "unavailable"));
 
             // 결정 175: 보스를 처치한 뒤 귀환하면 포털이 남아 있어도 회차가 끝난다(다음 단계에서 닫힘을 확인).
             const auto resetBeforeReturn = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);

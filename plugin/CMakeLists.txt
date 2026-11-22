@@ -124,6 +124,7 @@ add_executable(skyrimpoe_tests
     tests/test_stage6.cpp
     tests/test_map_difficulty.cpp
     tests/test_map_pack.cpp
+    tests/test_map_runtime_rules.cpp
     tests/test_map_travel.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)

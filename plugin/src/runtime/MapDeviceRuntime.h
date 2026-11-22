@@ -106,8 +106,8 @@ namespace SkyrimPoE::Runtime
         // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차(검수 C-4: 완료 후 g_uninstallCleanupArmed=true로 재오염 차단)
         static MapActionResult RunSafeUninstallCleanup(RE::PlayerCharacter* player);
 
-        // 주 갱신 스레드 전용(DeathListener 호출): 지도 보스 클리어(아틀라스 +1, 첫 T6+ 공물) 및 4차 전직 보스 처치
-        static void OnActorKilled(RE::FormID actorId, RE::Actor* victim, std::uint64_t runId);
+        // 주 갱신 스레드 전용(DeathListener 호출): 지도 보스 클리어(아틀라스 +1) 및 4차 전직 보스 처치
+        static void OnActorKilled(RE::FormID actorId, std::uint64_t runId);
 
         // 스레드 안전(CombatHooks / MonsterRuntime 호출): 4차 전직 3페이즈 보스 체력 하한 동기 클램프 + 전환 예약
         // rawSkyrimDamage는 난이도 배율 적용 전 피해량이며, diffMult는 실제 체력 차감 배율(fDiffMultHPByPC)이다.
@@ -135,12 +135,15 @@ namespace SkyrimPoE::Runtime
 
         // 뮤텍스 보호 스냅샷 조회
         [[nodiscard]] static Core::ActiveMapState GetActiveMapStateCopy();
+        [[nodiscard]] static bool IsRunActive(std::uint64_t runId);
+        // 활성이고 실패하지 않은 회차(첫 공물 같은 보상 판정용)
+        [[nodiscard]] static bool IsRunRewardable(std::uint64_t runId);
 
         // 전용 잎 잠금으로 회차 소유와 해당 회차의 어픽스·보상 정보를 일관되게 읽는다.
         [[nodiscard]] static Core::MapActorScaling GetMapActorScaling(
             RE::FormID actorId, Core::MapModSummary* mods = nullptr);
         [[nodiscard]] static MapKillContext GetMapKillContext(RE::FormID actorId);
-        // 사망 확정 때 DeathListener가 부른다. 보상 자격이 있는 보스 사망을 표시한다(조회 함수는 상태를 바꾸지 않음).
+        // 사망 확정 때 DeathListener가 부른다. 보스 사망 확정과 보상 처리 대기를 각각 표시한다.
         static void NoteConfirmedMapKill(const MapKillContext& context);
 
         // 주 갱신 스레드 전용: 인벤토리 보유 지도 목록·4차 공물 수량·엔진 이동 요청

@@ -19,6 +19,15 @@ namespace SkyrimPoE::Core
         double damageMultiplier = 1.0;
     };
 
+    struct MapSpawnDeletionObservation
+    {
+        bool isActor = false;
+        bool isPlayer = false;
+        bool isDisabled = false;
+        std::uint32_t actorBaseId = 0;
+        std::uint32_t cellId = 0;
+    };
+
     struct MapActorScaling
     {
         std::uint64_t runId = 0;
@@ -57,6 +66,7 @@ namespace SkyrimPoE::Core
 
         // 지도 어픽스 16종 집계 + IIQ/IIR/PackSize 보상 합산
         [[nodiscard]] static MapModSummary AggregateMapMods(const std::vector<RolledAffix>& affixes) noexcept;
+        [[nodiscard]] static std::size_t MapPackActorCount(std::uint32_t basePacks, double packSizePct) noexcept;
 
         // 아틀라스 +24 패시브 포인트 계산 (T1~T16 첫 클리어 최대 16점 + 1~4차 보스/결투장 이정표 최대 8점)
         [[nodiscard]] static std::uint32_t CountAtlasTierPoints(std::uint16_t completedTierMask) noexcept;
@@ -84,11 +94,17 @@ namespace SkyrimPoE::Core
             const std::array<float, 3>& returnPos,
             const std::array<float, 3>& returnAngle);
 
-        // 재입장 시 포털 1 소모 (포털 0이거나 실패 상태면 false)
+        // 재입장 시 포털 1 소모 (포털 0, 실패 또는 종료 요청 상태면 false)
         [[nodiscard]] static bool TryConsumePortalForReenter(ActiveMapState& state) noexcept;
         [[nodiscard]] static bool ShouldEndOnReturn(const ActiveMapState& state) noexcept;
+        [[nodiscard]] static bool ShouldDeferReturnForBossDeath(
+            bool bossKilled, bool bossDeadNow, bool deathConfirmed, bool killPending, double waitedSec) noexcept;
 
         [[nodiscard]] static bool IsRunDrop(std::uint32_t corpseId, std::span<const std::uint32_t> spawnedRefIds) noexcept;
+        [[nodiscard]] static bool CanDeleteMapSpawn(std::uint32_t actorBaseId, std::uint32_t runCellId,
+            const MapSpawnDeletionObservation& observed) noexcept;
+        [[nodiscard]] static bool ShouldGuaranteeFirstTribute(bool activeRun, bool isMapBoss, bool rewardBlocked,
+            std::uint8_t dropMapTier, bool firstTributeGiven) noexcept;
 
         // 지도 내 치명타 사망 탈출 처리 (PoE1 표준 6포털 = 총 6회 진입/목숨, 이중 차감 및 0포털 좀비 상태 차단):
         // - 일반 지도: 남은 포털 > 0이면 안전 귀환(활성 유지, 재입장 시 포털 -1 소모) -> true;

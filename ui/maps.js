@@ -96,13 +96,16 @@
     const bossDone = Boolean(act.bossKilled);
     const inCell = Boolean(act.inMapCell);
 
-    // 실패한 회차(포털 0·결투장 사망)는 귀환이 끝나면 닫힌다. 그때까지 진행 중으로 보이지 않게 한다.
+    // 실패하거나 포기를 접수한 회차는 귀환이 끝나면 닫힌다. 그때까지 진행 중으로 보이지 않게 한다.
+    const abandoning = Boolean(act.endRequested) && !act.failed;
     activeBadge.textContent = act.failed
       ? (act.isArena4 ? "결투장 실패 · 귀환 대기" : `T${Number(act.tier || 1)} 실패 · 귀환 대기`)
-      : act.isArena4
-        ? (bossDone ? "결투장 정복" : `4차 결투장 P${Number(act.arenaPhase || 1)}`)
-        : (bossDone ? `T${Number(act.tier || 1)} 보스 처치` : `T${Number(act.tier || 1)} 진행 중`);
-    activeBadge.className = act.failed ? "badge badge-guard" : "badge badge-aura";
+      : abandoning
+        ? (act.isArena4 ? "결투장 포기 · 귀환 대기" : `T${Number(act.tier || 1)} 포기 · 귀환 대기`)
+        : act.isArena4
+          ? (bossDone ? "결투장 정복" : `4차 결투장 P${Number(act.arenaPhase || 1)}`)
+          : (bossDone ? `T${Number(act.tier || 1)} 보스 처치` : `T${Number(act.tier || 1)} 진행 중`);
+    activeBadge.className = (act.failed || abandoning) ? "badge badge-guard" : "badge badge-aura";
 
     activeBody.appendChild(el("div", "", `${act.dungeonName || "지도"} (몬스터 Lv.${areaLv})`));
     const location = inCell ? "지도 내부" : (maps.unauthorizedInPackCell ? "허가 없는 지도 팩 셀" : "지도 팩 밖");
@@ -124,7 +127,7 @@
     }
 
     if (btnReenter) {
-      const canReenter = !maps.inPackCell && !act.isArena4 && !act.failed && portalsRem > 0;
+      const canReenter = !maps.inPackCell && !act.isArena4 && !act.failed && !act.endRequested && portalsRem > 0;
       btnReenter.classList.toggle("hidden", !canReenter);
       btnReenter.disabled = !canReenter || !maps.packAvailable || maps.travelInProgress;
     }

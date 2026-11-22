@@ -257,6 +257,6 @@ namespace SkyrimPoE::Core
         // [Maps] (6단계: 결정 166)
         std::uint32_t mapPanelKey = 0x16;        // U (controlmap.txt 비충돌)
         bool mapDeathInterceptEnabled = true;    // 지도 인스턴스 내 치명타 클램프 귀환 (타 사망 대체 모드 병존 토글)
-        std::uint32_t mapBasePackCount = 3;      // 무리 앵커당 기본 스폰 수 (PackSize로 스케일)
+        std::uint32_t mapBasePackCount = 3;      // 기본 무리 수(1무리 = 3마리, PackSize %로 총수 스케일)
     };
 }

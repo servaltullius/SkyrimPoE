@@ -304,7 +304,7 @@ namespace SkyrimPoE::Core
 
     bool MapSystem::TryConsumePortalForReenter(ActiveMapState& state) noexcept
     {
-        if (!state.active || state.failed || state.isArena4 || state.portalsRemaining == 0) {
+        if (!state.active || state.failed || state.isArena4 || state.endRequested || state.portalsRemaining == 0) {
             return false;
         }
         --state.portalsRemaining;
@@ -313,12 +313,44 @@ namespace SkyrimPoE::Core
 
     bool MapSystem::ShouldEndOnReturn(const ActiveMapState& state) noexcept
     {
-        return state.bossKilled || state.portalsRemaining == 0;
+        return state.bossKilled || state.portalsRemaining == 0 || state.endRequested;
+    }
+
+    bool MapSystem::ShouldDeferReturnForBossDeath(
+        bool bossKilled, bool bossDeadNow, bool deathConfirmed, bool killPending, double waitedSec) noexcept
+    {
+        constexpr double kBossDeathReturnTimeoutSec = 10.0;
+        if (bossKilled || waitedSec >= kBossDeathReturnTimeoutSec) {
+            return false;
+        }
+        return killPending || (bossDeadNow && !deathConfirmed);
+    }
+
+    std::size_t MapSystem::MapPackActorCount(std::uint32_t basePacks, double packSizePct) noexcept
+    {
+        const double baseActors = std::clamp(basePacks, 1u, 6u) * 3.0;
+        const double sizePct = std::isfinite(packSizePct) ? packSizePct : 0.0;
+        const double total = std::round(baseActors + baseActors * sizePct / 100.0);
+        return static_cast<std::size_t>(std::clamp(total, 1.0, static_cast<double>(kMaxMapSpawnedActors - 1)));
     }
 
     bool MapSystem::IsRunDrop(std::uint32_t corpseId, std::span<const std::uint32_t> spawnedRefIds) noexcept
     {
         return corpseId != 0 && std::ranges::find(spawnedRefIds, corpseId) != spawnedRefIds.end();
+    }
+
+    bool MapSystem::CanDeleteMapSpawn(std::uint32_t actorBaseId, std::uint32_t runCellId,
+        const MapSpawnDeletionObservation& observed) noexcept
+    {
+        return observed.isActor && !observed.isPlayer && observed.isDisabled &&
+            actorBaseId != 0 && actorBaseId == observed.actorBaseId &&
+            runCellId != 0 && runCellId == observed.cellId;
+    }
+
+    bool MapSystem::ShouldGuaranteeFirstTribute(bool activeRun, bool isMapBoss, bool rewardBlocked,
+        std::uint8_t dropMapTier, bool firstTributeGiven) noexcept
+    {
+        return activeRun && isMapBoss && !rewardBlocked && dropMapTier >= 6u && !firstTributeGiven;
     }
 
     bool MapSystem::ConsumePortalOnDeathEscape(ActiveMapState& state) noexcept

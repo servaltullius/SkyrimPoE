@@ -20,6 +20,7 @@ namespace SkyrimPoE::Runtime
             RE::FormID dropRefFormId = 0;
             RE::FormID corpseRefFormId = 0;
             RE::FormID beamRefFormId = 0;
+            RE::FormID spawnCellId = 0;
             RE::ObjectRefHandle dropHandle{};
             RE::ActorHandle corpseHandle{};
             std::uint8_t worldDropTier = 2;
@@ -187,30 +188,17 @@ namespace SkyrimPoE::Runtime
             return false;
         }
 
-        // 상한 초과 시 가장 오래된 드랍 1건을 시체로 회수(결정 16, 159)
-        ActiveWorldDrop evicted{};
-        bool hasEvicted = false;
-        {
-            std::scoped_lock lock(g_dropMutex);
-            if (g_active.size() >= g_config->worldDropMaxCount && !g_active.empty()) {
-                evicted = g_active.front();
-                g_active.erase(g_active.begin());
-                hasEvicted = true;
-            }
-        }
-        if (hasEvicted) {
-            (void)TryReturnSingleDropToCorpse(evicted);
-        }
-
         // 인벤토리에 추가 후 kDropping으로 월드로 이동(복제 금지, 검수 M3: 전후 수량 대조로 중복 지급 차단)
         const std::int32_t countBefore = CountItemInContainer(sourceContainer, itemObj);
         sourceContainer->AddObjectToContainer(itemObj, nullptr, 1, nullptr);
+        if (CountItemInContainer(sourceContainer, itemObj) <= countBefore) {
+            return false;
+        }
         const auto droppedHandle = sourceContainer->RemoveItem(
             itemObj, 1, RE::ITEM_REMOVE_REASON::kDropping, nullptr, nullptr);
         auto droppedPtr = droppedHandle.get();
         if (!droppedPtr) {
-            // RemoveItem 실패로 시체에 이미 남아 있으면(countAfter > countBefore) 추가 지급하지 않고 true 취급,
-            // 둘 다 없어진 경우에만 시체에 1개 안전 복구
+            // RemoveItem 실패 뒤 수량이 처음과 같거나 줄었을 때만 시체에 1개 복구한다.
             const std::int32_t countAfter = CountItemInContainer(sourceContainer, itemObj);
             if (countAfter <= countBefore) {
                 sourceContainer->AddObjectToContainer(itemObj, nullptr, 1, nullptr);
@@ -232,23 +220,70 @@ namespace SkyrimPoE::Runtime
 
         PlayDropSound(isUniqueDrop || isMapDrop || (isCurrencyDrop && worldDropTier >= 2));
 
+        auto* corpseActor = sourceContainer->As<RE::Actor>();
+        // 배출 직후 드랍의 셀을 아직 모르면 시체의 셀을 쓴다(상한 회수에서 회차 안 드랍으로 보호되게).
+        const auto* cell = droppedPtr->GetParentCell();
+        if (!cell) {
+            cell = sourceContainer->GetParentCell();
+        }
+        const ActiveWorldDrop newDrop{
+            droppedPtr->GetFormID(),
+            sourceContainer->GetFormID(),
+            beamId,
+            cell ? cell->GetFormID() : 0,
+            droppedHandle,
+            corpseActor ? corpseActor->GetHandle() : RE::ActorHandle{},
+            worldDropTier,
+            0.0
+        };
         {
-            auto* corpseActor = sourceContainer->As<RE::Actor>();
             std::scoped_lock lock(g_dropMutex);
-            g_active.push_back(ActiveWorldDrop{
-                droppedPtr->GetFormID(),
-                sourceContainer->GetFormID(),
-                beamId,
-                droppedPtr->GetHandle(),
-                corpseActor ? corpseActor->GetHandle() : RE::ActorHandle{},
-                worldDropTier,
-                0.0
-            });
+            g_active.push_back(newDrop);
+        }
+
+        // 결정 178: 새 드랍을 만들었을 때만 상한을 맞춘다. 회차 밖의 오래된 드랍부터 회수한다.
+        std::unordered_set<RE::FormID> attempted;
+        for (;;) {
+            ActiveWorldDrop candidate;
+            {
+                std::scoped_lock lock(g_dropMutex);
+                if (g_active.size() <= g_config->worldDropMaxCount) {
+                    break;
+                }
+                auto oldest = g_active.end();
+                for (auto it = g_active.begin(); it != g_active.end(); ++it) {
+                    if (it->dropRefFormId == newDrop.dropRefFormId || attempted.contains(it->dropRefFormId)) {
+                        continue;
+                    }
+                    if (!MapDeviceRuntime::IsActiveMapCell(it->spawnCellId)) {
+                        oldest = it;
+                        break;
+                    }
+                    if (oldest == g_active.end()) {
+                        oldest = it;
+                    }
+                }
+                if (oldest == g_active.end()) {
+                    break;
+                }
+                candidate = *oldest;
+            }
+            attempted.insert(candidate.dropRefFormId);
+            const auto outcome = TryReturnSingleDropToCorpse(candidate);
+            std::scoped_lock lock(g_dropMutex);
+            const auto entry = std::ranges::find(g_active, candidate.dropRefFormId, &ActiveWorldDrop::dropRefFormId);
+            if (entry != g_active.end()) {
+                if (outcome == ReturnOutcome::RetryLater) {
+                    entry->beamRefFormId = 0; // 회수는 미뤘지만 빛기둥은 이미 정리했다.
+                } else {
+                    g_active.erase(entry);
+                }
+            }
         }
         return true;
     }
 
-    void WorldDropTracker::OnKillAwarded(
+    bool WorldDropTracker::OnKillAwarded(
         RE::ActorHandle corpseHandle,
         std::uint32_t effectiveMonsterLevel,
         bool isBoss,
@@ -259,15 +294,23 @@ namespace SkyrimPoE::Runtime
         double bonusIirPct,
         bool guaranteeFirstTribute)
     {
-        if (!g_itemData || !g_itemData->IsLoaded() || !g_config || !g_config->enableLootDrops) {
-            return;
-        }
         auto corpsePtr = corpseHandle.get();
         auto* corpse = corpsePtr.get();
-        if (!corpse || corpse->IsDeleted()) {
-            return;
+        // 회차를 끝낼 귀환으로 비활성화된 시체에 넣으면 회차 종료 정리로 사라지므로 닿을 수 없는 것으로 본다.
+        if (!g_config || !g_config->enableLootDrops || !g_itemData || !g_itemData->IsLoaded() ||
+            !corpse || corpse->IsDeleted() || corpse->IsDisabled()) {
+            if (!guaranteeFirstTribute) {
+                return false;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+            if (!player || !tribute) {
+                return false;
+            }
+            const auto countBefore = CountItemInContainer(player, tribute);
+            player->AddObjectToContainer(tribute, nullptr, 1, nullptr);
+            return CountItemInContainer(player, tribute) > countBefore;
         }
-
         std::vector<Core::DropEntry> drops;
         {
             std::scoped_lock lock(g_dropMutex);
@@ -275,10 +318,7 @@ namespace SkyrimPoE::Runtime
                 effectiveMonsterLevel, isBoss, isDragon, *g_config, *g_itemData, g_rng, monsterRarity,
                 activeMapTier, bonusIiqPct, bonusIirPct, guaranteeFirstTribute);
         }
-        if (drops.empty()) {
-            return;
-        }
-
+        bool tributeCreated = false;
         for (const auto& d : drops) {
             RE::TESObjectMISC* misc = nullptr;
             bool isCurr = false;
@@ -321,13 +361,20 @@ namespace SkyrimPoE::Runtime
                 continue;
             }
 
+            const bool isTribute = d.kind == Core::DropKind::AscendancyTribute;
+            const auto countBefore = isTribute ? CountItemInContainer(corpse, misc) : 0;
+            bool onGround = false;
             if (g_config->worldDropEnabled && d.worldDropTier >= g_config->worldDropMinTier) {
-                // 검수 M3: SpawnPhysicalDropFromContainer가 실패 시 내부에서 시체 잔여를 보장하므로 중복 추가 금지
-                (void)SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr, isUniq, isMap);
+                // 바닥 배출에 실패해도 시체에 남았을 수 있으므로 중복 추가하지 않는다.
+                onGround = SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr, isUniq, isMap);
             } else {
                 corpse->AddObjectToContainer(misc, nullptr, 1, nullptr);
             }
+            if (isTribute) {
+                tributeCreated = onGround || CountItemInContainer(corpse, misc) > countBefore;
+            }
         }
+        return tributeCreated;
     }
 
     std::size_t WorldDropTracker::SweepOrphanBeamsNearPlayer()
@@ -401,7 +448,8 @@ namespace SkyrimPoE::Runtime
         auto* curWs = player ? player->GetWorldspace() : nullptr;
         const bool isInterior = curCell ? curCell->IsInteriorCell() : false;
         const RE::FormID wsId = curWs ? curWs->GetFormID() : 0;
-        const RE::FormID intCellId = (isInterior && curCell) ? curCell->GetFormID() : 0;
+        const RE::FormID currentCellId = curCell ? curCell->GetFormID() : 0;
+        const RE::FormID intCellId = isInterior ? currentCellId : 0;
 
         // 검수 M4: 야외 인접 셀 경계 통과는 무시하고, 인테리어↔야외 전환·인테리어 셀 변경·월드스페이스 변경만 구역 이탈로 판정
         bool zoneChanged = false;
@@ -449,24 +497,29 @@ namespace SkyrimPoE::Runtime
         std::vector<RE::FormID> clearedBeamDropIds;
         for (const auto& d : snapshot) {
             auto* dropRef = ResolveDropRef(d);
+            const auto* dropCell = dropRef ? dropRef->GetParentCell() : nullptr;
+
+            // 포털로 나간 동안 내려간 회차 셀의 드랍은 조회되지 않아도 종료 정리까지 추적한다.
+            if (!dropCell && currentCellId != d.spawnCellId && MapDeviceRuntime::IsActiveMapCell(d.spawnCellId)) {
+                continue;
+            }
 
             // 1. 주웠거나 사라짐 → 빛기둥 즉시 삭제 (Q-5: 셀 소속 상실 포함)
-            if (!dropRef || dropRef->IsDeleted() || dropRef->IsDisabled() || dropRef->GetParentCell() == nullptr) {
+            if (!dropCell || dropRef->IsDeleted() || dropRef->IsDisabled()) {
                 DeleteBeamMarker(d.beamRefFormId);
                 toRemoveDropIds.push_back(d.dropRefFormId);
                 continue;
             }
 
             // 2. 시간 초과·구역 이탈·플레이어 원거리 이탈(>4096u) → 시체로 회수
-            // 6단계(검수 M-2): 활성 지도 셀 내부 드랍은 포털 왕복 중 지도가 살아있는 동안 zoneChanged 즉시 회수 보류
-            const auto* dropCell = dropRef->GetParentCell();
-            const bool deferForActiveMap = dropCell && MapDeviceRuntime::IsActiveMapCell(dropCell->GetFormID());
+            // 결정 178: 활성 회차 셀의 드랍은 포털 왕복과 시간 초과에도 보존한다.
+            const bool deferForActiveMap = MapDeviceRuntime::IsActiveMapCell(dropCell->GetFormID());
             const auto dp = dropRef->GetPosition();
             const float px = dp.x - playerPos.x;
             const float py = dp.y - playerPos.y;
             const float pz = dp.z - playerPos.z;
             const bool tooFar = player && ((px * px + py * py + pz * pz) > kFarReturnDistSq);
-            if ((!deferForActiveMap && (zoneChanged || tooFar)) || d.elapsedSec >= g_config->worldDropReturnSeconds) {
+            if (!deferForActiveMap && (zoneChanged || tooFar || d.elapsedSec >= g_config->worldDropReturnSeconds)) {
                 const auto outcome = TryReturnSingleDropToCorpse(d);
                 if (outcome != ReturnOutcome::RetryLater ||
                     d.elapsedSec >= g_config->worldDropReturnSeconds * 2.0) {
@@ -602,6 +655,7 @@ namespace SkyrimPoE::Runtime
                 e.dropRefFormId,
                 e.corpseRefFormId,
                 e.beamRefFormId,
+                0,  // WDRP에는 생성 셀이 없으므로 상한 회수 때 셀 밖으로 취급한다.
                 RE::ObjectRefHandle{},
                 RE::ActorHandle{},
                 e.worldDropTier,

@@ -88,6 +88,7 @@ namespace SkyrimPoE::Runtime
                 const bool isDragon = IsDragonActor(actor);
                 // 결정 116, 170 U-4: 사망 확정 때 희생자의 회차와 보상 조건을 함께 캡처한다.
                 const auto mapKill = MapDeviceRuntime::GetMapKillContext(actorId);
+                // 보상 자격으로 분기하기 전에 사망 확정을 알린다. 자격 없는 보스도 귀환 보류가 풀려야 한다.
                 MapDeviceRuntime::NoteConfirmedMapKill(mapKill);
                 const bool isBoss = IsBossActor(actor) || mapKill.isBoss;
                 // 검수 M5 + 6단계: 이정표 보스 카운트는 오픈월드 바닐라 LocTypeBoss만 인정(동적 지도/결투장 보스는 아틀라스·4차 전용)
@@ -126,7 +127,7 @@ namespace SkyrimPoE::Runtime
                         MonsterRuntime::OnActorReset(actorId);
                         auto corpsePtr = corpseHandle.get();
                         AilmentRuntime::OnActorKilled(actorId, corpsePtr.get(), false);
-                        MapDeviceRuntime::OnActorKilled(actorId, corpsePtr.get(), runId);
+                        MapDeviceRuntime::OnActorKilled(actorId, runId);
                     });
                     return RE::BSEventNotifyControl::kContinue;
                 }
@@ -209,18 +210,28 @@ namespace SkyrimPoE::Runtime
                     }
 
                     // 4~6단계(결정 16, 157~159, 164, 166): 지도·아틀라스 IIQ/IIR 반영 시체/바닥 드랍 + 지도/결투장 보스 처치 처리
-                    const auto curSt = SaveLoad::GetStateCopy();
-                    double mapIiq = mapKill.bonusIiqPct;
-                    double mapIir = mapKill.bonusIirPct + (snap ? snap->itemRarityPct : 0.0);
-                    if (mapKill.dropMapTier != 0) {
-                        mapIiq += Core::MapSystem::AtlasBonusIiqPct(curSt.atlas.completedTierMask);
-                        mapIir += Core::MapSystem::AtlasBonusIirPct(curSt.atlas.completedTierMask);
+                    const bool activeRun = MapDeviceRuntime::IsRunActive(mapKill.runId);
+                    if (mapKill.runId == 0 || activeRun) {
+                        const auto curSt = SaveLoad::GetStateCopy();
+                        double mapIiq = mapKill.bonusIiqPct;
+                        double mapIir = mapKill.bonusIirPct + (snap ? snap->itemRarityPct : 0.0);
+                        if (mapKill.dropMapTier != 0) {
+                            mapIiq += Core::MapSystem::AtlasBonusIiqPct(curSt.atlas.completedTierMask);
+                            mapIir += Core::MapSystem::AtlasBonusIirPct(curSt.atlas.completedTierMask);
+                        }
+                        const bool guarantee = Core::MapSystem::ShouldGuaranteeFirstTribute(
+                            activeRun && MapDeviceRuntime::IsRunRewardable(mapKill.runId), mapKill.isBoss, mapKill.rewardBlocked, mapKill.dropMapTier, curSt.atlas.firstTributeGiven);
+                        const bool tributeCreated = WorldDropTracker::OnKillAwarded(
+                            corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon, killedProf.rarity,
+                            mapKill.dropMapTier, mapIiq, mapIir, guarantee);
+                        if (guarantee && tributeCreated) {
+                            SaveLoad::UpdateState([](PersistentState& st) {
+                                st.atlas.firstTributeGiven = true;
+                            });
+                            RE::SendHUDMessage::ShowHUDMessage("[SkyrimPoE] 4차 전직의 공물을 획득했습니다!");
+                        }
                     }
-
-                    WorldDropTracker::OnKillAwarded(
-                        corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon, killedProf.rarity,
-                        mapKill.dropMapTier, mapIiq, mapIir, false);
-                    MapDeviceRuntime::OnActorKilled(actorId, victim, mapKill.runId);
+                    MapDeviceRuntime::OnActorKilled(actorId, mapKill.runId);
 
                     // 5단계(결정 161): 보스 이정표 달성 시 최대 정신력 +30 즉시 반영을 위해 StatEngine 동기화
                     if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0 || unlockedTier > 0) {
