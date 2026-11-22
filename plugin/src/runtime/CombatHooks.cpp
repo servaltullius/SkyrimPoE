@@ -69,11 +69,18 @@ namespace SkyrimPoE::Runtime
         // 진단·자동 시험용: 플레이어->동료 실제 체력 피해 누적 횟수
         std::atomic<std::uint64_t> g_playerToTeammateHits{ 0 };
 
+        bool CanApplyCombatEffects(std::uint64_t generation) noexcept
+        {
+            return !MapDeviceRuntime::IsUninstallCleanupActive() &&
+                (!g_queue || generation == g_queue->CurrentGeneration());
+        }
+
         double ApplyMindOverMatterIfActive(
             double rawAfterEs,
             double diffMult,
             const Core::StatSnapshot& snap,
-            RE::PlayerCharacter* player) noexcept
+            RE::PlayerCharacter* player,
+            std::uint64_t generation) noexcept
         {
             if (rawAfterEs <= 0.0 || snap.momRatio <= 0.0 || snap.bloodMagic || snap.poeMaxMana <= 0.0 || !player) {
                 return rawAfterEs;
@@ -86,6 +93,9 @@ namespace SkyrimPoE::Runtime
             // 검수 Minor #5: 동시 멀티스레드 타격에서 매지카 초과 예약 방지를 위해 단일 CAS 루프로 흡수량을 원자 예약
             double curPending = g_pendingMomDrain.load(std::memory_order_acquire);
             for (;;) {
+                if (!CanApplyCombatEffects(generation)) {
+                    return rawAfterEs;
+                }
                 const double availMagicka = std::max(0.0, curMagicka - curPending);
                 const auto res = Core::AbsorbWithMindOverMatter(rawAfterEs, diffMult, snap.momRatio, availMagicka);
                 if (res.absorbedMagicka <= 0.0) {
@@ -105,13 +115,13 @@ namespace SkyrimPoE::Runtime
             return dist(t_rng);
         }
 
-        void PostHudNotice(const char* text)
+        void PostHudNotice(std::uint64_t generation, const char* text)
         {
             if (!text || !g_queue) {
                 return;
             }
             std::string msg(text);
-            g_queue->Enqueue([msg = std::move(msg)]() {
+            g_queue->EnqueueForGeneration(generation, [msg = std::move(msg)]() {
                 RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
             });
         }
@@ -145,13 +155,16 @@ namespace SkyrimPoE::Runtime
             return true;
         }
 
-        void EnqueueCharmBonusSync(const char* toastMsg)
+        void EnqueueCharmBonusSync(std::uint64_t generation, const char* toastMsg)
         {
             if (!g_queue) {
                 return;
             }
             std::string msg = toastMsg ? toastMsg : "";
-            g_queue->Enqueue([msg = std::move(msg)]() {
+            g_queue->EnqueueForGeneration(generation, [msg = std::move(msg)]() {
+                if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                    return;
+                }
                 if (g_statEngine && g_charmSystem) {
                     const auto bonuses = g_charmSystem->ComputeActiveBonuses();
                     g_statEngine->UpdateLayer2([bonuses](Core::Layer2Input& l2) {
@@ -205,13 +218,16 @@ namespace SkyrimPoE::Runtime
             effectiveSnap.activeCharmMask |= missingMask;
         }
 
-        void EnqueueMoltenShellBreakEffects(double reflectedFireSkyrim)
+        void EnqueueMoltenShellBreakEffects(std::uint64_t generation, double reflectedFireSkyrim)
         {
             if (!g_queue) {
                 return;
             }
             const auto runId = MapDeviceRuntime::GetActiveRunId();
-            g_queue->Enqueue([reflectedFireSkyrim, runId]() {
+            g_queue->EnqueueForGeneration(generation, [reflectedFireSkyrim, runId]() {
+                if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                    return;
+                }
                 if (g_statEngine) {
                     g_statEngine->UpdateLayer2([](Core::Layer2Input& l2) {
                         l2.moltenShellBonusArmour = 0.0;
@@ -227,9 +243,10 @@ namespace SkyrimPoE::Runtime
             });
         }
 
-        void TryTriggerBastionOnProjectedLowLife(RE::PlayerCharacter* player, double remainingRaw, double diffMult)
+        void TryTriggerBastionOnProjectedLowLife(
+            std::uint64_t generation, RE::PlayerCharacter* player, double remainingRaw, double diffMult)
         {
-            if (!g_charmSystem || !g_config || !g_config->enableCharms || !player || remainingRaw <= 0.0) {
+            if (!CanApplyCombatEffects(generation) || !g_charmSystem || !g_config || !g_config->enableCharms || !player || remainingRaw <= 0.0) {
                 return;
             }
             auto* av = player->AsActorValueOwner();
@@ -239,8 +256,8 @@ namespace SkyrimPoE::Runtime
             const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
             const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
             const double projectedRatio = std::max(0.0, (curHp - remainingRaw * diffMult) / maxHp);
-            if (g_charmSystem->TryTriggerOnLowLife(projectedRatio, true)) {
-                EnqueueCharmBonusSync("[참] 수호의 참 자동 발동!");
+            if (CanApplyCombatEffects(generation) && g_charmSystem->TryTriggerOnLowLife(projectedRatio, true)) {
+                EnqueueCharmBonusSync(generation, "[참] 수호의 참 자동 발동!");
             }
         }
 
@@ -250,7 +267,8 @@ namespace SkyrimPoE::Runtime
             if (!target || !hit || !g_statEngine || !g_dataPack || !g_config || !g_dataPack->IsLoaded()) {
                 return;
             }
-            if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+            const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
+            if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                 return;
             }
             if (SkillExecution::IsInPluginDirectDamage()) {
@@ -268,7 +286,7 @@ namespace SkyrimPoE::Runtime
                 siteIdx < 7 && !hit->flags.any(RE::HitData::Flag::kPredictDamage) &&
                 hit->totalDamage > 0.0f && MapDeviceRuntime::IsActiveArena4Boss(target->GetFormID())) {
                 const double clamped = MapDeviceRuntime::FilterArena4BossIncomingDamage(
-                    target, static_cast<double>(hit->totalDamage), 1.0);
+                    target, static_cast<double>(hit->totalDamage), 1.0, generation);
                 hit->totalDamage = static_cast<float>(std::max(0.0, clamped));
                 return;
             }
@@ -313,7 +331,7 @@ namespace SkyrimPoE::Runtime
                     }
                     const auto monRes = MonsterRuntime::ApplyPlayerHitToMonster(
                         target->GetFormID(), dmg, Core::DamageType::Physical, false,
-                        target, SkillExecution::GetDifficultyMultiplier(false));
+                        target, SkillExecution::GetDifficultyMultiplier(false), generation);
                     hit->totalDamage = static_cast<float>(std::max(0.0, monRes.remainingHealthDamage));
                     if (monRes.absorbedByEs > 1e-4) {
                         // 검수 M3: 적 ES가 사이클론 타격을 100% 흡수해도 CoC·상태이상 발동 경로에 적중 전달
@@ -337,8 +355,9 @@ namespace SkyrimPoE::Runtime
                         const double rawHitDmg = baseHitDmg;
                         const std::uint32_t exileLevel = snap->exileLevel;
                         const auto runId = MapDeviceRuntime::GetMapActorScaling(target->GetFormID()).runId;
-                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, exileLevel, runId]() {
-                            if (runId != 0 && !MapDeviceRuntime::IsRunRewardable(runId)) {
+                        g_queue->EnqueueForGeneration(generation, [targetHandle, rawHitDmg, isHitCrit, exileLevel, runId]() {
+                            if (MapDeviceRuntime::IsUninstallCleanupActive() ||
+                                (runId != 0 && !MapDeviceRuntime::IsRunRewardable(runId))) {
                                 return;
                             }
                             auto ptr = targetHandle.get();
@@ -370,7 +389,7 @@ namespace SkyrimPoE::Runtime
                     const double diffMult7 = SkillExecution::GetDifficultyMultiplier(true);
                     const auto* pav = player->AsActorValueOwner();
                     const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(hit->totalDamage) * diffMult7)) {
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(hit->totalDamage) * diffMult7, generation)) {
                         hit->totalDamage = 0.0f;
                     }
                 }
@@ -431,7 +450,7 @@ namespace SkyrimPoE::Runtime
                     const double hitChance = Core::EvasionHitChance(snap->evasion, acc, g_dataPack->Constants().minHitChance);
                     if (RollUnit() >= hitChance) {
                         hit->totalDamage = 0.0f;
-                        PostHudNotice("회피");
+                        PostHudNotice(generation, "회피");
                         return;
                     }
                 }
@@ -439,7 +458,7 @@ namespace SkyrimPoE::Runtime
                 // 2) PoE 공격 막기 판정(결정 73)
                 if (snap->attackBlockChance > 0.0 && RollUnit() * 100.0 < snap->attackBlockChance) {
                     hit->totalDamage = 0.0f;
-                    PostHudNotice("막음");
+                    PostHudNotice(generation, "막음");
                     return;
                 }
 
@@ -475,13 +494,16 @@ namespace SkyrimPoE::Runtime
                 }
 
                 // C-22, N-3: 유효 물리 타격(최대 체력의 5% 이상) 시 20% 확률로 적->플레이어 출혈 판정(정화의 참이 실제 출혈을 차단)
+                if (!CanApplyCombatEffects(generation)) {
+                    return;
+                }
                 if (postDefense > 0.0) {
                     const auto* pav = player->AsActorValueOwner();
                     const double pMaxHp = pav ? std::max(50.0, static_cast<double>(pav->GetPermanentActorValue(RE::ActorValue::kHealth))) : 100.0;
                     if (postDefense >= pMaxHp * 0.05 && RollUnit() < 0.20) {
                         const auto ailOut = AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Bleed, postDefense);
                         if (ailOut.purifyingCharmTriggered) {
-                            EnqueueCharmBonusSync("[참] 정화의 참 자동 발동! (출혈 해제·면역)");
+                            EnqueueCharmBonusSync(generation, "[참] 정화의 참 자동 발동! (출혈 해제·면역)");
                         }
                     }
                 }
@@ -493,21 +515,21 @@ namespace SkyrimPoE::Runtime
                     const auto guard = g_skillSystem->AbsorbWithGuardShield(remainingRaw, diffMult, false);
                     remainingRaw = guard.remainingRawDamage;
                     if (guard.brokeNow) {
-                        EnqueueMoltenShellBreakEffects(guard.reflectedFireSkyrim);
+                        EnqueueMoltenShellBreakEffects(generation, guard.reflectedFireSkyrim);
                     }
                 }
-                if (g_esPool) {
+                if (g_esPool && CanApplyCombatEffects(generation)) {
                     const auto absorb = g_esPool->AbsorbDamage(remainingRaw, diffMult, false);
                     remainingRaw = absorb.remainingRawDamage;
                 }
-                remainingRaw = ApplyMindOverMatterIfActive(remainingRaw, diffMult, effectiveSnap, player);
-                TryTriggerBastionOnProjectedLowLife(player, remainingRaw, diffMult);
+                remainingRaw = ApplyMindOverMatterIfActive(remainingRaw, diffMult, effectiveSnap, player, generation);
+                TryTriggerBastionOnProjectedLowLife(generation, player, remainingRaw, diffMult);
 
                 // 6단계(검수 C-2): 지도·결투장 내부 치명타 가로채기(난이도 배율 diffMult 반영, 발동 시 피해 0.0f 클램프)
                 if (remainingRaw > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
                     const auto* pav = player->AsActorValueOwner();
                     const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, remainingRaw * diffMult)) {
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, remainingRaw * diffMult, generation)) {
                         hit->totalDamage = 0.0f;
                         return;
                     }
@@ -590,7 +612,8 @@ namespace SkyrimPoE::Runtime
             static void Thunk(RE::ActiveEffect* self, float effectiveness, bool flag)
             {
                 try {
-                    if (self && self->spell && self->effect && self->effect->baseEffect &&
+                    if (!MapDeviceRuntime::IsUninstallCleanupActive() &&
+                        self && self->spell && self->effect && self->effect->baseEffect &&
                         self->effect->baseEffect->IsDetrimental()) {
                         if (auto* target = self->GetTargetActor(); target && target->IsPlayerRef()) {
                             float resMult = 1.0f;
@@ -670,7 +693,8 @@ namespace SkyrimPoE::Runtime
             if (!self || !actor || !(value < 0.0f)) {
                 return value;
             }
-            if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+            const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
+            if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                 return value;
             }
             const auto actualAv = (av == RE::ActorValue::kNone) ? self->actorValue : av;
@@ -715,7 +739,7 @@ namespace SkyrimPoE::Runtime
                         const auto monDmgType = mapping.useAverageElemental ? Core::DamageType::Count : mapping.type;
                         const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(
                             targetId, magDmg, monDmgType, bypassEs,
-                            actor, SkillExecution::GetDifficultyMultiplier(false));
+                            actor, SkillExecution::GetDifficultyMultiplier(false), generation);
                         if (hitRes.absorbedByEs > 0.0 && g_killTracker) {
                             g_killTracker->ConfirmDamageContribution(targetId, hitRes.absorbedByEs);
                         }
@@ -724,7 +748,7 @@ namespace SkyrimPoE::Runtime
                 } else if (!recoversOnExpiry && MapDeviceRuntime::IsActiveArena4Boss(actor->GetFormID())) {
                     // 6단계(검수 C-5): 동료/NPC 마법도 4차 전직 보스 페이즈 하한을 건너뛰지 못하도록 동기 클램프
                     const double clamped = MapDeviceRuntime::FilterArena4BossIncomingDamage(
-                        actor, static_cast<double>(-value), 1.0);
+                        actor, static_cast<double>(-value), 1.0, generation);
                     return -static_cast<float>(std::max(0.0, clamped));
                 }
                 return value;
@@ -744,7 +768,7 @@ namespace SkyrimPoE::Runtime
                     const double diffMultEnv = SkillExecution::GetDifficultyMultiplier(true);
                     const auto* pav = player->AsActorValueOwner();
                     const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(-value) * diffMultEnv)) {
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(-value) * diffMultEnv, generation)) {
                         return 0.0f;
                     }
                 }
@@ -862,13 +886,13 @@ namespace SkyrimPoE::Runtime
                     }
                     if (dodged) {
                         if (firstRoll) {
-                            PostHudNotice("주문 회피");
+                            PostHudNotice(generation, "주문 회피");
                         }
                         return 0.0f;
                     }
                     if (blocked) {
                         if (firstRoll) {
-                            PostHudNotice("막음");
+                            PostHudNotice(generation, "막음");
                         }
                         return 0.0f;
                     }
@@ -879,21 +903,24 @@ namespace SkyrimPoE::Runtime
             }
 
             // 2.5) 5단계(결정 162) + 검수 M5/M6: 원소·카오스 피격 시 참 자동 발동 + 정화의 참(냉기) + 같은 프레임 연속 피격 보정
+            if (!CanApplyCombatEffects(generation)) {
+                return value;
+            }
             Core::StatSnapshot effectiveSnap = *snap;
-            if (g_charmSystem && g_config->enableCharms && !mapping.useAverageElemental) {
+            if (CanApplyCombatEffects(generation) && g_charmSystem && g_config->enableCharms && !mapping.useAverageElemental) {
                 if (g_charmSystem->TryTriggerOnIncomingDamage(mapping.type, true)) {
                     switch (mapping.type) {
                         case Core::DamageType::Fire:
-                            EnqueueCharmBonusSync("[참] 루비 참 자동 발동! (+25% 화염 저항)");
+                            EnqueueCharmBonusSync(generation, "[참] 루비 참 자동 발동! (+25% 화염 저항)");
                             break;
                         case Core::DamageType::Cold:
-                            EnqueueCharmBonusSync("[참] 사파이어 참 자동 발동! (+25% 냉기 저항)");
+                            EnqueueCharmBonusSync(generation, "[참] 사파이어 참 자동 발동! (+25% 냉기 저항)");
                             break;
                         case Core::DamageType::Lightning:
-                            EnqueueCharmBonusSync("[참] 토파즈 참 자동 발동! (+25% 번개 저항)");
+                            EnqueueCharmBonusSync(generation, "[참] 토파즈 참 자동 발동! (+25% 번개 저항)");
                             break;
                         case Core::DamageType::Chaos:
-                            EnqueueCharmBonusSync("[참] 자수정 참 자동 발동! (+25% 카오스 저항)");
+                            EnqueueCharmBonusSync(generation, "[참] 자수정 참 자동 발동! (+25% 카오스 저항)");
                             break;
                         default:
                             break;
@@ -925,7 +952,7 @@ namespace SkyrimPoE::Runtime
                     if (mapping.type == Core::DamageType::Cold) {
                         const auto ailOut = AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Freeze, postDefense);
                         if (ailOut.purifyingCharmTriggered) {
-                            EnqueueCharmBonusSync("[참] 정화의 참 자동 발동! (빙결·출혈 면역)");
+                            EnqueueCharmBonusSync(generation, "[참] 정화의 참 자동 발동! (빙결·출혈 면역)");
                         }
                     } else if (mapping.type == Core::DamageType::Fire && RollUnit() < 0.25) {
                         (void)AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Ignite, postDefense);
@@ -936,28 +963,31 @@ namespace SkyrimPoE::Runtime
             }
 
             // 4) 5단계 7단계 방어 순서: ④ 가드(용암 방패, DoT 우회) → ⑤ 에너지 실드(샤브론 시 카오스 차단) → ⑥ MoM → ⑦ 저체력 수호의 참
+            if (!CanApplyCombatEffects(generation)) {
+                return value;
+            }
             const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
             double finalRaw = postDefense;
             if (g_skillSystem) {
                 const auto guard = g_skillSystem->AbsorbWithGuardShield(finalRaw, diffMult, !isHit);
                 finalRaw = guard.remainingRawDamage;
                 if (guard.brokeNow) {
-                    EnqueueMoltenShellBreakEffects(guard.reflectedFireSkyrim);
+                    EnqueueMoltenShellBreakEffects(generation, guard.reflectedFireSkyrim);
                 }
             }
-            if (g_esPool) {
+            if (g_esPool && CanApplyCombatEffects(generation)) {
                 const bool chaosBypassesEs = isChaos && !effectiveSnap.shavronneChaosEs;
                 const auto absorb = g_esPool->AbsorbDamage(finalRaw, diffMult, chaosBypassesEs);
                 finalRaw = absorb.remainingRawDamage;
             }
-            finalRaw = ApplyMindOverMatterIfActive(finalRaw, diffMult, effectiveSnap, player);
-            TryTriggerBastionOnProjectedLowLife(player, finalRaw, diffMult);
+            finalRaw = ApplyMindOverMatterIfActive(finalRaw, diffMult, effectiveSnap, player, generation);
+            TryTriggerBastionOnProjectedLowLife(generation, player, finalRaw, diffMult);
 
             // 6단계(검수 C-2): 지도·결투장 내부 치명 마법 피해 가로채기(diffMult 반영, 발동 시 0.0f 클램프)
             if (finalRaw > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
                 const auto* pav = player->AsActorValueOwner();
                 const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
-                if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, finalRaw * diffMult)) {
+                if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, finalRaw * diffMult, generation)) {
                     return 0.0f;
                 }
             }
@@ -1056,7 +1086,8 @@ namespace SkyrimPoE::Runtime
                 // 결정 140: HandleHealthDamage는 이미 체력이 실제로 깎인 뒤 음수 damage로 불리며,
                 // orig 안에서 KillImpl/TESDeathEvent가 동기 발송될 수 있으므로 반드시 orig 호출 전에 기여를 확정한다.
                 try {
-                    if (self && !self->IsPlayerRef() && attacker && attacker->IsPlayerRef() && damage < 0.0f) {
+                    if (!MapDeviceRuntime::IsUninstallCleanupActive() &&
+                        self && !self->IsPlayerRef() && attacker && attacker->IsPlayerRef() && damage < 0.0f) {
                         if (self->IsPlayerTeammate()) {
                             g_playerToTeammateHits.fetch_add(1, std::memory_order_relaxed);
                         }
@@ -1221,7 +1252,7 @@ namespace SkyrimPoE::Runtime
 
     void CombatHooks::TickPlayerPools(double deltaSec, bool gamePaused)
     {
-        if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+        if (MapDeviceRuntime::IsUninstallCleanupActive()) {
             return;
         }
         if (g_esPool) {

@@ -10,15 +10,29 @@
 
 namespace SkyrimPoE::Core
 {
+    inline constexpr std::uint32_t kAtlasSaveVersion = 1;
+    inline constexpr std::uint32_t kMapSaveVersion = 3;
     inline constexpr std::uint8_t kMinMapTier = 1;
     inline constexpr std::uint8_t kMaxMapTier = 16;
     inline constexpr std::uint32_t kMapBaseMonsterLevel = 68;   // T1 = Lv68 .. T16 = Lv83
     inline constexpr std::uint32_t kArena4MonsterLevel = 75;    // 4차 전직 결투장 고정 레벨
     inline constexpr std::uint8_t kNormalMapMaxPortals = 6;
     inline constexpr std::uint8_t kArena4MaxPortals = 1;
-    // 결정 169, R4: 목록과 MAPS v2에 같은 던전 키 길이 제한을 둔다.
+    inline constexpr float kArena4PhaseInvulnSec = 0.8f;
+    // 목록과 MAPS에 같은 던전 키 길이 제한을 둔다.
     inline constexpr std::size_t kMaxMapDungeonKeyBytes = 64;
     inline constexpr std::size_t kMaxMapSpawnedActors = 64;
+    inline constexpr std::uint64_t kMapRunIdLimit = std::uint64_t{ 1 } << 62;
+
+    [[nodiscard]] constexpr bool IsValidMapRunId(std::uint64_t id) noexcept
+    {
+        return id != 0 && id < kMapRunIdLimit;
+    }
+
+    [[nodiscard]] constexpr std::uint64_t NextMapRunId(std::uint64_t id) noexcept
+    {
+        return IsValidMapRunId(id) && id < kMapRunIdLimit - 1 ? id + 1 : 1;
+    }
 
     // 활성 지도 어픽스 16종 집계 스냅샷 (StatEngine Layer2Input / MonsterRuntime / CombatHooks 공용)
     struct MapModSummary
@@ -47,7 +61,7 @@ namespace SkyrimPoE::Core
         [[nodiscard]] bool operator==(const MapModSummary&) const noexcept = default;
     };
 
-    // 아틀라스 영구 진행 상태 ('MAPS' v2 코세이브 저장)
+    // 아틀라스 영구 진행 상태 ('ATLS' v1 코세이브 저장)
     struct AtlasState
     {
         std::uint16_t completedTierMask = 0;  // bit 0..15 = T1..T16 첫 클리어 (+1 패시브/티어, 최대 16점)
@@ -56,7 +70,7 @@ namespace SkyrimPoE::Core
         bool firstTributeGiven = false;       // 첫 T6+ 보스 처치 시 4차 공물 확정 1회 지급 여부
     };
 
-    // 활성 지도/결투장 실행 상태 ('MAPS' v2 코세이브 저장 + 런타임 상태머신)
+    // 활성 지도/결투장 실행 상태 ('MAPS' v3 코세이브 저장 + 런타임 상태머신)
     struct ActiveMapState
     {
         bool active = false;
@@ -66,12 +80,14 @@ namespace SkyrimPoE::Core
         // 저장 순간 플레이어가 허가된 입장으로 회차 셀에 있었는지(결정 176 ④). 저장 스냅숏에서만 쓴다.
         bool playerAuthorized = false;
         bool endRequested = false;
+        bool spawnsDisabled = false;
         std::uint64_t runId = 0;
         std::uint8_t tier = 1;                // 1..16 (결투장은 8 표시, 레벨 75)
         std::string dungeonKey;
         std::uint32_t packVersion = 0;
         std::uint8_t portalsRemaining = 0;
         std::uint8_t arenaPhase = 1;          // 1..3 (4차 결투장 보스 페이즈)
+        float arenaPhaseInvulnSec = 0.0f;
         std::vector<RolledAffix> mods;
         MapModSummary summary{};
 
@@ -84,6 +100,8 @@ namespace SkyrimPoE::Core
         // 검수 C-3: 저장→재로드 후 보스 처치/3페이즈/정리 연속성 보장을 위한 동적 스폰 FormID 영속화
         std::uint32_t bossRefFormId = 0;
         std::vector<std::uint32_t> spawnedRefFormIds;
+        // 해석을 못 한 보스 참조. 재바인딩 전에 저장해도 기존 보스 필드에 다시 쓴다.
+        std::uint32_t unresolvedBossRefFormId = 0;
     };
 
     struct ArenaDamageClampResult

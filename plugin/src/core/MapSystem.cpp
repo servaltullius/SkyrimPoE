@@ -1,11 +1,13 @@
 #include "core/MapSystem.h"
 
 #include "core/DataPack.h"
+#include "core/ItemData.h"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <format>
+#include <limits>
 
 namespace SkyrimPoE::Core
 {
@@ -48,6 +50,73 @@ namespace SkyrimPoE::Core
     std::uint8_t MapSystem::Arena4PhaseForSave(std::uint8_t requestedPhase, std::uint8_t completedPhase) noexcept
     {
         return std::min(requestedPhase, completedPhase);
+    }
+
+    bool MapSystem::CanCheckBossLoss(const ActiveMapState& state, const MapBossLossObservation& observation) noexcept
+    {
+        return state.active && !state.failed && !state.bossKilled && !state.endRequested &&
+            observation.stableRunCell && observation.playerAuthorized && observation.spawned && !state.spawnsDisabled &&
+            !observation.travelPending && !observation.deathConfirmed && !observation.deathPending;
+    }
+
+    MapBossLossProgress MapSystem::ObserveBossLoss(const ActiveMapState& state,
+        const MapBossLossObservation& observation, double missingSec, double deltaSec) noexcept
+    {
+        if (!CanCheckBossLoss(state, observation) || !observation.bossMissing) {
+            return {};
+        }
+        if (observation.paused) {
+            return { missingSec, false };
+        }
+        if (std::isfinite(deltaSec) && deltaSec > 0.0) {
+            missingSec = std::min(kMapBossMissingSec, missingSec + deltaSec);
+        }
+        return { missingSec, state.unresolvedBossRefFormId != 0 || missingSec >= kMapBossMissingSec };
+    }
+
+    std::uint32_t MapSystem::SelectMapBossCandidate(std::uint32_t livingBoss,
+        std::span<const std::uint32_t> deadBosses, std::span<const std::uint32_t> spawnedRefIds) noexcept
+    {
+        if (livingBoss != 0) {
+            return livingBoss;
+        }
+        const auto owned = std::ranges::find_if(deadBosses, [spawnedRefIds](std::uint32_t corpseId) {
+            return IsRunDrop(corpseId, spawnedRefIds);
+        });
+        return owned != deadBosses.end() ? *owned : 0;
+    }
+
+    bool MapSystem::MatchesMapBoss(std::uint32_t bossBaseId, std::uint32_t runCellId,
+        std::uint32_t actorBaseId, std::uint32_t actorCellId) noexcept
+    {
+        return bossBaseId != 0 && bossBaseId == actorBaseId && runCellId != 0 && runCellId == actorCellId;
+    }
+
+    void MapSystem::RebindMapBoss(ActiveMapState& state, std::uint32_t bossId)
+    {
+        auto& spawned = state.spawnedRefFormIds;
+        if (state.bossRefFormId != bossId) {
+            std::erase(spawned, state.bossRefFormId);
+        }
+        if (!IsRunDrop(bossId, spawned) && spawned.size() < kMaxMapSpawnedActors) {
+            spawned.push_back(bossId);
+        }
+        state.bossRefFormId = bossId;
+        state.unresolvedBossRefFormId = 0;
+    }
+
+    std::vector<std::uint32_t> MapSystem::MapSpawnCleanupIds(const ActiveMapState& state)
+    {
+        auto ids = state.spawnedRefFormIds;
+        if (state.bossRefFormId != 0 && !IsRunDrop(state.bossRefFormId, ids)) {
+            ids.push_back(state.bossRefFormId);
+        }
+        return ids;
+    }
+
+    bool MapSystem::ReleaseDeathEscape(std::atomic<std::uint64_t>& owner, std::uint64_t runId) noexcept
+    {
+        return runId != 0 && owner.compare_exchange_strong(runId, 0, std::memory_order_acq_rel);
     }
 
     namespace
@@ -151,6 +220,26 @@ namespace SkyrimPoE::Core
     void MapActorRegistry::Clear() noexcept
     {
         actors_.clear();
+    }
+
+    bool MapSystem::AreSavedMapRollsValid(const ItemData& data, std::span<const RolledAffix> affixes)
+    {
+        for (const auto& affix : affixes) {
+            const auto* def = data.FindAffix(affix.affixId);
+            if (!def || affix.values.size() != def->TotalRangeCount()) {
+                return false;
+            }
+            std::size_t index = 0;
+            for (const auto& line : def->lines) {
+                for (const auto& range : line.ranges) {
+                    const double value = affix.values[index++];
+                    if (!std::isfinite(value) || value < range.minVal || value > range.maxVal) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     MapModSummary MapSystem::AggregateMapMods(const std::vector<RolledAffix>& affixes) noexcept
@@ -283,7 +372,9 @@ namespace SkyrimPoE::Core
         const std::uint16_t bit = static_cast<std::uint16_t>(1u << (tier - 1));
         const bool firstClear = (atlas.completedTierMask & bit) == 0;
         atlas.completedTierMask |= bit;
-        ++atlas.totalMapsCleared;
+        if (atlas.totalMapsCleared < std::numeric_limits<std::uint32_t>::max()) {
+            ++atlas.totalMapsCleared;
+        }
         if (tier > atlas.highestTierCleared) {
             atlas.highestTierCleared = tier;
         }

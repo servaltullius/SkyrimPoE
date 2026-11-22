@@ -2,6 +2,7 @@
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
@@ -39,6 +40,7 @@ namespace SkyrimPoE::Runtime
             bool isPower = false;
             bool dualCast = false;
             std::uint64_t timestampMs = 0;
+            std::uint64_t generation = 0;
         };
 
         Core::CommandQueue* g_queue = nullptr;
@@ -101,7 +103,7 @@ namespace SkyrimPoE::Runtime
             return player && caster->GetCasterAsActor() == player;
         }
 
-        void MaybeQueueCooldownNotice(std::uint8_t slotIdx, std::string msg)
+        void MaybeQueueCooldownNotice(std::uint64_t generation, std::uint8_t slotIdx, std::string msg)
         {
             // 메뉴 질의(MagicMenu/FavoritesMenu 등) 중에는 토스트 완전 억제 + 슬롯별 1초 스로틀
             auto* ui = RE::UI::GetSingleton();
@@ -114,7 +116,7 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             g_bindings[slotIdx].lastToastMs.store(now, std::memory_order_relaxed);
-            g_queue->Enqueue([m = std::move(msg)]() {
+            g_queue->EnqueueForGeneration(generation, [m = std::move(msg)]() {
                 RE::SendHUDMessage::ShowHUDMessage(m.c_str());
             });
         }
@@ -144,8 +146,9 @@ namespace SkyrimPoE::Runtime
                 RE::MagicSystem::CannotCastReason* reason,
                 bool useBaseValueForCost)
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
                 const bool origOk = original(caster, spell, dualCast, alchStrength, reason, useBaseValueForCost);
-                if (!origOk || !IsPlayerCaster(caster)) {
+                if (!origOk || MapDeviceRuntime::IsUninstallCleanupActive() || !IsPlayerCaster(caster)) {
                     return origOk;
                 }
 
@@ -174,7 +177,7 @@ namespace SkyrimPoE::Runtime
                 // 요구치 미달 차단
                 if (g_config->enforceGemRequirements && !slotStat.requirementMet) {
                     if (reason) *reason = RE::MagicSystem::CannotCastReason::kPowerUsed;
-                    MaybeQueueCooldownNotice(slotIdx, "SkyrimPoE: 스킬 젬 요구치를 충족하지 못했습니다.");
+                    MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 스킬 젬 요구치를 충족하지 못했습니다.");
                     return false;
                 }
 
@@ -185,12 +188,12 @@ namespace SkyrimPoE::Runtime
                     const auto gs = g_skillSystem->GuardSnapshot();
                     if (gs.active) {
                         if (reason) *reason = RE::MagicSystem::CannotCastReason::kPowerUsed;
-                        MaybeQueueCooldownNotice(slotIdx, "SkyrimPoE: 용암 방패가 이미 활성 중입니다.");
+                        MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 용암 방패가 이미 활성 중입니다.");
                         return false;
                     }
                     if (gs.cooldownRemainingSec > 0.0) {
                         if (reason) *reason = RE::MagicSystem::CannotCastReason::kPowerUsed;
-                        MaybeQueueCooldownNotice(slotIdx,
+                        MaybeQueueCooldownNotice(generation, slotIdx,
                             std::format("SkyrimPoE: 용암 방패 재사용 대기 ({:.1f}초)", gs.cooldownRemainingSec));
                         return false;
                     }
@@ -202,7 +205,7 @@ namespace SkyrimPoE::Runtime
                             const double hpCost = Core::ComputeBloodMagicLifeCost(maxHp, snap->poeMaxLife, slotStat.poeManaCost);
                             if ((curHp - hpCost) < (1.0 - 1e-6)) {
                                 if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
-                                MaybeQueueCooldownNotice(slotIdx, "SkyrimPoE: 혈마법 생명력이 부족합니다.");
+                                MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 혈마법 생명력이 부족합니다.");
                                 return false;
                             }
                         } else {
@@ -212,7 +215,7 @@ namespace SkyrimPoE::Runtime
                                 baseMaxMag, snap->poeMaxMana, slotStat.poeManaCost, snap->exileLevel, *g_dataPack, *g_config);
                             if (curMag + 1e-6 < ms.skyrimSkillCost) {
                                 if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
-                                MaybeQueueCooldownNotice(slotIdx, "SkyrimPoE: 매지카가 부족합니다.");
+                                MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 매지카가 부족합니다.");
                                 return false;
                             }
                         }
@@ -221,7 +224,7 @@ namespace SkyrimPoE::Runtime
                     const double remCd = g_skillSystem->RemainingCooldown(slotStat.gemInstanceId);
                     if (remCd > 0.0) {
                         if (reason) *reason = RE::MagicSystem::CannotCastReason::kPowerUsed;
-                        MaybeQueueCooldownNotice(slotIdx,
+                        MaybeQueueCooldownNotice(generation, slotIdx,
                             std::format("SkyrimPoE: 스킬 재사용 대기 ({:.1f}초)", remCd));
                         return false;
                     }
@@ -231,7 +234,7 @@ namespace SkyrimPoE::Runtime
                         const double hpCost = Core::ComputeBloodMagicLifeCost(maxHp, snap->poeMaxLife, slotStat.poeManaCost);
                         if ((curHp - hpCost) < (1.0 - 1e-6)) {
                             if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
-                            MaybeQueueCooldownNotice(slotIdx, "SkyrimPoE: 혈마법 생명력이 부족합니다.");
+                            MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 혈마법 생명력이 부족합니다.");
                             return false;
                         }
                     }
@@ -241,7 +244,10 @@ namespace SkyrimPoE::Runtime
                 auto* ui = RE::UI::GetSingleton();
                 if (!ui || !ui->GameIsPaused()) {
                     std::scoped_lock lk(g_authMutex);
-                    g_pendingAuthByCaster[caster] = PendingCastAuth{ slotIdx, isPower, dualCast, NowMs() };
+                    if (g_queue && generation == g_queue->CurrentGeneration() &&
+                        !MapDeviceRuntime::IsUninstallCleanupActive()) {
+                        g_pendingAuthByCaster[caster] = PendingCastAuth{ slotIdx, isPower, dualCast, NowMs(), generation };
+                    }
                 }
                 return true;
             }
@@ -255,8 +261,9 @@ namespace SkyrimPoE::Runtime
 
             static void Thunk(RE::MagicCaster* caster, bool doCast, std::uint32_t arg2, RE::MagicItem* spell)
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
                 original(caster, doCast, arg2, spell);
-                if (!doCast || !IsPlayerCaster(caster) || !g_queue) {
+                if (!doCast || !g_queue || MapDeviceRuntime::IsUninstallCleanupActive() || !IsPlayerCaster(caster)) {
                     return;
                 }
 
@@ -273,7 +280,7 @@ namespace SkyrimPoE::Runtime
                 {
                     std::scoped_lock lk(g_authMutex);
                     const auto it = g_pendingAuthByCaster.find(caster);
-                    if (it != g_pendingAuthByCaster.end()) {
+                    if (it != g_pendingAuthByCaster.end() && it->second.generation == generation) {
                         const auto now = NowMs();
                         if (it->second.slotIdx == slotIdx &&
                             it->second.isPower == isPower &&
@@ -299,7 +306,7 @@ namespace SkyrimPoE::Runtime
                     }
                 }
 
-                g_queue->Enqueue([slotIdx, isPower, capturedOrigin, capturedDir, hasAim, dualCast]() {
+                g_queue->EnqueueForGeneration(generation, [slotIdx, isPower, capturedOrigin, capturedDir, hasAim, dualCast]() {
                     if (isPower) {
                         (void)ProxySpellRuntime::ExecuteGuardPowerSlot(slotIdx);
                     } else {
@@ -353,6 +360,9 @@ namespace SkyrimPoE::Runtime
 
     void ProxySpellRuntime::SyncProxySpellsFromState()
     {
+        if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+            return;
+        }
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || !g_dataPack || !g_config || !g_statEngine) {
             return;
@@ -457,7 +467,8 @@ namespace SkyrimPoE::Runtime
         bool dualCast)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player || player->IsDead() || !g_statEngine || !g_skillSystem || !g_dataPack || !g_config) {
+        if (MapDeviceRuntime::IsUninstallCleanupActive() ||
+            !player || player->IsDead() || !g_statEngine || !g_skillSystem || !g_dataPack || !g_config) {
             return false;
         }
         const auto st = SaveLoad::GetStateCopy();
@@ -514,7 +525,8 @@ namespace SkyrimPoE::Runtime
     bool ProxySpellRuntime::ExecuteGuardPowerSlot(std::uint8_t slotIndex)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player || player->IsDead() || !g_statEngine || !g_skillSystem || !g_dataPack || !g_config) {
+        if (MapDeviceRuntime::IsUninstallCleanupActive() ||
+            !player || player->IsDead() || !g_statEngine || !g_skillSystem || !g_dataPack || !g_config) {
             return false;
         }
         const auto st = SaveLoad::GetStateCopy();

@@ -15,6 +15,7 @@
 #include "runtime/UniqueIdUtil.h"
 #include "runtime/WorldDropTracker.h"
 
+#include "core/GemTransaction.h"
 #include "core/ItemFormatter.h"
 #include "core/MapSystem.h"
 #include "core/PassiveTree.h"
@@ -37,13 +38,13 @@ namespace SkyrimPoE::Runtime
         constexpr RE::FormID kXMarkerHeadingId = 0x00000034;
         constexpr RE::FormID kTamrielWorldspaceId = 0x0000003C;
         constexpr double kDeathEscapeReleaseCooldownSec = 1.5;
-        constexpr double kArena4PhaseInvulnSec = 0.8;
         constexpr double kFallRecoveryCooldownSec = 3.0;
         constexpr double kMapActorDeleteDelaySec = 3.0;
         constexpr double kMapActorDeleteRetrySec = 1.0;
         // 이만큼(일시정지·로딩 제외) 조회되지 않으면 삭제를 포기한다. 비활성 상태로 남고 셀 초기화에 맡긴다.
         constexpr double kMapActorDeleteGiveUpSec = 300.0;
         constexpr std::size_t kMaxPendingMapActorDeletes = 512;
+        constexpr RE::FormID kDynamicFormMask = 0xFF000000u;
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
@@ -105,6 +106,9 @@ namespace SkyrimPoE::Runtime
         std::uint64_t g_nextCellResetSeq = 1;
         // 불러온 뒤 셀을 아직 못 읽어 결정 175 종료 판단을 미룬 경우
         bool g_endCheckAfterLoad = false;
+        bool g_atlasDamagedAfterLoad = false;
+        bool g_runDamagedAfterLoad = false;
+        bool g_runDamageEscapeReady = false;
         // 입구로 옮긴 뒤에도 다음 판정에서 여전히 문턱 아래면 포털 귀환으로 바꾼다.
         std::uint32_t g_fallRecoveryStreak = 0;
         double g_fallRecoveryCooldownSec = 0.0;
@@ -122,6 +126,7 @@ namespace SkyrimPoE::Runtime
         Core::MapActorRegistry g_mapActors;
         Core::MapModSummary g_mapActorMods{};
         bool g_spawnedForCurrentRun = false;
+        double g_bossMissingSec = 0.0;
         std::uint64_t g_nextRunId = 1;
         std::uint64_t g_pendingSpawnRunId = 0;
         double g_arenaPhaseInvulnSec = 0.0;
@@ -141,8 +146,10 @@ namespace SkyrimPoE::Runtime
         std::atomic<std::uint8_t> g_activeMapTier{ 0 };
         std::atomic<RE::FormID> g_activeBossFormId{ 0 };
         std::atomic_bool g_activeIsArena4{ false };
-        std::atomic_bool g_deathEscapeInFlight{ false };
-        std::atomic_bool g_uninstallCleanupArmed{ false };
+        std::atomic<std::uint64_t> g_deathEscapeRunId{ 0 };
+        enum class CleanupStatus { Idle, InProgress, Armed };
+        std::atomic<CleanupStatus> g_uninstallCleanupStatus{ CleanupStatus::Idle };
+        std::atomic_bool g_uninstallCleanupIncomplete{ false };
         // g_mutex로 보호한다. 큐에 있는 보스 처치 처리보다 귀환 확정이 먼저 오지 않게 한다.
         std::uint64_t g_bossDeathPendingRunId = 0;
         std::uint64_t g_bossDeathConfirmedRunId = 0;
@@ -235,6 +242,7 @@ namespace SkyrimPoE::Runtime
                 g_pendingReturnConfirmation.reset();
                 g_completedArenaPhase = Core::kArena4FirstPhase;
                 g_arenaBossDeathStart.reset();
+                g_bossMissingSec = 0.0;
             }
             g_activeMap = std::move(state);
             g_consumedMapRecord = std::move(consumedMap);
@@ -522,10 +530,57 @@ namespace SkyrimPoE::Runtime
 
         using Core::MapTravelKind;
 
+        RE::NiPointer<RE::Actor> LookupMapBoss(RE::FormID bossId, RE::FormID runCellId)
+        {
+            if (!bossId || !runCellId) {
+                return {};
+            }
+            const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::FindDungeonByCell(runCellId));
+            if (!forms || !forms->bossNpc) {
+                return {};
+            }
+            RE::NiPointer<RE::Actor> boss{ RE::TESForm::LookupByID<RE::Actor>(bossId) };
+            if (!boss || boss->IsDeleted()) {
+                return {};
+            }
+            const auto* base = boss->GetBaseObject();
+            const auto* cell = boss->GetParentCell();
+            if (!Core::MapSystem::MatchesMapBoss(forms->bossNpc->GetFormID(), runCellId,
+                    base ? base->GetFormID() : 0, cell ? cell->GetFormID() : 0)) {
+                return {};
+            }
+            return boss;
+        }
+
         bool IsBossDeadNow(RE::FormID bossId)
         {
-            const RE::NiPointer<RE::Actor> boss{ bossId ? RE::TESForm::LookupByID<RE::Actor>(bossId) : nullptr };
+            const auto boss = LookupMapBoss(bossId, g_activeCellFormId.load(std::memory_order_acquire));
             return boss && boss->IsDead();
+        }
+
+        void PromoteMapBoss(RE::Actor* boss, bool isArena4, std::uint8_t arenaPhase, const Core::MapModSummary& summary)
+        {
+            if (!boss || boss->IsDead() || boss->IsDisabled()) {
+                return;
+            }
+            const auto modBit = [](Core::MonsterModKind kind) {
+                return static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(kind));
+            };
+            std::uint16_t mask = modBit(Core::MonsterModKind::Armoured);
+            if (isArena4 && arenaPhase == 2) {
+                mask = modBit(Core::MonsterModKind::Hasted) | modBit(Core::MonsterModKind::ExtraFire);
+            } else if (isArena4 && arenaPhase >= Core::kArena4FinalPhase) {
+                mask = modBit(Core::MonsterModKind::Hasted) | modBit(Core::MonsterModKind::Deadly) |
+                    modBit(Core::MonsterModKind::ExtraLightning);
+            } else if (!isArena4) {
+                if (summary.forceHasted) {
+                    mask |= modBit(Core::MonsterModKind::Hasted);
+                }
+                if (summary.forceDeadly) {
+                    mask |= modBit(Core::MonsterModKind::Deadly);
+                }
+            }
+            MonsterRuntime::ForcePromoteForTest(boss, Core::MonsterRarity::Rare, mask, -1.0);
         }
 
         bool ShouldDeferBossDeathLocked(bool bossDeadNow)
@@ -582,6 +637,7 @@ namespace SkyrimPoE::Runtime
                 if (!g_travel.TryStart(request)) {
                     return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
                 }
+                g_bossMissingSec = 0.0;
                 g_travelContext = context;
                 if (entry) {
                     // 입장 대기 중 지도 상태가 꺼져 있어 사망 가로채기가 새로 발동할 수 없다.
@@ -656,9 +712,13 @@ namespace SkyrimPoE::Runtime
                 SKSE::log::error("MapDeviceRuntime: missing player or entry item 0x{:06X} for refund.", localId);
                 return false;
             }
-            if (!tracked) {
+            const auto beforeCount = player->GetItemCount(item);
+            const auto addPlain = [&]() {
                 player->AddObjectToContainer(item, nullptr, 1, nullptr);
-                return true;
+                return player->GetItemCount(item) > beforeCount;
+            };
+            if (!tracked) {
+                return addPlain();
             }
 
             // 재검수 R-15: 추적에 실패해도 원래 소유한 지도는 플레이어에게 남긴다.
@@ -667,14 +727,17 @@ namespace SkyrimPoE::Runtime
                 const auto key = ItemTracker::AddObjectWithTrackedUniqueId(player, item, extra, nullptr,
                     ItemTracker::UntrackedAddPolicy::Keep, &untrackedLeft);
                 if (key.IsValid()) {
+                    if (player->GetItemCount(item) <= beforeCount) {
+                        return false;
+                    }
                     auto record = *tracked;
                     record.baseFormId = item->GetFormID();
                     ItemTracker::Upsert(key, record, false);
                     return true;
                 }
             }
-            if (!untrackedLeft) {
-                player->AddObjectToContainer(item, nullptr, 1, nullptr);
+            if (!(untrackedLeft ? player->GetItemCount(item) > beforeCount : addPlain())) {
+                return false;
             }
             SKSE::log::error("MapDeviceRuntime: refunded map without tracking; its affixes were lost.");
             RE::SendHUDMessage::ShowHUDMessage("지도를 돌려받았지만 추적에 실패해 지도 속성이 사라졌습니다.");
@@ -733,11 +796,11 @@ namespace SkyrimPoE::Runtime
 
         // 결정 178 ①: 비활성화할 때도 우리 스폰임을 입증한다. FormID가 재사용돼 다른 액터(소환수 등)를
         // 끄거나 지우지 않도록, 그 회차 셀에 있고 기본 객체가 그 던전의 스폰 원형인 액터만 끈다.
-        void DisableMapSpawnOnMainThread(RE::FormID actorId, std::uint64_t runId, RE::FormID runCellId,
+        bool DisableMapSpawnOnMainThread(RE::FormID actorId, std::uint64_t runId, RE::FormID runCellId,
             std::span<const RE::FormID> templateIds)
         {
-            if ((actorId & 0xFF000000u) != 0xFF000000u || runCellId == 0 || templateIds.empty()) {
-                return;
+            if ((actorId & kDynamicFormMask) != kDynamicFormMask || runCellId == 0 || templateIds.empty()) {
+                return false;
             }
             std::uint64_t generation = 0;
             {
@@ -745,20 +808,20 @@ namespace SkyrimPoE::Runtime
                 if (std::ranges::any_of(g_pendingActorDeletes, [actorId, runId](const PendingActorDelete& entry) {
                         return entry.actorId == actorId && entry.runId == runId;
                     })) {
-                    return;
+                    return false;
                 }
                 generation = g_pendingActorDeleteGeneration;
             }
             const RE::NiPointer<RE::Actor> actor{ RE::TESForm::LookupByID<RE::Actor>(actorId) };
             if (!actor || actor->IsPlayerRef() || actor->IsDeleted()) {
-                return;
+                return false;
             }
             const auto* cell = actor->GetParentCell();
             const auto* baseObject = actor->GetBaseObject();
             const RE::FormID actorBaseId = baseObject ? baseObject->GetFormID() : 0;
             if (!cell || cell->GetFormID() != runCellId ||
                 std::ranges::find(templateIds, actorBaseId) == templateIds.end()) {
-                return;
+                return false;
             }
             // 사망한 액터의 희귀도와 상태이상은 예약된 처치 처리가 읽고 정리한다.
             if (!actor->IsDead()) {
@@ -770,7 +833,7 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lk(g_mutex);
                 if (generation != g_pendingActorDeleteGeneration) {
-                    return;
+                    return false;
                 }
                 // 다른 회차의 같은 FormID는 번호가 재사용된 것이므로 새 대기 항목으로 바꾼다.
                 std::erase_if(g_pendingActorDeletes, [actorId](const PendingActorDelete& entry) { return entry.actorId == actorId; });
@@ -785,6 +848,7 @@ namespace SkyrimPoE::Runtime
                 SKSE::log::warn("MapDeviceRuntime: dropped pending deletion of actor 0x{:08X} at queue capacity {}.",
                     evictedActorId, kMaxPendingMapActorDeletes);
             }
+            return true;
         }
 
         void DisableRunSpawnsOnMainThread(std::uint64_t runId)
@@ -796,8 +860,10 @@ namespace SkyrimPoE::Runtime
                 if (!g_activeMap.active || g_activeMap.runId != runId) {
                     return;
                 }
-                spawnedIds = g_activeMap.spawnedRefFormIds;
+                spawnedIds = Core::MapSystem::MapSpawnCleanupIds(g_activeMap);
                 cellId = g_activeCellFormId.load(std::memory_order_relaxed);
+                g_activeMap.spawnsDisabled = true;
+                g_bossMissingSec = 0.0;
             }
             const auto templateIds = SpawnTemplateIdsForCell(cellId);
             for (const auto id : spawnedIds) {
@@ -898,7 +964,7 @@ namespace SkyrimPoE::Runtime
         void CleanupClosedRunOnMainThread(std::span<const RE::FormID> spawnedIds, std::uint64_t runId, RE::FormID cellId)
         {
             WorldDropTracker::DiscardDropsFromCorpses(spawnedIds, cellId);
-            // 보스도 스폰 목록에 있다. 목록 밖의 ID는 손상됐거나 재사용됐을 수 있다.
+            // 목록 밖의 보스도 정리하되, 삭제 전에 원형과 셀을 확인한다.
             const auto templateIds = SpawnTemplateIdsForCell(cellId);
             for (const auto id : spawnedIds) {
                 DisableMapSpawnOnMainThread(id, runId, cellId, templateIds);
@@ -914,7 +980,7 @@ namespace SkyrimPoE::Runtime
             std::optional<bool> refunded, std::string_view reason, RE::FormID cellId)
         {
             // refunded: nullopt = 돌려줄 대상이 아님(보스를 처치했거나 실패한 회차), true/false = 환불 성공 여부
-            CleanupClosedRunOnMainThread(snap.spawnedRefFormIds, snap.runId, cellId);
+            CleanupClosedRunOnMainThread(Core::MapSystem::MapSpawnCleanupIds(snap), snap.runId, cellId);
             const std::string_view refundText = !refunded.has_value()
                 ? "이미 끝난 회차(보스 처치 또는 실패)라 소모품은 돌려주지 않습니다."
                 : (*refunded ? (snap.isArena4 ? "공물을 돌려받았습니다." : "지도를 돌려받았습니다.")
@@ -925,6 +991,17 @@ namespace SkyrimPoE::Runtime
             if (returnPlayer) {
                 ShowMapMessage(RequestReturn(player, MapTravelKind::CancelledRun, SavedReturn(snap), 0, "귀환을 요청했습니다."));
             }
+        }
+
+        void EscapeDamagedRunOnMainThread(RE::PlayerCharacter* player)
+        {
+            RE::SendHUDMessage::ShowHUDMessage("[지도 장치] 회차 기록이 손상되어 지도를 복원할 수 없습니다.");
+            ShowMapMessage(RequestReturn(player, MapTravelKind::SafeEscape, {}, 0, "안전 탈출을 요청했습니다."));
+        }
+
+        void ShowAtlasDamageOnMainThread()
+        {
+            RE::SendHUDMessage::ShowHUDMessage("[지도 장치] 아틀라스 기록을 읽지 못해 진행도가 초기화되었습니다. 첫 공물은 지급된 것으로 처리합니다.");
         }
 
         [[nodiscard]] bool HasMapSpawnCapacityLocked()
@@ -1055,19 +1132,13 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
             }
-            auto* boss = RE::TESForm::LookupByID<RE::Actor>(bossFormId);
+            const auto boss = LookupMapBoss(bossFormId, g_activeCellFormId.load(std::memory_order_acquire));
             if (!boss || boss->IsDead() || boss->IsDisabled()) {
                 return;
             }
             {
-                SpawnHarmlessVfxAtActor(boss, FormIds::kVfxFireBurst);
-                const std::uint16_t phaseMods = (newPhase == 2)
-                    ? (static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted)) |
-                       static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::ExtraFire)))
-                    : (static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted)) |
-                       static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Deadly)) |
-                       static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::ExtraLightning)));
-                MonsterRuntime::ForcePromoteForTest(boss, Core::MonsterRarity::Rare, phaseMods, -1.0);
+                SpawnHarmlessVfxAtActor(boss.get(), FormIds::kVfxFireBurst);
+                PromoteMapBoss(boss.get(), true, newPhase, {});
             }
 
             const auto* arena = MapPackRuntime::FindForms(&MapPackRuntime::Manifest().arena);
@@ -1173,7 +1244,7 @@ namespace SkyrimPoE::Runtime
                         g_permittedCell = 0;
                         g_retryReturnRunId = 0;
                         g_deathEscapeExitElapsedSec = 0.0;
-                        g_deathEscapeInFlight.store(false, std::memory_order_release);
+                        g_deathEscapeRunId.store(0, std::memory_order_release);
                         RefreshAtomicsLocked();
                     }
                     refunded = RefundEntryOnMainThread(player, snap.tier, snap.isArena4, tracked);
@@ -1214,7 +1285,7 @@ namespace SkyrimPoE::Runtime
                 std::scoped_lock lk(g_mutex);
                 cellId = g_activeCellFormId.load(std::memory_order_relaxed);
                 runId = g_activeMap.runId;
-                toClean.swap(g_activeMap.spawnedRefFormIds);
+                toClean = Core::MapSystem::MapSpawnCleanupIds(g_activeMap);
                 SetActiveMapLocked({});
                 g_spawnedForCurrentRun = false;
                 g_pendingSpawnRunId = 0;
@@ -1226,6 +1297,122 @@ namespace SkyrimPoE::Runtime
             CleanupClosedRunOnMainThread(toClean, runId, cellId);
             MapDeviceRuntime::SyncMapLayer2ToStatEngine();
             RE::SendHUDMessage::ShowHUDMessage("지도 회차를 종료했습니다.");
+        }
+
+        Core::MapBossLossObservation BossLossObservationLocked(bool stableRunCell, bool gamePaused)
+        {
+            return {
+                .stableRunCell = stableRunCell,
+                .playerAuthorized = g_playerInActiveMapCell.load(std::memory_order_relaxed),
+                .spawned = g_spawnedForCurrentRun,
+                .travelPending = PendingTravelKindLocked().has_value() ||
+                    g_deathEscapeRunId.load(std::memory_order_relaxed) == g_activeMap.runId,
+                .deathConfirmed = g_bossDeathConfirmedRunId == g_activeMap.runId,
+                .deathPending = g_bossDeathPendingRunId == g_activeMap.runId,
+                .paused = gamePaused
+            };
+        }
+
+        void RecoverMissingBossOnMainThread(RE::PlayerCharacter* player, RE::FormID cellId, RE::FormID previousBossId,
+            std::uint64_t runId)
+        {
+            const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::FindDungeonByCell(cellId));
+            if (!forms || !forms->cell || !forms->bossNpc || player->GetParentCell() != forms->cell) {
+                return;
+            }
+
+            std::vector<RE::NiPointer<RE::TESObjectREFR>> references;
+            forms->cell->ForEachReference([&](RE::TESObjectREFR* reference) {
+                references.emplace_back(reference);
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            RE::FormID livingBoss = 0;
+            std::vector<RE::FormID> deadBosses;
+            for (const auto& reference : references) {
+                auto* actor = reference->As<RE::Actor>();
+                if (!actor || actor->GetBaseObject() != forms->bossNpc || actor->GetParentCell() != forms->cell ||
+                    actor->IsDeleted() || actor->IsDisabled()) {
+                    continue;
+                }
+                // 지도 팩에는 배치된 NPC가 없고 런타임 스폰만 회차 참조로 기록한다.
+                const auto actorId = actor->GetFormID();
+                if ((actorId & kDynamicFormMask) != kDynamicFormMask) {
+                    continue;
+                }
+                if (!actor->IsDead()) {
+                    livingBoss = actorId;
+                    break;
+                }
+                deadBosses.push_back(actorId);
+            }
+
+            Core::ActiveMapState cancelledRun;
+            std::optional<bool> refunded;
+            RE::FormID foundBoss = 0;
+            std::uint8_t pendingArenaPhase = 0;
+            std::uint8_t completedArenaPhase = 0;
+            bool isArena4 = false;
+            Core::MapModSummary summary{};
+            SaveLoad::RunSerializedTransaction([&]() {
+                std::optional<Core::PoEItemRecord> tracked;
+                {
+                    std::scoped_lock lk(g_mutex);
+                    if (g_activeMap.runId != runId || g_activeMap.bossRefFormId != previousBossId ||
+                        !Core::MapSystem::CanCheckBossLoss(g_activeMap,
+                            BossLossObservationLocked(cellId == g_activeCellFormId.load(std::memory_order_relaxed), false))) {
+                        return;
+                    }
+                    foundBoss = Core::MapSystem::SelectMapBossCandidate(livingBoss, deadBosses, g_activeMap.spawnedRefFormIds);
+                    if (foundBoss != 0) {
+                        Core::MapSystem::RebindMapBoss(g_activeMap, foundBoss);
+                        g_activeMap.bossKilled = livingBoss == 0;
+                        isArena4 = g_activeMap.isArena4;
+                        completedArenaPhase = g_completedArenaPhase;
+                        summary = g_activeMap.summary;
+                        if (livingBoss != 0 && isArena4 && g_activeMap.arenaPhase > completedArenaPhase) {
+                            pendingArenaPhase = g_activeMap.arenaPhase;
+                        }
+                        g_bossMissingSec = 0.0;
+                        g_bossDeathPendingRunId = 0;
+                        g_bossDeathConfirmedRunId = 0;
+                        g_arenaBossDeathStart.reset();
+                        RefreshMapActorsLocked();
+                        RefreshAtomicsLocked();
+                        return;
+                    }
+                    cancelledRun = std::move(g_activeMap);
+                    tracked = std::move(g_consumedMapRecord);
+                    SetActiveMapLocked({});
+                    g_spawnedForCurrentRun = false;
+                    g_pendingSpawnRunId = 0;
+                    g_arenaPhaseInvulnSec = 0.0;
+                    g_permittedCell = 0;
+                    g_retryReturnRunId = 0;
+                    RefreshAtomicsLocked();
+                }
+                if (!tracked) {
+                    tracked = RecreateSavedMapRefund(cancelledRun);
+                }
+                refunded = RefundEntryOnMainThread(player, cancelledRun.tier, cancelledRun.isArena4, tracked);
+            });
+
+            if (foundBoss != 0) {
+                SKSE::log::info("MapDeviceRuntime: rebound run {} boss 0x{:08X} -> 0x{:08X} (dead={}).",
+                    runId, previousBossId, foundBoss, livingBoss == 0);
+                if (livingBoss == 0) {
+                    RE::SendHUDMessage::ShowHUDMessage("[지도 장치] 저장된 보스 처치를 반영했습니다. 보상 없음.");
+                } else {
+                    const auto boss = LookupMapBoss(foundBoss, cellId);
+                    PromoteMapBoss(boss.get(), isArena4, completedArenaPhase, summary);
+                    if (pendingArenaPhase != 0) {
+                        ExecuteArena4PhaseTransitionOnMainThread(pendingArenaPhase, foundBoss, runId);
+                    }
+                }
+            } else if (refunded.has_value()) {
+                FinishCancelledRunOnMainThread(player, cancelledRun, true, refunded,
+                    "보스를 찾을 수 없어 회차를 취소했습니다.", cellId);
+                MapDeviceRuntime::SyncMapLayer2ToStatEngine();
+            }
         }
 
         Core::MapEntryAccess GetEntryAccessLocked(const Core::MapTravelObservation& observation)
@@ -1242,7 +1429,7 @@ namespace SkyrimPoE::Runtime
                 g_pendingSpawnRunId = g_activeMap.runId;
             }
             g_deathEscapeExitElapsedSec = 0.0;
-            g_deathEscapeInFlight.store(false, std::memory_order_release);
+            g_deathEscapeRunId.store(0, std::memory_order_release);
         }
 
         std::string Arena4EntryDenialMessage()
@@ -1320,9 +1507,11 @@ namespace SkyrimPoE::Runtime
                     }
 
                     std::scoped_lock lk(g_mutex);
+                    const auto runId = g_nextRunId;
+                    g_nextRunId = Core::NextMapRunId(runId);
                     auto next = arena
-                        ? Core::MapSystem::CreateArena4Run(g_nextRunId++, origin.cell, origin.worldspace, origin.position, origin.angle)
-                        : Core::MapSystem::CreateNormalMapRun(g_nextRunId++, *tier,
+                        ? Core::MapSystem::CreateArena4Run(runId, origin.cell, origin.worldspace, origin.position, origin.angle)
+                        : Core::MapSystem::CreateNormalMapRun(runId, *tier,
                             tracked ? tracked->affixes : std::vector<Core::RolledAffix>{},
                             origin.cell, origin.worldspace, origin.position, origin.angle);
                     next.dungeonKey = dungeon->key;
@@ -1398,8 +1587,9 @@ namespace SkyrimPoE::Runtime
                 // 귀환이 끝내 실패하면 지도 안에서 무적으로 남지 않게 푼다(사망 귀환이 합류한 일반 귀환·포기 포함).
                 // 다음 치명타는 다시 귀환을 요청한다.
                 std::scoped_lock lk(g_mutex);
-                g_deathEscapeExitElapsedSec = 0.0;
-                g_deathEscapeInFlight.store(false, std::memory_order_release);
+                if (Core::MapSystem::ReleaseDeathEscape(g_deathEscapeRunId, runId)) {
+                    g_deathEscapeExitElapsedSec = 0.0;
+                }
             }
             if (kind == MapTravelKind::Return || kind == MapTravelKind::DeathEscape) {
                 std::scoped_lock lk(g_mutex);
@@ -1475,9 +1665,14 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lk(g_mutex);
                 const auto pending = PendingTravelKindLocked();
+                if (g_deathEscapeRunId.load(std::memory_order_relaxed) != runId) {
+                    return;
+                }
                 if (!g_activeMap.active || g_activeMap.runId != runId || !player ||
                     MapDeviceRuntime::IsUninstallCleanupArmed() || (pending && Core::IsMapEntry(*pending))) {
-                    g_deathEscapeInFlight.store(false, std::memory_order_release);
+                    if (Core::MapSystem::ReleaseDeathEscape(g_deathEscapeRunId, runId)) {
+                        g_deathEscapeExitElapsedSec = 0.0;
+                    }
                     return;
                 }
                 // 훅에서 실패를 먼저 표시한다. 여기서는 이미 실패한 회차도 스폰을 정리하고 귀환시킨다.
@@ -1522,8 +1717,9 @@ namespace SkyrimPoE::Runtime
                 if (!result.ok) {
                     // 요청이 서지 않으면 실패 처리기가 오지 않으므로 여기서 무적을 푼다.
                     std::scoped_lock lk(g_mutex);
-                    g_deathEscapeExitElapsedSec = 0.0;
-                    g_deathEscapeInFlight.store(false, std::memory_order_release);
+                    if (Core::MapSystem::ReleaseDeathEscape(g_deathEscapeRunId, runId)) {
+                        g_deathEscapeExitElapsedSec = 0.0;
+                    }
                 }
                 ShowMapMessage(result);
             }
@@ -1712,6 +1908,11 @@ namespace SkyrimPoE::Runtime
         }
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) {
+            {
+                std::scoped_lock lk(g_mutex);
+                g_lastObservedCell = 0;
+                g_bossMissingSec = 0.0;
+            }
             if (g_playerInActiveMapCell.exchange(false, std::memory_order_acq_rel)) {
                 SyncMapLayer2ToStatEngine();
             }
@@ -1735,11 +1936,19 @@ namespace SkyrimPoE::Runtime
         bool fallAuthorized = false;
         bool fallUsePortal = false;
         bool endRunNow = false;
+        bool atlasDamaged = false;
+        bool escapeDamagedRun = false;
+        std::uint64_t bossCheckRunId = 0;
+        RE::FormID bossCheckFormId = 0;
+        bool stableRunCell = false;
         const Core::MapDungeonDef* fallDungeon = nullptr;
         std::vector<std::pair<RE::FormID, std::uint64_t>> resetCandidates;
         {
             std::scoped_lock lk(g_mutex);
             const auto access = GetEntryAccessLocked(observation);
+            if (!observation.loading) {
+                atlasDamaged = std::exchange(g_atlasDamagedAfterLoad, false);
+            }
             g_permittedCell = access.permittedCell;
             accessChanged = g_playerInActiveMapCell.exchange(access.inActiveMap, std::memory_order_acq_rel) != access.inActiveMap;
             const auto pending = PendingTravelKindLocked();
@@ -1747,7 +1956,7 @@ namespace SkyrimPoE::Runtime
             if (!observation.loading) {
                 if (!access.unauthorized) {
                     g_warnedUnauthorizedCell = 0;
-                } else if (observation.cell != g_warnedUnauthorizedCell && !pending) {
+                } else if (!g_runDamagedAfterLoad && observation.cell != g_warnedUnauthorizedCell && !pending) {
                     g_warnedUnauthorizedCell = observation.cell;
                     warnUnauthorized = true;
                 }
@@ -1760,6 +1969,23 @@ namespace SkyrimPoE::Runtime
                 g_endCheckAfterLoad = false;
                 endRunNow = g_activeMap.active && !observation.inPackCell && Core::MapSystem::ShouldEndOnReturn(g_activeMap);
             }
+            if (g_runDamageEscapeReady && g_runDamagedAfterLoad && !observation.loading && observation.cell != 0) {
+                g_runDamagedAfterLoad = false;
+                escapeDamagedRun = observation.inPackCell;
+            }
+            // 낙하 복귀와 보스 확인은 3D가 준비된 같은 셀을 두 틱 연속 본 뒤 시작한다.
+            const bool observedReady = !observation.loading && observation.loaded3D && observation.cell != 0;
+            const bool cellStable = observedReady && observation.cell == g_lastObservedCell;
+            if (!gamePaused) {
+                g_lastObservedCell = observedReady ? observation.cell : 0;
+            }
+            stableRunCell = cellStable && observation.cell == g_activeCellFormId.load(std::memory_order_relaxed);
+            if (Core::MapSystem::CanCheckBossLoss(g_activeMap, BossLossObservationLocked(stableRunCell, gamePaused))) {
+                bossCheckRunId = g_activeMap.runId;
+                bossCheckFormId = g_activeMap.bossRefFormId;
+            } else {
+                g_bossMissingSec = 0.0;
+            }
             bool belowMap = false;
             if (!gamePaused && !observation.loading) {
                 const bool validDelta = std::isfinite(deltaSec) && deltaSec > 0.0;
@@ -1767,31 +1993,27 @@ namespace SkyrimPoE::Runtime
                     g_fallRecoveryCooldownSec = std::max(0.0, g_fallRecoveryCooldownSec - deltaSec);
                     AdvanceCellResetTimersLocked(deltaSec);
                 }
-                // 3D가 준비된 같은 셀을 두 틱 연속 본 뒤에만 높이를 믿는다(순간이동 직후 옛 좌표 제외).
-                const bool observedReady = observation.loaded3D && observation.cell != 0;
-                const bool cellStable = observedReady && observation.cell == g_lastObservedCell;
-                g_lastObservedCell = observedReady ? observation.cell : 0;
                 if (cellStable && observation.inPackCell) {
                     const auto* dungeon = MapPackRuntime::FindDungeonByCell(observation.cell);
                     belowMap = dungeon && Core::HasFallenBelowMap(observation, dungeon->navmeshMinZ, g_travelSettings.fallMargin);
                     if (!belowMap) {
                         g_fallRecoveryStreak = 0;
                     } else if (!pending && g_fallRecoveryCooldownSec == 0.0 &&
-                               !g_deathEscapeInFlight.load(std::memory_order_acquire)) {
+                               g_deathEscapeRunId.load(std::memory_order_acquire) == 0) {
                         fallDungeon = dungeon;
                         fallAuthorized = access.inActiveMap;
                         fallUsePortal = ++g_fallRecoveryStreak >= 2;
                         g_fallRecoveryCooldownSec = kFallRecoveryCooldownSec;
                     }
                 }
-                if (g_deathEscapeInFlight.load(std::memory_order_acquire)) {
+                if (const auto escapeRunId = g_deathEscapeRunId.load(std::memory_order_acquire); escapeRunId != 0) {
                     if (observation.inPackCell || !observation.loaded3D || observation.cell == 0) {
                         g_deathEscapeExitElapsedSec = 0.0;
                     } else if (validDelta) {
                         g_deathEscapeExitElapsedSec += deltaSec;
                         if (g_deathEscapeExitElapsedSec >= kDeathEscapeReleaseCooldownSec) {
                             g_deathEscapeExitElapsedSec = 0.0;
-                            g_deathEscapeInFlight.store(false, std::memory_order_release);
+                            (void)Core::MapSystem::ReleaseDeathEscape(g_deathEscapeRunId, escapeRunId);
                         }
                     }
                 }
@@ -1806,6 +2028,13 @@ namespace SkyrimPoE::Runtime
         if (accessChanged) {
             SyncMapLayer2ToStatEngine();
         }
+        if (atlasDamaged) {
+            ShowAtlasDamageOnMainThread();
+        }
+        if (escapeDamagedRun) {
+            EscapeDamagedRunOnMainThread(player);
+            return;
+        }
         if (!resetCandidates.empty()) {
             SendCellResets(resetCandidates);
         }
@@ -1818,11 +2047,33 @@ namespace SkyrimPoE::Runtime
             RE::SendHUDMessage::ShowHUDMessage("입장 허가가 없습니다. 귀환 문이나 지도 탭의 안전 탈출을 이용하세요.");
         }
         if (fallDungeon) {
+            {
+                std::scoped_lock lk(g_mutex);
+                g_bossMissingSec = 0.0;
+            }
             RecoverFromMapFall(player, *fallDungeon, fallAuthorized, fallUsePortal);
             return;  // 다음 틱에서 옮긴 위치를 다시 관측한 뒤 스폰한다.
         }
         if (shouldSpawnNow) {
             SpawnMapEncounterOnMainThread(player);
+        }
+        if (bossCheckRunId != 0) {
+            const auto boss = LookupMapBoss(bossCheckFormId, observation.cell);
+            const bool missing = !boss;
+            bool suspected = false;
+            {
+                std::scoped_lock lk(g_mutex);
+                if (g_activeMap.runId == bossCheckRunId && g_activeMap.bossRefFormId == bossCheckFormId) {
+                    auto status = BossLossObservationLocked(stableRunCell, gamePaused);
+                    status.bossMissing = missing;
+                    const auto progress = Core::MapSystem::ObserveBossLoss(g_activeMap, status, g_bossMissingSec, deltaSec);
+                    g_bossMissingSec = progress.missingSec;
+                    suspected = progress.suspected;
+                }
+            }
+            if (suspected) {
+                RecoverMissingBossOnMainThread(player, observation.cell, bossCheckFormId, bossCheckRunId);
+            }
         }
     }
 
@@ -2003,6 +2254,62 @@ namespace SkyrimPoE::Runtime
             completed == g_completedCellResets.end() ? 0 : completed->second };
     }
 
+    namespace
+    {
+        std::size_t CountGemAndSockets(const Core::GemInstance& gem)
+        {
+            std::size_t count = 1;
+            for (const auto& socketed : gem.socketedGems) {
+                count += CountGemAndSockets(socketed);
+            }
+            return count;
+        }
+
+        UninstallCleanupRemaining CountUninstallCleanupRemaining(const PersistentState& state)
+        {
+            UninstallCleanupRemaining remaining;
+            for (const auto& slot : state.slots) {
+                if (slot.occupied) {
+                    remaining.gems += CountGemAndSockets(slot.gem);
+                }
+            }
+            remaining.jewels = state.socketedJewels.size();
+            remaining.charms = static_cast<std::size_t>(std::ranges::count_if(state.charmSlots,
+                [](const auto& slot) { return slot.occupied; }));
+            return remaining;
+        }
+
+        bool ReturnUninstallGem(RE::PlayerCharacter* player, const Core::GemInstance& gem,
+            std::size_t& returned, std::size_t& lost)
+        {
+            const auto localId = FormIds::FindLocalFormIdForGem(gem.gemId);
+            auto* base = localId != 0 ? FormIds::Lookup<RE::TESObjectMISC>(localId) : nullptr;
+            if (!base) {
+                ++lost;
+                return true;
+            }
+            const auto countBefore = player->GetItemCount(base);
+            if (!GemInventory::ReturnGemToPlayerInventory(player, gem)) {
+                if (player->GetItemCount(base) <= countBefore) {
+                    return false;
+                }
+                SKSE::log::error("MapDeviceRuntime: uninstall returned gem instance {} ('{}') without tracking; gem data lost.",
+                    gem.instanceId, gem.gemId);
+                RE::SendHUDMessage::ShowHUDMessage("젬을 가방으로 돌려받았지만 추적에 실패해 젬 정보가 사라졌습니다.");
+            }
+            ++returned;
+            return true;
+        }
+    }
+
+    std::optional<UninstallCleanupRemaining> MapDeviceRuntime::GetUninstallCleanupRemaining(const PersistentState& state)
+    {
+        if (!g_uninstallCleanupIncomplete.load(std::memory_order_acquire)) {
+            return std::nullopt;
+        }
+        return CountUninstallCleanupRemaining(state);
+    }
+
     MapActionResult MapDeviceRuntime::RunSafeUninstallCleanup(RE::PlayerCharacter* player)
     {
         if (!player) {
@@ -2012,6 +2319,23 @@ namespace SkyrimPoE::Runtime
         if (travel.kind || travel.inPackCell || !player->GetParentCell()) {
             return { false, "이동을 마치고 지도 밖에서 실행하세요." };
         }
+
+        auto* av = player->AsActorValueOwner();
+        if (!av) {
+            return { false, "플레이어의 체력과 매지카를 확인할 수 없습니다." };
+        }
+        auto idle = CleanupStatus::Idle;
+        if (!g_uninstallCleanupStatus.compare_exchange_strong(idle, CleanupStatus::InProgress, std::memory_order_acq_rel)) {
+            return { false, "안전 제거 정리가 진행 중이거나 이미 완료되었습니다." };
+        }
+        struct ClearInProgressOnExit
+        {
+            ~ClearInProgressOnExit()
+            {
+                auto inProgress = CleanupStatus::InProgress;
+                g_uninstallCleanupStatus.compare_exchange_strong(inProgress, CleanupStatus::Idle, std::memory_order_acq_rel);
+            }
+        } clearInProgressOnExit;
 
         // 회차 드랍은 액터 정리 전에 버리고, 나머지는 안전 제거 절차대로 각 시체에 돌려준다.
         CycloneRuntime::StopNowOnMainThread(player);
@@ -2023,50 +2347,42 @@ namespace SkyrimPoE::Runtime
 
         std::size_t returnedGems = 0;
         std::size_t returnedJewels = 0;
-        // 돌려주지 못해 소켓에 남긴 주얼 수. 0이 아니면 정리를 완료로 표시하지 않는다(모드를 지우면 잃기 때문).
-        std::size_t keptJewels = 0;
         std::size_t returnedCharms = 0;
+        std::size_t lostGems = 0;
+        std::size_t lostJewels = 0;
+        std::size_t lostCharms = 0;
         double appliedHpDelta = 0.0;
         double appliedMpDelta = 0.0;
-
+        UninstallCleanupRemaining remaining;
         SaveLoad::RunSerializedTransaction([&]() {
-            PersistentState st = SaveLoad::GetStateCopy();
+            auto st = SaveLoad::GetStateCopy();
             appliedHpDelta = st.appliedHealthDelta;
             appliedMpDelta = st.appliedMagickaDelta;
 
-            for (auto& slot : st.slots) {
-                if (!slot.occupied) {
+            Core::GemTransaction::ReturnSlottedGemsForUninstall(st.slots, [&](const Core::GemInstance& gem) {
+                return ReturnUninstallGem(player, gem, returnedGems, lostGems);
+            });
+
+            // 주얼은 원래 폼과 색상 기본 폼을 모두 확인한다. 찾은 경우 재검수 R-15의 반환 규칙을 쓴다.
+            for (auto it = st.socketedJewels.begin(); it != st.socketedJewels.end();) {
+                const auto& jewel = it->second;
+                auto* base = RE::TESForm::LookupByID<RE::TESBoundObject>(jewel.baseFormId);
+                if (!base) {
+                    base = FormIds::Lookup<RE::TESObjectMISC>(FormIds::JewelLocalFormId(jewel.jewelColor));
+                }
+                if (!base) {
+                    ++lostJewels;
+                    it = st.socketedJewels.erase(it);
                     continue;
                 }
-                for (auto& sup : slot.gem.socketedGems) {
-                    if (GemInventory::ReturnGemToPlayerInventory(player, sup).has_value()) {
-                        ++returnedGems;
-                    }
-                }
-                slot.gem.socketedGems.clear();
-                if (GemInventory::ReturnGemToPlayerInventory(player, slot.gem).has_value()) {
-                    ++returnedGems;
-                }
-                slot.occupied = false;
-                slot.linkedAttackSlot = -1;
-                slot.gem = Core::GemInstance{};
-            }
-
-            // 재검수 R-15와 같은 규칙(SaveLoad::PostLoadInit의 주얼 반환): 돌려준 것과 "실물은 들어갔지만 추적 실패"는 소켓에서 빼고,
-            // 넣지 못한 것은 소켓에 남겨 다시 시도할 수 있게 한다(6단계 재작업 계획 D-10: 실패분은 보존).
-            for (auto it = st.socketedJewels.begin(); it != st.socketedJewels.end();) {
-                const auto& jRec = it->second;
-                auto* baseObj = RE::TESForm::LookupByID<RE::TESBoundObject>(jRec.baseFormId);
-                if (!baseObj) {
-                    baseObj = FormIds::Lookup<RE::TESObjectMISC>(FormIds::JewelLocalFormId(jRec.jewelColor));
-                }
-                auto* freshExtra = baseObj ? UniqueIdUtil::CreateGameExtraDataList() : nullptr;
-                if (baseObj && freshExtra) {
+                if (auto* extra = UniqueIdUtil::CreateGameExtraDataList()) {
                     bool untrackedLeft = false;
-                    const auto newKey = ItemTracker::AddObjectWithTrackedUniqueId(
-                        player, baseObj, freshExtra, nullptr, ItemTracker::UntrackedAddPolicy::RemoveAgain, &untrackedLeft);
-                    if (newKey.IsValid()) {
-                        ItemTracker::Upsert(newKey, jRec, false);
+                    const auto key = ItemTracker::AddObjectWithTrackedUniqueId(
+                        player, base, extra, nullptr, ItemTracker::UntrackedAddPolicy::RemoveAgain, &untrackedLeft);
+                    if (key.IsValid()) {
+                        auto returned = jewel;
+                        returned.baseFormId = base->GetFormID();
+                        ItemTracker::Upsert(key, returned, false);
                         ++returnedJewels;
                         it = st.socketedJewels.erase(it);
                         continue;
@@ -2080,60 +2396,111 @@ namespace SkyrimPoE::Runtime
                     }
                 }
                 SKSE::log::warn("MapDeviceRuntime: uninstall could not return jewel from node {}; kept in the socket.", it->first);
-                ++keptJewels;
                 ++it;
             }
 
-            for (auto& cs : st.charmSlots) {
-                if (cs.occupied) {
-                    if (auto* charmObj = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CharmLocalFormId(cs.kind))) {
-                        player->AddObjectToContainer(charmObj, nullptr, 1, nullptr);
-                        ++returnedCharms;
-                    }
-                }
-                cs = Core::CharmSlotState{};
-            }
             if (g_charmSystem) {
-                g_charmSystem->SetSlots(st.charmSlots, 0);
+                st.charmSlots = g_charmSystem->Slots();
+            }
+            for (auto& charm : st.charmSlots) {
+                if (!charm.occupied) {
+                    continue;
+                }
+                const auto localId = FormIds::CharmLocalFormId(charm.kind);
+                auto* base = localId != 0 ? FormIds::Lookup<RE::TESObjectMISC>(localId) : nullptr;
+                if (!base) {
+                    ++lostCharms;
+                    charm = Core::CharmSlotState{};
+                    continue;
+                }
+                const auto countBefore = player->GetItemCount(base);
+                player->AddObjectToContainer(base, nullptr, 1, nullptr);
+                if (player->GetItemCount(base) > countBefore) {
+                    charm = Core::CharmSlotState{};
+                    ++returnedCharms;
+                }
+            }
+            remaining = CountUninstallCleanupRemaining(st);
+            if (g_charmSystem) {
+                if (remaining.Empty()) {
+                    g_charmSystem->ResetOnRevert();
+                } else {
+                    g_charmSystem->SetSlots(st.charmSlots, g_charmSystem->UnlockedSlots());
+                }
             }
 
-            st.activeAuraMask = 0;
-            st.virtualRing2Key = {};
-            st.virtualRing2BaseFormId = 0;
-            st.virtualBeltKey = {};
-            st.virtualBeltBaseFormId = 0;
-            st.appliedHealthDelta = 0.0;
-            st.appliedMagickaDelta = 0.0;
-            SaveLoad::SetState(st);
-        });
+            if (remaining.Empty()) {
+                if (std::abs(appliedHpDelta) > 0.01) {
+                    const float revertHp = -static_cast<float>(appliedHpDelta);
+                    if (revertHp < 0.0f) {
+                        const float curHp = av->GetActorValue(RE::ActorValue::kHealth);
+                        if (curHp > 0.0f && (curHp + revertHp) < 1.0f) {
+                            const float comp = std::min(-revertHp, 1.0f - (curHp + revertHp));
+                            if (comp > 0.0f) {
+                                av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, comp);
+                            }
+                        }
+                    }
+                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kHealth, revertHp);
+                }
+                if (std::abs(appliedMpDelta) > 0.01) {
+                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kMagicka,
+                        -static_cast<float>(appliedMpDelta));
+                }
+                av->SetActorValue(RE::ActorValue::kVariable09, 0.0f);
+            }
 
-        ProxySpellRuntime::RemoveAllProxySpells(player);
-
-        if (auto* av = player->AsActorValueOwner()) {
-            if (std::abs(appliedHpDelta) > 0.01) {
-                const float revertHp = -static_cast<float>(appliedHpDelta);
-                if (revertHp < 0.0f) {
-                    const float curHp = av->GetActorValue(RE::ActorValue::kHealth);
-                    if (curHp > 0.0f && (curHp + revertHp) < 1.0f) {
-                        const float comp = std::min(-revertHp, 1.0f - (curHp + revertHp));
-                        if (comp > 0.0f) {
-                            av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, comp);
+            SaveLoad::UpdateState([&](PersistentState& state) {
+                state.slots = std::move(st.slots);
+                state.socketedJewels = std::move(st.socketedJewels);
+                state.charmSlots = st.charmSlots;
+                if (remaining.Empty()) {
+                    state.activeAuraMask = 0;
+                    state.virtualRing2Key = {};
+                    state.virtualRing2BaseFormId = 0;
+                    state.virtualBeltKey = {};
+                    state.virtualBeltBaseFormId = 0;
+                    state.appliedHealthDelta = 0.0;
+                    state.appliedMagickaDelta = 0.0;
+                } else {
+                    for (std::size_t i = 0; i < state.slots.size(); ++i) {
+                        if (!state.slots[i].occupied) {
+                            state.activeAuraMask &= static_cast<std::uint16_t>(~(1u << i));
                         }
                     }
                 }
-                av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kHealth, revertHp);
-            }
-            if (std::abs(appliedMpDelta) > 0.01) {
-                av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kMagicka,
-                    -static_cast<float>(appliedMpDelta));
-            }
-            av->SetActorValue(RE::ActorValue::kVariable09, 0.0f);
+            });
+        });
+
+        std::string lostNotice;
+        if (lostGems != 0 || lostJewels != 0 || lostCharms != 0) {
+            lostNotice = std::format(" 돌려줄 수 없음(폼 유실) · 젬 {}개, 주얼 {}개, 참 {}개.",
+                lostGems, lostJewels, lostCharms);
+            SKSE::log::warn("MapDeviceRuntime: uninstall cleared missing item forms (gems={}, jewels={}, charms={}).",
+                lostGems, lostJewels, lostCharms);
         }
 
+        g_uninstallCleanupIncomplete.store(!remaining.Empty(), std::memory_order_release);
+        if (!remaining.Empty()) {
+            g_uninstallCleanupStatus.store(CleanupStatus::Idle, std::memory_order_release);
+            EquipmentSync::RefreshFromPlayerNow();
+            SaveLoad::SyncStateToStatEngine();
+            SyncMapLayer2ToStatEngine();
+
+            const auto failMsg = std::format(
+                "안전 제거 미완료. 장착된 젬 {}개, 주얼 {}개, 참 {}개가 남았습니다. 정리를 다시 시도하세요.{}",
+                remaining.gems, remaining.jewels, remaining.charms, lostNotice);
+            RE::SendHUDMessage::ShowHUDMessage(failMsg.c_str());
+            SKSE::log::error("MapDeviceRuntime: SafeUninstallCleanup incomplete (remaining gems={}, jewels={}, charms={}).",
+                remaining.gems, remaining.jewels, remaining.charms);
+            return { false, failMsg };
+        }
+
+        ProxySpellRuntime::RemoveAllProxySpells(player);
         AilmentRuntime::ClearPlayerAilments();
         AilmentRuntime::RevertAllTrackedSpeedsNow();
         MonsterRuntime::RevertAllHasteSpeedsNow();
-        SaveLoad::RevertAllPendingSpeedModsNow();
+        const auto pendingSpeedReverts = SaveLoad::RevertAllPendingSpeedModsNow();
 
         if (g_esPool) {
             g_esPool->Clear();
@@ -2143,47 +2510,77 @@ namespace SkyrimPoE::Runtime
             g_statEngine->SetLayer2(Core::Layer2Input{});
         }
 
-        if (keptJewels > 0) {
-            // 정리를 완료로 표시하지 않는다: 재오염 차단을 걸지 않고, 같은 세션에서 다시 시도할 수 있게 둔다(6단계 재작업 계획 D-10).
-            const auto failMsg = std::format(
-                "안전 제거를 마치지 못했습니다: 주얼 {}개를 돌려주지 못해 소켓에 남았습니다. 모드를 지우지 말고 다시 시도하세요(젬 {}개, 주얼 {}개, 참 {}개는 반환됨).",
-                keptJewels, returnedGems, returnedJewels, returnedCharms);
-            RE::SendHUDMessage::ShowHUDMessage(failMsg.c_str());
-            SKSE::log::error("MapDeviceRuntime: SafeUninstallCleanup incomplete; {} jewel(s) kept in sockets.", keptJewels);
-            return { false, failMsg };
+        g_uninstallCleanupStatus.store(CleanupStatus::Armed, std::memory_order_release);
+        if (g_queue) {
+            g_queue->InvalidatePending();
         }
 
-        g_uninstallCleanupArmed.store(true, std::memory_order_release);
-
-        const auto msg = std::format(
-            "안전 제거 정리 완료: 젬 {}개, 주얼 {}개, 참 {}개 반환 및 체력/매지카/속도 원복 완료. 저장 후 종료해 모드를 제거하세요.",
-            returnedGems, returnedJewels, returnedCharms);
+        auto msg = std::format(
+            "안전 제거 정리 완료. 젬 {}개, 주얼 {}개, 참 {}개를 반환했습니다. 저장 후 종료하세요.{}",
+            returnedGems, returnedJewels, returnedCharms, lostNotice);
+        if (pendingSpeedReverts > 0) {
+            msg += std::format(" 속도 원복 대기 NPC {}명. 이 NPC들이 로드될 때 DLL이 원복하므로 지금 모드를 제거하면 속도 변경이 남을 수 있습니다.",
+                pendingSpeedReverts);
+        }
         RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
-        SKSE::log::info("MapDeviceRuntime: SafeUninstallCleanup armed (gems={}, jewels={}, charms={}, hpDelta={:.1f}, mpDelta={:.1f}).",
-            returnedGems, returnedJewels, returnedCharms, appliedHpDelta, appliedMpDelta);
+        SKSE::log::info("MapDeviceRuntime: SafeUninstallCleanup armed (gems={}, jewels={}, charms={}, hpDelta={:.1f}, mpDelta={:.1f}, pendingSpeedReverts={}).",
+            returnedGems, returnedJewels, returnedCharms, appliedHpDelta, appliedMpDelta, pendingSpeedReverts);
         return { true, msg };
     }
 
     void MapDeviceRuntime::OnActorKilled(RE::FormID actorId, std::uint64_t runId, MapKillReward reward)
     {
-        if (actorId == 0 || runId == 0 || g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
+        if (actorId == 0 || runId == 0 || IsUninstallCleanupActive()) {
             return;
         }
+        bool progressed = false;
         bool isArena4 = false;
         std::uint8_t tier = 0;
-        {
-            std::scoped_lock lk(g_mutex);
-            if (!g_activeMap.active || g_activeMap.runId != runId || g_activeMap.bossRefFormId != actorId) {
-                return;
-            }
-            if (g_activeMap.failed || g_activeMap.bossKilled) {
+        auto denial = Core::Arena4EntryDenial::None;
+        bool firstClear = false;
+        std::uint32_t totalAtlasPts = 0;
+        SaveLoad::RunSerializedTransaction([&]() {
+            {
+                std::scoped_lock lk(g_mutex);
+                if (!g_activeMap.active || g_activeMap.runId != runId || g_activeMap.bossRefFormId != actorId) {
+                    return;
+                }
+                if (g_activeMap.failed || g_activeMap.bossKilled) {
+                    g_bossDeathPendingRunId = 0;
+                    return;
+                }
+                g_activeMap.bossKilled = true;
                 g_bossDeathPendingRunId = 0;
+                isArena4 = g_activeMap.isArena4;
+                tier = g_activeMap.tier;
+            }
+            progressed = true;
+            if (reward != MapKillReward::Eligible) {
                 return;
             }
-            g_activeMap.bossKilled = true;
-            g_bossDeathPendingRunId = 0;
-            isArena4 = g_activeMap.isArena4;
-            tier = g_activeMap.tier;
+            if (isArena4) {
+                SaveLoad::UpdateState([&](PersistentState& st) {
+                    denial = Core::MapSystem::TryUnlockArena4(st.tree.ascendancyMilestonesBitmask);
+                    if (denial == Core::Arena4EntryDenial::None && g_treeData && g_treeData->IsLoaded() && g_config) {
+                        const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
+                            *g_treeData, st.tree, st.exileLevel, *g_config, st.atlas.completedTierMask);
+                        st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
+                    }
+                });
+                return;
+            }
+            SaveLoad::UpdateState([&](PersistentState& st) {
+                firstClear = Core::MapSystem::RecordMapClear(st.atlas, tier);
+                totalAtlasPts = Core::MapSystem::CountAtlasTierPoints(st.atlas.completedTierMask);
+                if (firstClear && g_treeData && g_treeData->IsLoaded() && g_config) {
+                    const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
+                        *g_treeData, st.tree, st.exileLevel, *g_config, st.atlas.completedTierMask);
+                    st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
+                }
+            });
+        });
+        if (!progressed) {
+            return;
         }
         if (reward != MapKillReward::Eligible) {
             if (!isArena4) {
@@ -2197,15 +2594,6 @@ namespace SkyrimPoE::Runtime
             return;
         }
         if (isArena4) {
-            auto denial = Core::Arena4EntryDenial::None;
-            SaveLoad::UpdateState([&](PersistentState& st) {
-                denial = Core::MapSystem::TryUnlockArena4(st.tree.ascendancyMilestonesBitmask);
-                if (denial == Core::Arena4EntryDenial::None && g_treeData && g_treeData->IsLoaded() && g_config) {
-                    const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                        *g_treeData, st.tree, st.exileLevel, *g_config, st.atlas.completedTierMask);
-                    st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
-                }
-            });
             if (denial == Core::Arena4EntryDenial::None) {
                 SaveLoad::SyncStateToStatEngine();
                 RE::SendHUDMessage::ShowHUDMessage(
@@ -2218,18 +2606,6 @@ namespace SkyrimPoE::Runtime
             }
             return;
         }
-
-        bool firstClear = false;
-        std::uint32_t totalAtlasPts = 0;
-        SaveLoad::UpdateState([&](PersistentState& st) {
-            firstClear = Core::MapSystem::RecordMapClear(st.atlas, tier);
-            totalAtlasPts = Core::MapSystem::CountAtlasTierPoints(st.atlas.completedTierMask);
-            if (firstClear && g_treeData && g_treeData->IsLoaded() && g_config) {
-                const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                    *g_treeData, st.tree, st.exileLevel, *g_config, st.atlas.completedTierMask);
-                st.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
-            }
-        });
 
         if (firstClear) {
             SaveLoad::SyncStateToStatEngine();
@@ -2247,15 +2623,17 @@ namespace SkyrimPoE::Runtime
     double MapDeviceRuntime::FilterArena4BossIncomingDamage(
         RE::Actor* boss,
         double rawSkyrimDamage,
-        double diffMult)
+        double diffMult,
+        std::optional<std::uint64_t> eventGeneration)
     {
         if (!boss || !std::isfinite(rawSkyrimDamage) || rawSkyrimDamage <= 0.0) {
             return std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
         }
-        if (!g_queue || !g_activeIsArena4.load(std::memory_order_acquire) ||
+        if (!g_queue || IsUninstallCleanupActive() || !g_activeIsArena4.load(std::memory_order_acquire) ||
             boss->GetFormID() != g_activeBossFormId.load(std::memory_order_acquire)) {
             return rawSkyrimDamage;
         }
+        const auto generation = eventGeneration.value_or(g_queue->CurrentGeneration());
         const double safeDiff = (std::isfinite(diffMult) && diffMult > 1e-4) ? diffMult : 1.0;
         const auto* av = boss->AsActorValueOwner();
         const double curHp = av ? std::max(0.0, static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth))) : 100.0;
@@ -2263,11 +2641,11 @@ namespace SkyrimPoE::Runtime
 
         Core::ArenaDamageClampResult clampRes{};
         const RE::FormID bossId = boss->GetFormID();
-        const auto generation = g_queue->CurrentGeneration();
         std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (!g_activeMap.active || g_activeMap.failed || !g_activeMap.isArena4 || g_activeMap.bossRefFormId != bossId ||
+            if (IsUninstallCleanupActive() || generation != g_queue->CurrentGeneration() ||
+                !g_activeMap.active || g_activeMap.failed || !g_activeMap.isArena4 || g_activeMap.bossRefFormId != bossId ||
                 g_activeMap.bossKilled || g_activeMap.endRequested) {
                 return rawSkyrimDamage;
             }
@@ -2280,7 +2658,7 @@ namespace SkyrimPoE::Runtime
             if (clampRes.triggeredNextPhase != 0) {
                 runId = g_activeMap.runId;
                 g_activeMap.arenaPhase = clampRes.triggeredNextPhase;
-                g_arenaPhaseInvulnSec = kArena4PhaseInvulnSec;
+                g_arenaPhaseInvulnSec = Core::kArena4PhaseInvulnSec;
             }
         }
         if (clampRes.triggeredNextPhase != 0) {
@@ -2294,19 +2672,19 @@ namespace SkyrimPoE::Runtime
 
     bool MapDeviceRuntime::TryInterceptLethalHitFromHook(
         double curHp,
-        double effectiveDamage)
+        double effectiveDamage,
+        std::uint64_t generation)
     {
         if (!g_queue || !g_config || !g_config->mapDeathInterceptEnabled) {
             return false;
         }
-        const auto generation = g_queue->CurrentGeneration();
-        if (g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
+        if (IsUninstallCleanupActive() || generation != g_queue->CurrentGeneration()) {
             return false;
         }
         if (!g_playerInActiveMapCell.load(std::memory_order_acquire)) {
             return false;
         }
-        if (g_deathEscapeInFlight.load(std::memory_order_acquire)) {
+        if (g_deathEscapeRunId.load(std::memory_order_acquire) != 0) {
             return true;
         }
         if (!std::isfinite(curHp) || !std::isfinite(effectiveDamage) || effectiveDamage <= 0.0) {
@@ -2316,17 +2694,19 @@ namespace SkyrimPoE::Runtime
             std::uint64_t runId = 0;
             {
                 std::scoped_lock lk(g_mutex);
-                if (!g_activeMap.active || !g_playerInActiveMapCell.load(std::memory_order_relaxed)) {
+                if (IsUninstallCleanupActive() || generation != g_queue->CurrentGeneration() ||
+                    !g_activeMap.active || !g_playerInActiveMapCell.load(std::memory_order_relaxed)) {
                     return false;
                 }
-                if (g_deathEscapeInFlight.exchange(true, std::memory_order_acq_rel)) {
+                runId = g_activeMap.runId;
+                if (g_deathEscapeRunId.load(std::memory_order_relaxed) == runId) {
                     return true;
                 }
+                g_deathEscapeRunId.store(runId, std::memory_order_release);
                 if (!g_activeMap.failed && (g_activeMap.isArena4 || g_activeMap.portalsRemaining == 0)) {
                     g_activeMap.failed = true;
                     RefreshMapActorsLocked();
                 }
-                runId = g_activeMap.runId;
             }
             g_queue->EnqueueForGeneration(generation, [runId]() {
                 ExecuteDeathEscapeOnMainThread(runId);
@@ -2381,17 +2761,23 @@ namespace SkyrimPoE::Runtime
 
     bool MapDeviceRuntime::IsDeathEscapeInFlight() noexcept
     {
-        return g_deathEscapeInFlight.load(std::memory_order_acquire);
+        return g_deathEscapeRunId.load(std::memory_order_acquire) != 0;
     }
 
     bool MapDeviceRuntime::IsUninstallCleanupArmed() noexcept
     {
-        return g_uninstallCleanupArmed.load(std::memory_order_acquire);
+        return g_uninstallCleanupStatus.load(std::memory_order_acquire) == CleanupStatus::Armed;
+    }
+
+    bool MapDeviceRuntime::IsUninstallCleanupActive() noexcept
+    {
+        return g_uninstallCleanupStatus.load(std::memory_order_acquire) != CleanupStatus::Idle;
     }
 
     void MapDeviceRuntime::DisarmUninstallCleanup() noexcept
     {
-        g_uninstallCleanupArmed.store(false, std::memory_order_release);
+        g_uninstallCleanupIncomplete.store(false, std::memory_order_release);
+        g_uninstallCleanupStatus.store(CleanupStatus::Idle, std::memory_order_release);
     }
 
     Core::ActiveMapState MapDeviceRuntime::GetActiveMapStateCopy()
@@ -2587,30 +2973,29 @@ namespace SkyrimPoE::Runtime
         std::scoped_lock lk(g_mutex);
         auto snapshot = g_activeMap;
         snapshot.arenaPhase = Core::MapSystem::Arena4PhaseForSave(snapshot.arenaPhase, g_completedArenaPhase);
+        snapshot.arenaPhaseInvulnSec = static_cast<float>(g_arenaPhaseInvulnSec);
         // 결정 176 ④: 도착 확인을 거친 허가만 저장한다. 허가 없이 셀에 있던 세이브는 불러와도 허가가 생기지 않는다.
         const auto activeCell = g_activeCellFormId.load(std::memory_order_acquire);
         snapshot.playerAuthorized = g_activeMap.active && activeCell != 0 && g_permittedCell == activeCell;
         return snapshot;
     }
 
-    void MapDeviceRuntime::RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell)
+    void MapDeviceRuntime::RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell, bool atlasDamaged, bool runDamaged)
     {
         std::scoped_lock lk(g_mutex);
+        g_atlasDamagedAfterLoad = atlasDamaged;
+        g_runDamagedAfterLoad = runDamaged;
+        g_runDamageEscapeReady = false;
         g_permittedCell = 0;
         g_playerInActiveMapCell.store(false, std::memory_order_release);
         g_incompatibleSavedRun.reset();
-        if (saved.active && saved.runId == 0) {
-            // 회차 번호 0은 "회차 밖"을 뜻하므로, 손상된 세이브의 활성 회차에는 새 번호를 준다.
-            saved.runId = std::max<std::uint64_t>(g_nextRunId, 1);
-            SKSE::log::warn("MapDeviceRuntime: active map run in save had runId 0; assigned {}.", saved.runId);
+        if (saved.active && !Core::IsValidMapRunId(saved.runId)) {
+            SKSE::log::warn("MapDeviceRuntime: legacy map run ID {} is outside the current range; assigned {}.",
+                saved.runId, g_nextRunId);
+            saved.runId = g_nextRunId;
         }
-        if (saved.runId == std::numeric_limits<std::uint64_t>::max()) {
-            // 손상된 값이다. +1이 0으로 돌아가면 다음 회차의 스폰 대기 조건(!= 0)이 깨진다.
-            saved.runId = std::max<std::uint64_t>(g_nextRunId, 1);
-            SKSE::log::warn("MapDeviceRuntime: active map run in save had runId UINT64_MAX; assigned {}.", saved.runId);
-        }
-        if (saved.runId >= g_nextRunId) {
-            g_nextRunId = saved.runId + 1;
+        if (saved.active && saved.runId >= g_nextRunId) {
+            g_nextRunId = Core::NextMapRunId(saved.runId);
         }
         if (saved.active && !MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(saved))) {
             // 결정 169, R4: 호환되지 않는 회차는 로드 중 등록부에 올리지 않고 주 스레드에서 정리한다.
@@ -2620,23 +3005,30 @@ namespace SkyrimPoE::Runtime
             auto refund = RecreateSavedMapRefund(saved);
             SetActiveMapLocked(std::move(saved), std::move(refund));
         }
-        g_spawnedForCurrentRun = g_activeMap.bossKilled || g_activeMap.bossRefFormId != 0 || !g_activeMap.spawnedRefFormIds.empty();
+        g_spawnedForCurrentRun = g_activeMap.bossKilled || g_activeMap.spawnsDisabled || g_activeMap.unresolvedBossRefFormId != 0 ||
+            g_activeMap.bossRefFormId != 0 || !g_activeMap.spawnedRefFormIds.empty();
+        g_bossMissingSec = 0.0;
         g_pendingSpawnRunId = (g_activeMap.active && !g_spawnedForCurrentRun) ? g_activeMap.runId : 0;
         g_completedArenaPhase = g_activeMap.arenaPhase;
-        g_arenaPhaseInvulnSec = 0.0;
+        g_arenaPhaseInvulnSec = g_activeMap.arenaPhaseInvulnSec;
         g_deathEscapeExitElapsedSec = 0.0;
-        g_deathEscapeInFlight.store(false, std::memory_order_release);
+        g_deathEscapeRunId.store(0, std::memory_order_release);
         RefreshAtomicsLocked();
     }
 
     void MapDeviceRuntime::OnPostLoadRebind()
     {
-        g_uninstallCleanupArmed.store(false, std::memory_order_release);
+        DisarmUninstallCleanup();
         auto* player = RE::PlayerCharacter::GetSingleton();
         auto* cell = player ? player->GetParentCell() : nullptr;
         const bool inPackCell = MapPackRuntime::OwnsCell(cell);
+        const bool loading = IsTravelLoading();
+        bool atlasDamaged = false;
         {
             std::scoped_lock lk(g_mutex);
+            if (!loading) {
+                atlasDamaged = std::exchange(g_atlasDamagedAfterLoad, false);
+            }
             // 저장하지 않는 요청과 허가는 불러온 세이브에서 새로 시작한다.
             g_travel.Clear();
             g_travelContext = {};
@@ -2659,6 +3051,9 @@ namespace SkyrimPoE::Runtime
             g_endCheckAfterLoad = false;
         }
 
+        if (atlasDamaged) {
+            ShowAtlasDamageOnMainThread();
+        }
         if (player) {
             std::optional<IncompatibleSavedRun> cancelled;
             std::optional<bool> refunded;
@@ -2667,8 +3062,7 @@ namespace SkyrimPoE::Runtime
                     std::scoped_lock lk(g_mutex);
                     cancelled = std::exchange(g_incompatibleSavedRun, std::nullopt);
                 }
-                // 보스를 처치한 회차는 보상(아틀라스·첫 공물·4차 해금)을 이미 받았으므로 소모품을 돌려주지 않는다.
-                // 돌려주면 팩 판이 바뀔 때마다 보상을 받고 지도까지 돌려받는 복제가 생긴다. 실패한 회차도 이미 소모가 끝났다.
+                // 이미 보스를 처치했거나 실패한 회차는 입장 비용을 모두 사용했다.
                 if (cancelled && !cancelled->state.bossKilled && !cancelled->state.failed) {
                     const auto& snap = cancelled->state;
                     refunded = RefundEntryOnMainThread(player, snap.tier, snap.isArena4, RecreateSavedMapRefund(snap));
@@ -2699,7 +3093,8 @@ namespace SkyrimPoE::Runtime
         }
 
         const auto observedBossId = g_activeBossFormId.load(std::memory_order_acquire);
-        const bool bossDeadNow = IsBossDeadNow(observedBossId);
+        const auto boss = LookupMapBoss(observedBossId, g_activeCellFormId.load(std::memory_order_acquire));
+        const bool bossDeadNow = boss && boss->IsDead();
         bool restoredBossKill = false;
         bool isArena4 = false;
         RE::FormID bossId = 0;
@@ -2729,7 +3124,7 @@ namespace SkyrimPoE::Runtime
                 isArena4 = g_activeMap.isArena4;
                 runId = g_activeMap.runId;
                 bossId = g_activeMap.bossRefFormId;
-                arenaPhase = g_activeMap.arenaPhase;
+                arenaPhase = g_completedArenaPhase;
                 summaryCopy = g_activeMap.summary;
             } else {
                 g_playerInActiveMapCell.store(false, std::memory_order_release);
@@ -2753,36 +3148,16 @@ namespace SkyrimPoE::Runtime
         if (endRunAfterLoad) {
             EndRunOnMainThread();
             SKSE::log::info("MapDeviceRuntime: ended a run saved outside the pack with a pending end condition.");
-            return;
-        }
-
-        if (bossId != 0) {
-            if (auto* boss = RE::TESForm::LookupByID<RE::Actor>(bossId); boss && !boss->IsDead() && !boss->IsDisabled()) {
-                if (isArena4) {
-                    const std::uint16_t mask = (arenaPhase <= 1)
-                        ? static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Armoured))
-                        : (arenaPhase == 2
-                            ? static_cast<std::uint16_t>(
-                                  (1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted)) |
-                                  (1u << static_cast<std::uint8_t>(Core::MonsterModKind::ExtraFire)))
-                            : static_cast<std::uint16_t>(
-                                  (1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted)) |
-                                  (1u << static_cast<std::uint8_t>(Core::MonsterModKind::Deadly)) |
-                                  (1u << static_cast<std::uint8_t>(Core::MonsterModKind::ExtraLightning))));
-                    MonsterRuntime::ForcePromoteForTest(boss, Core::MonsterRarity::Rare, mask, -1.0);
-                } else {
-                    std::uint16_t mask = static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Armoured));
-                    if (summaryCopy.forceHasted) {
-                        mask |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted));
-                    }
-                    if (summaryCopy.forceDeadly) {
-                        mask |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Deadly));
-                    }
-                    MonsterRuntime::ForcePromoteForTest(boss, Core::MonsterRarity::Rare, mask, -1.0);
-                }
+        } else {
+            if (bossId == observedBossId) {
+                PromoteMapBoss(boss.get(), isArena4, arenaPhase, summaryCopy);
             }
+            SyncMapLayer2ToStatEngine();
         }
-        SyncMapLayer2ToStatEngine();
+        {
+            std::scoped_lock lk(g_mutex);
+            g_runDamageEscapeReady = true;
+        }
     }
 
     void MapDeviceRuntime::ResetOnRevert()
@@ -2802,14 +3177,17 @@ namespace SkyrimPoE::Runtime
         g_fallRecoveryStreak = 0;
         g_lastObservedCell = 0;
         g_endCheckAfterLoad = false;
+        g_atlasDamagedAfterLoad = false;
+        g_runDamagedAfterLoad = false;
+        g_runDamageEscapeReady = false;
         g_incompatibleSavedRun.reset();
         SetActiveMapLocked({});
         g_spawnedForCurrentRun = false;
         g_pendingSpawnRunId = 0;
         g_arenaPhaseInvulnSec = 0.0;
         g_deathEscapeExitElapsedSec = 0.0;
-        g_deathEscapeInFlight.store(false, std::memory_order_release);
-        g_uninstallCleanupArmed.store(false, std::memory_order_release);
+        g_deathEscapeRunId.store(0, std::memory_order_release);
+        DisarmUninstallCleanup();
         RefreshAtomicsLocked();
     }
 }

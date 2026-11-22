@@ -90,3 +90,133 @@ POE_TEST("An abandoned map rejects reentry without consuming a portal")
     POE_CHECK(!MapSystem::TryConsumePortalForReenter(run));
     POE_CHECK(run.portalsRemaining == remaining);
 }
+
+POE_TEST("Map boss loss needs ten uninterrupted seconds in an authorized, stable cell")
+{
+    const auto run = MapSystem::CreateNormalMapRun(1, 1, {}, 0, 0, {}, {});
+    MapBossLossObservation observation{ .stableRunCell = true, .playerAuthorized = true, .spawned = true, .bossMissing = true };
+    auto progress = MapSystem::ObserveBossLoss(run, observation, 0.0, 9.0);
+    POE_CHECK(progress.missingSec == 9.0);
+    POE_CHECK(!progress.suspected);
+
+    observation.paused = true;
+    progress = MapSystem::ObserveBossLoss(run, observation, progress.missingSec, 10.0);
+    POE_CHECK(progress.missingSec == 9.0);
+    POE_CHECK(!progress.suspected);
+    observation.paused = false;
+    POE_CHECK(MapSystem::ObserveBossLoss(run, observation, progress.missingSec, 1.0).suspected);
+
+    for (const auto excluded : { &MapBossLossObservation::stableRunCell, &MapBossLossObservation::playerAuthorized,
+             &MapBossLossObservation::spawned,
+             &MapBossLossObservation::travelPending, &MapBossLossObservation::bossMissing }) {
+        auto changed = observation;
+        changed.*excluded = !(changed.*excluded);
+        progress = MapSystem::ObserveBossLoss(run, changed, 9.0, 2.0);
+        POE_CHECK(progress.missingSec == 0.0);
+        POE_CHECK(!progress.suspected);
+        POE_CHECK(!MapSystem::ObserveBossLoss(run, observation, progress.missingSec, 1.0).suspected);
+    }
+}
+
+POE_TEST("Unresolved saved bosses in eligible runs can be checked immediately, including the arena")
+{
+    auto run = MapSystem::CreateArena4Run(1, 0, 0, {}, {});
+    run.unresolvedBossRefFormId = 0xFF000001;
+    MapBossLossObservation observation{ .stableRunCell = true, .playerAuthorized = true, .spawned = true, .bossMissing = true };
+    POE_CHECK(MapSystem::ShouldEndOnReturn(run));
+    POE_CHECK(MapSystem::ObserveBossLoss(run, observation, 0.0, 0.0).suspected);
+
+    for (const auto excluded : { &ActiveMapState::active, &ActiveMapState::bossKilled,
+             &ActiveMapState::failed, &ActiveMapState::endRequested, &ActiveMapState::spawnsDisabled }) {
+        auto changed = run;
+        changed.*excluded = !(changed.*excluded);
+        const auto progress = MapSystem::ObserveBossLoss(changed, observation, 9.0, 2.0);
+        POE_CHECK(progress.missingSec == 0.0);
+        POE_CHECK(!progress.suspected);
+    }
+    observation.playerAuthorized = false;
+    POE_CHECK(!MapSystem::ObserveBossLoss(run, observation, 0.0, 0.0).suspected);
+    POE_CHECK(!MapSystem::ObserveBossLoss(run, observation, 0.0, 10.0).suspected);
+}
+
+POE_TEST("Boss loss resets the timer after death confirmation or a pending kill")
+{
+    auto run = MapSystem::CreateNormalMapRun(1, 1, {}, 0, 0, {}, {});
+    const MapBossLossObservation ready{ .stableRunCell = true, .playerAuthorized = true, .spawned = true, .bossMissing = true };
+    for (const auto death : { &MapBossLossObservation::deathConfirmed, &MapBossLossObservation::deathPending }) {
+        auto observation = ready;
+        observation.*death = true;
+        const auto loss = MapSystem::ObserveBossLoss(run, observation, 9.0, 2.0);
+        POE_CHECK(loss.missingSec == 0.0 && !loss.suspected);
+        run.unresolvedBossRefFormId = 0xFF000001;
+        POE_CHECK(!MapSystem::ObserveBossLoss(run, observation, 0.0, 0.0).suspected);
+        run.unresolvedBossRefFormId = 0;
+    }
+}
+
+POE_TEST("A directly resolved map boss must match both its dungeon base and parent cell")
+{
+    POE_CHECK(MapSystem::MatchesMapBoss(0x101, 0x201, 0x101, 0x201));
+    POE_CHECK(!MapSystem::MatchesMapBoss(0x101, 0x201, 0x102, 0x201));
+    POE_CHECK(!MapSystem::MatchesMapBoss(0x101, 0x201, 0x101, 0x202));
+    POE_CHECK(!MapSystem::MatchesMapBoss(0, 0x201, 0, 0x201));
+    POE_CHECK(!MapSystem::MatchesMapBoss(0x101, 0, 0x101, 0));
+}
+
+POE_TEST("Boss rebind keeps the spawn list bounded and cleanup includes a separate boss")
+{
+    ActiveMapState run;
+    constexpr std::uint32_t firstSpawn = 0xFF000001;
+    constexpr std::uint32_t oldBoss = 0xFF010001;
+    constexpr std::uint32_t newBoss = 0xFF010002;
+    for (std::uint32_t i = 0; i < kMaxMapSpawnedActors; ++i) {
+        run.spawnedRefFormIds.push_back(firstSpawn + i);
+    }
+    const auto originalSpawns = run.spawnedRefFormIds;
+    run.bossRefFormId = oldBoss;
+    run.unresolvedBossRefFormId = oldBoss;
+    MapSystem::RebindMapBoss(run, newBoss);
+    POE_CHECK(run.spawnedRefFormIds == originalSpawns);
+    POE_CHECK(run.bossRefFormId == newBoss && run.unresolvedBossRefFormId == 0);
+    auto cleanup = MapSystem::MapSpawnCleanupIds(run);
+    POE_CHECK(cleanup.size() == kMaxMapSpawnedActors + 1);
+    POE_CHECK(cleanup.back() == newBoss);
+    POE_CHECK(!MapSystem::IsRunDrop(oldBoss, cleanup));
+
+    run.bossRefFormId = firstSpawn;
+    MapSystem::RebindMapBoss(run, newBoss);
+    POE_CHECK(run.spawnedRefFormIds.size() == kMaxMapSpawnedActors);
+    POE_CHECK(!MapSystem::IsRunDrop(firstSpawn, run.spawnedRefFormIds));
+    POE_CHECK(MapSystem::IsRunDrop(newBoss, run.spawnedRefFormIds));
+    POE_CHECK(MapSystem::MapSpawnCleanupIds(run) == run.spawnedRefFormIds);
+}
+
+POE_TEST("Boss recovery prefers living candidates and only recognizes corpses spawned by the active run")
+{
+    constexpr std::uint32_t currentBoss = 0xFF000001;
+    constexpr std::uint32_t previousBoss = 0xFF000002;
+    constexpr std::uint32_t livingBoss = 0xFF000003;
+    constexpr std::uint32_t spawned[] = { currentBoss };
+    constexpr std::uint32_t staleCorpses[] = { previousBoss };
+    constexpr std::uint32_t mixedCorpses[] = { previousBoss, currentBoss };
+
+    POE_CHECK(MapSystem::SelectMapBossCandidate(livingBoss, mixedCorpses, spawned) == livingBoss);
+    POE_CHECK(MapSystem::SelectMapBossCandidate(livingBoss, {}, {}) == livingBoss);
+    POE_CHECK(MapSystem::SelectMapBossCandidate(0, mixedCorpses, spawned) == currentBoss);
+    POE_CHECK(MapSystem::SelectMapBossCandidate(0, staleCorpses, spawned) == 0);
+    POE_CHECK(MapSystem::SelectMapBossCandidate(0, mixedCorpses, {}) == 0);
+    POE_CHECK(MapSystem::SelectMapBossCandidate(0, {}, {}) == 0);
+}
+
+POE_TEST("Only a death escape's owning run can release its flag")
+{
+    std::atomic<std::uint64_t> owner{ 1 };
+    POE_CHECK(MapSystem::ReleaseDeathEscape(owner, 1));
+    POE_CHECK(owner.load() == 0);
+    owner.store(2);
+    POE_CHECK(!MapSystem::ReleaseDeathEscape(owner, 1));
+    POE_CHECK(!MapSystem::ReleaseDeathEscape(owner, 0));
+    POE_CHECK(owner.load() == 2);
+    POE_CHECK(MapSystem::ReleaseDeathEscape(owner, 2));
+    POE_CHECK(owner.load() == 0);
+}

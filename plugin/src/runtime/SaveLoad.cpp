@@ -13,25 +13,22 @@
 #include "runtime/WorldDropTracker.h"
 
 #include "core/ItemAffixParser.h"
-#include "core/MapSaveIdentity.h"
-#include "core/MapSystem.h"
+#include "core/MapSave.h"
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
 #include "core/SaveCapPolicy.h"
 
 #include <bit>
+#include <unordered_set>
 
 namespace SkyrimPoE::Runtime
 {
     namespace
     {
-        constexpr std::uint32_t kMaxStringLen = 256;
         constexpr std::uint32_t kMaxListLen = 1024;
         constexpr std::uint32_t kMaxTreeNodes = 4096;
         constexpr std::uint32_t kMaxItemRecords = 8192;
         constexpr std::uint32_t kMaxWorldDropRecords = 64;
-        constexpr std::uint32_t kMaxAffixesPerItem = 16;
-        constexpr std::uint32_t kMaxValuesPerAffix = 16;
         constexpr std::uint32_t kMaxGemDepth = 4;
         constexpr std::uint32_t kMaxSocketedJewels = 64;
         constexpr std::uint32_t kPlayerRefFormId = 0x00000014;
@@ -40,7 +37,6 @@ namespace SkyrimPoE::Runtime
             0x000B6BE6, 0x00043FAB, 0x00015224, 0x000152B1, 0x0001521C
         };
         constexpr RE::FormID kLegacyMapsV1ArenaCell = 0x00015211;
-        constexpr std::uint32_t kLegacyMapsVersion = 1;
 
         // 재검수 R-3: 상한을 넘으면 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다(Core::SelectEntriesWithinSaveCap).
         template <class Entry>
@@ -67,6 +63,7 @@ namespace SkyrimPoE::Runtime
         std::mutex g_txMutex;
         std::mutex g_stateMutex;
         PersistentState g_state;
+        SaveLoad::LoadedMapRecordVersions g_loadedMapRecordVersions;
         std::mutex g_revertCbMutex;
         std::vector<std::function<void()>> g_revertCallbacks;
         // Q-1: 세이브 시점에 잔존하던 NPC kTemporary SpeedMult 델타(로드 후 주 갱신에서 안전 원복)
@@ -164,28 +161,14 @@ namespace SkyrimPoE::Runtime
 
         bool WriteString(SKSE::SerializationInterface* intfc, const std::string& str)
         {
-            const auto len = static_cast<std::uint32_t>(std::min<std::size_t>(str.size(), kMaxStringLen));
-            if (!intfc->WriteRecordData(&len, sizeof(len))) {
-                return false;
-            }
-            if (len > 0 && !intfc->WriteRecordData(str.data(), len)) {
-                return false;
-            }
-            return true;
+            return Core::WriteSaveString(
+                [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, str);
         }
 
         bool ReadString(SKSE::SerializationInterface* intfc, std::string& out)
         {
-            std::uint32_t len = 0;
-            if (!ReadExactPod(intfc, len) || len > kMaxStringLen) {
-                return false;
-            }
-            out.resize(len);
-            if (len > 0 && !ReadExact(intfc, out.data(), len)) {
-                out.clear();
-                return false;
-            }
-            return true;
+            return Core::ReadSaveString(
+                [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, out);
         }
 
         bool WriteGemInstance(SKSE::SerializationInterface* intfc, const Core::GemInstance& gem, std::uint32_t depth = 0)
@@ -256,43 +239,14 @@ namespace SkyrimPoE::Runtime
 
         bool WriteAffixList(SKSE::SerializationInterface* intfc, const std::vector<Core::RolledAffix>& list)
         {
-            const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(list.size(), kMaxAffixesPerItem));
-            if (!intfc->WriteRecordData(&count, sizeof(count))) return false;
-            for (std::uint32_t a = 0; a < count; ++a) {
-                if (!WriteString(intfc, list[a].affixId)) return false;
-                const auto valCount = static_cast<std::uint32_t>(
-                    std::min<std::size_t>(list[a].values.size(), kMaxValuesPerAffix));
-                if (!intfc->WriteRecordData(&valCount, sizeof(valCount))) return false;
-                for (std::uint32_t v = 0; v < valCount; ++v) {
-                    if (!intfc->WriteRecordData(&list[a].values[v], sizeof(double))) return false;
-                }
-            }
-            return true;
+            return Core::WriteSaveAffixList(
+                [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, list);
         }
 
         bool ReadAffixList(SKSE::SerializationInterface* intfc, std::vector<Core::RolledAffix>& out)
         {
-            std::uint32_t count = 0;
-            if (!ReadExactPod(intfc, count) || count > kMaxAffixesPerItem) {
-                return false;
-            }
-            out.clear();
-            out.reserve(count);
-            for (std::uint32_t a = 0; a < count; ++a) {
-                Core::RolledAffix af;
-                std::uint32_t valCount = 0;
-                if (!ReadString(intfc, af.affixId)) return false;
-                if (!ReadExactPod(intfc, valCount) || valCount > kMaxValuesPerAffix) return false;
-                af.values.resize(valCount);
-                for (std::uint32_t v = 0; v < valCount; ++v) {
-                    if (!ReadExactPod(intfc, af.values[v])) return false;
-                    if (!std::isfinite(af.values[v])) {
-                        af.values[v] = 0.0;
-                    }
-                }
-                out.push_back(std::move(af));
-            }
-            return true;
+            return Core::ReadSaveAffixList(
+                [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, out);
         }
 
         bool WritePoEItemRecordV2(SKSE::SerializationInterface* intfc, const Core::PoEItemRecord& rec)
@@ -423,6 +377,7 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lock(g_stateMutex);
                 g_state = PersistentState{};
+                g_loadedMapRecordVersions = {};
             }
             GemInventory::Clear();
             ItemTracker::Clear();
@@ -512,12 +467,12 @@ namespace SkyrimPoE::Runtime
             std::sort(savedSpeedMods.begin(), savedSpeedMods.end(),
                 [](const auto& a, const auto& b) { return a.first < b.first; });
 
-            if (!intfc->OpenRecord(SaveLoad::kRecordCore, SaveLoad::kCoreVersion)) {
+            const bool coreOpened = intfc->OpenRecord(SaveLoad::kRecordCore, SaveLoad::kCoreVersion);
+            if (!coreOpened) {
                 SKSE::log::error("SaveLoad: failed to open CORE record for writing.");
-                return;
             }
 
-            bool ok = true;
+            bool ok = coreOpened;
             ok = ok && intfc->WriteRecordData(&state.exileLevel, sizeof(state.exileLevel));
             ok = ok && intfc->WriteRecordData(&state.exileXp, sizeof(state.exileXp));
             ok = ok && intfc->WriteRecordData(&state.unallocatedPassivePoints, sizeof(state.unallocatedPassivePoints));
@@ -545,7 +500,7 @@ namespace SkyrimPoE::Runtime
             std::uint32_t wdrpCount = 0;
             std::uint32_t jewelCount = 0;
 
-            if (!ok) {
+            if (coreOpened && !ok) {
                 SKSE::log::error("SaveLoad: error while writing CORE record.");
             }
 
@@ -729,61 +684,27 @@ namespace SkyrimPoE::Runtime
                 }
             }
 
-            // 결정 169, R4: MAPS v2는 던전 키와 팩 판 번호를 저장한다.
-            // MAPS v2는 허가와 종료 요청을 함께 저장한다. v2는 아직 게임에서 저장된 적이 없다.
-            std::uint32_t mapSpawnCount = 0;
-            if (intfc->OpenRecord(SaveLoad::kRecordMaps, SaveLoad::kMapsVersion)) {
-                const auto& atl = state.atlas;
-                const std::uint8_t tribByte = atl.firstTributeGiven ? 1 : 0;
-                bool mapsOk = intfc->WriteRecordData(&atl.completedTierMask, sizeof(atl.completedTierMask));
-                mapsOk = mapsOk && intfc->WriteRecordData(&atl.totalMapsCleared, sizeof(atl.totalMapsCleared));
-                mapsOk = mapsOk && intfc->WriteRecordData(&atl.highestTierCleared, sizeof(atl.highestTierCleared));
-                mapsOk = mapsOk && intfc->WriteRecordData(&tribByte, sizeof(tribByte));
-
-                const auto& am = savedMapState;
-                const std::uint8_t activeByte = am.active ? 1 : 0;
-                const std::uint8_t arenaByte = am.isArena4 ? 1 : 0;
-                const std::uint8_t bossKilledByte = am.bossKilled ? 1 : 0;
-                const std::uint8_t failedByte = am.failed ? 1 : 0;
-                const std::uint8_t authorizedByte = am.playerAuthorized ? 1 : 0;
-                const std::uint8_t endRequestedByte = am.endRequested ? 1 : 0;
-                mapsOk = mapsOk && intfc->WriteRecordData(&activeByte, sizeof(activeByte));
-                mapsOk = mapsOk && intfc->WriteRecordData(&arenaByte, sizeof(arenaByte));
-                mapsOk = mapsOk && intfc->WriteRecordData(&bossKilledByte, sizeof(bossKilledByte));
-                mapsOk = mapsOk && intfc->WriteRecordData(&failedByte, sizeof(failedByte));
-                mapsOk = mapsOk && intfc->WriteRecordData(&authorizedByte, sizeof(authorizedByte));
-                mapsOk = mapsOk && intfc->WriteRecordData(&endRequestedByte, sizeof(endRequestedByte));
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.runId, sizeof(am.runId));
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.tier, sizeof(am.tier));
-                mapsOk = mapsOk && Core::WriteMapSaveIdentity(
-                    [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, am);
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.portalsRemaining, sizeof(am.portalsRemaining));
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.arenaPhase, sizeof(am.arenaPhase));
-                mapsOk = mapsOk && WriteAffixList(intfc, am.mods);
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.returnCellFormId, sizeof(am.returnCellFormId));
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.returnWorldspaceFormId, sizeof(am.returnWorldspaceFormId));
-                mapsOk = mapsOk && intfc->WriteRecordData(am.returnPos.data(), static_cast<std::uint32_t>(sizeof(am.returnPos)));
-                mapsOk = mapsOk && intfc->WriteRecordData(am.returnAngle.data(), static_cast<std::uint32_t>(sizeof(am.returnAngle)));
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.bossRefFormId, sizeof(am.bossRefFormId));
-
-                mapSpawnCount = static_cast<std::uint32_t>(
-                    std::min<std::size_t>(am.spawnedRefFormIds.size(), Core::kMaxMapSpawnedActors));
-                mapsOk = mapsOk && intfc->WriteRecordData(&mapSpawnCount, sizeof(mapSpawnCount));
-                for (std::uint32_t s = 0; s < mapSpawnCount && mapsOk; ++s) {
-                    mapsOk = mapsOk && intfc->WriteRecordData(&am.spawnedRefFormIds[s], sizeof(std::uint32_t));
-                }
-                if (!mapsOk) {
-                    SKSE::log::error("SaveLoad: error while writing MAPS record.");
-                }
-            } else {
-                SKSE::log::error("SaveLoad: failed to open MAPS record for writing.");
+            // 결정 180: 두 레코드를 독립적으로 기록한다. 비활성 회차는 active=0 한 바이트다.
+            const auto write = [intfc](const void* data, std::uint32_t size) {
+                return intfc->WriteRecordData(data, size);
+            };
+            const bool atlasWritten = intfc->OpenRecord(SaveLoad::kRecordAtlas, SaveLoad::kAtlasVersion) &&
+                Core::WriteAtlasSave(write, state.atlas);
+            if (!atlasWritten) {
+                SKSE::log::error("SaveLoad: failed to write ATLS v{}.", SaveLoad::kAtlasVersion);
+            }
+            const bool mapsWritten = intfc->OpenRecord(SaveLoad::kRecordMaps, SaveLoad::kMapsVersion) &&
+                Core::WriteMapRunSave(write, savedMapState);
+            if (!mapsWritten) {
+                SKSE::log::error("SaveLoad: failed to write MAPS v{}.", SaveLoad::kMapsVersion);
             }
 
             SKSE::log::info(
-                "SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}), SPRT(0x{:X}), GEAR(jewels={}), SPDM({}), MAPS(atlas=0x{:04X}, active={}, spawns={}).",
+                "SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}), SPRT(0x{:X}), GEAR(jewels={}), SPDM({}), ATLS(v={}, ok={}, mask=0x{:04X}), MAPS(v={}, ok={}, active={}, spawns={}).",
                 state.exileLevel, trackedCount, nodeCount, itemCount, wdrpCount,
                 state.activeAuraMask, jewelCount, spdmCount,
-                state.atlas.completedTierMask, savedMapState.active, mapSpawnCount);
+                SaveLoad::kAtlasVersion, atlasWritten, state.atlas.completedTierMask,
+                SaveLoad::kMapsVersion, mapsWritten, savedMapState.active, savedMapState.spawnedRefFormIds.size());
         }
 
         // SKSE 코세이브 콜백: 불러오기(순수 메모리 복원만 수행, 엔진 조작은 주 갱신으로 이연)
@@ -818,10 +739,10 @@ namespace SkyrimPoE::Runtime
             std::vector<TrackedItemEntry> loadedItems;
             std::vector<SavedWorldDropEntry> loadedWorldDrops;
             std::vector<std::pair<RE::FormID, float>> loadedSpeedMods;
-            Core::AtlasState loadedAtlas{};
-            Core::ActiveMapState loadedActiveMap{};
-            RE::FormID loadedLegacyMapCell = 0;
-            bool hasMaps = false;
+            bool sawAtlasRecord = false;
+            std::optional<Core::AtlasState> atlasRecord;
+            std::optional<Core::MapSaveRecord> mapsRecord;
+            SaveLoad::LoadedMapRecordVersions mapVersions;
 
             std::uint32_t type = 0;
             std::uint32_t version = 0;
@@ -1210,137 +1131,48 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse SPDM record.");
                     }
+                } else if (type == SaveLoad::kRecordAtlas) {
+                    sawAtlasRecord = true;
+                    const auto candidate = Core::ReadAtlasSave(version, length,
+                        [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); });
+                    if (candidate) {
+                        atlasRecord = candidate;
+                        mapVersions.atlas = version;
+                    } else {
+                        SKSE::log::error("SaveLoad: failed to parse ATLS v{} ({} bytes).", version, length);
+                    }
                 } else if (type == SaveLoad::kRecordMaps) {
-                    if (version != kLegacyMapsVersion && version != SaveLoad::kMapsVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported MAPS record version {}.", version);
-                        continue;
+                    auto candidate = Core::ReadMapSave(version, length,
+                        [intfc](void* data, std::size_t size) { return ReadExact(intfc, data, static_cast<std::uint32_t>(size)); },
+                        [intfc](std::uint32_t raw, std::uint32_t& resolved) {
+                            return intfc->ResolveFormID(raw, resolved);
+                        });
+                    if (version == Core::kMapSaveVersion && candidate.run && candidate.run->active) {
+                        if (!g_itemData || !g_itemData->IsLoaded()) {
+                            SKSE::log::warn("SaveLoad: item data unavailable; skipped validation of saved map affix rolls.");
+                        } else if (!Core::MapSystem::AreSavedMapRollsValid(*g_itemData, candidate.run->mods)) {
+                            SKSE::log::error("SaveLoad: MAPS run {} has invalid saved affix rolls.", candidate.run->runId);
+                            candidate.run.reset();
+                        }
                     }
-                    Core::AtlasState tmpAtlas{};
-                    Core::ActiveMapState tmpMap{};
-                    std::uint8_t tribByte = 0;
-                    std::uint8_t activeByte = 0, arenaByte = 0, bossKilledByte = 0, failedByte = 0, authorizedByte = 0;
-                    std::uint8_t endRequestedByte = 0;
-                    std::uint8_t legacyIndex = 0;
-                    RE::FormID rawRetCell = 0, rawRetWs = 0, rawBossRef = 0;
-                    std::uint32_t spawnCount = 0;
-                    bool ok = true;
-                    ok = ok && ReadExactPod(intfc, tmpAtlas.completedTierMask);
-                    ok = ok && ReadExactPod(intfc, tmpAtlas.totalMapsCleared);
-                    ok = ok && ReadExactPod(intfc, tmpAtlas.highestTierCleared);
-                    ok = ok && ReadExactPod(intfc, tribByte);
-
-                    ok = ok && ReadExactPod(intfc, activeByte);
-                    ok = ok && ReadExactPod(intfc, arenaByte);
-                    ok = ok && ReadExactPod(intfc, bossKilledByte);
-                    ok = ok && ReadExactPod(intfc, failedByte);
-                    if (version != kLegacyMapsVersion) {
-                        ok = ok && ReadExactPod(intfc, authorizedByte);
-                        ok = ok && ReadExactPod(intfc, endRequestedByte);
-                    }
-                    ok = ok && ReadExactPod(intfc, tmpMap.runId);
-                    ok = ok && ReadExactPod(intfc, tmpMap.tier);
-                    if (version == kLegacyMapsVersion) {
-                        ok = ok && ReadExactPod(intfc, legacyIndex);
+                    if (candidate.run) {
+                        mapVersions.maps = version;
                     } else {
-                        ok = ok && Core::ReadMapSaveIdentity(
-                            [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, tmpMap);
+                        SKSE::log::error("SaveLoad: failed to parse MAPS v{} run ({} bytes).", version, length);
                     }
-                    ok = ok && ReadExactPod(intfc, tmpMap.portalsRemaining);
-                    ok = ok && ReadExactPod(intfc, tmpMap.arenaPhase);
-                    ok = ok && ReadAffixList(intfc, tmpMap.mods);
-                    ok = ok && ReadExactPod(intfc, rawRetCell);
-                    ok = ok && ReadExactPod(intfc, rawRetWs);
-                    ok = ok && ReadExact(intfc, tmpMap.returnPos.data(), static_cast<std::uint32_t>(sizeof(tmpMap.returnPos)));
-                    ok = ok && ReadExact(intfc, tmpMap.returnAngle.data(), static_cast<std::uint32_t>(sizeof(tmpMap.returnAngle)));
-                    ok = ok && ReadExactPod(intfc, rawBossRef);
-                    ok = ok && ReadExactPod(intfc, spawnCount);
-
-                    if (ok && spawnCount <= Core::kMaxMapSpawnedActors) {
-                        tmpMap.spawnedRefFormIds.reserve(spawnCount);
-                        for (std::uint32_t s = 0; s < spawnCount && ok; ++s) {
-                            RE::FormID rawSpawn = 0;
-                            ok = ok && ReadExactPod(intfc, rawSpawn);
-                            if (ok && rawSpawn != 0) {
-                                RE::FormID resSpawn = 0;
-                                // 배치2 검수 Major #4: 동적 생성 참조(0xFFxxxxxx) 대역만 스폰 목록으로 허용
-                                if (intfc->ResolveFormID(rawSpawn, resSpawn) &&
-                                    (resSpawn & 0xFF000000u) == 0xFF000000u) {
-                                    tmpMap.spawnedRefFormIds.push_back(resSpawn);
-                                }
-                            }
-                        }
-                    } else {
-                        ok = false;
-                    }
-
-                    if (ok) {
-                        tmpAtlas.highestTierCleared = std::min<std::uint8_t>(tmpAtlas.highestTierCleared, Core::kMaxMapTier);
-                        tmpAtlas.firstTributeGiven = (tribByte != 0);
-
-                        tmpMap.active = (activeByte != 0);
-                        tmpMap.isArena4 = (arenaByte != 0);
-                        tmpMap.bossKilled = (bossKilledByte != 0);
-                        tmpMap.failed = (failedByte != 0);
-                        tmpMap.playerAuthorized = (authorizedByte != 0);
-                        tmpMap.endRequested = (endRequestedByte != 0);
-                        tmpMap.tier = std::clamp<std::uint8_t>(tmpMap.tier, Core::kMinMapTier, Core::kMaxMapTier);
-                        tmpMap.portalsRemaining = std::min<std::uint8_t>(
-                            tmpMap.portalsRemaining,
-                            tmpMap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals);
-                        tmpMap.arenaPhase = std::clamp<std::uint8_t>(tmpMap.arenaPhase, 1u, 3u);
-                        tmpMap.summary = Core::MapSystem::AggregateMapMods(tmpMap.mods);
-                        // 손상된 귀환 좌표는 0으로 바꿔 쓰지 않는다. 셀·월드스페이스를 비워 고정 마커로 가게 한다.
-                        const bool returnPosValid = std::ranges::all_of(tmpMap.returnPos, [](float c) { return std::isfinite(c); });
-                        for (float& a : tmpMap.returnAngle) {
-                            if (!std::isfinite(a)) a = 0.0f;
-                        }
-                        if (rawRetCell != 0) {
-                            RE::FormID res = 0;
-                            if (intfc->ResolveFormID(rawRetCell, res) && res != 0) {
-                                tmpMap.returnCellFormId = res;
-                            }
-                        }
-                        if (rawRetWs != 0) {
-                            RE::FormID res = 0;
-                            if (intfc->ResolveFormID(rawRetWs, res) && res != 0) {
-                                tmpMap.returnWorldspaceFormId = res;
-                            }
-                        }
-                        if (!returnPosValid) {
-                            tmpMap.returnCellFormId = 0;
-                            tmpMap.returnWorldspaceFormId = 0;
-                            tmpMap.returnPos = { 0.0f, 0.0f, 0.0f };
-                            SKSE::log::warn("SaveLoad: MAPS return position was not finite; the fixed marker will be used.");
-                        }
-                        if (rawBossRef != 0) {
-                            RE::FormID res = 0;
-                            if (intfc->ResolveFormID(rawBossRef, res) &&
-                                (res & 0xFF000000u) == 0xFF000000u) {
-                                tmpMap.bossRefFormId = res;
-                            }
-                        }
-
-                        loadedAtlas = tmpAtlas;
-                        loadedLegacyMapCell = 0;
-                        if (version == kLegacyMapsVersion && tmpMap.active) {
-                            loadedLegacyMapCell = tmpMap.isArena4
-                                ? kLegacyMapsV1ArenaCell
-                                : kLegacyMapsV1Cells[legacyIndex % kLegacyMapsV1Cells.size()];
-                        }
-                        loadedActiveMap = version == kLegacyMapsVersion && !tmpMap.active
-                            ? Core::ActiveMapState{}
-                            : std::move(tmpMap);
-                        hasMaps = true;
-                    } else {
-                        SKSE::log::error("SaveLoad: failed to parse MAPS record.");
-                    }
+                    Core::KeepLatestMapSave(mapsRecord, std::move(candidate));
                 } else {
                     SKSE::log::warn("SaveLoad: ignoring unknown record type 0x{:08X}.", type);
                 }
             }
 
-            if (hasMaps) {
-                loadedState.atlas = loadedAtlas;
+            const auto [loadedAtlas, atlasDamaged, runDamaged] = Core::GetMapSaveStatus(sawAtlasRecord, atlasRecord, mapsRecord);
+            loadedState.atlas = loadedAtlas;
+            if (atlasDamaged) {
+                SKSE::log::error("SaveLoad: atlas record missing from map save or unreadable; suppressing duplicate first tribute.");
+            }
+            if (sawAtlasRecord && !mapsRecord) {
+                SKSE::log::error("SaveLoad: MAPS run record missing from map save.");
             }
             if (hasTree) {
                 if (g_treeData && g_treeData->IsLoaded()) {
@@ -1398,7 +1230,8 @@ namespace SkyrimPoE::Runtime
                 loadedState.charmSlots = loadedCharms;
                 loadedState.socketedJewels = std::move(loadedJewels);
             }
-            if (hasCore || hasTree || hasItems || hasSpirit || hasGear || hasMaps || sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
+            if (hasCore || hasTree || hasItems || hasSpirit || hasGear || sawAtlasRecord || mapsRecord ||
+                sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
                 // C-3: CORE만 손상되고 다른 SPOE 레코드가 살아 있는 세이브에서 시작 젬·화폐 중복 지급을 막는다.
                 if (!hasCore) {
                     loadedState.starterGemsGiven = true;
@@ -1423,10 +1256,20 @@ namespace SkyrimPoE::Runtime
             GemInventory::RestoreFromSave(std::move(loadedGems));
             ItemTracker::RestoreFromSave(std::move(loadedItems));
             WorldDropTracker::RestoreFromSave(std::move(loadedWorldDrops));
-            if (hasMaps) {
-                MapDeviceRuntime::RestoreFromSave(std::move(loadedActiveMap), loadedLegacyMapCell);
+            if (sawAtlasRecord || mapsRecord) {
+                auto loadedRun = mapsRecord && mapsRecord->run ? std::move(*mapsRecord->run) : Core::ActiveMapState{};
+                RE::FormID legacyCell = 0;
+                if (mapVersions.maps == Core::kLegacyIndexMapSaveVersion && loadedRun.active) {
+                    legacyCell = loadedRun.isArena4 ? kLegacyMapsV1ArenaCell :
+                        kLegacyMapsV1Cells[mapsRecord->legacyDungeonIndex % kLegacyMapsV1Cells.size()];
+                }
+                MapDeviceRuntime::RestoreFromSave(std::move(loadedRun), legacyCell, atlasDamaged, runDamaged);
             } else {
                 MapDeviceRuntime::ResetOnRevert();
+            }
+            {
+                std::scoped_lock lock(g_stateMutex);
+                g_loadedMapRecordVersions = mapVersions;
             }
             {
                 std::scoped_lock lock(g_speedModMutex);
@@ -1435,10 +1278,11 @@ namespace SkyrimPoE::Runtime
             SaveLoad::SyncStateToStatEngine();
 
             SKSE::log::info(
-                "SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}), SPRT({}), GEAR(jewels={}), MAPS(atlas=0x{:04X}).",
+                "SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}), SPRT({}), GEAR(jewels={}), atlas(0x{:04X}), ATLS(v={}), MAPS(v={}).",
                 hasCore, loadedState.tree.allocatedNodes.size(),
                 GemInventory::CountTracked(), ItemTracker::CountTracked(), WorldDropTracker::ActiveCount(),
-                hasSpirit, loadedState.socketedJewels.size(), loadedState.atlas.completedTierMask);
+                hasSpirit, loadedState.socketedJewels.size(), loadedState.atlas.completedTierMask,
+                mapVersions.atlas, mapVersions.maps);
         }
     }
 
@@ -1647,6 +1491,12 @@ namespace SkyrimPoE::Runtime
         return g_state;
     }
 
+    SaveLoad::LoadedMapRecordVersions SaveLoad::GetLoadedMapRecordVersions()
+    {
+        std::scoped_lock lock(g_stateMutex);
+        return g_loadedMapRecordVersions;
+    }
+
     void SaveLoad::SetState(const PersistentState& state)
     {
         std::scoped_lock lock(g_stateMutex);
@@ -1748,14 +1598,24 @@ namespace SkyrimPoE::Runtime
     // 6단계 안전 제거: 맡겨 둔 SpeedMult 원복을 지금 시도한다.
     // 재검수 R-9의 ApplyPendingSpeedRevertsNow와 같은 규칙을 쓴다. 지금 찾지 못한 액터의 항목은 버리지 않고 남겨,
     // 주 갱신의 재시도와 세이브(SPDM)에 그대로 둔다(6단계 재작업 계획 D-10: 실패분은 보존).
-    void SaveLoad::RevertAllPendingSpeedModsNow()
+    std::size_t SaveLoad::RevertAllPendingSpeedModsNow()
     {
-        const auto [reverted, remaining] = ApplyPendingSpeedRevertsNow();
+        const auto reverted = ApplyPendingSpeedRevertsNow().first;
+        std::size_t remaining = 0;
+        {
+            std::scoped_lock lock(g_speedModMutex);
+            std::unordered_set<RE::FormID> actors;
+            for (const auto& entry : g_pendingSpeedModReverts) {
+                actors.insert(entry.first);
+            }
+            remaining = actors.size();
+        }
         if (remaining > 0) {
             SKSE::log::warn("SaveLoad: uninstall cleanup reverted {} SpeedMult entr(ies); {} actor(s) not found now and kept for retry.",
                 reverted, remaining);
         } else {
             SKSE::log::info("SaveLoad: uninstall cleanup reverted {} SpeedMult entr(ies).", reverted);
         }
+        return remaining;
     }
 }

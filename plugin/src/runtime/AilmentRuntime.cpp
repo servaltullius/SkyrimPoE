@@ -66,6 +66,9 @@ namespace SkyrimPoE::Runtime
             float prevDelta = 0.0f;
             {
                 std::scoped_lock lk(g_mutex);
+                if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                    return;
+                }
                 if (const auto it = g_appliedSpeedDelta.find(fid); it != g_appliedSpeedDelta.end()) {
                     prevDelta = it->second;
                 }
@@ -311,12 +314,14 @@ namespace SkyrimPoE::Runtime
         double shockChancePct)
     {
         Core::AilmentApplyResult res{};
-        if (!target || target->IsDead() || target->IsPlayerRef() || !g_dataPack || !g_statEngine) {
+        if (MapDeviceRuntime::IsUninstallCleanupActive() ||
+            !target || target->IsDead() || target->IsPlayerRef() || !g_dataPack || !g_statEngine) {
             return res;
         }
         const auto snap = g_statEngine->GetSnapshot();
         const std::uint32_t exileLevel = snap ? snap->exileLevel : 1u;
-        const auto scaling = MapDeviceRuntime::GetMapActorScaling(target->GetFormID());
+        const auto targetId = target->GetFormID();
+        const auto scaling = MapDeviceRuntime::GetMapActorScaling(targetId);
 
         std::uniform_real_distribution<double> u01(0.0, 1.0);
         Core::HitAilmentInput in{};
@@ -344,8 +349,11 @@ namespace SkyrimPoE::Runtime
         bool wasFrozenBefore = false;
         {
             std::scoped_lock lk(g_mutex);
-            wasFrozenBefore = g_ailments.IsFrozen(target->GetFormID());
-            res = g_ailments.ApplyHitAilments(target->GetFormID(), in);
+            if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                return res;
+            }
+            wasFrozenBefore = g_ailments.IsFrozen(targetId);
+            res = g_ailments.ApplyHitAilments(targetId, in);
         }
         if (res.appliedChill || res.appliedFreeze) {
             SyncActorSpeedFromAilment(target);
@@ -363,6 +371,9 @@ namespace SkyrimPoE::Runtime
         double skyrimHitDamage)
     {
         PlayerAilmentOutcome out{};
+        if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+            return out;
+        }
         const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
         // 검수 Major 3: 같은 프레임 직전 타격에서 이미 켜진 정화의 참 면역도 실시간 반영
         const auto liveCharm = (g_charmSystem && g_config && g_config->enableCharms)
@@ -381,20 +392,21 @@ namespace SkyrimPoE::Runtime
         if (kind == Core::AilmentKind::Bleed && bleedImmune) {
             return out;
         }
-        if (g_charmSystem && g_config && g_charmSystem->TryTriggerOnAilment(kind, g_config->enableCharms)) {
-            out.purifyingCharmTriggered = true;
-            // 정화의 참 발동 시 플레이어에 남아 있던 동결/출혈 잔여 상태도 즉시 정화(C-22)
-            std::scoped_lock lk(g_mutex);
-            g_playerAilments.bleedRemainingSec = 0.0;
-            g_playerAilments.bleedDpsSkyrim = 0.0;
-            g_playerAilments.chillRemainingSec = 0.0;
-            return out;
-        }
-
         // C-22, N-3: 면역/참에 막히지 않았으면 실제 플레이어 측 상태이상 부여
         const double safeHit = (std::isfinite(skyrimHitDamage) && skyrimHitDamage > 0.0) ? skyrimHitDamage : 10.0;
         {
             std::scoped_lock lk(g_mutex);
+            if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                return out;
+            }
+            if (g_charmSystem && g_config && g_charmSystem->TryTriggerOnAilment(kind, g_config->enableCharms)) {
+                out.purifyingCharmTriggered = true;
+                // 정화의 참 발동 시 남아 있던 동결과 출혈도 즉시 정화한다(C-22).
+                g_playerAilments.bleedRemainingSec = 0.0;
+                g_playerAilments.bleedDpsSkyrim = 0.0;
+                g_playerAilments.chillRemainingSec = 0.0;
+                return out;
+            }
             switch (kind) {
                 case Core::AilmentKind::Ignite: {
                     const double dps = std::clamp(safeHit * 0.25, 1.0, 25.0);

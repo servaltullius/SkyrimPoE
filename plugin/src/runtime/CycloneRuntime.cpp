@@ -362,6 +362,7 @@ namespace SkyrimPoE::Runtime
             if (!player || !g_dataPack || !g_config || cycloneSlotIdx >= Core::kSkillSlotCount) {
                 return;
             }
+            const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
             const auto& cycStats = snap.slotStats[cycloneSlotIdx];
             const float radius = static_cast<float>(kCycloneBaseRadius * std::max(0.25, cycStats.areaMult));
             const auto targets = SkillExecution::CollectHostileTargets(player, player->GetPosition(), radius);
@@ -446,7 +447,10 @@ namespace SkyrimPoE::Runtime
                             // 플레이어→대상 방향으로 ProjectileRuntime으로 발사한다.
                             auto castCopy = *cast;
                             const auto targetPos = target->GetPosition();
-                            g_queue->Enqueue([castCopy = std::move(castCopy), targetPos]() {
+                            g_queue->EnqueueForGeneration(generation, [castCopy = std::move(castCopy), targetPos]() {
+                                if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                                    return;
+                                }
                                 auto* pl = RE::PlayerCharacter::GetSingleton();
                                 if (!pl || pl->IsDead()) return;
                                 RE::NiPoint3 aimOrigin{};
@@ -488,7 +492,11 @@ namespace SkyrimPoE::Runtime
                             const RE::FormID vfxId = VfxLocalIdForGem(cast->gemId);
                             auto castCopy = *cast;
 
-                            g_queue->Enqueue([origin, spellRadius, spellDmg, vfxId, eoEligibleCrit, spellCrit, castCopy = std::move(castCopy)]() {
+                            g_queue->EnqueueForGeneration(generation,
+                                [origin, spellRadius, spellDmg, vfxId, eoEligibleCrit, spellCrit, castCopy = std::move(castCopy)]() {
+                                if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                                    return;
+                                }
                                 if (g_skillSystem) {
                                     g_skillSystem->EnterTriggerDepth();
                                 }
@@ -541,7 +549,7 @@ namespace SkyrimPoE::Runtime
                 };
 
                 if (t_sendingGraphEvent || !g_config || !g_statEngine || !g_dataPack || !g_dataPack->IsLoaded() ||
-                    MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                    MapDeviceRuntime::IsUninstallCleanupActive()) {
                     return callOrig();
                 }
 
@@ -645,7 +653,7 @@ namespace SkyrimPoE::Runtime
                 RE::InputEvent* const* a_events,
                 RE::BSTEventSource<RE::InputEvent*>*) override
             {
-                if (!a_events || !g_config) {
+                if (!a_events || !g_config || MapDeviceRuntime::IsUninstallCleanupActive()) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 auto* ui = RE::UI::GetSingleton();
@@ -726,7 +734,7 @@ namespace SkyrimPoE::Runtime
                 const RE::MenuOpenCloseEvent* event,
                 RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
             {
-                if (!event || !event->opening) {
+                if (!event || !event->opening || MapDeviceRuntime::IsUninstallCleanupActive()) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 auto* ui = RE::UI::GetSingleton();

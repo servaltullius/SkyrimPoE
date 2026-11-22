@@ -375,8 +375,9 @@ namespace SkyrimPoE::Runtime
             if (!utf8Text || !g_queue || !g_panelOpen.load(std::memory_order_acquire)) {
                 return;
             }
+            const auto generation = g_queue->CurrentGeneration();
             std::string txt(utf8Text);
-            g_queue->Enqueue([txt = std::move(txt)]() {
+            g_queue->EnqueueForGeneration(generation, [txt = std::move(txt)]() {
                 if (!ViewUsable() || !g_domReady.load(std::memory_order_acquire) ||
                     !g_panelOpen.load(std::memory_order_acquire)) {
                     return;
@@ -391,8 +392,9 @@ namespace SkyrimPoE::Runtime
             if (!keyName || !g_queue || !g_panelOpen.load(std::memory_order_acquire)) {
                 return;
             }
+            const auto generation = g_queue->CurrentGeneration();
             std::string key(keyName);
-            g_queue->Enqueue([key = std::move(key)]() {
+            g_queue->EnqueueForGeneration(generation, [key = std::move(key)]() {
                 if (!ViewUsable() || !g_domReady.load(std::memory_order_acquire) ||
                     !g_panelOpen.load(std::memory_order_acquire)) {
                     return;
@@ -577,7 +579,7 @@ namespace SkyrimPoE::Runtime
 
             // 장비 탭·능력치에 최신 착용 장비 및 제작 변경이 즉시 반영되도록 더티 상태를 플러시하고 스탯을 재계산한다(검수 C3).
             EquipmentSync::FlushIfDirty();
-            if (g_dataPack && g_dataPack->IsLoaded()) {
+            if (!MapDeviceRuntime::IsUninstallCleanupArmed() && g_dataPack && g_dataPack->IsLoaded()) {
                 (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
             }
 
@@ -1094,6 +1096,13 @@ namespace SkyrimPoE::Runtime
                 mapsJ["arena4MilestonesCompleted"] = arenaEntry.milestonesCompleted;
                 mapsJ["ascendancy4Unlocked"] = arenaEntry.denial == Core::Arena4EntryDenial::AlreadyCleared;
                 mapsJ["uninstallCleanupArmed"] = MapDeviceRuntime::IsUninstallCleanupArmed();
+                if (const auto remaining = MapDeviceRuntime::GetUninstallCleanupRemaining(state)) {
+                    mapsJ["uninstallCleanupRemaining"] = {
+                        { "gems", remaining->gems },
+                        { "jewels", remaining->jewels },
+                        { "charms", remaining->charms }
+                    };
+                }
 
                 json bagMapsArr = json::array();
                 for (const auto& bm : MapDeviceRuntime::ListPlayerMaps(player)) {
@@ -1188,6 +1197,7 @@ namespace SkyrimPoE::Runtime
             if (!g_config || !g_queue) {
                 return;
             }
+            const auto generation = g_queue->CurrentGeneration();
             const std::uint32_t panelKey = g_config->panelKey;
             const std::uint32_t treeKey = g_config->treePanelKey;
             const std::uint32_t gearKey = g_config->gearPanelKey;
@@ -1215,7 +1225,7 @@ namespace SkyrimPoE::Runtime
                 // 검수 M4: 검색칸 포커스 중에는 K/P 탭 전환·닫기 차단, Escape는 검색칸 포커스 해제만 수행
                 if (searchFocused) {
                     if (code == kEscapeScanCode && !imeActive) {
-                        g_queue->Enqueue([]() {
+                        g_queue->EnqueueForGeneration(generation, []() {
                             g_searchFocused.store(false, std::memory_order_release);
                             SimpleImeBridge::SetTextEntry(false);
                             if (ViewUsable() && g_domReady.load(std::memory_order_acquire)) {
@@ -1227,7 +1237,7 @@ namespace SkyrimPoE::Runtime
                 }
 
                 if (code == panelKey) {
-                    g_queue->Enqueue([]() {
+                    g_queue->EnqueueForGeneration(generation, []() {
                         if (!g_panelOpen.load(std::memory_order_acquire)) {
                             OpenPanelOnMainThread(kTabSkills);
                         } else if (g_activeTab.load(std::memory_order_acquire) == kTabSkills) {
@@ -1237,7 +1247,7 @@ namespace SkyrimPoE::Runtime
                         }
                     });
                 } else if (code == treeKey) {
-                    g_queue->Enqueue([]() {
+                    g_queue->EnqueueForGeneration(generation, []() {
                         if (!g_panelOpen.load(std::memory_order_acquire)) {
                             OpenPanelOnMainThread(kTabTree);
                         } else if (g_activeTab.load(std::memory_order_acquire) == kTabTree) {
@@ -1247,7 +1257,7 @@ namespace SkyrimPoE::Runtime
                         }
                     });
                 } else if (code == gearKey) {
-                    g_queue->Enqueue([]() {
+                    g_queue->EnqueueForGeneration(generation, []() {
                         if (!g_panelOpen.load(std::memory_order_acquire)) {
                             OpenPanelOnMainThread(kTabGear);
                         } else if (g_activeTab.load(std::memory_order_acquire) == kTabGear) {
@@ -1257,7 +1267,7 @@ namespace SkyrimPoE::Runtime
                         }
                     });
                 } else if (code == mapKey) {
-                    g_queue->Enqueue([]() {
+                    g_queue->EnqueueForGeneration(generation, []() {
                         if (!g_panelOpen.load(std::memory_order_acquire)) {
                             OpenPanelOnMainThread(kTabMaps);
                         } else if (g_activeTab.load(std::memory_order_acquire) == kTabMaps) {
@@ -1267,7 +1277,7 @@ namespace SkyrimPoE::Runtime
                         }
                     });
                 } else if (open && code == kEscapeScanCode) {
-                    g_queue->Enqueue([]() {
+                    g_queue->EnqueueForGeneration(generation, []() {
                         UiBridge::ClosePanelOnMainThread();
                     });
                 }
@@ -1473,7 +1483,7 @@ namespace SkyrimPoE::Runtime
                     PushToastToJs(false, "지금은 변경할 수 없습니다.");
                     return;
                 }
-                if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                if (MapDeviceRuntime::IsUninstallCleanupArmed() && op != "mapSafeEscape") {
                     PushToastToJs(false, "안전 제거 정리 완료 상태입니다. 저장 후 게임을 종료하세요.");
                     PushPanelStateToJs();
                     return;
@@ -1927,8 +1937,8 @@ namespace SkyrimPoE::Runtime
             if (!argument || !g_queue) {
                 return;
             }
-            std::string raw(argument);
             const auto generation = g_queue->CurrentGeneration();
+            std::string raw(argument);
             const auto mapRunId = MapDeviceRuntime::GetActiveRunId();
             g_queue->EnqueueForGeneration(generation, [raw = std::move(raw), mapRunId]() {
                 ExecuteCommandOnMainThread(raw, mapRunId);

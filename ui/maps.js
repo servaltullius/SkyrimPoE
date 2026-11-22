@@ -18,6 +18,9 @@
 
   const uninstallBadge = document.getElementById("maps-uninstall-badge");
   const btnSafeUninstall = document.getElementById("btn-map-safe-uninstall");
+  const uninstallRemaining = el("p", "maps-desc");
+  uninstallRemaining.hidden = true;
+  if (btnSafeUninstall) btnSafeUninstall.before(uninstallRemaining);
 
   const atlasPtsBadge = document.getElementById("maps-atlas-pts");
   const atlasSummary = document.getElementById("maps-atlas-summary");
@@ -55,7 +58,9 @@
     }
     if (btnSafeUninstall) {
       const armed = Boolean(lastMapsData && lastMapsData.uninstallCleanupArmed);
-      btnSafeUninstall.textContent = armed ? "정리 완료됨 (저장 후 종료)" : "안전 제거 정리 실행";
+      const incomplete = Boolean(lastMapsData && lastMapsData.uninstallCleanupRemaining);
+      btnSafeUninstall.textContent = armed ? "정리 완료됨 (저장 후 종료)"
+        : incomplete ? "안전 제거 정리 다시 시도" : "안전 제거 정리 실행";
       btnSafeUninstall.disabled = armed || Boolean(lastMapsData &&
         (lastMapsData.travelInProgress || lastMapsData.inPackCell));
     }
@@ -177,10 +182,15 @@
 
   function renderSafeUninstall(maps) {
     const armed = Boolean(maps && maps.uninstallCleanupArmed);
+    const remaining = maps && maps.uninstallCleanupRemaining;
     if (uninstallBadge) {
-      uninstallBadge.textContent = armed ? "정리 완료" : "정상 운용";
-      uninstallBadge.className = armed ? "badge badge-guard" : "badge";
+      uninstallBadge.textContent = armed ? "정리 완료" : remaining ? "정리 미완료" : "정상 운용";
+      uninstallBadge.className = armed || remaining ? "badge badge-guard" : "badge";
     }
+    uninstallRemaining.hidden = armed || !remaining;
+    uninstallRemaining.textContent = remaining
+      ? `남은 장착품 · 젬 ${remaining.gems}개 · 주얼 ${remaining.jewels}개 · 참 ${remaining.charms}개`
+      : "";
     if (btnSafeUninstall) {
       const blocked = Boolean(maps.travelInProgress || maps.inPackCell);
       if (armed || blocked || !uninstallConfirmPending) resetUninstallConfirm();

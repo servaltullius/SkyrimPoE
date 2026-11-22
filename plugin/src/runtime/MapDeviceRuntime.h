@@ -19,10 +19,21 @@
 
 namespace SkyrimPoE::Runtime
 {
+    struct PersistentState;
+
     struct MapActionResult
     {
         bool ok = false;
         std::string message;
+    };
+
+    struct UninstallCleanupRemaining
+    {
+        std::size_t gems = 0;
+        std::size_t jewels = 0;
+        std::size_t charms = 0;
+
+        [[nodiscard]] bool Empty() const noexcept { return gems == 0 && jewels == 0 && charms == 0; }
     };
 
     struct MapKillContext
@@ -113,8 +124,9 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static std::size_t GetFallRecoveryCount();
         [[nodiscard]] static MapCellResetStatus GetCellResetStatus(RE::FormID cellId);
 
-        // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차(검수 C-4: 완료 후 g_uninstallCleanupArmed=true로 재오염 차단)
+        // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차
         static MapActionResult RunSafeUninstallCleanup(RE::PlayerCharacter* player);
+        [[nodiscard]] static std::optional<UninstallCleanupRemaining> GetUninstallCleanupRemaining(const PersistentState& state);
 
         // 주 갱신 스레드 전용(DeathListener 호출): 보스 처치로 회차를 진행하고, 자격에 따라 보상을 반영한다.
         static void OnActorKilled(RE::FormID actorId, std::uint64_t runId, MapKillReward reward);
@@ -124,13 +136,15 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static double FilterArena4BossIncomingDamage(
             RE::Actor* boss,
             double rawSkyrimDamage,
-            double diffMult);
+            double diffMult,
+            std::optional<std::uint64_t> eventGeneration = std::nullopt);
 
         // CombatHooks 워커 스레드 안전: 지도/결투장 내부 치명타 가로채기 및 회차별 귀환 예약
         // true 반환 시 호출부는 들어오는 피해를 즉시 0.0f로 무효화해야 한다.
         [[nodiscard]] static bool TryInterceptLethalHitFromHook(
             double curHp,
-            double effectiveDamage);
+            double effectiveDamage,
+            std::uint64_t generation);
 
         // 락프리 원자 상태 조회
         [[nodiscard]] static bool IsPlayerInActiveMapCell() noexcept;
@@ -141,6 +155,7 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static bool IsActiveArena4Boss(RE::FormID actorFormId) noexcept;
         [[nodiscard]] static bool IsDeathEscapeInFlight() noexcept;
         [[nodiscard]] static bool IsUninstallCleanupArmed() noexcept;
+        [[nodiscard]] static bool IsUninstallCleanupActive() noexcept;
         static void DisarmUninstallCleanup() noexcept;
 
         // 뮤텍스 보호 스냅샷 조회
@@ -175,9 +190,9 @@ namespace SkyrimPoE::Runtime
         // Layer2Input에 플레이어의 지도 셀 소속과 불이익을 동기화
         static void SyncMapLayer2ToStatEngine();
 
-        // SKSE 코세이브 'MAPS' v2 스냅샷/복원/초기화(순수 메모리) 및 PostLoad 재바인딩
+        // SKSE 코세이브 회차 스냅샷/복원/초기화(순수 메모리) 및 PostLoad 재바인딩
         [[nodiscard]] static Core::ActiveMapState TakeSnapshotForSave();
-        static void RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell);
+        static void RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell, bool atlasDamaged, bool runDamaged);
         static void OnPostLoadRebind();
         static void ResetOnRevert();
     };

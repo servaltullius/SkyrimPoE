@@ -2,6 +2,7 @@
 
 #include "core/MapTypes.h"
 
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -11,6 +12,7 @@
 
 namespace SkyrimPoE::Core
 {
+    class ItemData;
     class DataPack;
 
     struct MapMonsterMultipliers
@@ -26,6 +28,26 @@ namespace SkyrimPoE::Core
         bool isDisabled = false;
         std::uint32_t actorBaseId = 0;
         std::uint32_t cellId = 0;
+    };
+
+    inline constexpr double kMapBossMissingSec = 10.0;
+
+    struct MapBossLossObservation
+    {
+        bool stableRunCell = false;
+        bool playerAuthorized = false;
+        bool spawned = false;
+        bool travelPending = false;
+        bool deathConfirmed = false;
+        bool deathPending = false;
+        bool bossMissing = false;
+        bool paused = false;
+    };
+
+    struct MapBossLossProgress
+    {
+        double missingSec = 0.0;
+        bool suspected = false;
     };
 
     inline constexpr std::uint32_t kArena4PrerequisiteMask = 0x7u;
@@ -92,6 +114,7 @@ namespace SkyrimPoE::Core
 
         // 지도 어픽스 16종 집계 + IIQ/IIR/PackSize 보상 합산
         [[nodiscard]] static MapModSummary AggregateMapMods(const std::vector<RolledAffix>& affixes) noexcept;
+        [[nodiscard]] static bool AreSavedMapRollsValid(const ItemData& data, std::span<const RolledAffix> affixes);
         [[nodiscard]] static std::size_t MapPackActorCount(std::uint32_t basePacks, double packSizePct) noexcept;
 
         // 아틀라스 +24 패시브 포인트 계산 (T1~T16 첫 클리어 최대 16점 + 1~4차 보스/결투장 이정표 최대 8점)
@@ -136,6 +159,17 @@ namespace SkyrimPoE::Core
         [[nodiscard]] static bool ShouldEndOnReturn(const ActiveMapState& state) noexcept;
         [[nodiscard]] static bool ShouldDeferReturnForBossDeath(
             bool bossKilled, bool bossDeadNow, bool deathConfirmed, bool killPending, double waitedSec) noexcept;
+        [[nodiscard]] static bool CanCheckBossLoss(
+            const ActiveMapState& state, const MapBossLossObservation& observation) noexcept;
+        [[nodiscard]] static MapBossLossProgress ObserveBossLoss(const ActiveMapState& state,
+            const MapBossLossObservation& observation, double missingSec, double deltaSec) noexcept;
+        [[nodiscard]] static std::uint32_t SelectMapBossCandidate(std::uint32_t livingBoss,
+            std::span<const std::uint32_t> deadBosses, std::span<const std::uint32_t> spawnedRefIds) noexcept;
+        [[nodiscard]] static bool MatchesMapBoss(std::uint32_t bossBaseId, std::uint32_t runCellId,
+            std::uint32_t actorBaseId, std::uint32_t actorCellId) noexcept;
+        static void RebindMapBoss(ActiveMapState& state, std::uint32_t bossId);
+        [[nodiscard]] static std::vector<std::uint32_t> MapSpawnCleanupIds(const ActiveMapState& state);
+        [[nodiscard]] static bool ReleaseDeathEscape(std::atomic<std::uint64_t>& owner, std::uint64_t runId) noexcept;
 
         [[nodiscard]] static bool IsRunDrop(std::uint32_t corpseId, std::span<const std::uint32_t> spawnedRefIds) noexcept;
         [[nodiscard]] static bool CanDeleteMapSpawn(std::uint32_t actorBaseId, std::uint32_t runCellId,

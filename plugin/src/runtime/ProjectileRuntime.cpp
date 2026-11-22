@@ -3,6 +3,7 @@
 #include "runtime/AilmentRuntime.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 
@@ -518,8 +519,9 @@ namespace SkyrimPoE::Runtime
                 std::int32_t arg6,
                 std::uint32_t arg7)
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
                 auto* result = original(self, hitRef, location, velocity, collidable, arg6, arg7);
-                if (!self || !g_queue) {
+                if (!self || !g_queue || MapDeviceRuntime::IsUninstallCleanupActive()) {
                     return result;
                 }
 
@@ -527,6 +529,9 @@ namespace SkyrimPoE::Runtime
                 std::uint64_t matchedShotId = 0;
                 {
                     std::scoped_lock lk(g_shotMutex);
+                    if (generation != g_queue->CurrentGeneration()) {
+                        return result;
+                    }
                     const auto hitIt = g_handleToShotId.find(handleVal);
                     if (hitIt != g_handleToShotId.end()) {
                         const auto shotIt = g_shots.find(hitIt->second);
@@ -542,8 +547,10 @@ namespace SkyrimPoE::Runtime
                     const RE::ObjectRefHandle refHandle = hitRef ? hitRef->GetHandle() : RE::ObjectRefHandle{};
                     const RE::NiPoint3 locCopy = location;
                     const RE::NiPoint3 velCopy = velocity;
-                    g_queue->Enqueue([matchedShotId, refHandle, locCopy, velCopy]() {
-                        ResolveImpactOnMainThread(matchedShotId, refHandle, locCopy, velCopy);
+                    g_queue->EnqueueForGeneration(generation, [matchedShotId, refHandle, locCopy, velCopy]() {
+                        if (!MapDeviceRuntime::IsUninstallCleanupActive()) {
+                            ResolveImpactOnMainThread(matchedShotId, refHandle, locCopy, velCopy);
+                        }
                     });
                 }
                 return result;

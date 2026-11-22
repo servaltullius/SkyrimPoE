@@ -41,7 +41,8 @@ namespace SkyrimPoE::Runtime
             Core::DamageType dominantType,
             bool bypassesEs = false,
             RE::Actor* targetActor = nullptr,
-            double engineDiffMult = 1.0);
+            double engineDiffMult = 1.0,
+            std::optional<std::uint64_t> generation = std::nullopt);
         [[nodiscard]] static Core::MonsterOutgoingModifier GetOutgoingModifier(RE::FormID actorId);
 
         // DeathListener 주 갱신 스레드 호출: 처치된 적의 프로필 반환 및 헤드헌터 훔치기 실행

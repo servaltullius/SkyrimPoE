@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -56,6 +57,10 @@ namespace SkyrimPoE::Core
             std::array<SkillSlot, kSkillSlotCount>& slots,
             std::uint8_t slotIndex,
             IGemInventoryAdapter& inventory);
+
+        // 보조 젬부터 처리한다. 반환하거나 돌려줄 수 없는 젬은 콜러가 true, 재시도할 젬은 false를 반환한다.
+        static void ReturnSlottedGemsForUninstall(
+            std::array<SkillSlot, kSkillSlotCount>& slots, const std::function<bool(const GemInstance&)>& returnOrDiscard);
 
         // 소켓 장착:
         // - triggeredSpellIndex < 0: slots[slotIndex].gem 소켓에 장착(일반 스킬이면 보조, 발동 젬이면 주문)

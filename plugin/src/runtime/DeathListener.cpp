@@ -58,7 +58,8 @@ namespace SkyrimPoE::Runtime
                 if (!event || !event->actorDying || !g_killTracker) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
-                if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
+                if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 auto* actor = event->actorDying->As<RE::Actor>();
@@ -83,7 +84,6 @@ namespace SkyrimPoE::Runtime
                 if (!g_config || !g_queue) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
-                const auto generation = g_queue->CurrentGeneration();
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 const auto* playerCell = player ? player->GetParentCell() : nullptr;
                 const std::uint32_t enemyLvl = actor->GetLevel();
@@ -130,7 +130,7 @@ namespace SkyrimPoE::Runtime
                 if (!killRewardEligible) {
                     const auto eligibility = reward.playerContributed ? MapKillReward::Ineligible : MapKillReward::NoPlayerContribution;
                     g_queue->EnqueueForGeneration(generation, [actorId, corpseHandle, runId = mapKill.runId, eligibility]() {
-                        if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                        if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                             return;
                         }
                         if (MapDeviceRuntime::IsRunActive(runId)) {
@@ -146,7 +146,7 @@ namespace SkyrimPoE::Runtime
 
                 // 상태 갱신·드랍 판정·참 충전·전령 폭발·헤드헌터·스탯 재빌드·HUD 알림은 주 갱신 스레드 예약 큐로 넘긴다(결정 119).
                 g_queue->EnqueueForGeneration(generation, [actorId, reward, hasXp, isBoss, isDragon, isMilestoneBoss, corpseHandle, mapKill]() {
-                    if (!g_config || MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                    if (!g_config || MapDeviceRuntime::IsUninstallCleanupActive()) {
                         return;
                     }
                     const auto currentRunId = MapDeviceRuntime::GetActiveRunId();
@@ -304,7 +304,7 @@ namespace SkyrimPoE::Runtime
                 RE::BSTEventSource<RE::TESResetEvent>*) override
             {
                 if (event && event->object) {
-                    const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
+                    const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                     const auto id = event->object->GetFormID();
                     MapDeviceRuntime::ClearArena4BossDeathStart(id);
                     if (g_killTracker) {
@@ -312,7 +312,7 @@ namespace SkyrimPoE::Runtime
                     }
                     if (g_queue) {
                         // 검수 Major 1: MonsterRuntime::OnActorReset도 Hasted SpeedMult 원복(엔진 API)을 수행하므로 주 갱신 큐로 이연
-                        g_queue->EnqueueForGeneration(generation, [id]() {
+                        g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, [id]() {
                             MonsterRuntime::OnActorReset(id);
                             AilmentRuntime::OnActorReset(id);
                             // 재검수 R-9: 리셋으로 엔진이 임시 수정치를 지웠으므로 맡겨 둔 원복(위 두 호출이 맡긴 것 포함)을 버린다.

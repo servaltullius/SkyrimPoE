@@ -43,6 +43,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -174,10 +175,12 @@ namespace SkyrimPoE::Runtime
             ScenarioH_Arena4Phase3Wait,
             ScenarioH_Arena4KillWait,
             ScenarioH_PostArenaReturnWait,
+            ScenarioH_CosaveMapEntryWait,
             ScenarioH_SavePump,
             ScenarioH_SaveWaitBeforeLoad,
             ScenarioH_AwaitReload,
             ScenarioH_ReloadSettle,
+            ScenarioH_UninstallPrepare,
             ScenarioH_UninstallVerifyWait,
             QuitDelay,
             Done
@@ -272,10 +275,12 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioH_Arena4Phase3Wait: return "ScenarioH_Arena4Phase3Wait";
             case Phase::ScenarioH_Arena4KillWait: return "ScenarioH_Arena4KillWait";
             case Phase::ScenarioH_PostArenaReturnWait: return "ScenarioH_PostArenaReturnWait";
+            case Phase::ScenarioH_CosaveMapEntryWait: return "ScenarioH_CosaveMapEntryWait";
             case Phase::ScenarioH_SavePump: return "ScenarioH_SavePump";
             case Phase::ScenarioH_SaveWaitBeforeLoad: return "ScenarioH_SaveWaitBeforeLoad";
             case Phase::ScenarioH_AwaitReload: return "ScenarioH_AwaitReload";
             case Phase::ScenarioH_ReloadSettle: return "ScenarioH_ReloadSettle";
+            case Phase::ScenarioH_UninstallPrepare: return "ScenarioH_UninstallPrepare";
             case Phase::ScenarioH_UninstallVerifyWait: return "ScenarioH_UninstallVerifyWait";
             case Phase::QuitDelay: return "QuitDelay";
             case Phase::Done: return "Done";
@@ -371,10 +376,14 @@ namespace SkyrimPoE::Runtime
         bool g_hArenaPhase1Clamped = false;
         bool g_hArenaInvulnBlocked = false;
         bool g_hArenaPhase2Clamped = false;
+        Core::AtlasState g_hAtlasBeforeCosave;
+        Core::ActiveMapState g_hRunBeforeCosave;
         double g_hHpDeltaBeforeUninstall = 0.0;
         double g_hMpDeltaBeforeUninstall = 0.0;
         float g_hPermHpBeforeUninstall = 0.0f;
         float g_hPermMpBeforeUninstall = 0.0f;
+        bool g_hUninstallResultOk = false;
+        std::unordered_map<RE::TESBoundObject*, std::int32_t> g_hUninstallBagCounts;
 
         std::atomic_bool g_enabled{ false };
         AutoTestConfig g_cfg;
@@ -507,6 +516,93 @@ namespace SkyrimPoE::Runtime
         // 지도 이동이 끝나(요청 없음·3D 준비) 기대 상태를 기다리기 시작한 시각(단계 경과 초). 음수면 아직 이동 중.
         double g_mapTravelSettledAtSec = -1.0;
 
+        bool VerifyUninstallBagCounts(RE::PlayerCharacter* player)
+        {
+            bool matches = player != nullptr && !g_hUninstallBagCounts.empty();
+            if (!player) {
+                return false;
+            }
+            for (const auto& [base, expected] : g_hUninstallBagCounts) {
+                const auto actual = player->GetItemCount(base);
+                if (actual != expected) {
+                    LogInfo(std::format("H8 inventory: base=0x{:08X}, expected={}, actual={}",
+                        base->GetFormID(), expected, actual));
+                    matches = false;
+                }
+            }
+            return matches;
+        }
+
+        bool ExerciseUninstallWithMissingForm(RE::PlayerCharacter* player)
+        {
+            auto* av = player ? player->AsActorValueOwner() : nullptr;
+            const auto before = SaveLoad::GetStateCopy();
+            const auto charms = g_charmSystem ? g_charmSystem->Slots() : before.charmSlots;
+            const auto withSupport = std::ranges::find_if(before.slots, [](const auto& slot) {
+                return slot.occupied && !slot.gem.socketedGems.empty();
+            });
+            if (!av || withSupport == before.slots.end() || before.socketedJewels.empty() ||
+                std::ranges::none_of(charms, [](const auto& slot) { return slot.occupied; })) {
+                return false;
+            }
+            const auto testSlot = static_cast<std::size_t>(withSupport - before.slots.begin());
+            g_hHpDeltaBeforeUninstall = before.appliedHealthDelta;
+            g_hMpDeltaBeforeUninstall = before.appliedMagickaDelta;
+            g_hPermHpBeforeUninstall = av->GetPermanentActorValue(RE::ActorValue::kHealth);
+            g_hPermMpBeforeUninstall = av->GetPermanentActorValue(RE::ActorValue::kMagicka);
+            g_hUninstallBagCounts.clear();
+
+            bool allFormsFound = true;
+            const auto expectReturn = [&](RE::TESBoundObject* base) {
+                if (!base) {
+                    allFormsFound = false;
+                    return;
+                }
+                auto [it, added] = g_hUninstallBagCounts.try_emplace(base);
+                if (added) {
+                    it->second = player->GetItemCount(base);
+                }
+                ++it->second;
+            };
+            const auto expectGem = [&](const auto& self, const Core::GemInstance& gem) -> void {
+                expectReturn(FormIds::Lookup<RE::TESObjectMISC>(FormIds::FindLocalFormIdForGem(gem.gemId)));
+                for (const auto& socketed : gem.socketedGems) {
+                    self(self, socketed);
+                }
+            };
+            for (const auto& slot : before.slots) {
+                if (slot.occupied) {
+                    expectGem(expectGem, slot.gem);
+                }
+            }
+            for (const auto& [node, jewel] : before.socketedJewels) {
+                (void)node;
+                auto* base = RE::TESForm::LookupByID<RE::TESBoundObject>(jewel.baseFormId);
+                expectReturn(base ? base : FormIds::Lookup<RE::TESObjectMISC>(FormIds::JewelLocalFormId(jewel.jewelColor)));
+            }
+            for (const auto& charm : charms) {
+                if (charm.occupied) {
+                    expectReturn(FormIds::Lookup<RE::TESObjectMISC>(FormIds::CharmLocalFormId(charm.kind)));
+                }
+            }
+            if (!allFormsFound) {
+                return false;
+            }
+
+            // H7 저장 뒤에만 폼이 없는 보조 젬을 추가한다. 실물 반환 수와 완료 여부에는 영향을 주지 않는다.
+            constexpr std::string_view kUnavailableSupport = "AutoTest_H8_MissingSupport";
+            SaveLoad::UpdateState([&](PersistentState& state) {
+                Core::GemInstance unavailable;
+                unavailable.gemId = kUnavailableSupport;
+                state.slots[testSlot].gem.socketedGems.push_back(std::move(unavailable));
+            });
+            const auto cleanup = MapDeviceRuntime::RunSafeUninstallCleanup(player);
+            g_hUninstallResultOk = cleanup.ok &&
+                cleanup.message.contains("돌려줄 수 없음(폼 유실) · 젬 1개, 주얼 0개, 참 0개.");
+            LogInfo(cleanup.message);
+            return true;
+        }
+
         void EnterPhase(Phase next)
         {
             g_phase = next;
@@ -560,16 +656,21 @@ namespace SkyrimPoE::Runtime
             }
             UiBridge::ClosePanelOnMainThread();
             RestoreH14AtlasTier();
-            RevertTempEnergyShield();
+            const bool restoreTestStats = !MapDeviceRuntime::IsUninstallCleanupArmed();
+            if (restoreTestStats) {
+                RevertTempEnergyShield();
+            }
             // U2 확정(2026-11-20): AutoTest 실행 중 임시 비활성화한 enforceGemRequirements를 원래 INI 값으로 원복
             if (g_config && g_hasSavedEnforceGemReq) {
                 g_config->enforceGemRequirements = g_savedEnforceGemReq;
                 g_hasSavedEnforceGemReq = false;
             }
             // 검수 Major #4: 비정상 종료/타임아웃 시에도 임시 키스톤(CI/BM 등) 주입이 남지 않도록 원상태로 복원
-            SaveLoad::SyncStateToStatEngine();
-            if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
-                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+            if (restoreTestStats) {
+                SaveLoad::SyncStateToStatEngine();
+                if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
+                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                }
             }
             {
                 std::scoped_lock lock(g_msgMutex);
@@ -598,6 +699,13 @@ namespace SkyrimPoE::Runtime
                 EnterPhase(Phase::Done);
                 g_enabled.store(false, std::memory_order_release);
             }
+        }
+
+        void FinishHAfterCosaveFailure(const std::string& detail)
+        {
+            Check("H7_MapsAndTreeCosaveRoundTrip", false, detail);
+            Check("H8_SafeUninstallCleanupAndNoReapply", false, "건너뜀(H7 실패)");
+            FinishAndScheduleQuit("Scenario H co-save round trip failed.");
         }
 
         std::string SaveStemFromMessage(const SKSE::MessagingInterface::Message& msg)
@@ -4723,23 +4831,21 @@ namespace SkyrimPoE::Runtime
             const auto tributeCountAfter = CountMapBossTributes(player, boss, bossCell);
             const bool oneTributeGranted = g_hTributeCountBeforeBoss && tributeCountAfter &&
                 *tributeCountAfter == *g_hTributeCountBeforeBoss + 1;
-            Check("H5_MapReenterBossKillAndAtlasPoint",
-                t10Cleared && act.bossKilled && (act.portalsRemaining == 4u) &&
-                (availAfter == g_hAvailPtsBeforeBoss + 1) && stNow.atlas.firstTributeGiven && oneTributeGranted,
-                std::format("t10Bit={}, bossKilled={}, portals={}, pts={}->{}, firstTrib={}, tributes={}->{}",
-                    t10Cleared, act.bossKilled, act.portalsRemaining, g_hAvailPtsBeforeBoss, availAfter,
-                    stNow.atlas.firstTributeGiven,
-                    g_hTributeCountBeforeBoss ? std::to_string(*g_hTributeCountBeforeBoss) : "unavailable",
-                    tributeCountAfter ? std::to_string(*tributeCountAfter) : "unavailable"));
-
             // 결정 175: 보스를 처치한 뒤 귀환하면 포털이 남아 있어도 회차가 끝난다(다음 단계에서 닫힘을 확인).
             const auto resetBeforeReturn = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
             const auto returnRes = MapDeviceRuntime::ReturnPortal(player);
+            Check("H5_MapReenterBossKillAndAtlasPoint",
+                t10Cleared && act.bossKilled && (act.portalsRemaining == 4u) &&
+                (availAfter == g_hAvailPtsBeforeBoss + 1) && stNow.atlas.firstTributeGiven && oneTributeGranted && returnRes.ok,
+                std::format("t10Bit={}, bossKilled={}, portals={}, pts={}->{}, firstTrib={}, tributes={}->{}, return={}",
+                    t10Cleared, act.bossKilled, act.portalsRemaining, g_hAvailPtsBeforeBoss, availAfter,
+                    stNow.atlas.firstTributeGiven,
+                    g_hTributeCountBeforeBoss ? std::to_string(*g_hTributeCountBeforeBoss) : "unavailable",
+                    tributeCountAfter ? std::to_string(*tributeCountAfter) : "unavailable", returnRes.message));
+
             g_hExpectMapReset = act.bossKilled && returnRes.ok && !resetBeforeReturn.pending &&
                 resetBeforeReturn.dispatched == g_hResetCountBeforeMap;
             if (!returnRes.ok) {
-                Check("H5_MapReenterBossKillAndAtlasPoint", false,
-                    std::format("ReturnPortal after the boss kill failed: {}", returnRes.message));
                 (void)MapDeviceRuntime::AbandonActiveMap(player);
             }
             EnterPhase(Phase::ScenarioH_PostMapAbandonWait);
@@ -4886,6 +4992,7 @@ namespace SkyrimPoE::Runtime
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player) {
                 Check("H12_Arena4Prerequisites", false, "Player unavailable before testing arena entry.");
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Skipped because arena prerequisites could not be tested.");
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }
@@ -4943,6 +5050,7 @@ namespace SkyrimPoE::Runtime
             const auto a4Res = MapDeviceRuntime::OpenArena4(player);
             if (!a4Res.ok) {
                 Check("H13_Arena4EarlyKillNoReward", false, std::format("OpenArena4 failed: {}", a4Res.message));
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Skipped because the early-kill arena could not be opened.");
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }
@@ -4962,8 +5070,12 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!ready || MapDeviceRuntime::GetTravelStatus(player).kind) {
-                Check(g_hTestArenaBypass ? "H13_Arena4EarlyKillNoReward" : "H6_Arena4ThreePhaseBossAndSpirit220",
-                    false, "Arena arrival and boss spawn were not confirmed.");
+                if (g_hTestArenaBypass) {
+                    Check("H13_Arena4EarlyKillNoReward", false, "Arena arrival and boss spawn were not confirmed.");
+                }
+                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, g_hTestArenaBypass
+                    ? "Skipped because the early-kill arena arrival failed."
+                    : "Arena arrival and boss spawn were not confirmed.");
                 (void)MapDeviceRuntime::AbandonActiveMap(player);
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
@@ -5147,17 +5259,16 @@ namespace SkyrimPoE::Runtime
             const auto ascAfter = Core::PassiveTree::ComputeEarnedAscendancyPoints(stNow.tree, *g_config);
             const std::uint32_t spiritAfter = snapAfter ? snapAfter->maxSpirit : 0u;
 
+            const auto returnRes = MapDeviceRuntime::ReturnPortal(player);
             Check("H6_Arena4ThreePhaseBossAndSpirit220",
                 g_hArenaPhase1Clamped && g_hArenaInvulnBlocked && g_hArenaPhase2Clamped &&
-                asc4Done && (ascAfter == 8) && (spiritAfter == 220u),
-                std::format("p1Clamp={}, invulnBlk={}, p2Clamp={}, bit8={}, asc={}->{}, spirit={}->{}",
+                asc4Done && (ascAfter == 8) && (spiritAfter == 220u) && returnRes.ok,
+                std::format("p1Clamp={}, invulnBlk={}, p2Clamp={}, bit8={}, asc={}->{}, spirit={}->{}, return={}",
                     g_hArenaPhase1Clamped, g_hArenaInvulnBlocked, g_hArenaPhase2Clamped,
-                    asc4Done, g_hAscPtsBeforeArena4, ascAfter, g_hSpiritBeforeArena4, spiritAfter));
+                    asc4Done, g_hAscPtsBeforeArena4, ascAfter, g_hSpiritBeforeArena4, spiritAfter, returnRes.message));
 
-            if (const auto returnRes = MapDeviceRuntime::ReturnPortal(player); !returnRes.ok) {
+            if (!returnRes.ok) {
                 // 결정 175: 결투장은 포털 0이라 귀환하면 회차가 끝나야 한다. 거절되면 실패로 남기고 포기로 정리한다.
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false,
-                    std::format("Arena ReturnPortal was refused: {}", returnRes.message));
                 (void)MapDeviceRuntime::AbandonActiveMap(player);
             }
             EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
@@ -5171,19 +5282,50 @@ namespace SkyrimPoE::Runtime
             if (WaitForMapTravel(player, outsideClosedRun, kMapReturnWaitSec)) {
                 break;
             }
-            if (!outsideClosedRun || travel.kind || !IsPlayerReadyInWorld()) {
-                Check("H7_MapsAndTreeCosaveRoundTrip", false, "Could not confirm return and closure before saving.");
-                Check("H8_SafeUninstallCleanupAndNoReapply", false, "Skipped after the return failed.");
-                FinishAndScheduleQuit("Scenario H return failed.");
+            if (!player || !outsideClosedRun || travel.kind || !IsPlayerReadyInWorld()) {
+                FinishHAfterCosaveFailure("Could not confirm arena return and closure before the map round trip.");
                 break;
             }
-            if (player) {
-                RestorePlayerVitals(player, true, true);
-                if (player->IsInCombat()) {
-                    player->StopCombat();
-                }
+            constexpr auto kCosaveMapTier = Core::kMinMapTier;
+            const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForTier(kCosaveMapTier));
+            if (forms && MapDeviceRuntime::GetCellResetStatus(forms->cellId).pending &&
+                PhaseElapsedSec() < kMapResetWaitSec) {
+                break;
             }
-            // H7 준비: 'MAPS' v2 + 'TREE'(0xFu) 코세이브 왕복 저장
+            auto* map = FormIds::Lookup<RE::TESObjectMISC>(FormIds::MapItemLocalFormId(kCosaveMapTier));
+            if (!map) {
+                FinishHAfterCosaveFailure("The co-save test map item was unavailable.");
+                break;
+            }
+            RestorePlayerVitals(player, true, true);
+            if (player->IsInCombat()) {
+                player->StopCombat();
+            }
+            player->AddObjectToContainer(map, nullptr, 1, nullptr);
+            const auto open = MapDeviceRuntime::OpenNormalMap(player, {}, map->GetFormID());
+            if (!open.ok) {
+                FinishHAfterCosaveFailure(open.message);
+                break;
+            }
+            EnterPhase(Phase::ScenarioH_CosaveMapEntryWait);
+            break;
+        }
+
+        case Phase::ScenarioH_CosaveMapEntryWait: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto run = MapDeviceRuntime::TakeSnapshotForSave();
+            const bool ready = run.active && run.playerAuthorized && run.bossRefFormId != 0 &&
+                !run.bossKilled && !run.failed && MapDeviceRuntime::IsPlayerInActiveMapCell();
+            if (WaitForMapTravel(player, ready, kMapBossLoadWaitSec)) {
+                break;
+            }
+            if (!player || !ready || !IsPlayerReadyInWorld()) {
+                FinishHAfterCosaveFailure("The active run was unavailable for saving.");
+                break;
+            }
+            RestorePlayerVitals(player, true, true);
+            g_hAtlasBeforeCosave = SaveLoad::GetStateCopy().atlas;
+            g_hRunBeforeCosave = std::move(run);
             {
                 std::scoped_lock lock(g_msgMutex);
                 g_expectedSaveStem = g_cfg.tempSave;
@@ -5217,8 +5359,7 @@ namespace SkyrimPoE::Runtime
                 if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
                     mgr->Save(g_cfg.tempSave.c_str());
                 } else {
-                    Check("H7_MapsAndTreeCosaveRoundTrip", false, "BGSSaveLoadManager unavailable.");
-                    FinishAndScheduleQuit("Scenario H save failed.");
+                    FinishHAfterCosaveFailure("BGSSaveLoadManager unavailable.");
                     break;
                 }
                 g_nextSaveRetryAt = Clock::now() + std::chrono::seconds(2);
@@ -5228,8 +5369,7 @@ namespace SkyrimPoE::Runtime
                     std::scoped_lock lock(g_msgMutex);
                     g_expectedSaveStem.clear();
                 }
-                Check("H7_MapsAndTreeCosaveRoundTrip", false, "Timed out waiting for Scenario H kSaveGame.");
-                FinishAndScheduleQuit("Scenario H save timeout.");
+                FinishHAfterCosaveFailure("Timed out waiting for Scenario H kSaveGame.");
             }
             break;
         }
@@ -5239,8 +5379,7 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!RequestLoadSave(g_cfg.tempSave)) {
-                Check("H7_MapsAndTreeCosaveRoundTrip", false, "Scenario H reload request failed.");
-                FinishAndScheduleQuit("Scenario H reload failed.");
+                FinishHAfterCosaveFailure("Scenario H reload request failed.");
                 break;
             }
             EnterPhase(Phase::ScenarioH_AwaitReload);
@@ -5256,20 +5395,22 @@ namespace SkyrimPoE::Runtime
                 ok = g_postLoadSucceeded;
             }
             if (signaled && !ok) {
-                Check("H7_MapsAndTreeCosaveRoundTrip", false, "kPostLoadGame failed on Scenario H reload.");
-                FinishAndScheduleQuit("Scenario H reload failed.");
+                FinishHAfterCosaveFailure("kPostLoadGame failed on Scenario H reload.");
                 return;
             }
             if (signaled && ok && IsPlayerReadyInWorld()) {
                 EnterPhase(Phase::ScenarioH_ReloadSettle);
             } else if (PhaseElapsedSec() > 90.0) {
-                Check("H7_MapsAndTreeCosaveRoundTrip", false, "Timed out waiting for Scenario H reload.");
-                FinishAndScheduleQuit("Scenario H reload timeout.");
+                FinishHAfterCosaveFailure("Timed out waiting for Scenario H reload.");
             }
             break;
         }
 
         case Phase::ScenarioH_ReloadSettle: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player) {
+                RestorePlayerVitals(player, true, true);
+            }
             if (g_unpausedAccumSec < 2.0 && PhaseElapsedSec() < 8.0) {
                 break;
             }
@@ -5278,27 +5419,63 @@ namespace SkyrimPoE::Runtime
             const bool t10Ok = (st.atlas.completedTierMask & static_cast<std::uint16_t>(1u << 9u)) != 0u;
             const bool asc4Ok = (st.tree.ascendancyMilestonesBitmask & 0x8u) != 0u;
             const bool spiritOk = snap && (snap->maxSpirit == 220u);
+            const auto versions = SaveLoad::GetLoadedMapRecordVersions();
+            const auto run = MapDeviceRuntime::TakeSnapshotForSave();
+            const auto& expected = g_hRunBeforeCosave;
+            const bool atlasRestored = st.atlas.completedTierMask == g_hAtlasBeforeCosave.completedTierMask &&
+                st.atlas.totalMapsCleared >= 1 &&
+                st.atlas.totalMapsCleared == g_hAtlasBeforeCosave.totalMapsCleared &&
+                st.atlas.highestTierCleared == g_hAtlasBeforeCosave.highestTierCleared &&
+                st.atlas.firstTributeGiven == g_hAtlasBeforeCosave.firstTributeGiven;
+            const bool runRestored = run.active && run.playerAuthorized && MapDeviceRuntime::IsPlayerInActiveMapCell() &&
+                run.runId == expected.runId && run.tier == expected.tier && run.isArena4 == expected.isArena4 &&
+                run.dungeonKey == expected.dungeonKey && run.packVersion == expected.packVersion &&
+                run.portalsRemaining == expected.portalsRemaining && run.arenaPhase == expected.arenaPhase &&
+                run.bossKilled == expected.bossKilled && run.failed == expected.failed && run.endRequested == expected.endRequested &&
+                run.spawnsDisabled == expected.spawnsDisabled &&
+                run.bossRefFormId == expected.bossRefFormId && run.spawnedRefFormIds == expected.spawnedRefFormIds &&
+                run.mods == expected.mods && run.returnCellFormId == expected.returnCellFormId &&
+                run.returnWorldspaceFormId == expected.returnWorldspaceFormId &&
+                run.returnPos == expected.returnPos && run.returnAngle == expected.returnAngle;
+            const bool cosaveOk = versions.atlas == SaveLoad::kAtlasVersion && versions.maps == SaveLoad::kMapsVersion &&
+                atlasRestored && runRestored && t10Ok && asc4Ok && spiritOk && st.atlas.firstTributeGiven;
+            const auto detail = std::format(
+                "ATLS v{}, MAPS v{}, atlasMask=0x{:04X}, cleared={}, trib={}, msMask=0x{:X}, spirit={}, atlasRestored={}, runRestored={}",
+                versions.atlas, versions.maps,
+                st.atlas.completedTierMask, st.atlas.totalMapsCleared, st.atlas.firstTributeGiven,
+                st.tree.ascendancyMilestonesBitmask, snap ? snap->maxSpirit : 0u, atlasRestored, runRestored);
+            if (!cosaveOk) {
+                FinishHAfterCosaveFailure(detail);
+                break;
+            }
+            Check("H7_MapsAndTreeCosaveRoundTrip", true, detail);
+
+            if (run.active && !MapDeviceRuntime::AbandonActiveMap(player).ok) {
+                Check("H8_SafeUninstallCleanupAndNoReapply", false, "Could not abandon the co-save run before cleanup.");
+                FinishAndScheduleQuit("Scenario H cleanup setup failed.");
+                break;
+            }
+            EnterPhase(Phase::ScenarioH_UninstallPrepare);
+            break;
+        }
+
+        case Phase::ScenarioH_UninstallPrepare: {
+            // H8 (반드시 최후반 — 이후 저장 금지!): 안전 제거 정리 + 다음 프레임 미재오염 확인
             auto* player = RE::PlayerCharacter::GetSingleton();
             const auto travel = MapDeviceRuntime::GetTravelStatus(player);
             const bool noTravelOrRun = !travel.kind && !travel.inPackCell && !MapDeviceRuntime::IsActiveMapRun();
-            Check("H7_MapsAndTreeCosaveRoundTrip",
-                t10Ok && asc4Ok && spiritOk && (st.atlas.totalMapsCleared >= 1u) && st.atlas.firstTributeGiven && noTravelOrRun,
-                std::format("atlasMask=0x{:04X}, cleared={}, trib={}, msMask=0x{:X}, spirit={}, noTravelOrRun={}",
-                    st.atlas.completedTierMask, st.atlas.totalMapsCleared, st.atlas.firstTributeGiven,
-                    st.tree.ascendancyMilestonesBitmask, snap ? snap->maxSpirit : 0u, noTravelOrRun));
-
-            // H8 (반드시 최후반 — 이후 저장 금지!): 안전 제거 정리 + 다음 프레임 미재오염 확인
-            if (!noTravelOrRun) {
+            if (WaitForMapTravel(player, noTravelOrRun, kMapReturnWaitSec)) {
+                break;
+            }
+            if (!player || !noTravelOrRun || !IsPlayerReadyInWorld()) {
                 Check("H8_SafeUninstallCleanupAndNoReapply", false, "Expected to be outside the pack with no travel before cleanup.");
                 FinishAndScheduleQuit("Scenario H cleanup setup failed.");
                 break;
             }
-            if (player && player->AsActorValueOwner()) {
-                g_hHpDeltaBeforeUninstall = st.appliedHealthDelta;
-                g_hMpDeltaBeforeUninstall = st.appliedMagickaDelta;
-                g_hPermHpBeforeUninstall = player->AsActorValueOwner()->GetPermanentActorValue(RE::ActorValue::kHealth);
-                g_hPermMpBeforeUninstall = player->AsActorValueOwner()->GetPermanentActorValue(RE::ActorValue::kMagicka);
-                (void)MapDeviceRuntime::RunSafeUninstallCleanup(player);
+            if (!ExerciseUninstallWithMissingForm(player)) {
+                Check("H8_SafeUninstallCleanupAndNoReapply", false, "Missing gem with supports, jewel, charm, or inventory form.");
+                FinishAndScheduleQuit("Scenario H cleanup inventory setup failed.");
+                break;
             }
             EnterPhase(Phase::ScenarioH_UninstallVerifyWait);
             break;
@@ -5314,6 +5491,8 @@ namespace SkyrimPoE::Runtime
             for (const auto& s : st.slots) {
                 if (s.occupied) anySlotOccupied = true;
             }
+            const bool charmsEmpty = std::ranges::none_of(st.charmSlots, [](const auto& slot) { return slot.occupied; });
+            const bool bagCountsMatch = VerifyUninstallBagCounts(player);
             bool anyProxySpellLeft = false;
             if (player) {
                 for (const auto fid : FormIds::kProxySpells) {
@@ -5339,14 +5518,16 @@ namespace SkyrimPoE::Runtime
             const bool mpRevertedAndHeld = std::abs(permMpAfter - expectedMp) < 1.5f;
 
             Check("H8_SafeUninstallCleanupAndNoReapply",
-                MapDeviceRuntime::IsUninstallCleanupArmed() &&
-                !anySlotOccupied && st.socketedJewels.empty() && (st.activeAuraMask == 0u) &&
+                g_hUninstallResultOk && bagCountsMatch &&
+                MapDeviceRuntime::IsUninstallCleanupArmed() && !MapDeviceRuntime::GetUninstallCleanupRemaining(st) &&
+                !anySlotOccupied && st.socketedJewels.empty() && charmsEmpty && (st.activeAuraMask == 0u) &&
                 !anyProxySpellLeft && (std::abs(st.appliedHealthDelta) < 0.01) &&
                 (std::abs(st.appliedMagickaDelta) < 0.01) && hpRevertedAndHeld && mpRevertedAndHeld &&
                 (std::abs(var09After) < 1e-3f),
-                std::format("armed={}, slotsEmpty={}, jewelsEmpty={}, proxyLeft={}, hp={:.1f}(exp {:.1f}), mp={:.1f}(exp {:.1f}), hpDelta={:.2f}, mpDelta={:.2f}, var09={:.2f}",
-                    MapDeviceRuntime::IsUninstallCleanupArmed(), !anySlotOccupied, st.socketedJewels.empty(),
-                    anyProxySpellLeft, permHpAfter, expectedHp, permMpAfter, expectedMp,
+                std::format("resultOk={}, bagCounts={}, armed={}, slotsEmpty={}, jewelsEmpty={}, charmsEmpty={}, proxyLeft={}, hp={:.1f}(exp {:.1f}), mp={:.1f}(exp {:.1f}), hpDelta={:.2f}, mpDelta={:.2f}, var09={:.2f}",
+                    g_hUninstallResultOk, bagCountsMatch, MapDeviceRuntime::IsUninstallCleanupArmed(),
+                    !anySlotOccupied, st.socketedJewels.empty(), charmsEmpty, anyProxySpellLeft,
+                    permHpAfter, expectedHp, permMpAfter, expectedMp,
                     st.appliedHealthDelta, st.appliedMagickaDelta, var09After));
 
             FinishAndScheduleQuit(std::format("All Stage 2-6 AutoTest scenarios (A-H, {} checks) completed.", kExpectedAutoTestChecks));

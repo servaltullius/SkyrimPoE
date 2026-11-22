@@ -308,7 +308,8 @@ namespace SkyrimPoE::Runtime
         Core::DamageType dominantType,
         bool bypassesEs,
         RE::Actor* targetActor,
-        double engineDiffMult)
+        double engineDiffMult,
+        std::optional<std::uint64_t> generation)
     {
         double adjustedDmg = std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
 
@@ -343,6 +344,11 @@ namespace SkyrimPoE::Runtime
         Core::MonsterIncomingResult res{};
         {
             std::scoped_lock lk(g_mutex);
+            if (MapDeviceRuntime::IsUninstallCleanupActive()) {
+                res.remainingHealthDamage = std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
+                res.hadAnyImpact = res.remainingHealthDamage > 0.0;
+                return res;
+            }
             const auto it = g_profiles.find(actorId);
             if (it == g_profiles.end()) {
                 res.remainingHealthDamage = adjustedDmg;
@@ -356,7 +362,7 @@ namespace SkyrimPoE::Runtime
         // 직접 RE::Actor* 포인터를 사용해 이중 역보정 및 워커 스레드 LookupByID 전역 폼 락을 제거한다.
         if (res.remainingHealthDamage > 0.0 && targetActor && MapDeviceRuntime::IsActiveArena4Boss(actorId)) {
             res.remainingHealthDamage = MapDeviceRuntime::FilterArena4BossIncomingDamage(
-                targetActor, res.remainingHealthDamage, engineDiffMult);
+                targetActor, res.remainingHealthDamage, engineDiffMult, generation);
         }
         return res;
     }
