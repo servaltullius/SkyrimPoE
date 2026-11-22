@@ -2,6 +2,7 @@
 // - 두 판의 번호 보존(6단계 재작업 계획 R1 2번): 원본에서 참조를 빼고 더해도 남은 참조·앵커의 번호가 그대로인지
 // - 원본 대조 검증이 만드는 코드의 결함을 잡는지: 위치 변경, 연결 필드 바뀜, 뺐어야 할 참조가 남음
 using Mutagen.Bethesda;
+using System.Text.Json;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
@@ -108,8 +109,54 @@ public class BuilderTests
         AnchorMinDistanceFromEntry = 600,
         AnchorMaxSnapDistance = 256,
         AnchorMinSeparation = 128,
-        Dungeons = { new DungeonSpec { Key = "test", Type = "cave", Role = "map", Name = "시험", SourceCell = sourceCell, MinPackAnchors = 2 } },
+        Dungeons = { new DungeonSpec
+        {
+            Key = "test", Type = "cave", Role = "map", Name = "시험", SourceCell = sourceCell, MinPackAnchors = 2,
+            BossNpc = "000103", PackNpcs = ["000103"],
+        } },
     };
+
+    [Theory]
+    [InlineData("map", "", "000103", null)]
+    [InlineData("map", "000103", null, null)]
+    [InlineData("arena", "000103", null, null)]
+    [InlineData("map", "000100", "000103", null)]
+    [InlineData("map", "000103", "000220", null)]
+    [InlineData("arena", "000103", null, "FFFFFF")]
+    public void MissingOrInvalidSpawnTemplatesFail(string role, string boss, string? packNpc, string? addNpc)
+    {
+        var pack = Pack();
+        var dungeon = pack.Dungeons[0];
+        dungeon.Role = role;
+        dungeon.BossNpc = boss;
+        dungeon.PackNpcs = packNpc is null ? null : [packNpc];
+        dungeon.AddNpcs = addNpc is null ? null : [addNpc];
+        var source = SourceIndex.Create(MakeSource(false));
+        Assert.Throws<InvalidDataException>(() => Builder.Build(pack, source, new Ledger(), allowLedgerChanges: true));
+    }
+
+    [Theory]
+    [InlineData("map", "packNpcs", "addNpcs")]
+    [InlineData("arena", "addNpcs", "packNpcs")]
+    public void FormatTwoWritesRoleSpecificSpawnTemplates(string role, string presentList, string absentList)
+    {
+        var pack = Pack();
+        var dungeon = pack.Dungeons[0];
+        dungeon.Role = role;
+        if (role == "arena")
+        {
+            dungeon.AddNpcs = dungeon.PackNpcs;
+            dungeon.PackNpcs = null;
+        }
+        var source = SourceIndex.Create(MakeSource(false));
+        var result = Builder.Build(pack, source, new Ledger(), allowLedgerChanges: true);
+        using var output = JsonDocument.Parse(JsonSerializer.Serialize(result.Manifest, Json.Options));
+        Assert.Equal(2, output.RootElement.GetProperty("manifestFormat").GetInt32());
+        var entry = output.RootElement.GetProperty("dungeons")[0];
+        Assert.Equal("000103", entry.GetProperty("bossNpc").GetString());
+        Assert.Equal("000103", entry.GetProperty(presentList)[0].GetString());
+        Assert.False(entry.TryGetProperty(absentList, out _));
+    }
 
     private static Dictionary<string, uint> IdsByKey(Ledger l) => l.Slots[0].Ids.ToDictionary(kv => kv.Key, kv => Ledger.ParseId(kv.Value));
 
@@ -241,6 +288,57 @@ public class BuilderTests
         var ledger = new Ledger();
         Builder.Build(Pack(), SourceIndex.Create(MakeSource(false)), ledger, true);
         Assert.Throws<InvalidDataException>(() => Builder.Build(Pack("TestCellB"), SourceIndex.Create(MakeSource(false)), ledger, true));
+    }
+
+    // 생성기가 받은 목록은 런타임 목록 파서(plugin/src/core/MapPack.cpp)도 받아야 한다:
+    // 플러그인 이름 고정, 지도 하나 이상, 결투장 정확히 하나.
+    [Theory]
+    [InlineData("SkyrimPoE_Maps.esp", true, true, true)]
+    [InlineData("SkyrimPoE_Maps.esp", true, false, false)]
+    [InlineData("SkyrimPoE_Maps.esp", false, true, false)]
+    [InlineData("Other.esp", true, true, false)]
+    [InlineData("skyrimpoe_maps.esp", true, true, false)]
+    public void PackSpecRolesAndPluginMatchRuntime(string plugin, bool withMap, bool withArena, bool valid)
+    {
+        static object Dungeon(string key, string role, string cell) => new
+        {
+            key, type = "cave", role, name = key, sourceCell = cell, minPackAnchors = 1, bossNpc = "000103",
+            packNpcs = role == "map" ? new[] { "000103" } : null,
+            addNpcs = role == "arena" ? new[] { "000103" } : null,
+        };
+        var dungeons = new List<object>();
+        if (withMap) dungeons.Add(Dungeon("map_a", "map", "CellA"));
+        if (withArena) dungeons.Add(Dungeon("arena_a", "arena", "CellB"));
+        var spec = new
+        {
+            plugin, packVersion = 1, editorIdPrefix = "SPOE_Map_", anchorMinDistanceFromEntry = 600,
+            anchorMaxSnapDistance = 256, anchorMinSeparation = 128, dungeons,
+        };
+        var path = Path.Combine(Path.GetTempPath(), $"dungeonclone-spec-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(spec, new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        }));
+        try
+        {
+            if (valid) Assert.Equal(plugin, PackSpec.Load(path).Plugin);
+            else Assert.Throws<InvalidDataException>(() => PackSpec.Load(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // 빌드 산출물은 저장소 밖에 있으므로 이 소스 파일의 위치에서 tools/dungeon-clone/dungeons.json을 찾는다.
+    private static string ShippedDungeonList([System.Runtime.CompilerServices.CallerFilePath] string thisFile = "") =>
+        Path.GetFullPath(Path.Combine(Path.GetDirectoryName(thisFile)!, "..", "dungeons.json"));
+
+    [Fact]
+    public void ShippedDungeonListLoads()
+    {
+        var spec = PackSpec.Load(ShippedDungeonList());
+        Assert.Single(spec.Dungeons, d => d.Role == "arena");
     }
 
     [Fact]

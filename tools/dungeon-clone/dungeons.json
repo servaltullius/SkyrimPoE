@@ -12,6 +12,8 @@
       "role": "map",
       "name": "엠버샤드 광산",
       "sourceCell": "EmbershardMine01",
+      "packNpcs": ["039D21", "03DE6A", "037C47", "039D5E"],
+      "bossNpc": "03DF0C",
       "bossAnchor": "0B6FEE",
       "bossAnchorReason": "Boss 표시 NPC 3개 가운데 입구에서 가장 먼 자리(광전사, 6,364유닛). 브랜치(neon/stage6-wip)의 보스 앵커와 같음.",
       "minPackAnchors": 3
@@ -22,6 +24,8 @@
       "role": "map",
       "name": "파인문 동굴",
       "sourceCell": "PinemoonCave01",
+      "packNpcs": ["03392F", "033929"],
+      "bossNpc": "02EAC1",
       "minPackAnchors": 3
     },
     {
@@ -30,6 +34,8 @@
       "role": "map",
       "name": "아이언바인드 고분",
       "sourceCell": "IronbindBarrow01",
+      "packNpcs": ["03B53F", "024328", "02432A"],
+      "bossNpc": "0DDD5F",
       "minPackAnchors": 3
     },
     {
@@ -38,6 +44,8 @@
       "role": "map",
       "name": "랄드브타르",
       "sourceCell": "Raldbthar01",
+      "packNpcs": ["10EC8E", "10EC87"],
+      "bossNpc": "023A96",
       "bossAnchor": "0F21AD",
       "bossAnchorReason": "Boss 표시가 없음. 매복(Ambush)이 아닌 적 가운데 입구에서 가장 먼 자리(드웨머 구체, 16,263유닛).",
       "minPackAnchors": 3
@@ -48,6 +56,8 @@
       "role": "arena",
       "name": "가려진 숲",
       "sourceCell": "ShroudedGrove01",
+      "bossNpc": "016FFA",
+      "addNpcs": ["016FF8"],
       "minPackAnchors": 2
     }
   ]

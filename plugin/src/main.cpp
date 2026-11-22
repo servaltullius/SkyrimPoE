@@ -23,6 +23,7 @@
 #include "runtime/ItemTracker.h"
 #include "runtime/MainUpdateHook.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/MapPackRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -210,6 +211,7 @@ namespace
 
         // 3. ESP 폼 검증
         VerifyEspForms();
+        Runtime::MapPackRuntime::Initialize();
 
         // 4. 주 갱신 훅을 먼저 설치해 CommandQueue 드레인을 보장한 뒤 전투·스킬·처치·아이템 훅을 건다.
         if (!Runtime::MainUpdateHook::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_config)) {
@@ -223,7 +225,7 @@ namespace
         Runtime::WorldDropTracker::Initialize(&g_itemData, &g_config);
         Runtime::MapDeviceRuntime::Initialize(
             &g_commandQueue, &g_statEngine, &g_itemData, &g_treeData, &g_config, &g_energyShield, &g_charmSystem);
-        Runtime::MonsterRuntime::Initialize(&g_statEngine, &g_itemData, &g_config);
+        Runtime::MonsterRuntime::Initialize(&g_statEngine, &g_itemData, &g_dataPack, &g_config);
         Runtime::AilmentRuntime::Initialize(&g_statEngine, &g_charmSystem, &g_dataPack, &g_config);
         (void)Runtime::GemInventory::Install(&g_commandQueue);
         (void)Runtime::ItemTracker::Install(&g_commandQueue, []() {

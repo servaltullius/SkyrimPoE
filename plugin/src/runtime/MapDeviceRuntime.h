@@ -123,9 +123,9 @@ namespace SkyrimPoE::Runtime
         // Layer2Input에 플레이어의 지도 셀 소속과 불이익을 동기화
         static void SyncMapLayer2ToStatEngine();
 
-        // SKSE 코세이브 'MAPS' v1 스냅샷/복원/초기화(순수 메모리) 및 PostLoad 재바인딩
+        // SKSE 코세이브 'MAPS' v2 스냅샷/복원/초기화(순수 메모리) 및 PostLoad 재바인딩
         [[nodiscard]] static Core::ActiveMapState TakeSnapshotForSave();
-        static void RestoreFromSave(Core::ActiveMapState saved);
+        static void RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell);
         static void OnPostLoadRebind();
         static void ResetOnRevert();
     };

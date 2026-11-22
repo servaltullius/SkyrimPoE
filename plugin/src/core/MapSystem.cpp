@@ -15,48 +15,6 @@ namespace SkyrimPoE::Core
         constexpr double kMinAilmentThresholdPoe = 20.0;
         constexpr double kVanillaHitReferenceLife = 100.0;
 
-        // 결정 166: houseCARL Skyrim.esm 실측 대조된 바닐라 던전 5종
-        constexpr std::array<MapDungeonDef, kMapDungeonCount> kMapDungeons{ {
-            MapDungeonDef{
-                0, "EmbershardMine01", "엠버샤드 광산", "광산 · 산적",
-                0x000B6BE6, 0x000CEED8, 0x000B6FEE,
-                { 0x000B6DBB, 0x000B6FF7, 0x000B6FE4, 0x000B6FE6 }, 4,
-                0x0003DECB, 0x0003DF17, 0
-            },
-            MapDungeonDef{
-                1, "HaltedStreamCamp01", "멈춘 시냇가 야영지", "매머드 광산 · 산적",
-                0x00043FAB, 0x000460EE, 0x000540A1,
-                { 0x00053AE5, 0x00053AE4, 0x000540A2, 0 }, 3,
-                0x0003DECB, 0x0003DF17, 0
-            },
-            MapDungeonDef{
-                2, "RedoransRetreat01", "레도란의 은신처", "암석 동굴 · 산적",
-                0x00015224, 0x000FD7A0, 0x00036CE0,
-                { 0x00036CE1, 0x00036CE2, 0x00036CE3, 0 }, 3,
-                0x0003DECB, 0x0003DF17, 0
-            },
-            MapDungeonDef{
-                3, "BrokenFangCave01", "부러진 독니 동굴", "흡혈귀 소굴 · 언데드",
-                0x000152B1, 0x00033BBE, 0x000267AC,
-                { 0x000267FF, 0x000267B1, 0x00026747, 0 }, 3,
-                0x0002F9E1, 0x0002F9E2, 0
-            },
-            MapDungeonDef{
-                4, "ShimmermistCave01", "쉬머미스트 동굴", "팔머 · 드워머 유적",
-                0x0001521C, 0x00048CB5, 0x000530C4,
-                { 0x0004B688, 0x0004B594, 0x000530C1, 0 }, 3,
-                0x0001E7B4, 0x0010F9B9, 0x0010EC89
-            }
-        } };
-
-        // 결정 18, 166: 4차 전직 단판 3페이즈 결투장 (SilentMoonsCamp01 단일 홀)
-        constexpr MapDungeonDef kArena4Dungeon{
-            5, "SilentMoonsCamp01", "침묵의 달 제련소 (4차 결투장)", "4차 전직 결투장 · 3페이즈 보스",
-            0x00015211, 0x00053FA6, 0x0005439A,
-            { 0x0005439C, 0x0005439B, 0, 0 }, 2,
-            0x00023A95, 0x00025D1D, 0x00023A95
-        };
-
         [[nodiscard]] double FirstRollValue(const RolledAffix& affix) noexcept
         {
             if (affix.values.empty()) {
@@ -95,7 +53,8 @@ namespace SkyrimPoE::Core
 
     double MapSystem::AilmentThreshold(std::uint32_t exileLevel, double lifeMultiplier, const DataPack& pack) noexcept
     {
-        // 결정 170 U-4: 유배자 레벨로 기본 문턱을 구한 뒤 대상의 생명 배율을 적용한다.
+        // 결정 170 U-4·173: 체력 맞춤 후 실효 체력은 기준 체력 × 티어 배율이므로
+        // PoE 상태이상 문턱에는 액터 최대 체력에 따른 맞춤 계수를 곱하지 않는다.
         return std::max(kMinAilmentThresholdPoe, pack.MonsterLife(exileLevel)) * lifeMultiplier;
     }
 
@@ -105,10 +64,16 @@ namespace SkyrimPoE::Core
         return rawHitDamage * pack.MonsterLife(exileLevel) / kVanillaHitReferenceLife;
     }
 
-    double MapActorScaling::ScaleIncomingDamage(double damage) const noexcept
+    double MapActorScaling::ScaleIncomingDamage(double damage, double referenceLife, double permanentHealth) const noexcept
     {
-        // 결정 169·170 U-3: 생명 배율을 받는 피해에 역으로 적용한다.
-        return damage / lifeMultiplier;
+        // 결정 173: 스카이림 최대 체력을 유배자 레벨의 기준 체력으로 맞춘 뒤 티어 배율을 적용한다.
+        const double healthMatch = std::isfinite(permanentHealth) && permanentHealth >= 1.0 &&
+                                   std::isfinite(referenceLife) && referenceLife > 0.0
+            ? referenceLife / permanentHealth
+            : 1.0;
+        const double scaled = damage / (lifeMultiplier * healthMatch);
+        // 설정이 허용하는 극단값(아주 작은 offenseK 등)에서 나눗셈이 넘치면 티어 배율만 적용한다.
+        return std::isfinite(scaled) ? scaled : damage / lifeMultiplier;
     }
 
     void MapActorRegistry::Register(std::uint32_t actorId, MapActorScaling scaling)
@@ -145,30 +110,6 @@ namespace SkyrimPoE::Core
     void MapActorRegistry::Clear() noexcept
     {
         actors_.clear();
-    }
-
-    std::uint8_t MapSystem::DungeonIndexForTier(std::uint8_t tier) noexcept
-    {
-        const auto clamped = std::clamp<std::uint8_t>(tier, kMinMapTier, kMaxMapTier);
-        return static_cast<std::uint8_t>((clamped - 1) % kMapDungeonCount);
-    }
-
-    const MapDungeonDef& MapSystem::GetMapDungeon(std::uint8_t dungeonIndex) noexcept
-    {
-        return kMapDungeons[dungeonIndex % kMapDungeonCount];
-    }
-
-    const MapDungeonDef& MapSystem::GetArena4Dungeon() noexcept
-    {
-        return kArena4Dungeon;
-    }
-
-    const MapDungeonDef& MapSystem::GetDungeonForState(const ActiveMapState& state) noexcept
-    {
-        if (state.isArena4) {
-            return kArena4Dungeon;
-        }
-        return GetMapDungeon(state.dungeonIndex);
     }
 
     MapModSummary MapSystem::AggregateMapMods(const std::vector<RolledAffix>& affixes) noexcept
@@ -325,7 +266,6 @@ namespace SkyrimPoE::Core
         st.failed = false;
         st.runId = runId;
         st.tier = clampedTier;
-        st.dungeonIndex = DungeonIndexForTier(clampedTier);
         // 개방 즉시 최초 입장 포털 1개 소모: 6 -> 5
         st.portalsRemaining = kNormalMapMaxPortals - 1;
         st.arenaPhase = 1;
@@ -352,7 +292,6 @@ namespace SkyrimPoE::Core
         st.failed = false;
         st.runId = runId;
         st.tier = 8;
-        st.dungeonIndex = 5;
         // 4차 결투장은 1포털 단판: 개방·입장 즉시 0 잔여 (재입장·부활 불가)
         st.portalsRemaining = 0;
         st.arenaPhase = 1;

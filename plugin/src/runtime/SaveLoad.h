@@ -76,7 +76,7 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kSpiritVersion = 1;
         static constexpr std::uint32_t kGearVersion = 1;
         static constexpr std::uint32_t kSpeedModsVersion = 1;
-        static constexpr std::uint32_t kMapsVersion = 1;
+        static constexpr std::uint32_t kMapsVersion = 2;
 
         static bool Install(
             Core::CommandQueue* queue,

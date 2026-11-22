@@ -83,6 +83,9 @@ internal static class Program
 
     private static int Anchors(PackSpec pack, SourceIndex src)
     {
+        foreach (var dungeon in pack.Dungeons)
+            Builder.ValidateSpawnTemplates(dungeon, src);
+
         foreach (var d in pack.Dungeons)
         {
             var cell = src.GetCell(d.SourceCell);

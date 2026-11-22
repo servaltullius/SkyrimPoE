@@ -7,6 +7,9 @@ namespace SkyrimPoE.Tools.DungeonClone;
 
 internal sealed class PackSpec
 {
+    // 결정 169, R4: 런타임의 MAPS v2 키 길이와 같다. 키 문자는 아래에서 ASCII로 제한한다.
+    private const int MaxDungeonKeyBytes = 64;
+    public const string RuntimePluginName = "SkyrimPoE_Maps.esp";
     // 지도 팩 플러그인 파일 이름(결정 20: 정규 ESP 하나)
     [JsonRequired] public string Plugin { get; set; } = "";
     // 런타임이 세이브의 지도와 팩의 짝을 확인하는 판 번호. 던전을 더하거나 규칙을 바꾸면 올린다.
@@ -30,8 +33,9 @@ internal sealed class PackSpec
 
     private void Validate()
     {
-        if (!Plugin.EndsWith(".esp", StringComparison.OrdinalIgnoreCase) || Plugin.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-            throw new InvalidDataException("plugin은 .esp 파일 이름이어야 합니다(결정 20: 정규 ESP).");
+        // 런타임(plugin/src/core/MapPack.h kMapsPluginName)은 이 이름만 받는다(결정 20: 정규 ESP).
+        if (!string.Equals(Plugin, RuntimePluginName, StringComparison.Ordinal))
+            throw new InvalidDataException($"plugin은 {RuntimePluginName}이어야 합니다(런타임이 이 이름만 읽음).");
         if (PackVersion <= 0) throw new InvalidDataException("packVersion은 1 이상이어야 합니다.");
         if (string.IsNullOrWhiteSpace(EditorIdPrefix)) throw new InvalidDataException("editorIdPrefix가 비었습니다.");
         if (AnchorMinDistanceFromEntry <= 0) throw new InvalidDataException("anchorMinDistanceFromEntry는 0보다 커야 합니다.");
@@ -42,8 +46,9 @@ internal sealed class PackSpec
         var cells = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var d in Dungeons)
         {
-            if (string.IsNullOrWhiteSpace(d.Key) || d.Key.Any(ch => !(char.IsAsciiLetterLower(ch) || char.IsAsciiDigit(ch) || ch == '_')))
-                throw new InvalidDataException($"key는 소문자·숫자·밑줄만 씁니다: '{d.Key}'");
+            if (string.IsNullOrWhiteSpace(d.Key) || d.Key.Length > MaxDungeonKeyBytes ||
+                d.Key.Any(ch => !(char.IsAsciiLetterLower(ch) || char.IsAsciiDigit(ch) || ch == '_')))
+                throw new InvalidDataException($"key는 소문자·숫자·밑줄로 {MaxDungeonKeyBytes}자까지 씁니다: '{d.Key}'");
             if (!keys.Add(d.Key)) throw new InvalidDataException($"key가 겹칩니다: {d.Key}");
             if (!cells.Add(d.SourceCell)) throw new InvalidDataException($"sourceCell이 겹칩니다: {d.SourceCell}");
             if (string.IsNullOrWhiteSpace(d.Name)) throw new InvalidDataException($"{d.Key}: name이 비었습니다.");
@@ -53,7 +58,9 @@ internal sealed class PackSpec
             if (d.BossAnchor is { } b && !(b.Length == 6 && b.All(Uri.IsHexDigit))) throw new InvalidDataException($"{d.Key}: bossAnchor는 6자리 16진수 원본 참조 번호입니다.");
             if (d.BossAnchor is not null && string.IsNullOrWhiteSpace(d.BossAnchorReason)) throw new InvalidDataException($"{d.Key}: bossAnchor를 정했으면 bossAnchorReason도 적어야 합니다.");
         }
-        if (Dungeons.Count(d => d.Role == "arena") > 1) throw new InvalidDataException("결투장(role=arena)은 하나만 둡니다(결정 18).");
+        // 런타임 목록 파서와 같은 조건: 지도 하나 이상, 결투장 정확히 하나(결정 18)
+        if (Dungeons.Count(d => d.Role == "arena") != 1) throw new InvalidDataException("결투장(role=arena)은 정확히 하나 둡니다(결정 18).");
+        if (!Dungeons.Any(d => d.Role == "map")) throw new InvalidDataException("지도(role=map)가 하나 이상 있어야 합니다.");
     }
 }
 
@@ -71,6 +78,10 @@ internal sealed class DungeonSpec
     // 왜 그 보스 앵커를 골랐는지(사람이 읽는 기록)
     public string? BossAnchorReason { get; set; }
     [JsonRequired] public int MinPackAnchors { get; set; }
+    // 결정 173: 원형은 Skyrim.esm의 NPC_ 로컬 번호다.
+    [JsonRequired] public string BossNpc { get; set; } = "";
+    public List<string>? PackNpcs { get; set; }
+    public List<string>? AddNpcs { get; set; }
 }
 
 internal static class Json

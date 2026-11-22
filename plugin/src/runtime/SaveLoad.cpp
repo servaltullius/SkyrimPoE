@@ -13,6 +13,7 @@
 #include "runtime/WorldDropTracker.h"
 
 #include "core/ItemAffixParser.h"
+#include "core/MapSaveIdentity.h"
 #include "core/MapSystem.h"
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
@@ -34,6 +35,12 @@ namespace SkyrimPoE::Runtime
         constexpr std::uint32_t kMaxGemDepth = 4;
         constexpr std::uint32_t kMaxSocketedJewels = 64;
         constexpr std::uint32_t kPlayerRefFormId = 0x00000014;
+        // 결정 166의 MAPS v1을 불러올 때 귀환 여부를 판정하는 바닐라 셀 전용 표다.
+        constexpr std::array<RE::FormID, 5> kLegacyMapsV1Cells{
+            0x000B6BE6, 0x00043FAB, 0x00015224, 0x000152B1, 0x0001521C
+        };
+        constexpr RE::FormID kLegacyMapsV1ArenaCell = 0x00015211;
+        constexpr std::uint32_t kLegacyMapsVersion = 1;
 
         // 재검수 R-3: 상한을 넘으면 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다(Core::SelectEntriesWithinSaveCap).
         template <class Entry>
@@ -722,7 +729,7 @@ namespace SkyrimPoE::Runtime
                 }
             }
 
-            // 6단계(결정 166 · 검수 C-3): 아틀라스 진행 + 활성 지도/결투장 + 보스/스폰 참조('MAPS' v1)
+            // 결정 169, R4: MAPS v2는 던전 키와 팩 판 번호를 저장한다.
             std::uint32_t mapSpawnCount = 0;
             if (intfc->OpenRecord(SaveLoad::kRecordMaps, SaveLoad::kMapsVersion)) {
                 const auto& atl = state.atlas;
@@ -743,7 +750,8 @@ namespace SkyrimPoE::Runtime
                 mapsOk = mapsOk && intfc->WriteRecordData(&failedByte, sizeof(failedByte));
                 mapsOk = mapsOk && intfc->WriteRecordData(&am.runId, sizeof(am.runId));
                 mapsOk = mapsOk && intfc->WriteRecordData(&am.tier, sizeof(am.tier));
-                mapsOk = mapsOk && intfc->WriteRecordData(&am.dungeonIndex, sizeof(am.dungeonIndex));
+                mapsOk = mapsOk && Core::WriteMapSaveIdentity(
+                    [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, am);
                 mapsOk = mapsOk && intfc->WriteRecordData(&am.portalsRemaining, sizeof(am.portalsRemaining));
                 mapsOk = mapsOk && intfc->WriteRecordData(&am.arenaPhase, sizeof(am.arenaPhase));
                 mapsOk = mapsOk && WriteAffixList(intfc, am.mods);
@@ -807,6 +815,7 @@ namespace SkyrimPoE::Runtime
             std::vector<std::pair<RE::FormID, float>> loadedSpeedMods;
             Core::AtlasState loadedAtlas{};
             Core::ActiveMapState loadedActiveMap{};
+            RE::FormID loadedLegacyMapCell = 0;
             bool hasMaps = false;
 
             std::uint32_t type = 0;
@@ -1197,14 +1206,15 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse SPDM record.");
                     }
                 } else if (type == SaveLoad::kRecordMaps) {
-                    if (version != SaveLoad::kMapsVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported MAPS record version {} (expected {}).", version, SaveLoad::kMapsVersion);
+                    if (version != kLegacyMapsVersion && version != SaveLoad::kMapsVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported MAPS record version {}.", version);
                         continue;
                     }
                     Core::AtlasState tmpAtlas{};
                     Core::ActiveMapState tmpMap{};
                     std::uint8_t tribByte = 0;
                     std::uint8_t activeByte = 0, arenaByte = 0, bossKilledByte = 0, failedByte = 0;
+                    std::uint8_t legacyIndex = 0;
                     RE::FormID rawRetCell = 0, rawRetWs = 0, rawBossRef = 0;
                     std::uint32_t spawnCount = 0;
                     bool ok = true;
@@ -1219,7 +1229,12 @@ namespace SkyrimPoE::Runtime
                     ok = ok && ReadExactPod(intfc, failedByte);
                     ok = ok && ReadExactPod(intfc, tmpMap.runId);
                     ok = ok && ReadExactPod(intfc, tmpMap.tier);
-                    ok = ok && ReadExactPod(intfc, tmpMap.dungeonIndex);
+                    if (version == kLegacyMapsVersion) {
+                        ok = ok && ReadExactPod(intfc, legacyIndex);
+                    } else {
+                        ok = ok && Core::ReadMapSaveIdentity(
+                            [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, tmpMap);
+                    }
                     ok = ok && ReadExactPod(intfc, tmpMap.portalsRemaining);
                     ok = ok && ReadExactPod(intfc, tmpMap.arenaPhase);
                     ok = ok && ReadAffixList(intfc, tmpMap.mods);
@@ -1257,9 +1272,6 @@ namespace SkyrimPoE::Runtime
                         tmpMap.bossKilled = (bossKilledByte != 0);
                         tmpMap.failed = (failedByte != 0);
                         tmpMap.tier = std::clamp<std::uint8_t>(tmpMap.tier, Core::kMinMapTier, Core::kMaxMapTier);
-                        tmpMap.dungeonIndex = tmpMap.isArena4
-                            ? 5u
-                            : static_cast<std::uint8_t>(tmpMap.dungeonIndex % Core::kMapDungeonCount);
                         tmpMap.portalsRemaining = std::min<std::uint8_t>(
                             tmpMap.portalsRemaining,
                             tmpMap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals);
@@ -1292,7 +1304,15 @@ namespace SkyrimPoE::Runtime
                         }
 
                         loadedAtlas = tmpAtlas;
-                        loadedActiveMap = std::move(tmpMap);
+                        loadedLegacyMapCell = 0;
+                        if (version == kLegacyMapsVersion && tmpMap.active) {
+                            loadedLegacyMapCell = tmpMap.isArena4
+                                ? kLegacyMapsV1ArenaCell
+                                : kLegacyMapsV1Cells[legacyIndex % kLegacyMapsV1Cells.size()];
+                        }
+                        loadedActiveMap = version == kLegacyMapsVersion && !tmpMap.active
+                            ? Core::ActiveMapState{}
+                            : std::move(tmpMap);
                         hasMaps = true;
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse MAPS record.");
@@ -1387,7 +1407,7 @@ namespace SkyrimPoE::Runtime
             ItemTracker::RestoreFromSave(std::move(loadedItems));
             WorldDropTracker::RestoreFromSave(std::move(loadedWorldDrops));
             if (hasMaps) {
-                MapDeviceRuntime::RestoreFromSave(std::move(loadedActiveMap));
+                MapDeviceRuntime::RestoreFromSave(std::move(loadedActiveMap), loadedLegacyMapCell);
             } else {
                 MapDeviceRuntime::ResetOnRevert();
             }

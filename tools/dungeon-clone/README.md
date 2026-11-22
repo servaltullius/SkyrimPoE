@@ -10,7 +10,7 @@ Skyrim.esm의 실내 던전 셀을 복제해 두 가지를 만든다. 지도 팩
 
 | 파일 | 뜻 | 저장소 |
 |---|---|---|
-| `dungeons.json` | 던전 목록. 사람이 고친다. 키, 유형, 역할(map/arena), 이름, 원본 셀, 보스 앵커 지정과 그 이유, 최소 무리 앵커 수, 앵커 거리 기준 | 넣음 |
+| `dungeons.json` | 던전 목록. 키, 유형, 역할(map/arena), 이름, 원본 셀, 보스 앵커 지정과 그 이유, 최소 무리 앵커 수, 앵커 거리 기준, 스폰 원형 | 넣음 |
 | `formid-ledger.json` | FormID 장부. 도구가 고친다. 판이 바뀌어도 같은 원본·역할에 같은 출력 번호를 준다 | 넣음 |
 | `SkyrimPoE_Maps.esp` / `.json` | 산출물. 지금 위치는 `G:\skyrim-build\SkyrimPoE-maps\` | 넣지 않음 |
 
@@ -29,6 +29,7 @@ dotnet test tools/dungeon-clone/DungeonClone.Tests/DungeonClone.Tests.csproj -c 
 
 - **`anchors`**: 던전마다 원본 NPC를 보인다. 내비메쉬로 옮긴 뒤 입구까지의 거리(3차원)와, Boss 표시·시체·처음 비활성·입구 근처·옮긴 거리를 함께 보인다. 보스 앵커를 정할 때 쓴다.
 - **`build`**
+  - 스폰 원형이 결정 173의 역할별 필수 필드를 채우고, 각 번호가 원본 `Skyrim.esm`의 NPC_ 레코드로 해석되는지 확인한다.
   - 장부에 없는 번호가 필요하면 `--update-ledger` 없이는 실패한다. 장부가 없으면 `--create-ledger`일 때만 새로 만든다.
   - 같은 장부로 두 빌드가 동시에 돌지 않게 잠근다.
   - 산출물은 임시 파일에 다 쓴 뒤, 장부를 먼저 저장하고 바꿔 넣는다.
@@ -42,6 +43,22 @@ dotnet test tools/dungeon-clone/DungeonClone.Tests/DungeonClone.Tests.csproj -c 
   - 7: 입력·규칙 위반
   - 8: 장부 갱신 필요
   - 9: 파일 입출력 오류
+
+## 런타임 목록 파일 형식 2
+
+`manifestFormat`은 2다. 최상위에 `plugin` (`SkyrimPoE_Maps.esp`), 양의 정수 `packVersion`, ESP 바이트의 SHA-256인 `espSha256`(16진수 64자리), `sourceMaster` (`Skyrim.esm`), `dungeons` 배열이 있다. 런타임은 지도 역할을 배열 순서대로 티어에 배정하고, 세이브에는 던전 `key`와 `packVersion`을 저장한다.
+
+| 던전 필드 | 값 |
+|---|---|
+| `key`, `type`, `role`, `name` | 고정 키, 던전 유형, `map` 또는 `arena`, 표시 이름. 키는 소문자·숫자·밑줄 최대 64바이트 |
+| `sourceCell` | Skyrim.esm 원본 셀의 로컬 FormID 문자열, 16진수 6자리 |
+| `cell`, `entryMarker`, `bossAnchor`, `packAnchors` | 지도 팩의 복제 셀, 입구, 보스 및 무리 마커. 로컬 FormID는 `0x`와 16진수 6자리 |
+| `returnDoors`, `sealedDoors` | 귀환 문, 막힌 문의 지도 팩 로컬 FormID 배열 |
+| `autoExits` | 자동 출구 배열. 각 항목은 지도 팩 로컬 ID `id`, 원래 목적지 `leads` (`exterior` 또는 `interior`), 3축 `position`과 `rotation` |
+| `bossNpc` | 두 역할에 필요한 보스 원형. Skyrim.esm 로컬 NPC_ FormID 문자열, 16진수 6자리 |
+| `packNpcs`, `addNpcs` | 지도 무리와 결투장 증원 원형 배열. `map`은 `packNpcs`, `arena`는 `addNpcs`가 최소 1개 필요하다. 각 ID의 형식은 `bossNpc`와 같다 |
+
+스폰 원형은 입력 문자열 그대로 목록 파일에 넣는다. ESP 레코드와 FormID 장부는 바뀌지 않는다. 모드 패키지에서는 ESP를 최상위에, 목록 파일을 `SKSE/Plugins/SkyrimPoE/maps/SkyrimPoE_Maps.json`에 둔다.
 
 ## 복제 규칙
 
@@ -149,19 +166,20 @@ dotnet test tools/dungeon-clone/DungeonClone.Tests/DungeonClone.Tests.csproj -c 
 
 ## 시험(`DungeonClone.Tests`)
 
-18개 시험이 있고, 모두 게임 데이터가 필요 없다.
+26개 시험이 있고, 모두 게임 데이터가 필요 없다.
 - **장부 단위 시험 9개**
   - 추가, 삭제, 순서 바꿈, 새 던전
   - 원본 결합
   - 갱신 없는 새 번호, 구간 초과
   - 깨진 장부: 겹침, 지운 키, 구간 틈, 같은 원본 두 구간
   - `ledger-diff`의 맞바꿈·되돌림
-- **통합 시험 9개**: 메모리에 만든 작은 원본(이름 Skyrim.esm)을 쓴다.
+- **통합 시험 17개**: 메모리에 만든 작은 원본(이름 Skyrim.esm)을 쓴다.
   - 두 판 번호 보존: 원본에서 참조 하나를 빼고 하나를 더해도 남은 참조·앵커의 번호가 그대로이고, 빠진 번호는 다시 쓰이지 않는다.
   - 규칙 적용
   - 원본 대조 검증이 결함을 잡는지: 위치를 옮김, 연결 필드를 바꿈, 상자를 남김, 앵커를 멀리 옮김
   - 같은 키에 다른 원본 셀을 주면 실패
   - 내비메쉬 계산: 위 판정, 가장 가까운 점, 퇴화 삼각형 제외
+  - 원형 누락, 잘못된 NPC_ 번호 거부와 역할별 형식 2 원형 필드 출력
 
 ## 2026-11-22 결과
 
@@ -201,6 +219,4 @@ dotnet test tools/dungeon-clone/DungeonClone.Tests/DungeonClone.Tests.csproj -c 
   - 드웨머 함정 계열(`TrapDweThresher` 등)
   - `FXCameraAttachScript`(화면 효과)
 - 셀 레코드는 원본의 압축 플래그를 그대로 가진다.
-- **아직 목록 파일에 없는 것**: 계획 R1 7번 가운데 두 가지다. 정해진 뒤 `manifestFormat`을 올리며 더한다.
-  - 스폰 원형: 결정 170에 따라 R3·R4에서 제안해 확인받는다.
-  - 막음 물체: 실험 G-7에서 방법을 정한다.
+- 막음 물체는 실험 G-7에서 방법을 정한다.

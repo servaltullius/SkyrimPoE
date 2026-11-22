@@ -16,25 +16,9 @@ namespace SkyrimPoE::Core
     inline constexpr std::uint32_t kArena4MonsterLevel = 75;    // 4차 전직 결투장 고정 레벨
     inline constexpr std::uint8_t kNormalMapMaxPortals = 6;
     inline constexpr std::uint8_t kArena4MaxPortals = 1;
-    inline constexpr std::size_t kMapDungeonCount = 5;
+    // 결정 169, R4: 목록과 MAPS v2에 같은 던전 키 길이 제한을 둔다.
+    inline constexpr std::size_t kMaxMapDungeonKeyBytes = 64;
     inline constexpr std::size_t kMaxMapSpawnedActors = 64;
-
-    // 결정 166: houseCARL Skyrim.esm 실측 대조된 바닐라 비퀘스트 던전 5종 + 4차 결투장 1종 정의
-    struct MapDungeonDef
-    {
-        std::uint8_t index = 0;
-        const char* id = "";
-        const char* koName = "";
-        const char* theme = "";
-        std::uint32_t cellFormId = 0;
-        std::uint32_t entryMarkerFormId = 0;
-        std::uint32_t bossAnchorFormId = 0;
-        std::array<std::uint32_t, 4> packAnchorFormIds{};
-        std::uint8_t packAnchorCount = 0;
-        std::uint32_t packNpcFormId = 0;
-        std::uint32_t bossNpcFormId = 0;
-        std::uint32_t extraAddNpcFormId = 0;  // 4차 결투장 쫄 소환 등
-    };
 
     // 활성 지도 어픽스 16종 집계 스냅샷 (StatEngine Layer2Input / MonsterRuntime / CombatHooks 공용)
     struct MapModSummary
@@ -63,7 +47,7 @@ namespace SkyrimPoE::Core
         [[nodiscard]] bool operator==(const MapModSummary&) const noexcept = default;
     };
 
-    // 아틀라스 영구 진행 상태 ('MAPS' v1 코세이브 저장)
+    // 아틀라스 영구 진행 상태 ('MAPS' v2 코세이브 저장)
     struct AtlasState
     {
         std::uint16_t completedTierMask = 0;  // bit 0..15 = T1..T16 첫 클리어 (+1 패시브/티어, 최대 16점)
@@ -72,7 +56,7 @@ namespace SkyrimPoE::Core
         bool firstTributeGiven = false;       // 첫 T6+ 보스 처치 시 4차 공물 확정 1회 지급 여부
     };
 
-    // 활성 지도/결투장 실행 상태 ('MAPS' v1 코세이브 저장 + 런타임 상태머신)
+    // 활성 지도/결투장 실행 상태 ('MAPS' v2 코세이브 저장 + 런타임 상태머신)
     struct ActiveMapState
     {
         bool active = false;
@@ -81,7 +65,8 @@ namespace SkyrimPoE::Core
         bool failed = false;
         std::uint64_t runId = 0;
         std::uint8_t tier = 1;                // 1..16 (결투장은 8 표시, 레벨 75)
-        std::uint8_t dungeonIndex = 0;        // 0..4 (결투장은 5)
+        std::string dungeonKey;
+        std::uint32_t packVersion = 0;
         std::uint8_t portalsRemaining = 0;
         std::uint8_t arenaPhase = 1;          // 1..3 (4차 결투장 보스 페이즈)
         std::vector<RolledAffix> mods;

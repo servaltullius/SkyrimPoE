@@ -6,6 +6,7 @@
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/MapPackRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/PrismaUIApi.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -31,6 +32,25 @@ namespace SkyrimPoE::Runtime
         using Clock = std::chrono::steady_clock;
 
         constexpr auto kViewPath = "SkyrimPoE/index.html";
+
+        // 지도 팩 목록 파일의 던전 유형 키(tools/dungeon-clone/dungeons.json의 type)를 화면 문구로 바꾼다.
+        // 모르는 유형은 키를 그대로 보인다.
+        [[nodiscard]] std::string MapDungeonTypeLabel(std::string_view type)
+        {
+            static constexpr std::pair<std::string_view, std::string_view> kLabels[] = {
+                { "mine", "광산" },
+                { "cave", "동굴" },
+                { "nordic_barrow", "노르드 고분" },
+                { "dwemer_ruin", "드웨머 유적" },
+                { "grove", "숲" },
+            };
+            for (const auto& [key, label] : kLabels) {
+                if (key == type) {
+                    return std::string(label);
+                }
+            }
+            return std::string(type);
+        }
         constexpr auto kKoLangPath = "Data/SKSE/Plugins/SkyrimPoE/lang/ko-KR.json";
         constexpr auto kEnLangPath = "Data/SKSE/Plugins/SkyrimPoE/lang/en-US.json";
         constexpr auto kJsCommandListener = "poeCommand";
@@ -986,17 +1006,22 @@ namespace SkyrimPoE::Runtime
             // 6단계(결정 166): 지도 장치·아틀라스·4차 전직 결투장·안전 제거 탭 페이로드
             {
                 json mapsJ;
+                const auto& mapPack = MapPackRuntime::Manifest();
+                const auto& packError = MapPackRuntime::UnavailableReason();
+                mapsJ["packAvailable"] = packError.empty();
+                mapsJ["packUnavailableReason"] = packError;
+                mapsJ["arenaDungeonName"] = mapPack.arena.name;
                 const auto atlasPts = Core::MapSystem::CountAtlasTierPoints(state.atlas.completedTierMask);
                 const auto msPts = Core::MapSystem::CountMilestonePassivePoints(state.tree.ascendancyMilestonesBitmask);
                 json tierDefs = json::array();
                 for (std::uint8_t t = Core::kMinMapTier; t <= Core::kMaxMapTier; ++t) {
-                    const auto& dg = Core::MapSystem::GetMapDungeon(Core::MapSystem::DungeonIndexForTier(t));
+                    const auto* dungeon = mapPack.ForTier(t);
                     const bool done = (state.atlas.completedTierMask & static_cast<std::uint16_t>(1u << (t - 1u))) != 0u;
                     tierDefs.push_back(json{
                         { "tier", t },
                         { "areaLevel", Core::MapSystem::MonsterLevelForTier(t) },
-                        { "dungeonName", dg.koName },
-                        { "theme", dg.theme },
+                        { "dungeonName", dungeon ? dungeon->name : "" },
+                        { "theme", dungeon ? MapDungeonTypeLabel(dungeon->type) : "" },
                         { "completed", done }
                     });
                 }
@@ -1014,7 +1039,7 @@ namespace SkyrimPoE::Runtime
                 };
 
                 const auto activeMap = MapDeviceRuntime::GetActiveMapStateCopy();
-                const auto& activeDg = Core::MapSystem::GetDungeonForState(activeMap);
+                const auto* activeDungeon = mapPack.ForRun(activeMap);
                 json activeModLines = json::array();
                 for (const auto& af : activeMap.mods) {
                     activeModLines.push_back(Core::MapSystem::FormatMapModKoreanLine(af));
@@ -1027,7 +1052,7 @@ namespace SkyrimPoE::Runtime
                     { "failed", activeMap.failed },
                     { "tier", activeMap.tier },
                     { "areaLevel", activeMap.active ? (activeMap.isArena4 ? Core::kArena4MonsterLevel : Core::MapSystem::MonsterLevelForTier(activeMap.tier)) : 0u },
-                    { "dungeonName", activeMap.active ? activeDg.koName : "" },
+                    { "dungeonName", activeDungeon ? activeDungeon->name : "" },
                     { "portalsRemaining", activeMap.portalsRemaining },
                     { "portalsTotal", activeMap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals },
                     { "arenaPhase", activeMap.arenaPhase },

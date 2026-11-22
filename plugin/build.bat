@@ -37,7 +37,10 @@ if defined POE_PLUGIN_BUILD_ROOT (
 )
 set "MOD_NAME=SkyrimPoE"
 
-cmake --preset %BUILD_PRESET% || exit /b 1
+rem 지도 팩 폴더는 매번 넘긴다. 넘기지 않으면 CMake 캐시에 남은 예전 폴더를 계속 쓴다.
+set "MAPS_PACK_DIR=G:\skyrim-build\SkyrimPoE-maps"
+if defined POE_MAPS_PACK_DIR set "MAPS_PACK_DIR=%POE_MAPS_PACK_DIR%"
+cmake --preset %BUILD_PRESET% "-DPOE_MAPS_PACK_DIR=%MAPS_PACK_DIR%" || exit /b 1
 cmake --build --preset %BUILD_PRESET% || exit /b 1
 ctest --preset %BUILD_PRESET% || exit /b 1
 cmake --build --preset %BUILD_PRESET% --target package_mod || exit /b 1

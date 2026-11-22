@@ -24,7 +24,8 @@ namespace SkyrimPoE::Core
         double lifeMultiplier = 1.0;
         double damageMultiplier = 1.0;
 
-        [[nodiscard]] double ScaleIncomingDamage(double damage) const noexcept;
+        [[nodiscard]] double ScaleIncomingDamage(
+            double damage, double referenceLife = 1.0, double permanentHealth = 1.0) const noexcept;
     };
 
     // 결정 169·170: 스폰 목록에서 복원하며, 읽는 쪽과 쓰는 쪽의 동기화는 런타임이 맡는다.
@@ -52,10 +53,6 @@ namespace SkyrimPoE::Core
             std::uint32_t exileLevel, double lifeMultiplier, const DataPack& pack) noexcept;
         [[nodiscard]] static double EstimateVanillaHitPoe(
             double rawHitDamage, std::uint32_t exileLevel, const DataPack& pack) noexcept;
-        [[nodiscard]] static std::uint8_t DungeonIndexForTier(std::uint8_t tier) noexcept;
-        [[nodiscard]] static const MapDungeonDef& GetMapDungeon(std::uint8_t dungeonIndex) noexcept;
-        [[nodiscard]] static const MapDungeonDef& GetArena4Dungeon() noexcept;
-        [[nodiscard]] static const MapDungeonDef& GetDungeonForState(const ActiveMapState& state) noexcept;
 
         // 지도 어픽스 16종 집계 + IIQ/IIR/PackSize 보상 합산
         [[nodiscard]] static MapModSummary AggregateMapMods(const std::vector<RolledAffix>& affixes) noexcept;

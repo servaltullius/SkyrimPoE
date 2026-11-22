@@ -6,6 +6,7 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MapPackRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/SaveLoad.h"
@@ -43,6 +44,13 @@ namespace SkyrimPoE::Runtime
 
         std::mutex g_mutex;
         Core::ActiveMapState g_activeMap{};
+        std::optional<Core::PoEItemRecord> g_consumedMapRecord;
+        struct IncompatibleSavedRun
+        {
+            Core::ActiveMapState state;
+            RE::FormID legacyCell = 0;
+        };
+        std::optional<IncompatibleSavedRun> g_incompatibleSavedRun;
         // 쓰기는 지도 상태 잠금 아래에서 이 잠금을 잡는다. 조회는 이 잠금만 잡고 값을 복사한다.
         std::mutex g_mapActorsMutex;
         Core::MapActorRegistry g_mapActors;
@@ -90,8 +98,8 @@ namespace SkyrimPoE::Runtime
             const bool active = g_activeMap.active;
             g_activeMapRun.store(active, std::memory_order_release);
             if (active) {
-                const auto& dg = Core::MapSystem::GetDungeonForState(g_activeMap);
-                g_activeCellFormId.store(dg.cellFormId, std::memory_order_release);
+                const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
+                g_activeCellFormId.store(forms ? forms->cell->GetFormID() : 0, std::memory_order_release);
                 g_activeMapTier.store(g_activeMap.tier, std::memory_order_release);
                 g_activeBossFormId.store(g_activeMap.bossRefFormId, std::memory_order_release);
                 g_activeIsArena4.store(g_activeMap.isArena4, std::memory_order_release);
@@ -104,9 +112,10 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void SetActiveMapLocked(Core::ActiveMapState state)
+        void SetActiveMapLocked(Core::ActiveMapState state, std::optional<Core::PoEItemRecord> consumedMap = std::nullopt)
         {
             g_activeMap = std::move(state);
+            g_consumedMapRecord = std::move(consumedMap);
             RefreshMapActorsLocked();
         }
 
@@ -193,36 +202,81 @@ namespace SkyrimPoE::Runtime
 
         bool TeleportPlayerToDungeonEntry(
             RE::PlayerCharacter* player,
-            const Core::MapDungeonDef& dungeon)
+            const MapPackRuntime::DungeonForms& dungeon)
         {
             if (!player) {
                 return false;
             }
-            auto* targetCell = RE::TESForm::LookupByID<RE::TESObjectCELL>(dungeon.cellFormId);
-            auto* marker = RE::TESForm::LookupByID<RE::TESObjectREFR>(dungeon.entryMarkerFormId);
-            if (marker) {
-                auto* markerCell = marker->GetParentCell() ? marker->GetParentCell() : targetCell;
+            if (auto* marker = dungeon.entryMarker) {
+                auto* markerCell = marker->GetParentCell() ? marker->GetParentCell() : dungeon.cell;
                 auto* markerWs = marker->GetWorldspace();
                 if (markerCell || markerWs) {
-                    return InvokeMoveToImpl(
-                        player,
-                        marker->GetHandle(),
-                        markerCell,
-                        markerWs,
-                        marker->GetPosition(),
-                        marker->GetAngle());
+                    return InvokeMoveToImpl(player, marker->GetHandle(), markerCell, markerWs,
+                        marker->GetPosition(), marker->GetAngle());
                 }
             }
-            if (targetCell) {
-                return InvokeMoveToImpl(
-                    player,
-                    player->CreateRefHandle(),
-                    targetCell,
-                    nullptr,
-                    RE::NiPoint3{ 0.0f, 0.0f, 0.0f },
-                    RE::NiPoint3{ 0.0f, 0.0f, 0.0f });
+            if (dungeon.cell) {
+                return InvokeMoveToImpl(player, player->CreateRefHandle(), dungeon.cell, nullptr, {}, {});
             }
             return false;
+        }
+
+        bool RefundEntryOnMainThread(
+            RE::PlayerCharacter* player, std::uint8_t tier, bool arena,
+            const std::optional<Core::PoEItemRecord>& tracked)
+        {
+            const auto localId = arena ? FormIds::kAscendancy4Tribute : FormIds::MapItemLocalFormId(tier);
+            auto* item = FormIds::Lookup<RE::TESObjectMISC>(localId);
+            if (!player || !item) {
+                SKSE::log::error("MapDeviceRuntime: missing player or entry item 0x{:06X} for refund.", localId);
+                return false;
+            }
+            if (!tracked) {
+                player->AddObjectToContainer(item, nullptr, 1, nullptr);
+                return true;
+            }
+
+            // 재검수 R-15: 추적에 실패해도 원래 소유한 지도는 플레이어에게 남긴다.
+            bool untrackedLeft = false;
+            if (auto* extra = UniqueIdUtil::CreateGameExtraDataList()) {
+                const auto key = ItemTracker::AddObjectWithTrackedUniqueId(player, item, extra, nullptr,
+                    ItemTracker::UntrackedAddPolicy::Keep, &untrackedLeft);
+                if (key.IsValid()) {
+                    auto record = *tracked;
+                    record.baseFormId = item->GetFormID();
+                    ItemTracker::Upsert(key, record, false);
+                    return true;
+                }
+            }
+            if (!untrackedLeft) {
+                player->AddObjectToContainer(item, nullptr, 1, nullptr);
+            }
+            SKSE::log::error("MapDeviceRuntime: refunded map without tracking; its affixes were lost.");
+            RE::SendHUDMessage::ShowHUDMessage("지도를 돌려받았지만 추적에 실패해 지도 속성이 사라졌습니다.");
+            return true;
+        }
+
+        std::optional<Core::PoEItemRecord> RecreateSavedMapRefund(const Core::ActiveMapState& state)
+        {
+            if (!state.active || state.isArena4 || state.mods.empty()) {
+                return std::nullopt;
+            }
+            // MAPS v1·v2의 어픽스와 티어로 제작 정보를 복원한다. 양쪽에 하나씩 붙은 두 속성은 매직으로 복원한다.
+            Core::PoEItemRecord record;
+            record.rarity = Core::ItemRarity::Magic;
+            if (state.mods.size() > 2) {
+                record.rarity = Core::ItemRarity::Rare;
+            } else if (state.mods.size() == 2 && g_itemData) {
+                const auto* first = g_itemData->FindAffix(state.mods[0].affixId);
+                const auto* second = g_itemData->FindAffix(state.mods[1].affixId);
+                if (first && second && first->type == second->type) {
+                    record.rarity = Core::ItemRarity::Rare;
+                }
+            }
+            record.slotGroup = Core::TokenSlotGroup::Map;
+            record.itemLevel = Core::MapSystem::MonsterLevelForTier(state.tier);
+            record.affixes = state.mods;
+            return record;
         }
 
         void CaptureReturnLocation(
@@ -276,6 +330,26 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        void FinishCancelledRunOnMainThread(
+            RE::PlayerCharacter* player, const Core::ActiveMapState& snap, bool returnPlayer,
+            std::optional<bool> refunded, std::string_view reason)
+        {
+            // refunded: nullopt = 돌려줄 대상이 아님(보스를 처치한 회차), true/false = 환불 성공 여부
+            // 보스는 스폰할 때 목록에도 들어가므로 목록만 지운다. 목록 밖의 보스 ID는 손상됐거나 재사용된 ID일 수 있다.
+            for (const auto id : snap.spawnedRefFormIds) {
+                CleanupSpawnedRefOnMainThread(id);
+            }
+            const bool returned = !returnPlayer || TeleportPlayerToSavedReturn(player, snap);
+            const std::string_view refundText = !refunded.has_value()
+                ? "보스를 처치한 회차라 소모품은 돌려주지 않습니다."
+                : (*refunded ? (snap.isArena4 ? "공물을 돌려받았습니다." : "지도를 돌려받았습니다.")
+                             : "소모품을 돌려주지 못했습니다.");
+            const auto msg = std::format("{} {}{}", reason, refundText,
+                returned ? "" : " 귀환 위치로 이동하지 못했습니다.");
+            SKSE::log::warn("MapDeviceRuntime: cancelled run {}. {}", snap.runId, msg);
+            RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
+        }
+
         [[nodiscard]] bool HasMapSpawnCapacityLocked()
         {
             const auto& ids = g_activeMap.spawnedRefFormIds;
@@ -286,13 +360,13 @@ namespace SkyrimPoE::Runtime
 
         RE::NiPointer<RE::Actor> SpawnMapNpcAtAnchor(
             RE::PlayerCharacter* player,
-            RE::FormID anchorFormId,
-            RE::FormID npcTemplateFormId,
+            RE::TESObjectREFR* anchor,
+            RE::TESNPC* npcBase,
             const RE::NiPoint3& offset,
             std::uint64_t runId,
             bool isBoss = false)
         {
-            if (!player || npcTemplateFormId == 0) {
+            if (!player || !anchor || anchor->IsDeleted() || !npcBase) {
                 return {};
             }
             {
@@ -306,31 +380,21 @@ namespace SkyrimPoE::Runtime
                     return {};
                 }
             }
-            auto* npcBase = RE::TESForm::LookupByID<RE::TESNPC>(npcTemplateFormId);
             auto* dataHandler = RE::TESDataHandler::GetSingleton();
-            if (!npcBase || !dataHandler) {
+            auto* cell = anchor->GetParentCell();
+            if (!dataHandler || !cell || cell->GetFormID() != g_activeCellFormId.load(std::memory_order_acquire)) {
                 return {};
             }
-            auto* anchor = (anchorFormId != 0)
-                ? RE::TESForm::LookupByID<RE::TESObjectREFR>(anchorFormId)
-                : nullptr;
-            auto* cell = (anchor && anchor->GetParentCell()) ? anchor->GetParentCell() : player->GetParentCell();
-            auto* ws = anchor ? anchor->GetWorldspace() : player->GetWorldspace();
-            if (!cell && !ws) {
-                return {};
-            }
-            RE::NiPoint3 spawnPos = anchor ? anchor->GetPosition() : player->GetPosition();
+            RE::NiPoint3 spawnPos = anchor->GetPosition();
             spawnPos.x += offset.x;
             spawnPos.y += offset.y;
             spawnPos.z += offset.z;
-            const RE::NiPoint3 spawnAng = anchor ? anchor->GetAngle() : RE::NiPoint3{};
-
             const auto handle = dataHandler->CreateReferenceAtLocation(
                 npcBase,
                 spawnPos,
-                spawnAng,
+                anchor->GetAngle(),
                 cell,
-                ws,
+                anchor->GetWorldspace(),
                 nullptr,
                 nullptr,
                 RE::ObjectRefHandle{},
@@ -339,6 +403,9 @@ namespace SkyrimPoE::Runtime
             auto ptr = handle.get();
             auto* actor = ptr ? ptr->As<RE::Actor>() : nullptr;
             if (!actor) {
+                if (ptr) {
+                    CleanupSpawnedRefOnMainThread(ptr->GetFormID());
+                }
                 return {};
             }
             const auto actorId = actor->GetFormID();
@@ -424,12 +491,14 @@ namespace SkyrimPoE::Runtime
                 MonsterRuntime::ForcePromoteForTest(boss, Core::MonsterRarity::Rare, phaseMods, -1.0);
             }
 
-            const auto& arena = Core::MapSystem::GetArena4Dungeon();
-            const RE::FormID addNpc = arena.extraAddNpcFormId != 0 ? arena.extraAddNpcFormId : arena.packNpcFormId;
+            const auto* arena = MapPackRuntime::FindForms(&MapPackRuntime::Manifest().arena);
+            if (!arena) {
+                return;
+            }
             std::size_t addedCount = 0;
-            for (std::size_t i = 0; i < 2 && i < arena.packAnchorCount; ++i) {
+            for (std::size_t i = 0; i < 2 && i < arena->packAnchors.size(); ++i) {
                 const RE::NiPoint3 off{ (i == 0 ? 40.0f : -40.0f), 30.0f, 0.0f };
-                if (SpawnMapNpcAtAnchor(player, arena.packAnchorFormIds[i], addNpc, off, runId)) {
+                if (SpawnMapNpcAtAnchor(player, arena->packAnchors[i], arena->addNpcs[i % arena->addNpcs.size()], off, runId)) {
                     ++addedCount;
                 }
             }
@@ -450,30 +519,30 @@ namespace SkyrimPoE::Runtime
                 snap = g_activeMap;
             }
 
-            const auto& dg = Core::MapSystem::GetDungeonForState(snap);
-
-            if (snap.isArena4) {
-                if (auto boss = SpawnMapNpcAtAnchor(player, dg.bossAnchorFormId, dg.bossNpcFormId, {}, snap.runId, true)) {
-                    const std::uint16_t p1Mask =
-                        static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Armoured));
-                    MonsterRuntime::ForcePromoteForTest(boss.get(), Core::MonsterRarity::Rare, p1Mask, -1.0);
-                }
-                const RE::FormID addNpc = dg.extraAddNpcFormId != 0 ? dg.extraAddNpcFormId : dg.packNpcFormId;
-                for (std::size_t i = 0; i < 2 && i < dg.packAnchorCount; ++i) {
-                    (void)SpawnMapNpcAtAnchor(player, dg.packAnchorFormIds[i], addNpc, {}, snap.runId);
-                }
-            } else {
-                if (auto boss = SpawnMapNpcAtAnchor(player, dg.bossAnchorFormId, dg.bossNpcFormId, {}, snap.runId, true)) {
-                    std::uint16_t bossMods =
-                        static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Armoured));
-                    if (snap.summary.forceHasted) {
-                        bossMods |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted));
+            const auto* dungeon = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(snap));
+            bool packSpawned = false;
+            auto boss = dungeon ? SpawnMapNpcAtAnchor(player, dungeon->bossAnchor, dungeon->bossNpc, {}, snap.runId, true)
+                                : RE::NiPointer<RE::Actor>{};
+            if (boss && snap.isArena4) {
+                const std::uint16_t p1Mask =
+                    static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Armoured));
+                MonsterRuntime::ForcePromoteForTest(boss.get(), Core::MonsterRarity::Rare, p1Mask, -1.0);
+                for (std::size_t i = 0; i < 2 && i < dungeon->packAnchors.size(); ++i) {
+                    auto* npc = dungeon->addNpcs[i % dungeon->addNpcs.size()];
+                    if (SpawnMapNpcAtAnchor(player, dungeon->packAnchors[i], npc, {}, snap.runId)) {
+                        packSpawned = true;
                     }
-                    if (snap.summary.forceDeadly) {
-                        bossMods |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Deadly));
-                    }
-                    MonsterRuntime::ForcePromoteForTest(boss.get(), Core::MonsterRarity::Rare, bossMods, -1.0);
                 }
+            } else if (boss) {
+                std::uint16_t bossMods =
+                    static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Armoured));
+                if (snap.summary.forceHasted) {
+                    bossMods |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Hasted));
+                }
+                if (snap.summary.forceDeadly) {
+                    bossMods |= static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::Deadly));
+                }
+                MonsterRuntime::ForcePromoteForTest(boss.get(), Core::MonsterRarity::Rare, bossMods, -1.0);
 
                 const std::uint32_t basePacks = g_config ? std::clamp<std::uint32_t>(g_config->mapBasePackCount, 1u, 6u) : 3u;
                 const std::uint32_t extraPacks = (snap.summary.packSizePct >= 15.0) ? 1u : 0u;
@@ -483,16 +552,50 @@ namespace SkyrimPoE::Runtime
                     { 85.0f, 45.0f, 0.0f },
                     { -85.0f, -45.0f, 0.0f }
                 }};
-                const std::size_t anchorCount = dg.packAnchorCount;
-                for (std::uint32_t p = 0; p < totalPacks && anchorCount > 0; ++p) {
-                    const RE::FormID anchorId = dg.packAnchorFormIds[p % anchorCount];
+                const std::size_t anchorCount = dungeon->packAnchors.size();
+                for (std::uint32_t p = 0; p < totalPacks; ++p) {
+                    auto* anchor = dungeon->packAnchors[p % anchorCount];
                     const float wrapShift = static_cast<float>((p / anchorCount) * 110);
                     for (std::size_t m = 0; m < kPackOffsets.size(); ++m) {
                         RE::NiPoint3 off = kPackOffsets[m];
                         off.x += wrapShift;
-                        (void)SpawnMapNpcAtAnchor(player, anchorId, dg.packNpcFormId, off, snap.runId);
+                        auto* npc = dungeon->packNpcs[(p * kPackOffsets.size() + m) % dungeon->packNpcs.size()];
+                        if (SpawnMapNpcAtAnchor(player, anchor, npc, off, snap.runId)) {
+                            packSpawned = true;
+                        }
                     }
                 }
+            }
+
+            if (!boss || !packSpawned) {
+                bool cancelled = false;
+                bool refunded = false;
+                SaveLoad::RunSerializedTransaction([&]() {
+                    std::optional<Core::PoEItemRecord> tracked;
+                    {
+                        std::scoped_lock lk(g_mutex);
+                        if (!g_activeMap.active || g_activeMap.runId != snap.runId) {
+                            return;
+                        }
+                        snap = std::move(g_activeMap);
+                        tracked = std::move(g_consumedMapRecord);
+                        SetActiveMapLocked({});
+                        g_spawnedForCurrentRun = false;
+                        g_pendingSpawnRunId = 0;
+                        g_arenaPhaseInvulnSec = 0.0;
+                        g_deathEscapeExitElapsedSec = 0.0;
+                        g_deathEscapeInFlight.store(false, std::memory_order_release);
+                        RefreshAtomicsLocked();
+                    }
+                    refunded = RefundEntryOnMainThread(player, snap.tier, snap.isArena4, tracked);
+                    cancelled = true;
+                });
+                if (cancelled) {
+                    FinishCancelledRunOnMainThread(player, snap, true, refunded,
+                        boss ? "무리 생성에 실패해 회차를 취소했습니다." : "보스 생성에 실패해 회차를 취소했습니다.");
+                    MapDeviceRuntime::SyncMapLayer2ToStatEngine();
+                }
+                return;
             }
 
             std::size_t spawnedCount = 0;
@@ -707,6 +810,9 @@ namespace SkyrimPoE::Runtime
         const Core::InventoryItemKey& mapKey,
         RE::FormID baseFormId)
     {
+        if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
+            return { false, reason };
+        }
         if (!player) {
             return { false, "플레이어를 찾을 수 없습니다." };
         }
@@ -726,6 +832,12 @@ namespace SkyrimPoE::Runtime
             return { false, "유효한 지도 아이템이 아닙니다." };
         }
         const std::uint8_t tier = *tierOpt;
+        const auto& pack = MapPackRuntime::Manifest();
+        const auto* dungeon = pack.ForTier(tier);
+        const auto* forms = MapPackRuntime::FindForms(dungeon);
+        if (!forms) {
+            return { false, "지도 티어에 해당하는 복제 던전을 찾을 수 없습니다." };
+        }
         auto* miscObj = RE::TESForm::LookupByID<RE::TESBoundObject>(baseFormId);
         if (!miscObj) {
             return { false, "지도 베이스 폼을 찾을 수 없습니다." };
@@ -776,7 +888,9 @@ namespace SkyrimPoE::Runtime
             std::scoped_lock lk(g_mutex);
             next = Core::MapSystem::CreateNormalMapRun(
                 g_nextRunId++, tier, rolledMods, retCell, retWs, retPos, retAng);
-            SetActiveMapLocked(next);
+            next.dungeonKey = dungeon->key;
+            next.packVersion = pack.version;
+            SetActiveMapLocked(next, consumedTrackedRecord);
             g_spawnedForCurrentRun = false;
             g_pendingSpawnRunId = next.runId;
             g_arenaPhaseInvulnSec = 0.0;
@@ -785,8 +899,7 @@ namespace SkyrimPoE::Runtime
             RefreshAtomicsLocked();
         }
 
-        const auto& dungeon = Core::MapSystem::GetDungeonForState(next);
-        if (!TeleportPlayerToDungeonEntry(player, dungeon)) {
+        if (!TeleportPlayerToDungeonEntry(player, *forms)) {
             {
                 std::scoped_lock lk(g_mutex);
                 SetActiveMapLocked({});
@@ -794,41 +907,26 @@ namespace SkyrimPoE::Runtime
                 g_pendingSpawnRunId = 0;
                 RefreshAtomicsLocked();
             }
-            if (consumedTrackedRecord.has_value()) {
-                // 재검수 R-15의 기본값(RemoveAgain)은 추적에 실패하면 넣은 1개를 다시 뺀다. 여기서는 플레이어가 원래 가진
-                // 지도를 돌려주는 것이라 되돌리면 잃으므로 Keep을 쓴다(스택 분리와 같은 경우).
-                bool untrackedLeft = false;
-                auto* freshExtra = UniqueIdUtil::CreateGameExtraDataList();
-                const auto newKey = freshExtra
-                    ? ItemTracker::AddObjectWithTrackedUniqueId(player, miscObj, freshExtra, nullptr,
-                          ItemTracker::UntrackedAddPolicy::Keep, &untrackedLeft)
-                    : Core::InventoryItemKey{};
-                if (newKey.IsValid()) {
-                    ItemTracker::Upsert(newKey, *consumedTrackedRecord, false);
-                } else if (untrackedLeft) {
-                    SKSE::log::error("MapDeviceRuntime: refunded map returned without tracking; its affixes were lost.");
-                    RE::SendHUDMessage::ShowHUDMessage("지도를 돌려받았지만 추적에 실패해 지도 속성이 사라졌습니다.");
-                } else {
-                    SKSE::log::error("MapDeviceRuntime: could not refund the consumed map after a failed teleport.");
-                    RE::SendHUDMessage::ShowHUDMessage("지도를 돌려주지 못했습니다. 로그를 확인해 주세요.");
-                }
-            } else {
-                player->AddObjectToContainer(miscObj, nullptr, 1, nullptr);
+            if (!RefundEntryOnMainThread(player, tier, false, consumedTrackedRecord)) {
+                return { false, "지도 던전 입구로 이동하지 못했고 소모한 지도를 돌려주지 못했습니다." };
             }
             return { false, "지도 던전 입구 마커로 이동하지 못했습니다." };
         }
 
         SyncMapLayer2ToStatEngine();
         const auto msg = std::format("T{} {} 입장 (Lv.{}, 남은 포털 {}/{})",
-            tier, dungeon.koName, Core::MapSystem::RewardMonsterLevel(next), next.portalsRemaining, Core::kNormalMapMaxPortals);
+            tier, dungeon->name, Core::MapSystem::RewardMonsterLevel(next), next.portalsRemaining, Core::kNormalMapMaxPortals);
         RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
         SKSE::log::info("MapDeviceRuntime: opened T{} map '{}' (cell=0x{:08X}, portals={}/{}).",
-            tier, dungeon.id, dungeon.cellFormId, next.portalsRemaining, Core::kNormalMapMaxPortals);
+            tier, dungeon->key, forms->cell->GetFormID(), next.portalsRemaining, Core::kNormalMapMaxPortals);
         return { true, msg };
     }
 
     MapActionResult MapDeviceRuntime::OpenArena4(RE::PlayerCharacter* player)
     {
+        if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
+            return { false, reason };
+        }
         if (!player) {
             return { false, "플레이어를 찾을 수 없습니다." };
         }
@@ -842,6 +940,11 @@ namespace SkyrimPoE::Runtime
             return { false, "전투 중에는 4차 전직 결투장을 열 수 없습니다." };
         }
 
+        const auto& pack = MapPackRuntime::Manifest();
+        const auto* arena = MapPackRuntime::FindForms(&pack.arena);
+        if (!arena) {
+            return { false, "복제 결투장을 찾을 수 없습니다." };
+        }
         auto* tributeObj = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
         if (!tributeObj) {
             return { false, "4차 전직의 공물 폼을 찾을 수 없습니다." };
@@ -876,6 +979,8 @@ namespace SkyrimPoE::Runtime
         {
             std::scoped_lock lk(g_mutex);
             next = Core::MapSystem::CreateArena4Run(g_nextRunId++, retCell, retWs, retPos, retAng);
+            next.dungeonKey = pack.arena.key;
+            next.packVersion = pack.version;
             SetActiveMapLocked(next);
             g_spawnedForCurrentRun = false;
             g_pendingSpawnRunId = next.runId;
@@ -885,8 +990,7 @@ namespace SkyrimPoE::Runtime
             RefreshAtomicsLocked();
         }
 
-        const auto& arena = Core::MapSystem::GetArena4Dungeon();
-        if (!TeleportPlayerToDungeonEntry(player, arena)) {
+        if (!TeleportPlayerToDungeonEntry(player, *arena)) {
             {
                 std::scoped_lock lk(g_mutex);
                 SetActiveMapLocked({});
@@ -894,20 +998,25 @@ namespace SkyrimPoE::Runtime
                 g_pendingSpawnRunId = 0;
                 RefreshAtomicsLocked();
             }
-            player->AddObjectToContainer(tributeObj, nullptr, 1, nullptr);
+            if (!RefundEntryOnMainThread(player, next.tier, true, std::nullopt)) {
+                return { false, "4차 전직 결투장 입구로 이동하지 못했고 공물을 돌려주지 못했습니다." };
+            }
             return { false, "4차 전직 결투장 입구로 이동하지 못했습니다." };
         }
 
         SyncMapLayer2ToStatEngine();
-        const std::string msg = "4차 전직 결투장 입장! (단판 1포털 · 3페이즈 보스전)";
+        const auto msg = std::format("4차 전직 결투장 {} 입장 (단판 1포털 · 3페이즈 보스전)", pack.arena.name);
         RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
         SKSE::log::info("MapDeviceRuntime: opened Arena4 '{}' (cell=0x{:08X}, rewardLv={}).",
-            arena.id, arena.cellFormId, Core::kArena4MonsterLevel);
+            pack.arena.key, arena->cell->GetFormID(), Core::kArena4MonsterLevel);
         return { true, msg };
     }
 
     MapActionResult MapDeviceRuntime::ReenterActiveMap(RE::PlayerCharacter* player)
     {
+        if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
+            return { false, reason };
+        }
         if (!player) {
             return { false, "플레이어를 찾을 수 없습니다." };
         }
@@ -926,10 +1035,15 @@ namespace SkyrimPoE::Runtime
         CaptureReturnLocation(player, retCell, retWs, retPos, retAng);
 
         Core::ActiveMapState snap;
+        const MapPackRuntime::DungeonForms* forms = nullptr;
         {
             std::scoped_lock lk(g_mutex);
             if (!g_activeMap.active || g_activeMap.failed) {
                 return { false, "재입장 가능한 활성 지도가 없습니다." };
+            }
+            forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
+            if (!forms) {
+                return { false, "저장된 회차와 일치하는 복제 던전을 찾을 수 없습니다." };
             }
             if (!Core::MapSystem::TryConsumePortalForReenter(g_activeMap)) {
                 return { false, "남은 포털이 없습니다." };
@@ -948,8 +1062,7 @@ namespace SkyrimPoE::Runtime
             RefreshAtomicsLocked();
         }
 
-        const auto& dg = Core::MapSystem::GetDungeonForState(snap);
-        if (!TeleportPlayerToDungeonEntry(player, dg)) {
+        if (!TeleportPlayerToDungeonEntry(player, *forms)) {
             // 배치2 검수 Minor #6: 텔레포트 실패 시 차감한 포털 1개 환급
             std::scoped_lock lk(g_mutex);
             if (g_activeMap.active && g_activeMap.runId == snap.runId &&
@@ -1465,7 +1578,9 @@ namespace SkyrimPoE::Runtime
                 continue;
             }
             const std::uint8_t tier = *tierOpt;
-            const auto& dg = Core::MapSystem::GetMapDungeon(Core::MapSystem::DungeonIndexForTier(tier));
+            const auto* dungeon = MapPackRuntime::Manifest().ForTier(tier);
+            const auto displayName = std::format("T{} {} (Lv.{})", tier,
+                dungeon ? dungeon->name : "지도", Core::MapSystem::MonsterLevelForTier(tier));
             std::int32_t trackedCount = 0;
 
             if (entryData && entryData->extraLists) {
@@ -1493,8 +1608,7 @@ namespace SkyrimPoE::Runtime
                     item.tracked = true;
                     item.rarity = recOpt->rarity;
                     item.summary = Core::MapSystem::AggregateMapMods(recOpt->affixes);
-                    item.displayName = std::format("T{} {} (Lv.{})",
-                        tier, dg.koName, Core::MapSystem::MonsterLevelForTier(tier));
+                    item.displayName = displayName;
                     item.modLines.reserve(recOpt->affixes.size());
                     for (const auto& af : recOpt->affixes) {
                         item.modLines.push_back(Core::MapSystem::FormatMapModKoreanLine(af));
@@ -1512,8 +1626,7 @@ namespace SkyrimPoE::Runtime
                 item.count = plainCount;
                 item.tracked = false;
                 item.rarity = Core::ItemRarity::Normal;
-                item.displayName = std::format("T{} {} (Lv.{})",
-                    tier, dg.koName, Core::MapSystem::MonsterLevelForTier(tier));
+                item.displayName = displayName;
                 result.push_back(std::move(item));
             }
         }
@@ -1536,17 +1649,30 @@ namespace SkyrimPoE::Runtime
         return g_activeMap;
     }
 
-    void MapDeviceRuntime::RestoreFromSave(Core::ActiveMapState saved)
+    void MapDeviceRuntime::RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell)
     {
         std::scoped_lock lk(g_mutex);
+        g_incompatibleSavedRun.reset();
         if (saved.active && saved.runId == 0) {
             // 회차 번호 0은 "회차 밖"을 뜻하므로, 손상된 세이브의 활성 회차에는 새 번호를 준다.
             saved.runId = std::max<std::uint64_t>(g_nextRunId, 1);
             SKSE::log::warn("MapDeviceRuntime: active map run in save had runId 0; assigned {}.", saved.runId);
         }
-        SetActiveMapLocked(std::move(saved));
-        if (g_activeMap.runId >= g_nextRunId) {
-            g_nextRunId = g_activeMap.runId + 1;
+        if (saved.runId == std::numeric_limits<std::uint64_t>::max()) {
+            // 손상된 값이다. +1이 0으로 돌아가면 다음 회차의 스폰 대기 조건(!= 0)이 깨진다.
+            saved.runId = std::max<std::uint64_t>(g_nextRunId, 1);
+            SKSE::log::warn("MapDeviceRuntime: active map run in save had runId UINT64_MAX; assigned {}.", saved.runId);
+        }
+        if (saved.runId >= g_nextRunId) {
+            g_nextRunId = saved.runId + 1;
+        }
+        if (saved.active && !MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(saved))) {
+            // 결정 169, R4: 호환되지 않는 회차는 로드 중 등록부에 올리지 않고 주 스레드에서 정리한다.
+            g_incompatibleSavedRun = IncompatibleSavedRun{ std::move(saved), legacyCell };
+            SetActiveMapLocked({});
+        } else {
+            auto refund = RecreateSavedMapRefund(saved);
+            SetActiveMapLocked(std::move(saved), std::move(refund));
         }
         g_spawnedForCurrentRun = g_activeMap.bossKilled || g_activeMap.bossRefFormId != 0 || !g_activeMap.spawnedRefFormIds.empty();
         g_pendingSpawnRunId = (g_activeMap.active && !g_spawnedForCurrentRun) ? g_activeMap.runId : 0;
@@ -1561,7 +1687,38 @@ namespace SkyrimPoE::Runtime
         g_uninstallCleanupArmed.store(false, std::memory_order_release);
         auto* player = RE::PlayerCharacter::GetSingleton();
         auto* cell = player ? player->GetParentCell() : nullptr;
-        const RE::FormID curCellId = cell ? cell->GetFormID() : 0u;
+
+        if (player) {
+            std::optional<IncompatibleSavedRun> cancelled;
+            std::optional<bool> refunded;
+            SaveLoad::RunSerializedTransaction([&]() {
+                {
+                    std::scoped_lock lk(g_mutex);
+                    cancelled = std::exchange(g_incompatibleSavedRun, std::nullopt);
+                }
+                // 보스를 처치한 회차는 보상(아틀라스·첫 공물·4차 해금)을 이미 받았으므로 소모품을 돌려주지 않는다.
+                // 돌려주면 팩 판이 바뀔 때마다 보상을 받고 지도까지 돌려받는 복제가 생긴다.
+                if (cancelled && !cancelled->state.bossKilled) {
+                    const auto& snap = cancelled->state;
+                    refunded = RefundEntryOnMainThread(player, snap.tier, snap.isArena4, RecreateSavedMapRefund(snap));
+                }
+            });
+            if (cancelled) {
+                const auto& snap = cancelled->state;
+                const auto& pack = MapPackRuntime::Manifest();
+                const auto* dungeon = pack.Find(snap.dungeonKey);
+                const bool inLegacyCell = cell && cancelled->legacyCell != 0 && cell->GetFormID() == cancelled->legacyCell;
+                const bool inSavedDungeon = cell && dungeon && cell == MapPackRuntime::ResolveCell(*dungeon);
+                // 키를 찾았어도 그 키의 셀이 바뀌었을 수 있으므로 팩 소속 셀 검사를 함께 한다.
+                // 현재 셀을 모르면 출구 없는 셀에 남지 않도록 귀환시킨다.
+                const bool returnPlayer = !cell || inSavedDungeon || inLegacyCell || MapPackRuntime::OwnsCell(cell);
+                const auto& packError = MapPackRuntime::UnavailableReason();
+                const auto reason = packError.empty()
+                    ? std::string("저장된 던전 키나 팩 판이 현재 지도 팩과 달라 회차를 종료했습니다.")
+                    : std::format("{} 저장된 회차를 종료했습니다.", packError);
+                FinishCancelledRunOnMainThread(player, snap, returnPlayer, refunded, reason);
+            }
+        }
 
         bool isArena4 = false;
         RE::FormID bossId = 0;
@@ -1570,8 +1727,8 @@ namespace SkyrimPoE::Runtime
         {
             std::scoped_lock lk(g_mutex);
             if (g_activeMap.active) {
-                const auto& dg = Core::MapSystem::GetDungeonForState(g_activeMap);
-                const bool inCell = (curCellId != 0 && curCellId == dg.cellFormId);
+                const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
+                const bool inCell = forms && cell == forms->cell;
                 g_playerInActiveMapCell.store(inCell, std::memory_order_release);
                 isArena4 = g_activeMap.isArena4;
                 bossId = g_activeMap.bossRefFormId;
@@ -1615,6 +1772,7 @@ namespace SkyrimPoE::Runtime
     void MapDeviceRuntime::ResetOnRevert()
     {
         std::scoped_lock lk(g_mutex);
+        g_incompatibleSavedRun.reset();
         SetActiveMapLocked({});
         g_spawnedForCurrentRun = false;
         g_pendingSpawnRunId = 0;

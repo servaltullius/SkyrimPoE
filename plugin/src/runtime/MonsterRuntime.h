@@ -27,6 +27,7 @@ namespace SkyrimPoE::Runtime
         static void Initialize(
             Core::StatEngine* statEngine,
             const Core::ItemData* itemData,
+            const Core::DataPack* dataPack,
             const Core::Config* config);
 
         // 주 갱신 스레드 틱: 0.5s 주기 고프로세스 적대 액터 선승격 + 적 ES 재충전 + 헤드헌터 버프 타이머

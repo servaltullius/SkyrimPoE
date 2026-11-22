@@ -3,6 +3,7 @@
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
+#include "core/DamageConversion.h"
 
 #include <algorithm>
 #include <chrono>
@@ -18,6 +19,7 @@ namespace SkyrimPoE::Runtime
     {
         Core::StatEngine* g_statEngine = nullptr;
         const Core::ItemData* g_itemData = nullptr;
+        const Core::DataPack* g_dataPack = nullptr;
         const Core::Config* g_config = nullptr;
 
         std::mutex g_mutex;
@@ -144,10 +146,12 @@ namespace SkyrimPoE::Runtime
     void MonsterRuntime::Initialize(
         Core::StatEngine* statEngine,
         const Core::ItemData* itemData,
+        const Core::DataPack* dataPack,
         const Core::Config* config)
     {
         g_statEngine = statEngine;
         g_itemData = itemData;
+        g_dataPack = dataPack;
         g_config = config;
     }
 
@@ -312,7 +316,17 @@ namespace SkyrimPoE::Runtime
         Core::MapModSummary mods{};
         const auto scaling = MapDeviceRuntime::GetMapActorScaling(actorId, &mods);
         if (adjustedDmg > 0.0 && scaling.runId != 0) {
-            adjustedDmg = scaling.ScaleIncomingDamage(adjustedDmg);
+            const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const auto* values = targetActor ? targetActor->AsActorValueOwner() : nullptr;
+            const double health = values ? values->GetPermanentActorValue(RE::ActorValue::kHealth) : 0.0;
+            if (!snap || !g_dataPack || !g_config || !std::isfinite(health) || health < 1.0) {
+                SKSE::log::debug("Map actor {:08X}: health matching unavailable (max health={}); using tier scaling.",
+                    actorId, health);
+                adjustedDmg = scaling.ScaleIncomingDamage(adjustedDmg);
+            } else {
+                const double referenceLife = Core::OffenseReferenceLife(snap->exileLevel, *g_dataPack, *g_config);
+                adjustedDmg = scaling.ScaleIncomingDamage(adjustedDmg, referenceLife, health);
+            }
             if (mods.monsterReducedTakenPct > 0.0) {
                 adjustedDmg *= std::max(0.25, 1.0 - mods.monsterReducedTakenPct / 100.0);
             }
@@ -340,12 +354,9 @@ namespace SkyrimPoE::Runtime
 
         // 6단계(배치2 검수 Critical #1): 호출부가 전달한 실제 엔진 난이도 배율(DoDamage(...,true)=1.0, CombatHooks=fDiffMultHPByPC)과
         // 직접 RE::Actor* 포인터를 사용해 이중 역보정 및 워커 스레드 LookupByID 전역 폼 락을 제거한다.
-        if (res.remainingHealthDamage > 0.0 && MapDeviceRuntime::IsActiveArena4Boss(actorId)) {
-            RE::Actor* boss = targetActor ? targetActor : RE::TESForm::LookupByID<RE::Actor>(actorId);
-            if (boss) {
-                res.remainingHealthDamage = MapDeviceRuntime::FilterArena4BossIncomingDamage(
-                    boss, res.remainingHealthDamage, engineDiffMult);
-            }
+        if (res.remainingHealthDamage > 0.0 && targetActor && MapDeviceRuntime::IsActiveArena4Boss(actorId)) {
+            res.remainingHealthDamage = MapDeviceRuntime::FilterArena4BossIncomingDamage(
+                targetActor, res.remainingHealthDamage, engineDiffMult);
         }
         return res;
     }

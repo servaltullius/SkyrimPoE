@@ -3,12 +3,14 @@
 
   const activeBadge = document.getElementById("maps-active-badge");
   const activeBody = document.getElementById("maps-active-body");
+  const packStatus = document.getElementById("maps-pack-status");
   const btnReenter = document.getElementById("btn-map-reenter");
   const btnReturn = document.getElementById("btn-map-return");
   const btnAbandon = document.getElementById("btn-map-abandon");
 
   const tributeBadge = document.getElementById("maps-tribute-badge");
   const arena4Status = document.getElementById("maps-arena4-status");
+  const arena4Name = document.getElementById("maps-arena4-name");
   const btnOpenArena4 = document.getElementById("btn-map-open-arena4");
 
   const uninstallBadge = document.getElementById("maps-uninstall-badge");
@@ -60,7 +62,11 @@
     if (!act.active) {
       activeBadge.textContent = "대기 중";
       activeBadge.className = "badge";
-      activeBody.appendChild(el("div", "empty-hint", "현재 열려 있는 지도가 없습니다. 오른쪽 목록에서 지도를 선택해 개방하세요."));
+      // 팩을 쓸 수 없으면 개방 안내 대신 위의 사용 불가 사유를 보라고 한다(버튼도 막혀 있음).
+      const hint = maps && maps.packAvailable === false
+        ? "현재 열려 있는 지도가 없습니다. 지도 팩을 쓸 수 없어 지금은 지도를 개방할 수 없습니다."
+        : "현재 열려 있는 지도가 없습니다. 오른쪽 목록에서 지도를 선택해 개방하세요.";
+      activeBody.appendChild(el("div", "empty-hint", hint));
       if (btnReenter) btnReenter.classList.add("hidden");
       if (btnReturn) btnReturn.classList.add("hidden");
       if (btnAbandon) btnAbandon.classList.add("hidden");
@@ -99,7 +105,7 @@
     if (btnReenter) {
       const canReenter = !inCell && !act.isArena4 && portalsRem > 0;
       btnReenter.classList.toggle("hidden", !canReenter);
-      btnReenter.disabled = !canReenter;
+      btnReenter.disabled = !canReenter || !maps.packAvailable;
     }
     if (btnReturn) {
       btnReturn.classList.toggle("hidden", !inCell);
@@ -121,6 +127,9 @@
     if (tributeBadge) {
       tributeBadge.textContent = `공물 ${trib}개`;
     }
+    if (arena4Name) {
+      arena4Name.textContent = maps.arenaDungeonName || "결투장";
+    }
     if (arena4Status) {
       arena4Status.textContent = unlocked
         ? "정복 완료 · 전직 8/8 · 기본 최대 정신력 220 해금"
@@ -128,7 +137,7 @@
       arena4Status.classList.toggle("done", unlocked);
     }
     if (btnOpenArena4) {
-      btnOpenArena4.disabled = armed || inCell || trib <= 0;
+      btnOpenArena4.disabled = !maps.packAvailable || armed || inCell || trib <= 0;
     }
   }
 
@@ -199,7 +208,7 @@
 
       const openBtn = el("button", "btn btn-primary", "지도 열기");
       openBtn.type = "button";
-      openBtn.disabled = armed || inCell;
+      openBtn.disabled = !maps.packAvailable || armed || inCell;
       openBtn.onclick = () => {
         sendMapCommand({
           op: "mapOpen",
@@ -232,6 +241,10 @@
 
   function renderAll() {
     if (!lastMapsData) return;
+    if (packStatus) {
+      packStatus.hidden = Boolean(lastMapsData.packAvailable);
+      packStatus.textContent = lastMapsData.packUnavailableReason || "";
+    }
     renderActiveMap(lastMapsData);
     renderArena4(lastMapsData);
     renderSafeUninstall(lastMapsData);

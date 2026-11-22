@@ -9,6 +9,7 @@
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/MapPackRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -4252,9 +4253,13 @@ namespace SkyrimPoE::Runtime
         case Phase::ScenarioH_MapEntryWait: {
             auto* player = RE::PlayerCharacter::GetSingleton();
             const auto active = MapDeviceRuntime::GetActiveMapStateCopy();
-            const auto& dg = Core::MapSystem::GetDungeonForState(active);
+            const auto& pack = MapPackRuntime::Manifest();
+            const auto* dungeon = pack.ForTier(10);
+            const auto* forms = MapPackRuntime::FindForms(dungeon);
+            const RE::FormID targetCellId = forms ? forms->cell->GetFormID() : 0u;
             const RE::FormID curCellId = (player && player->GetParentCell()) ? player->GetParentCell()->GetFormID() : 0u;
-            const bool inTargetCell = (curCellId == dg.cellFormId) && MapDeviceRuntime::IsPlayerInActiveMapCell();
+            const bool inTargetCell = targetCellId != 0 && curCellId == targetCellId &&
+                                      pack.ForRun(active) == dungeon && MapDeviceRuntime::IsPlayerInActiveMapCell();
             const bool spawned = (active.bossRefFormId != 0) && (active.spawnedRefFormIds.size() >= 4u);
 
             if ((!IsPlayerReadyInWorld() || !inTargetCell || !spawned) && PhaseElapsedSec() < 25.0) {
@@ -4290,7 +4295,7 @@ namespace SkyrimPoE::Runtime
                 inTargetCell && spawned && rewardOk && scalingOk && playerStatsOk &&
                     bossRecognized && (active.portalsRemaining == 5u),
                 std::format("cell=0x{:08X}/0x{:08X}, spawns={}, boss=0x{:08X}, bossRec={}, rewardLv={}, scaling={}, playerStats={}, portals={}",
-                    curCellId, dg.cellFormId, active.spawnedRefFormIds.size(), active.bossRefFormId,
+                    curCellId, targetCellId, active.spawnedRefFormIds.size(), active.bossRefFormId,
                     bossRecognized, bossReward.rewardMonsterLevel, scalingOk, playerStatsOk, active.portalsRemaining));
 
             // H4 준비: 실제 CombatHooks::ApplyHitHook(CallDealDamage) 경로로 치명타 가로채기 발동 검증
@@ -4622,7 +4627,7 @@ namespace SkyrimPoE::Runtime
                     player->StopCombat();
                 }
             }
-            // H7 준비: 'MAPS' v1 + 'TREE'(0xFu) 코세이브 왕복 저장
+            // H7 준비: 'MAPS' v2 + 'TREE'(0xFu) 코세이브 왕복 저장
             {
                 std::scoped_lock lock(g_msgMutex);
                 g_expectedSaveStem = g_cfg.tempSave;

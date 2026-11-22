@@ -26,26 +26,13 @@ namespace
     }
 }
 
-POE_TEST("Stage6 MapSystem: T1-T16 monster levels, 5 verified dungeons + Arena4, and 16 map affixes")
+POE_TEST("Stage6 MapSystem: T1-T16 monster levels and 16 map affixes")
 {
     POE_CHECK(MapSystem::MonsterLevelForTier(1) == 68);
     POE_CHECK(MapSystem::MonsterLevelForTier(8) == 75);
     POE_CHECK(MapSystem::MonsterLevelForTier(16) == 83);
     POE_CHECK(MapSystem::MonsterLevelForTier(0) == 68);
     POE_CHECK(MapSystem::MonsterLevelForTier(99) == 83);
-
-    for (std::uint8_t i = 0; i < kMapDungeonCount; ++i) {
-        const auto& d = MapSystem::GetMapDungeon(i);
-        POE_CHECK(d.cellFormId != 0);
-        POE_CHECK(d.entryMarkerFormId != 0);
-        POE_CHECK(d.bossAnchorFormId != 0);
-        POE_CHECK(d.packAnchorCount >= 3);
-        POE_CHECK(d.packNpcFormId != 0 && d.bossNpcFormId != 0);
-    }
-    const auto& arena = MapSystem::GetArena4Dungeon();
-    POE_CHECK(arena.cellFormId == 0x00015211);
-    POE_CHECK(arena.entryMarkerFormId == 0x00053FA6);
-    POE_CHECK(arena.bossAnchorFormId == 0x0005439A);
 
     ItemData items;
     std::string err;

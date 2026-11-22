@@ -206,8 +206,28 @@ internal static class Builder
             : throw new InvalidDataException($"{srcCell.EditorID}: 입구 마커(COCMarkerHeading)가 {markers.Count}개입니다. 정확히 하나여야 합니다.");
     }
 
+    internal static void ValidateSpawnTemplates(DungeonSpec dungeon, SourceIndex src)
+    {
+        if (dungeon.Role == "map" && dungeon.PackNpcs is not { Count: > 0 })
+            throw new InvalidDataException($"{dungeon.Key}: 지도에는 packNpcs가 하나 이상 필요합니다.");
+        if (dungeon.Role == "arena" && dungeon.AddNpcs is not { Count: > 0 })
+            throw new InvalidDataException($"{dungeon.Key}: 결투장에는 addNpcs가 하나 이상 필요합니다.");
+
+        foreach (var id in new[] { dungeon.BossNpc }.Concat(dungeon.PackNpcs ?? []).Concat(dungeon.AddNpcs ?? []))
+        {
+            if (id is not { Length: 6 } || !id.All(Uri.IsHexDigit))
+                throw new InvalidDataException($"{dungeon.Key}: 원형 ID '{id}'는 6자리 16진수여야 합니다.");
+            var key = new FormKey(Policy.SourceMaster, Convert.ToUInt32(id, 16));
+            if (!src.Cache.TryResolve(key, out var record) || record is not INpcGetter)
+                throw new InvalidDataException($"{dungeon.Key}: 원형 {key}를 NPC_로 찾지 못했습니다.");
+        }
+    }
+
     public static BuildResult Build(PackSpec pack, SourceIndex src, Ledger ledger, bool allowLedgerChanges)
     {
+        foreach (var dungeon in pack.Dungeons)
+            ValidateSpawnTemplates(dungeon, src);
+
         var outKey = ModKey.FromFileName(pack.Plugin);
         var outMod = new SkyrimMod(outKey, SkyrimRelease.SkyrimSE);
         var manifest = new PackManifest { Plugin = pack.Plugin, PackVersion = pack.PackVersion, SourceMaster = Policy.SourceMaster.FileName };
@@ -400,6 +420,7 @@ internal static class Builder
         {
             Key = spec.Key, Type = spec.Type, Role = spec.Role, Name = spec.Name,
             SourceCell = $"{srcCell.FormKey.ID:X6}", Cell = Ledger.Format(mapping[srcCell.FormKey].ID),
+            BossNpc = spec.BossNpc, PackNpcs = spec.PackNpcs, AddNpcs = spec.AddNpcs,
         };
         var cutDoors = new HashSet<FormKey>();
         foreach (var placed in cell.Persistent.Concat(cell.Temporary).OfType<PlacedObject>())
