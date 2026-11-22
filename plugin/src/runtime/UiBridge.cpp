@@ -190,6 +190,23 @@ namespace SkyrimPoE::Runtime
             std::uint32_t mapAreaLevel = 0;
         };
         CachedHud g_lastHud;
+        std::optional<MapTravelStatus> g_panelMapTravel;
+
+        std::string_view MapTravelLabel(Core::MapTravelKind kind)
+        {
+            using Core::MapTravelKind;
+            switch (kind) {
+            case MapTravelKind::OpenMap: return "지도 입장";
+            case MapTravelKind::OpenArena: return "결투장 입장";
+            case MapTravelKind::Reenter: return "지도 재입장";
+            case MapTravelKind::Return: return "포털 귀환";
+            case MapTravelKind::Abandon: return "회차 포기";
+            case MapTravelKind::DeathEscape: return "사망 귀환";
+            case MapTravelKind::CancelledRun: return "취소 후 귀환";
+            case MapTravelKind::SafeEscape: return "안전 탈출";
+            }
+            return {};
+        }
 
         // 언어 팩 이름 매핑(ko-KR 우선, en-US 폴백)
         std::unordered_map<std::string, std::string> g_gemDisplayNames;
@@ -1011,6 +1028,13 @@ namespace SkyrimPoE::Runtime
                 mapsJ["packAvailable"] = packError.empty();
                 mapsJ["packUnavailableReason"] = packError;
                 mapsJ["arenaDungeonName"] = mapPack.arena.name;
+                const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+                g_panelMapTravel = travel;
+                mapsJ["travelInProgress"] = travel.kind.has_value();
+                mapsJ["travelKind"] = travel.kind ? MapTravelLabel(*travel.kind) : std::string_view{};
+                mapsJ["inPackCell"] = travel.inPackCell;
+                mapsJ["unauthorizedInPackCell"] = travel.unauthorized;
+                mapsJ["canRetryReturn"] = travel.canRetryReturn;
                 const auto atlasPts = Core::MapSystem::CountAtlasTierPoints(state.atlas.completedTierMask);
                 const auto msPts = Core::MapSystem::CountMilestonePassivePoints(state.tree.ascendancyMilestonesBitmask);
                 json tierDefs = json::array();
@@ -1776,6 +1800,10 @@ namespace SkyrimPoE::Runtime
                         closeOnSuccess = true;
                     } else if (op == "mapAbandon") {
                         mapRes = MapDeviceRuntime::AbandonActiveMap(player);
+                        closeOnSuccess = MapDeviceRuntime::GetTravelStatus(player).kind == Core::MapTravelKind::Abandon;
+                    } else if (op == "mapSafeEscape") {
+                        mapRes = MapDeviceRuntime::SafeEscape(player);
+                        closeOnSuccess = true;
                     } else if (op == "mapSafeUninstall") {
                         mapRes = MapDeviceRuntime::RunSafeUninstallCleanup(player);
                     } else {
@@ -1784,6 +1812,8 @@ namespace SkyrimPoE::Runtime
 
                     PushToastToJs(mapRes.ok, mapRes.message);
                     if (mapRes.ok && closeOnSuccess) {
+                        // 패널이 토스트와 함께 닫히므로 요청 접수도 HUD로 남긴다. 도착 확정은 별도 HUD 메시지다.
+                        RE::SendHUDMessage::ShowHUDMessage(mapRes.message.c_str());
                         UiBridge::ClosePanelOnMainThread();
                     } else {
                         PushPanelStateToJs();
@@ -2110,6 +2140,10 @@ namespace SkyrimPoE::Runtime
             g_api->Show(g_view);
             g_hudShown.store(true, std::memory_order_release);
             g_lastHud.valid = false;
+        }
+        if (panelOpen && g_activeTab.load(std::memory_order_acquire) == kTabMaps &&
+            g_panelMapTravel != MapDeviceRuntime::GetTravelStatus(RE::PlayerCharacter::GetSingleton())) {
+            PushPanelStateToJs();
         }
 
         // HUD 값 변경 시에만 C++ -> JS 푸시(프레임 유휴 비용 0 유지)

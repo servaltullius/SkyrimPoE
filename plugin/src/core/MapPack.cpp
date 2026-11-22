@@ -58,9 +58,9 @@ namespace SkyrimPoE::Core
             return ids;
         }
 
-        void ValidateDoors(const json& entry)
+        void ReadDoors(const json& entry, MapDungeonDef& dungeon)
         {
-            (void)ReadIds(entry, "returnDoors", true);
+            dungeon.returnDoors = ReadIds(entry, "returnDoors", true);
             (void)ReadIds(entry, "sealedDoors", true);
             for (const auto& exit : entry.at("autoExits").get_ref<const json::array_t&>()) {
                 (void)ReadFormId(exit.at("id"), "autoExits.id", true);
@@ -105,7 +105,7 @@ namespace SkyrimPoE::Core
             if (arena ? dungeon.addNpcs.empty() : dungeon.packNpcs.empty()) {
                 throw std::runtime_error(arena ? "addNpcs가 비었습니다." : "packNpcs가 비었습니다.");
             }
-            ValidateDoors(entry);
+            ReadDoors(entry, dungeon);
             return dungeon;
         }
     }

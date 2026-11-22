@@ -59,8 +59,13 @@ POE_TEST("Map pack format 2: resolved local IDs, ordered tiers and arena selecti
     POE_CHECK(mine.name == "엠버샤드 광산");
     POE_CHECK(mine.cell == 0x800 && mine.entryMarker == 0xB32 && mine.bossAnchor == 0xBBE);
     POE_CHECK(mine.packAnchors.size() == 3 && mine.packNpcs.size() == 4 && mine.bossNpc == 0x03DF0C);
+    POE_CHECK(mine.returnDoors == std::vector<std::uint32_t>{ 0x00080B });
+    POE_CHECK(pack.maps[1].returnDoors.empty());
+    POE_CHECK(pack.maps[2].returnDoors == std::vector<std::uint32_t>{ 0x00482E });
+    POE_CHECK(pack.maps[3].returnDoors == std::vector<std::uint32_t>{ 0x006807 });
     POE_CHECK(pack.arena.key == "shrouded_grove");
     POE_CHECK(pack.arena.cell == 0x008800 && pack.arena.addNpcs.front() == 0x016FF8);
+    POE_CHECK(pack.arena.returnDoors.empty());
 
     auto run = MapSystem::CreateArena4Run(1, 0, 0, {}, {});
     run.dungeonKey = pack.arena.key;

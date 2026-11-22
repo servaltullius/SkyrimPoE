@@ -114,9 +114,11 @@ namespace SkyrimPoE::Runtime
 
                 // 검수 M5 & 4단계 검수 M2: reward.awarded가 참이면 XP가 0(유배자 Lv.100 등)이어도
                 // 1~3차 보스 이정표 및 전리품 드랍 판정을 항상 수행한다.
-                if (!reward.awarded) {
+                // 결정 176 ④: 허가 없이 회차 셀에 있거나 실패한 회차의 액터는 경험치·드랍·클리어를 주지 않는다.
+                const bool mapRewardBlocked = mapKill.runId != 0 && mapKill.rewardBlocked;
+                if (!reward.awarded || mapRewardBlocked) {
                     // 보상 대상이 아닌 사망자도 상태이상(SpeedMult 원복)·승격 테이블 정리 + 동적 보스 처치(동료 마무리 등) 누락 방지
-                    g_queue->Enqueue([actorId, corpseHandle, runId = mapKill.runId]() {
+                    g_queue->Enqueue([actorId, corpseHandle, runId = mapRewardBlocked ? std::uint64_t{ 0 } : mapKill.runId]() {
                         if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
                             return;
                         }

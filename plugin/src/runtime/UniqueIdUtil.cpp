@@ -140,6 +140,47 @@ namespace SkyrimPoE::Runtime::UniqueIdUtil
         return 0;
     }
 
+    std::int32_t CountRemovablePlainItems(RE::TESObjectREFR* owner, RE::TESBoundObject* baseObj)
+    {
+        if (!owner || !baseObj) {
+            return 0;
+        }
+        auto* changes = owner->GetInventoryChanges(false);
+        RE::InventoryEntryData* targetEntry = nullptr;
+        if (changes && changes->entryList) {
+            for (auto* entry : *changes->entryList) {
+                if (entry && entry->object == baseObj) {
+                    targetEntry = entry;
+                    break;
+                }
+            }
+        }
+        std::int32_t baseCount = 0;
+        if (const auto* baseForm = owner->GetBaseObject()) {
+            if (const auto* container = baseForm->As<RE::TESContainer>()) {
+                baseCount = container->GetObjectCount(baseObj);
+            }
+        }
+        const std::int32_t total = baseCount + (targetEntry ? targetEntry->countDelta : 0);
+        if (!targetEntry || !targetEntry->extraLists || targetEntry->extraLists->empty()) {
+            return std::max<std::int32_t>(0, total);
+        }
+        // RemovePlainItem의 사전 검증과 같은 규칙: 일반 스택 + 보호되지 않은 ExtraDataList
+        std::int32_t extraTotal = 0;
+        std::int32_t unprotected = 0;
+        for (auto* ex : *targetEntry->extraLists) {
+            if (!ex) {
+                continue;
+            }
+            const std::int32_t cnt = std::max<std::int32_t>(1, ex->GetCount());
+            extraTotal += cnt;
+            if (!IsProtectedExtraList(ex)) {
+                unprotected += cnt;
+            }
+        }
+        return std::max<std::int32_t>(0, total - extraTotal) + unprotected;
+    }
+
     bool RemovePlainItem(RE::TESObjectREFR* owner, RE::TESBoundObject* baseObj, std::int32_t count)
     {
         if (!owner || !baseObj || count <= 0) {

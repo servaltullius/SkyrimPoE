@@ -730,6 +730,7 @@ namespace SkyrimPoE::Runtime
             }
 
             // 결정 169, R4: MAPS v2는 던전 키와 팩 판 번호를 저장한다.
+            // 결정 176 ④: 허가 바이트는 R4-B1에서 v2에 더했다. v2는 그 전까지 게임에서 저장된 적이 없다.
             std::uint32_t mapSpawnCount = 0;
             if (intfc->OpenRecord(SaveLoad::kRecordMaps, SaveLoad::kMapsVersion)) {
                 const auto& atl = state.atlas;
@@ -744,10 +745,12 @@ namespace SkyrimPoE::Runtime
                 const std::uint8_t arenaByte = am.isArena4 ? 1 : 0;
                 const std::uint8_t bossKilledByte = am.bossKilled ? 1 : 0;
                 const std::uint8_t failedByte = am.failed ? 1 : 0;
+                const std::uint8_t authorizedByte = am.playerAuthorized ? 1 : 0;
                 mapsOk = mapsOk && intfc->WriteRecordData(&activeByte, sizeof(activeByte));
                 mapsOk = mapsOk && intfc->WriteRecordData(&arenaByte, sizeof(arenaByte));
                 mapsOk = mapsOk && intfc->WriteRecordData(&bossKilledByte, sizeof(bossKilledByte));
                 mapsOk = mapsOk && intfc->WriteRecordData(&failedByte, sizeof(failedByte));
+                mapsOk = mapsOk && intfc->WriteRecordData(&authorizedByte, sizeof(authorizedByte));
                 mapsOk = mapsOk && intfc->WriteRecordData(&am.runId, sizeof(am.runId));
                 mapsOk = mapsOk && intfc->WriteRecordData(&am.tier, sizeof(am.tier));
                 mapsOk = mapsOk && Core::WriteMapSaveIdentity(
@@ -1213,7 +1216,7 @@ namespace SkyrimPoE::Runtime
                     Core::AtlasState tmpAtlas{};
                     Core::ActiveMapState tmpMap{};
                     std::uint8_t tribByte = 0;
-                    std::uint8_t activeByte = 0, arenaByte = 0, bossKilledByte = 0, failedByte = 0;
+                    std::uint8_t activeByte = 0, arenaByte = 0, bossKilledByte = 0, failedByte = 0, authorizedByte = 0;
                     std::uint8_t legacyIndex = 0;
                     RE::FormID rawRetCell = 0, rawRetWs = 0, rawBossRef = 0;
                     std::uint32_t spawnCount = 0;
@@ -1227,6 +1230,9 @@ namespace SkyrimPoE::Runtime
                     ok = ok && ReadExactPod(intfc, arenaByte);
                     ok = ok && ReadExactPod(intfc, bossKilledByte);
                     ok = ok && ReadExactPod(intfc, failedByte);
+                    if (version != kLegacyMapsVersion) {
+                        ok = ok && ReadExactPod(intfc, authorizedByte);
+                    }
                     ok = ok && ReadExactPod(intfc, tmpMap.runId);
                     ok = ok && ReadExactPod(intfc, tmpMap.tier);
                     if (version == kLegacyMapsVersion) {
@@ -1271,15 +1277,15 @@ namespace SkyrimPoE::Runtime
                         tmpMap.isArena4 = (arenaByte != 0);
                         tmpMap.bossKilled = (bossKilledByte != 0);
                         tmpMap.failed = (failedByte != 0);
+                        tmpMap.playerAuthorized = (authorizedByte != 0);
                         tmpMap.tier = std::clamp<std::uint8_t>(tmpMap.tier, Core::kMinMapTier, Core::kMaxMapTier);
                         tmpMap.portalsRemaining = std::min<std::uint8_t>(
                             tmpMap.portalsRemaining,
                             tmpMap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals);
                         tmpMap.arenaPhase = std::clamp<std::uint8_t>(tmpMap.arenaPhase, 1u, 3u);
                         tmpMap.summary = Core::MapSystem::AggregateMapMods(tmpMap.mods);
-                        for (float& c : tmpMap.returnPos) {
-                            if (!std::isfinite(c)) c = 0.0f;
-                        }
+                        // 손상된 귀환 좌표는 0으로 바꿔 쓰지 않는다. 셀·월드스페이스를 비워 고정 마커로 가게 한다.
+                        const bool returnPosValid = std::ranges::all_of(tmpMap.returnPos, [](float c) { return std::isfinite(c); });
                         for (float& a : tmpMap.returnAngle) {
                             if (!std::isfinite(a)) a = 0.0f;
                         }
@@ -1294,6 +1300,12 @@ namespace SkyrimPoE::Runtime
                             if (intfc->ResolveFormID(rawRetWs, res) && res != 0) {
                                 tmpMap.returnWorldspaceFormId = res;
                             }
+                        }
+                        if (!returnPosValid) {
+                            tmpMap.returnCellFormId = 0;
+                            tmpMap.returnWorldspaceFormId = 0;
+                            tmpMap.returnPos = { 0.0f, 0.0f, 0.0f };
+                            SKSE::log::warn("SaveLoad: MAPS return position was not finite; the fixed marker will be used.");
                         }
                         if (rawBossRef != 0) {
                             RE::FormID res = 0;

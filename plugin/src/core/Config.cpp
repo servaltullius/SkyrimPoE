@@ -311,12 +311,19 @@ namespace SkyrimPoE::Core
                 }
             } else if (section == "Maps") {
                 std::uint32_t u = 0;
+                double d = 0.0;
                 if (key == "MapPanelKey") {
                     if (ParseUint(val, u) && u <= 0xFF) c.mapPanelKey = u; else warnInvalid();
                 } else if (key == "MapDeathInterceptEnabled") {
                     if (!ParseBool(val, c.mapDeathInterceptEnabled)) warnInvalid();
                 } else if (key == "MapBasePackCount") {
                     if (ParseUint(val, u) && u >= 1 && u <= 6) c.mapBasePackCount = u; else warnInvalid();
+                } else if (key == "MapTravelTimeoutSec") {
+                    if (ParseDouble(val, d) && d >= 5.0 && d <= 120.0) result.mapTravel.timeoutSec = d; else warnInvalid();
+                } else if (key == "MapTravelArrivalRadius") {
+                    if (ParseDouble(val, d) && d >= 64.0 && d <= 4096.0) result.mapTravel.arrivalRadius = d; else warnInvalid();
+                } else if (key == "MapTravelMaxAttempts") {
+                    if (ParseUint(val, u) && u >= 1 && u <= 5) result.mapTravel.maxAttempts = u; else warnInvalid();
                 } else {
                     warnInvalid();
                 }

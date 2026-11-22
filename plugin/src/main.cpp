@@ -224,7 +224,8 @@ namespace
         Runtime::CraftingRuntime::Initialize(&g_itemData, &g_dataPack, &g_treeData, &g_config, &g_charmSystem, &g_statEngine);
         Runtime::WorldDropTracker::Initialize(&g_itemData, &g_config);
         Runtime::MapDeviceRuntime::Initialize(
-            &g_commandQueue, &g_statEngine, &g_itemData, &g_treeData, &g_config, &g_energyShield, &g_charmSystem);
+            &g_commandQueue, &g_statEngine, &g_itemData, &g_treeData, &g_config, &g_energyShield, &g_charmSystem, cfgRes.mapTravel);
+        Runtime::MapDeviceRuntime::InstallReturnDoorSink();
         Runtime::MonsterRuntime::Initialize(&g_statEngine, &g_itemData, &g_dataPack, &g_config);
         Runtime::AilmentRuntime::Initialize(&g_statEngine, &g_charmSystem, &g_dataPack, &g_config);
         (void)Runtime::GemInventory::Install(&g_commandQueue);

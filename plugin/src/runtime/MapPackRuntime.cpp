@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <bcrypt.h>
 
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <stdexcept>
@@ -72,6 +73,7 @@ namespace SkyrimPoE::Runtime::MapPackRuntime
             if (!forms.cell || !forms.cell->IsInteriorCell()) {
                 throw std::runtime_error(std::format("{}: 0x{:06X} 실내 셀을 찾지 못했습니다.", dungeon.key, dungeon.cell));
             }
+            forms.cellId = forms.cell->GetFormID();
             const auto resolveMarker = [&](std::uint32_t id) {
                 auto* marker = data.LookupForm<RE::TESObjectREFR>(id, Core::kMapsPluginName);
                 if (!marker || marker->GetFormType() != RE::FormType::Reference || marker->GetParentCell() != forms.cell) {
@@ -97,6 +99,15 @@ namespace SkyrimPoE::Runtime::MapPackRuntime
             }
             for (const auto npc : dungeon.addNpcs) {
                 forms.addNpcs.push_back(resolveNpc(npc));
+            }
+            for (const auto id : dungeon.returnDoors) {
+                auto* door = data.LookupForm<RE::TESObjectREFR>(id, Core::kMapsPluginName);
+                auto* base = door ? door->GetBaseObject() : nullptr;
+                if (!door || door->GetFormType() != RE::FormType::Reference || door->IsDeleted() ||
+                    door->GetParentCell() != forms.cell || !base || !base->As<RE::TESObjectDOOR>()) {
+                    throw std::runtime_error(std::format("{}: 귀환 문 0x{:06X}의 형식이나 부모 셀이 다릅니다.", dungeon.key, id));
+                }
+                forms.returnDoors.push_back(door->GetFormID());
             }
             return forms;
         }
@@ -143,6 +154,16 @@ namespace SkyrimPoE::Runtime::MapPackRuntime
     {
         const auto found = g_forms.find(dungeon);
         return found == g_forms.end() ? nullptr : &found->second;
+    }
+
+    RE::FormID ReturnDoorCell(RE::FormID doorId) noexcept
+    {
+        for (const auto& [dungeon, forms] : g_forms) {
+            if (std::ranges::find(forms.returnDoors, doorId) != forms.returnDoors.end()) {
+                return forms.cellId;
+            }
+        }
+        return 0;
     }
 
     RE::TESObjectCELL* ResolveCell(const Core::MapDungeonDef& dungeon)

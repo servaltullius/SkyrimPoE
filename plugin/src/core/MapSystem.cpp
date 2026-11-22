@@ -311,6 +311,11 @@ namespace SkyrimPoE::Core
         return true;
     }
 
+    bool MapSystem::ShouldEndOnReturn(const ActiveMapState& state) noexcept
+    {
+        return state.bossKilled || state.portalsRemaining == 0;
+    }
+
     bool MapSystem::ConsumePortalOnDeathEscape(ActiveMapState& state) noexcept
     {
         if (!state.active || state.failed) {

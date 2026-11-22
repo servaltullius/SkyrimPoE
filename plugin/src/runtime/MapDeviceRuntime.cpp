@@ -28,7 +28,9 @@ namespace SkyrimPoE::Runtime
 {
     namespace
     {
-        constexpr RE::FormID kCocMarkerBaseId = 0x00000032;
+        // houseCARL (2026-11-22): WhiterunStablesMapMarker의 빠른 이동 착지점(Skyrim.esm).
+        constexpr RE::FormID kSafeReturnMarkerId = 0x0007287B;
+        constexpr RE::FormID kXMarkerHeadingId = 0x00000034;
         constexpr RE::FormID kTamrielWorldspaceId = 0x0000003C;
         constexpr double kDeathEscapeReleaseCooldownSec = 1.5;
         constexpr double kArena4PhaseInvulnSec = 0.8;
@@ -45,6 +47,23 @@ namespace SkyrimPoE::Runtime
         std::mutex g_mutex;
         Core::ActiveMapState g_activeMap{};
         std::optional<Core::PoEItemRecord> g_consumedMapRecord;
+        Core::MapTravelSettings g_travelSettings;
+        RE::TESObjectREFR* g_safeReturnMarker = nullptr;
+        std::optional<Core::MapTravelTarget> g_safeReturnTarget;
+
+        // 이동 요청은 메모리에만 둔다. 입장 비용은 도착 때 소비하므로 저장할 대기 항목이 없다.
+        Core::MapTravel g_travel;
+        struct TravelContext
+        {
+            Core::MapTravelTarget entryOrigin;
+            Core::InventoryItemKey mapKey;
+            RE::FormID item = 0;
+            std::uint64_t runId = 0;
+        };
+        TravelContext g_travelContext;
+        RE::FormID g_permittedCell = 0;
+        RE::FormID g_warnedUnauthorizedCell = 0;
+        std::uint64_t g_retryReturnRunId = 0;
         struct IncompatibleSavedRun
         {
             Core::ActiveMapState state;
@@ -72,6 +91,8 @@ namespace SkyrimPoE::Runtime
         std::atomic_bool g_activeIsArena4{ false };
         std::atomic_bool g_deathEscapeInFlight{ false };
         std::atomic_bool g_uninstallCleanupArmed{ false };
+        // 보상 자격이 있는 보스 사망을 사망 이벤트 때 표시한다. 큐에 있는 처치 처리보다 귀환 확정이 먼저 오지 않게 한다.
+        std::atomic<std::uint64_t> g_bossDeathPendingRunId{ 0 };
 
         void RefreshMapActorsLocked()
         {
@@ -84,6 +105,7 @@ namespace SkyrimPoE::Runtime
                 g_mapKillContext.dropMapTier = g_activeMap.isArena4 ? std::uint8_t{ 0 } : g_activeMap.tier;
                 g_mapKillContext.bonusIiqPct = g_activeMap.summary.bonusIiqPct;
                 g_mapKillContext.bonusIirPct = g_activeMap.summary.bonusIirPct;
+                g_mapKillContext.runFailed = g_activeMap.failed;
                 g_mapActorBossId = g_activeMap.bossRefFormId;
             } else {
                 g_mapActors.Clear();
@@ -99,7 +121,7 @@ namespace SkyrimPoE::Runtime
             g_activeMapRun.store(active, std::memory_order_release);
             if (active) {
                 const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
-                g_activeCellFormId.store(forms ? forms->cell->GetFormID() : 0, std::memory_order_release);
+                g_activeCellFormId.store(forms ? forms->cellId : 0, std::memory_order_release);
                 g_activeMapTier.store(g_activeMap.tier, std::memory_order_release);
                 g_activeBossFormId.store(g_activeMap.bossRefFormId, std::memory_order_release);
                 g_activeIsArena4.store(g_activeMap.isArena4, std::memory_order_release);
@@ -114,6 +136,9 @@ namespace SkyrimPoE::Runtime
 
         void SetActiveMapLocked(Core::ActiveMapState state, std::optional<Core::PoEItemRecord> consumedMap = std::nullopt)
         {
+            if (g_activeMap.runId != state.runId) {
+                g_bossDeathPendingRunId.store(0, std::memory_order_release);
+            }
             g_activeMap = std::move(state);
             g_consumedMapRecord = std::move(consumedMap);
             RefreshMapActorsLocked();
@@ -140,85 +165,163 @@ namespace SkyrimPoE::Runtime
                 const RE::NiPoint3&);
             static REL::Relocation<MoveToImplFn> func{ RELOCATION_ID(56227, 56626) };
             func(self, targetHandle, targetCell, targetWorldspace, pos, angle);
+            // 엔진에 요청을 전달했는지만 나타낸다. 도착은 이후 틱에서 확인한다.
             return true;
         }
 
-        bool MovePlayerToFallbackSafeLocation(RE::PlayerCharacter* player)
+        Core::MapTravelTarget CaptureLocation(RE::TESObjectREFR& ref)
         {
-            if (!player) {
+            const auto* cell = ref.GetParentCell();
+            const auto* world = ref.GetWorldspace();
+            const auto& pos = ref.GetPosition();
+            const auto& angle = ref.GetAngle();
+            return { cell ? cell->GetFormID() : 0, world ? world->GetFormID() : 0,
+                { pos.x, pos.y, pos.z }, { angle.x, angle.y, angle.z } };
+        }
+
+        void ResolveSafeReturnMarker()
+        {
+            auto* marker = RE::TESForm::LookupByID<RE::TESObjectREFR>(kSafeReturnMarkerId);
+            const auto* base = marker ? marker->GetBaseObject() : nullptr;
+            if (!marker || marker->GetFormType() != RE::FormType::Reference || marker->IsDeleted() ||
+                !base || base->GetFormID() != kXMarkerHeadingId) {
+                SKSE::log::error("MapDeviceRuntime: safe return marker 0x{:08X} is invalid.", kSafeReturnMarkerId);
+                return;
+            }
+            auto destination = CaptureLocation(*marker);
+            if (destination.worldspace == 0 && RE::TESForm::LookupByID<RE::TESWorldSpace>(kTamrielWorldspaceId)) {
+                // 영구 야외 참조의 부모 셀을 아직 못 읽으면 월드스페이스가 비어 나온다(houseCARL로 Tamriel 확인).
+                destination.cell = 0;
+                destination.worldspace = kTamrielWorldspaceId;
+            }
+            if (destination.worldspace != kTamrielWorldspaceId) {
+                SKSE::log::error("MapDeviceRuntime: safe return marker 0x{:08X} is outside Tamriel.", kSafeReturnMarkerId);
+                return;
+            }
+            destination.marker = kSafeReturnMarkerId;
+            g_safeReturnMarker = marker;
+            g_safeReturnTarget = destination;
+        }
+
+        bool IssueTravelMove(RE::PlayerCharacter* player, const Core::MapTravelTarget& target)
+        {
+            auto* cell = target.cell ? RE::TESForm::LookupByID<RE::TESObjectCELL>(target.cell) : nullptr;
+            auto* world = target.worldspace ? RE::TESForm::LookupByID<RE::TESWorldSpace>(target.worldspace) : nullptr;
+            const RE::NiPoint3 pos{ target.position[0], target.position[1], target.position[2] };
+            const RE::NiPoint3 angle{ target.angle[0], target.angle[1], target.angle[2] };
+            if (!player || (target.worldspace ? !world : !cell)) {
                 return false;
             }
-            if (auto* drCell = RE::TESForm::LookupByEditorID<RE::TESObjectCELL>("WhiterunDragonsreach")) {
-                RE::TESObjectREFR* cocMarker = nullptr;
-                drCell->ForEachReference([&](RE::TESObjectREFR* ref) {
-                    if (ref && ref->GetBaseObject() && ref->GetBaseObject()->GetFormID() == kCocMarkerBaseId) {
-                        cocMarker = ref;
-                        return RE::BSContainer::ForEachResult::kStop;
+            if (target.marker != 0) {
+                auto* marker = target.marker == kSafeReturnMarkerId
+                    ? g_safeReturnMarker : RE::TESForm::LookupByID<RE::TESObjectREFR>(target.marker);
+                return marker && !marker->IsDeleted() &&
+                    InvokeMoveToImpl(player, marker->GetHandle(), cell, world, pos, angle);
+            }
+            return MapDeviceRuntime::MovePlayerToSpace(player, cell, world, pos, angle);
+        }
+
+        Core::MapTravelTarget SavedReturn(const Core::ActiveMapState& state)
+        {
+            return { state.returnCellFormId, state.returnWorldspaceFormId, state.returnPos, state.returnAngle };
+        }
+
+        std::optional<Core::MapTravelTarget> ResolveReturnTarget(Core::MapTravelTarget saved)
+        {
+            auto* cell = saved.cell ? RE::TESForm::LookupByID<RE::TESObjectCELL>(saved.cell) : nullptr;
+            auto* world = saved.worldspace ? RE::TESForm::LookupByID<RE::TESWorldSpace>(saved.worldspace) : nullptr;
+            const auto finite = [](float value) { return std::isfinite(value); };
+            if (!MapPackRuntime::OwnsCell(cell) && std::ranges::all_of(saved.position, finite) &&
+                std::ranges::all_of(saved.angle, finite)) {
+                if (world) {
+                    // 실험 E: 야외는 조회 가능한 셀과 월드스페이스를 함께 넘긴다.
+                    if (!cell || !cell->IsExteriorCell() || cell->GetRuntimeData().worldSpace != world) {
+                        saved.cell = 0;
                     }
-                    return RE::BSContainer::ForEachResult::kContinue;
-                });
-                if (cocMarker) {
-                    return InvokeMoveToImpl(
-                        player, cocMarker->GetHandle(), drCell, nullptr,
-                        cocMarker->GetPosition(), cocMarker->GetAngle());
+                    return saved;
                 }
-                return InvokeMoveToImpl(
-                    player, player->CreateRefHandle(), drCell, nullptr,
-                    RE::NiPoint3{ 0.0f, 0.0f, 0.0f }, RE::NiPoint3{ 0.0f, 0.0f, 0.0f });
-            }
-            if (auto* tamriel = RE::TESForm::LookupByID<RE::TESWorldSpace>(kTamrielWorldspaceId)) {
-                return InvokeMoveToImpl(
-                    player, player->CreateRefHandle(), nullptr, tamriel,
-                    RE::NiPoint3{ 22200.0f, -7300.0f, -3400.0f }, RE::NiPoint3{ 0.0f, 0.0f, 0.0f });
-            }
-            return false;
-        }
-
-        bool TeleportPlayerToSavedReturn(RE::PlayerCharacter* player, const Core::ActiveMapState& snap)
-        {
-            if (!player) {
-                return false;
-            }
-            auto* retCell = (snap.returnCellFormId != 0)
-                ? RE::TESForm::LookupByID<RE::TESObjectCELL>(snap.returnCellFormId)
-                : nullptr;
-            auto* retWs = (snap.returnWorldspaceFormId != 0)
-                ? RE::TESForm::LookupByID<RE::TESWorldSpace>(snap.returnWorldspaceFormId)
-                : nullptr;
-            const RE::NiPoint3 pos{ snap.returnPos[0], snap.returnPos[1], snap.returnPos[2] };
-            const RE::NiPoint3 ang{ snap.returnAngle[0], snap.returnAngle[1], snap.returnAngle[2] };
-
-            // 검수 C-1: 야외(Tamriel 등)는 언로드되어 retCell==nullptr일 수 있으므로 retWs!=nullptr이면 그대로 이동
-            if (retWs != nullptr) {
-                return MapDeviceRuntime::MovePlayerToSpace(player, retCell, retWs, pos, ang);
-            }
-            if (retCell != nullptr) {
-                return MapDeviceRuntime::MovePlayerToSpace(player, retCell, nullptr, pos, ang);
-            }
-            SKSE::log::warn("MapDeviceRuntime: return cell 0x{:08X} / ws 0x{:08X} unavailable; using safe fallback.",
-                snap.returnCellFormId, snap.returnWorldspaceFormId);
-            return MovePlayerToFallbackSafeLocation(player);
-        }
-
-        bool TeleportPlayerToDungeonEntry(
-            RE::PlayerCharacter* player,
-            const MapPackRuntime::DungeonForms& dungeon)
-        {
-            if (!player) {
-                return false;
-            }
-            if (auto* marker = dungeon.entryMarker) {
-                auto* markerCell = marker->GetParentCell() ? marker->GetParentCell() : dungeon.cell;
-                auto* markerWs = marker->GetWorldspace();
-                if (markerCell || markerWs) {
-                    return InvokeMoveToImpl(player, marker->GetHandle(), markerCell, markerWs,
-                        marker->GetPosition(), marker->GetAngle());
+                if (!saved.worldspace && cell && cell->IsInteriorCell()) {
+                    return saved;
                 }
             }
-            if (dungeon.cell) {
-                return InvokeMoveToImpl(player, player->CreateRefHandle(), dungeon.cell, nullptr, {}, {});
+            SKSE::log::warn("MapDeviceRuntime: return cell 0x{:08X} / ws 0x{:08X} unavailable.", saved.cell, saved.worldspace);
+            return g_safeReturnTarget;
+        }
+
+        Core::MapTravelObservation ObservePlayer(RE::PlayerCharacter* player)
+        {
+            auto* ui = RE::UI::GetSingleton();
+            const bool loading = ui && (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
+                                        ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
+            if (!player) {
+                return { .loading = loading };
             }
-            return false;
+            const auto* cell = player->GetParentCell();
+            const auto* world = player->GetWorldspace();
+            const auto& pos = player->GetPosition();
+            return { cell ? cell->GetFormID() : 0, world ? world->GetFormID() : 0,
+                { pos.x, pos.y, pos.z }, player->Is3DLoaded(), loading, MapPackRuntime::OwnsCell(cell) };
+        }
+
+        using Core::MapTravelKind;
+
+        MapActionResult StartTravel(RE::PlayerCharacter* player, MapTravelKind kind,
+            const Core::MapTravelTarget& target, const TravelContext& context, std::string message)
+        {
+            if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                // 정리 완료 뒤에는 Tick이 돌지 않아 도착 확인도 시간 초과도 오지 않는다.
+                // 늦게 도착한 입장 등으로 지도 팩 셀에 갇히지 않게 안전 탈출만 추적 없이 이동시킨다.
+                if (kind == MapTravelKind::SafeEscape && IssueTravelMove(player, target)) {
+                    return { true, std::move(message) };
+                }
+                return { false, "안전 제거 정리 완료 상태입니다. 세이브 후 종료하거나 다시 불러오세요." };
+            }
+            const bool entry = Core::IsMapEntry(kind);
+            const bool retrySavedReturn = !entry && target.marker != kSafeReturnMarkerId;
+            // 귀환은 목표가 고정 마커여도 같은 목표로 정한 횟수만큼 다시 이동한다. 입장은 한 번만 기다린다.
+            const Core::MapTravelRequest request{
+                kind, target, g_travelSettings.arrivalRadius, !entry,
+                retrySavedReturn ? g_safeReturnTarget : std::nullopt,
+                entry ? 1u : g_travelSettings.maxAttempts, g_travelSettings.timeoutSec
+            };
+            bool sync = false;
+            {
+                std::scoped_lock lk(g_mutex);
+                if (!g_travel.TryStart(request)) {
+                    return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
+                }
+                g_travelContext = context;
+                if (entry) {
+                    // 입장 대기 중 지도 상태가 꺼져 있어 사망 가로채기가 새로 발동할 수 없다.
+                    g_permittedCell = 0;
+                    sync = g_playerInActiveMapCell.exchange(false, std::memory_order_acq_rel);
+                }
+            }
+            if (sync) {
+                MapDeviceRuntime::SyncMapLayer2ToStatEngine();
+            }
+            if (!IssueTravelMove(player, target)) {
+                std::scoped_lock lk(g_mutex);
+                g_travel.Clear();
+                g_travelContext = {};
+                return { false, "이동을 요청하지 못했습니다. 다시 시도하세요." };
+            }
+            return { true, std::move(message) };
+        }
+
+        MapActionResult RequestReturn(RE::PlayerCharacter* player, MapTravelKind kind,
+            const Core::MapTravelTarget& saved, std::uint64_t runId, std::string message)
+        {
+            const auto target = kind == MapTravelKind::SafeEscape ? g_safeReturnTarget : ResolveReturnTarget(saved);
+            if (!target) {
+                return { false, "안전 귀환 마커를 찾을 수 없어 이동을 요청하지 못했습니다. 다시 시도하세요." };
+            }
+            return StartTravel(player, kind, *target, { .runId = runId }, std::move(message));
+        }
+
+        void ShowMapMessage(const MapActionResult& result)
+        {
+            RE::SendHUDMessage::ShowHUDMessage(result.message.c_str());
         }
 
         bool RefundEntryOnMainThread(
@@ -279,26 +382,6 @@ namespace SkyrimPoE::Runtime
             return record;
         }
 
-        void CaptureReturnLocation(
-            RE::PlayerCharacter* player,
-            RE::FormID& outCellId,
-            RE::FormID& outWsId,
-            std::array<float, 3>& outPos,
-            std::array<float, 3>& outAngle)
-        {
-            if (!player) {
-                return;
-            }
-            auto* cell = player->GetParentCell();
-            auto* ws = player->GetWorldspace();
-            outCellId = cell ? cell->GetFormID() : 0u;
-            outWsId = ws ? ws->GetFormID() : 0u;
-            const auto pos = player->GetPosition();
-            const auto ang = player->GetAngle();
-            outPos = { pos.x, pos.y, pos.z };
-            outAngle = { ang.x, ang.y, ang.z };
-        }
-
         void CleanupSpawnedRefOnMainThread(RE::FormID fid)
         {
             if ((fid & 0xFF000000u) != 0xFF000000u) {
@@ -314,40 +397,25 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void CleanupSpawnedRefsOnMainThread()
-        {
-            std::vector<std::uint32_t> toClean;
-            {
-                std::scoped_lock lk(g_mutex);
-                // 보스는 스폰할 때 목록에도 들어가므로 따로 더하지 않는다(목록 밖 ID를 지우는 범위를 넓히지 않음).
-                toClean.swap(g_activeMap.spawnedRefFormIds);
-                g_activeMap.bossRefFormId = 0;
-                g_activeBossFormId.store(0u, std::memory_order_release);
-                RefreshMapActorsLocked();
-            }
-            for (const auto fid : toClean) {
-                CleanupSpawnedRefOnMainThread(fid);
-            }
-        }
-
         void FinishCancelledRunOnMainThread(
             RE::PlayerCharacter* player, const Core::ActiveMapState& snap, bool returnPlayer,
             std::optional<bool> refunded, std::string_view reason)
         {
-            // refunded: nullopt = 돌려줄 대상이 아님(보스를 처치한 회차), true/false = 환불 성공 여부
+            // refunded: nullopt = 돌려줄 대상이 아님(보스를 처치했거나 실패한 회차), true/false = 환불 성공 여부
             // 보스는 스폰할 때 목록에도 들어가므로 목록만 지운다. 목록 밖의 보스 ID는 손상됐거나 재사용된 ID일 수 있다.
             for (const auto id : snap.spawnedRefFormIds) {
                 CleanupSpawnedRefOnMainThread(id);
             }
-            const bool returned = !returnPlayer || TeleportPlayerToSavedReturn(player, snap);
             const std::string_view refundText = !refunded.has_value()
-                ? "보스를 처치한 회차라 소모품은 돌려주지 않습니다."
+                ? "이미 끝난 회차(보스 처치 또는 실패)라 소모품은 돌려주지 않습니다."
                 : (*refunded ? (snap.isArena4 ? "공물을 돌려받았습니다." : "지도를 돌려받았습니다.")
                              : "소모품을 돌려주지 못했습니다.");
-            const auto msg = std::format("{} {}{}", reason, refundText,
-                returned ? "" : " 귀환 위치로 이동하지 못했습니다.");
+            const auto msg = std::format("{} {}", reason, refundText);
             SKSE::log::warn("MapDeviceRuntime: cancelled run {}. {}", snap.runId, msg);
             RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
+            if (returnPlayer) {
+                ShowMapMessage(RequestReturn(player, MapTravelKind::CancelledRun, SavedReturn(snap), 0, "귀환을 요청했습니다."));
+            }
         }
 
         [[nodiscard]] bool HasMapSpawnCapacityLocked()
@@ -513,7 +581,8 @@ namespace SkyrimPoE::Runtime
             Core::ActiveMapState snap;
             {
                 std::scoped_lock lk(g_mutex);
-                if (!g_activeMap.active || g_spawnedForCurrentRun) {
+                if (!g_activeMap.active || g_spawnedForCurrentRun ||
+                    !g_playerInActiveMapCell.load(std::memory_order_relaxed)) {
                     return;
                 }
                 snap = g_activeMap;
@@ -583,6 +652,8 @@ namespace SkyrimPoE::Runtime
                         g_spawnedForCurrentRun = false;
                         g_pendingSpawnRunId = 0;
                         g_arenaPhaseInvulnSec = 0.0;
+                        g_permittedCell = 0;
+                        g_retryReturnRunId = 0;
                         g_deathEscapeExitElapsedSec = 0.0;
                         g_deathEscapeInFlight.store(false, std::memory_order_release);
                         RefreshAtomicsLocked();
@@ -615,6 +686,233 @@ namespace SkyrimPoE::Runtime
                 spawnedCount, bossId, snap.isArena4, snap.tier, Core::MapSystem::RewardMonsterLevel(snap));
         }
 
+        void EndRunOnMainThread()
+        {
+            std::vector<std::uint32_t> toClean;
+            {
+                std::scoped_lock lk(g_mutex);
+                // 보스도 스폰 목록에 있으므로 목록에 담긴 참조만 정리한다.
+                toClean.swap(g_activeMap.spawnedRefFormIds);
+                SetActiveMapLocked({});
+                g_spawnedForCurrentRun = false;
+                g_pendingSpawnRunId = 0;
+                g_arenaPhaseInvulnSec = 0.0;
+                g_permittedCell = 0;
+                g_retryReturnRunId = 0;
+                RefreshAtomicsLocked();
+            }
+            for (const auto id : toClean) {
+                CleanupSpawnedRefOnMainThread(id);
+            }
+            MapDeviceRuntime::SyncMapLayer2ToStatEngine();
+            RE::SendHUDMessage::ShowHUDMessage("지도 회차를 종료했습니다.");
+        }
+
+        Core::MapEntryAccess GetEntryAccessLocked(const Core::MapTravelObservation& observation)
+        {
+            return Core::CheckMapEntryAccess(g_activeCellFormId.load(std::memory_order_relaxed),
+                g_permittedCell, observation);
+        }
+
+        void PermitEntryLocked(RE::FormID cell)
+        {
+            g_permittedCell = cell;
+            g_retryReturnRunId = 0;
+            if (!g_spawnedForCurrentRun) {
+                g_pendingSpawnRunId = g_activeMap.runId;
+            }
+            g_deathEscapeExitElapsedSec = 0.0;
+            g_deathEscapeInFlight.store(false, std::memory_order_release);
+        }
+
+        bool CompleteEntry(RE::PlayerCharacter* player, const Core::MapTravelRequest& request, const TravelContext& context)
+        {
+            const auto kind = request.kind;
+            const auto& origin = context.entryOrigin;
+            std::string message;
+            if (kind == MapTravelKind::Reenter) {
+                std::scoped_lock lk(g_mutex);
+                if (g_activeMap.runId != context.runId || !Core::MapSystem::TryConsumePortalForReenter(g_activeMap)) {
+                    return false;
+                }
+                g_activeMap.returnCellFormId = origin.cell;
+                g_activeMap.returnWorldspaceFormId = origin.worldspace;
+                g_activeMap.returnPos = origin.position;
+                g_activeMap.returnAngle = origin.angle;
+                PermitEntryLocked(request.target.cell);
+                message = std::format("지도 재입장 완료 (남은 포털: {}/{})",
+                    g_activeMap.portalsRemaining, Core::kNormalMapMaxPortals);
+            } else {
+                const bool arena = kind == MapTravelKind::OpenArena;
+                const auto& pack = MapPackRuntime::Manifest();
+                const auto tier = FormIds::MapTierFromLocalFormId(FormIds::ResolveLocalFormIdIfOurs(context.item));
+                const auto* dungeon = arena ? &pack.arena : (tier ? pack.ForTier(*tier) : nullptr);
+                auto* item = RE::TESForm::LookupByID<RE::TESBoundObject>(context.item);
+                if (!dungeon || !item) {
+                    return false;
+                }
+
+                bool committed = false;
+                SaveLoad::RunSerializedTransaction([&]() {
+                    const auto beforeCount = player->GetItemCount(item);
+                    if (beforeCount <= 0) {
+                        return;
+                    }
+                    std::optional<Core::PoEItemRecord> tracked;
+                    if (context.mapKey.IsValid()) {
+                        tracked = ItemTracker::FindByKey(context.mapKey);
+                        auto* extra = tracked ? ItemTracker::FindExtraListByKey(player, item, context.mapKey) : nullptr;
+                        if (!extra) {
+                            return;
+                        }
+                        (void)player->RemoveItem(item, 1, RE::ITEM_REMOVE_REASON::kRemove, extra, nullptr);
+                    } else if (!UniqueIdUtil::RemovePlainItem(player, item, 1)) {
+                        if (!arena || MapDeviceRuntime::CountPlayerTributes(player) <= 0) {
+                            return;
+                        }
+                        // 공물은 추적 제작 아이템이 아니므로 기존 공물 소비 경로도 허용한다.
+                        (void)player->RemoveItem(item, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                    }
+                    // RemoveItem의 반환은 제거 수량이 아니므로 가방 수량으로 소비를 확인한다.
+                    if (player->GetItemCount(item) != beforeCount - 1) {
+                        return;
+                    }
+                    if (tracked && !ItemTracker::FindExtraListByKey(player, item, context.mapKey)) {
+                        ItemTracker::RemoveByKey(context.mapKey);
+                    }
+
+                    std::scoped_lock lk(g_mutex);
+                    auto next = arena
+                        ? Core::MapSystem::CreateArena4Run(g_nextRunId++, origin.cell, origin.worldspace, origin.position, origin.angle)
+                        : Core::MapSystem::CreateNormalMapRun(g_nextRunId++, *tier,
+                            tracked ? tracked->affixes : std::vector<Core::RolledAffix>{},
+                            origin.cell, origin.worldspace, origin.position, origin.angle);
+                    next.dungeonKey = dungeon->key;
+                    next.packVersion = pack.version;
+                    message = arena
+                        ? std::format("4차 전직 결투장 {} 입장 완료", dungeon->name)
+                        : std::format("T{} {} 입장 완료 (Lv.{}, 남은 포털 {}/{})", next.tier, dungeon->name,
+                            Core::MapSystem::RewardMonsterLevel(next), next.portalsRemaining, Core::kNormalMapMaxPortals);
+                    SetActiveMapLocked(std::move(next), std::move(tracked));
+                    g_spawnedForCurrentRun = false;
+                    g_arenaPhaseInvulnSec = 0.0;
+                    PermitEntryLocked(request.target.cell);
+                    RefreshAtomicsLocked();
+                    committed = true;
+                });
+                if (!committed) {
+                    return false;
+                }
+            }
+
+            RE::SendHUDMessage::ShowHUDMessage(message.c_str());
+            return true;
+        }
+
+        void CompleteReturn(MapTravelKind kind, std::uint64_t runId)
+        {
+            if (runId != 0 && g_bossDeathPendingRunId.load(std::memory_order_acquire) == runId &&
+                g_queue && !MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                // 보스 사망 처리(보상·bossKilled)가 큐에 먼저 들어가 있다. 그 뒤로 돌려 결정 175 판정이 그 결과를 보게 한다.
+                g_queue->Enqueue([kind, runId]() { CompleteReturn(kind, runId); });
+                return;
+            }
+            if (kind == MapTravelKind::SafeEscape || kind == MapTravelKind::CancelledRun) {
+                RE::SendHUDMessage::ShowHUDMessage(kind == MapTravelKind::SafeEscape ? "안전 탈출을 완료했습니다." : "귀환을 완료했습니다.");
+                return;
+            }
+            bool endRun = false;
+            std::uint8_t portals = 0;
+            bool arena = false;
+            {
+                std::scoped_lock lk(g_mutex);
+                if (!g_activeMap.active || g_activeMap.runId != runId) {
+                    return;
+                }
+                g_retryReturnRunId = 0;
+                endRun = kind == MapTravelKind::Abandon || Core::MapSystem::ShouldEndOnReturn(g_activeMap);
+                portals = g_activeMap.portalsRemaining;
+                arena = g_activeMap.isArena4;
+            }
+            if (endRun) {
+                EndRunOnMainThread();
+            } else {
+                const auto message = std::format("귀환 완료 (남은 포털: {}/{})",
+                    portals, arena ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals);
+                RE::SendHUDMessage::ShowHUDMessage(message.c_str());
+            }
+        }
+
+        void ReportTravelFailure(MapTravelKind kind, std::uint64_t runId)
+        {
+            if (!Core::IsMapEntry(kind)) {
+                // 귀환이 끝내 실패하면 지도 안에서 무적으로 남지 않게 푼다(사망 귀환이 합류한 일반 귀환·포기 포함).
+                // 다음 치명타는 다시 귀환을 요청한다.
+                std::scoped_lock lk(g_mutex);
+                g_deathEscapeExitElapsedSec = 0.0;
+                g_deathEscapeInFlight.store(false, std::memory_order_release);
+            }
+            if (kind == MapTravelKind::Return || kind == MapTravelKind::DeathEscape) {
+                std::scoped_lock lk(g_mutex);
+                if (g_activeMap.active && g_activeMap.runId == runId) {
+                    g_retryReturnRunId = runId;
+                }
+            }
+            RE::SendHUDMessage::ShowHUDMessage(Core::IsMapEntry(kind)
+                ? "입구 도착을 확인하지 못해 입장 요청을 취소했습니다. 다시 시도하세요."
+                : (kind == MapTravelKind::SafeEscape || kind == MapTravelKind::CancelledRun)
+                    ? "귀환 위치에 도착하지 못했습니다. 지도 탭의 안전 탈출로 다시 시도하세요."
+                    : "귀환 위치에 도착하지 못했습니다. 다시 시도하세요.");
+        }
+
+        void AdvanceTravel(RE::PlayerCharacter* player, const Core::MapTravelObservation& observation,
+            double deltaSec, bool gamePaused)
+        {
+            std::optional<Core::MapTravelRequest> request;
+            TravelContext context;
+            Core::MapTravelOutcome outcome;
+            {
+                std::scoped_lock lk(g_mutex);
+                request = g_travel.Current();
+                if (!request) {
+                    return;
+                }
+                outcome = g_travel.Tick(observation, deltaSec, gamePaused);
+                if (outcome == Core::MapTravelOutcome::Waiting) {
+                    return;
+                }
+                context = g_travelContext;
+                if (outcome == Core::MapTravelOutcome::Retry || outcome == Core::MapTravelOutcome::Fallback) {
+                    request = g_travel.Current();
+                } else {
+                    g_travelContext = {};
+                }
+            }
+
+            if (outcome == Core::MapTravelOutcome::Arrived) {
+                if (!Core::IsMapEntry(request->kind)) {
+                    CompleteReturn(request->kind, context.runId);
+                } else if (!CompleteEntry(player, *request, context)) {
+                    RE::SendHUDMessage::ShowHUDMessage("입장 비용을 소비하지 못했습니다.");
+                    ShowMapMessage(RequestReturn(player, MapTravelKind::CancelledRun, context.entryOrigin, 0, "귀환을 요청했습니다."));
+                }
+                return;
+            }
+            if (outcome != Core::MapTravelOutcome::Failed) {
+                if (IssueTravelMove(player, request->target)) {
+                    return;
+                }
+                SKSE::log::warn("MapDeviceRuntime: could not issue travel attempt {}.", request->attempts);
+                if (outcome == Core::MapTravelOutcome::Retry) {
+                    return;
+                }
+                std::scoped_lock lk(g_mutex);
+                g_travel.Clear();
+                g_travelContext = {};
+            }
+            ReportTravelFailure(request->kind, context.runId);
+        }
+
         void ExecuteDeathEscapeOnMainThread()
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
@@ -623,7 +921,34 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            // 1) 플레이어 상태이상 해제 및 체력·매지카·스태미나 최소 안전선(50%) 복구
+            Core::MapTravelTarget saved;
+            std::uint64_t runId = 0;
+            bool alreadyReturning = false;
+            bool failedRun = false;
+            bool arenaRun = false;
+            {
+                std::scoped_lock lk(g_mutex);
+                const auto& pending = g_travel.Current();
+                if (!g_activeMap.active || (pending && Core::IsMapEntry(pending->kind))) {
+                    g_deathEscapeInFlight.store(false, std::memory_order_release);
+                    return;
+                }
+                // 사망으로 생긴 포털 변화와 실패는 즉시 반영한다. 회차 종료(정리)는 도착 때 확정하므로
+                // 실패한 회차도 귀환 좌표를 쓰도록 활성으로 두되, 보상·재입장은 failed로 막는다.
+                auto death = g_activeMap;
+                if (!Core::MapSystem::ConsumePortalOnDeathEscape(death)) {
+                    g_activeMap.failed = true;
+                    failedRun = true;
+                    arenaRun = g_activeMap.isArena4;
+                    RefreshMapActorsLocked();
+                }
+                g_activeMap.portalsRemaining = death.portalsRemaining;
+                saved = SavedReturn(g_activeMap);
+                runId = g_activeMap.runId;
+                alreadyReturning = pending.has_value();
+                g_deathEscapeExitElapsedSec = 0.0;
+            }
+
             AilmentRuntime::ClearPlayerAilments();
             if (auto* av = player->AsActorValueOwner()) {
                 for (const auto avKind : { RE::ActorValue::kHealth, RE::ActorValue::kMagicka, RE::ActorValue::kStamina }) {
@@ -635,48 +960,98 @@ namespace SkyrimPoE::Runtime
                 }
             }
 
-            Core::ActiveMapState snap;
-            bool survivedMap = false;
+            if (failedRun) {
+                RE::SendHUDMessage::ShowHUDMessage(arenaRun
+                    ? "[4차 전직 결투장] 치명타로 도전에 실패했습니다. 귀환합니다."
+                    : "[지도 장치] 남은 포털이 없어 지도에 실패했습니다. 귀환합니다.");
+            }
+            // UI나 문에서 이미 요청한 귀환도 도착할 때 같은 회차 종료 규칙을 적용한다.
+            if (!alreadyReturning) {
+                const auto result = RequestReturn(player, MapTravelKind::DeathEscape, saved, runId,
+                    "치명타를 막아 귀환을 요청했습니다.");
+                if (!result.ok) {
+                    // 요청이 서지 않으면 실패 처리기가 오지 않으므로 여기서 무적을 푼다.
+                    std::scoped_lock lk(g_mutex);
+                    g_deathEscapeExitElapsedSec = 0.0;
+                    g_deathEscapeInFlight.store(false, std::memory_order_release);
+                }
+                ShowMapMessage(result);
+            }
+        }
+
+        class MapReturnDoorSink final : public RE::BSTEventSink<RE::TESActivateEvent>
+        {
+        public:
+            RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* event,
+                RE::BSTEventSource<RE::TESActivateEvent>*) override
+            {
+                if (event && event->actionRef && event->actionRef->IsPlayerRef() && event->objectActivated && g_queue) {
+                    const auto generation = g_queue->CurrentGeneration();
+                    const auto cellId = MapPackRuntime::ReturnDoorCell(event->objectActivated->GetFormID());
+                    if (cellId != 0) {
+                        g_queue->EnqueueForGeneration(generation, [cellId]() {
+                            auto* player = RE::PlayerCharacter::GetSingleton();
+                            const auto observation = ObservePlayer(player);
+                            if (observation.cell != cellId || observation.loading) {
+                                return;
+                            }
+                            const auto status = MapDeviceRuntime::GetTravelStatus(player);
+                            if (!status.kind) {
+                                // 안전 제거 정리 뒤에도 갇히지 않도록 안전 탈출은 허용한다.
+                                ShowMapMessage(status.unauthorized || MapDeviceRuntime::IsUninstallCleanupArmed()
+                                    ? MapDeviceRuntime::SafeEscape(player) : MapDeviceRuntime::ReturnPortal(player));
+                            }
+                        });
+                    }
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        };
+
+        std::string EntryUnavailable(RE::PlayerCharacter* player, MapTravelKind kind)
+        {
+            if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
+                return reason;
+            }
+            if (!player) {
+                return "플레이어를 찾을 수 없습니다.";
+            }
+            if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                return "안전 제거 정리 완료 상태입니다. 세이브 후 종료하거나 다시 불러오세요.";
+            }
             {
                 std::scoped_lock lk(g_mutex);
-                if (!g_activeMap.active) {
-                    g_deathEscapeInFlight.store(false, std::memory_order_release);
-                    return;
+                if (g_travel.Current()) {
+                    return "이동 중입니다. 도착 후 다시 시도하세요.";
                 }
-                survivedMap = Core::MapSystem::ConsumePortalOnDeathEscape(g_activeMap);
-                if (!survivedMap) {
-                    RefreshMapActorsLocked();
+                if (kind != MapTravelKind::Reenter && g_activeMap.active) {
+                    return "진행 중인 회차가 있습니다. 보스를 처치하고 귀환하거나 포기한 뒤 여세요.";
                 }
-                snap = g_activeMap;
-                g_deathEscapeExitElapsedSec = 0.0;
             }
-
-            (void)TeleportPlayerToSavedReturn(player, snap);
-
-            if (!survivedMap) {
-                CleanupSpawnedRefsOnMainThread();
-                {
-                    std::scoped_lock lk(g_mutex);
-                    SetActiveMapLocked({});
-                    g_spawnedForCurrentRun = false;
-                    g_pendingSpawnRunId = 0;
-                    g_arenaPhaseInvulnSec = 0.0;
-                    RefreshAtomicsLocked();
-                }
-                MapDeviceRuntime::SyncMapLayer2ToStatEngine();
-                const char* msg = snap.isArena4
-                    ? "[4차 전직 결투장] 치명타로 도전에 실패했습니다. 귀환합니다."
-                    : "[지도 장치] 남은 포털이 모두 소진되어 지도가 닫혔습니다.";
-                RE::SendHUDMessage::ShowHUDMessage(msg);
-            } else {
-                g_playerInActiveMapCell.store(false, std::memory_order_release);
-                MapDeviceRuntime::SyncMapLayer2ToStatEngine();
-                const auto msg = std::format("[지도 장치] 치명타 가로채기 발동! 안전 귀환 (남은 포털: {}/{})",
-                    snap.portalsRemaining, Core::kNormalMapMaxPortals);
-                RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
+            const auto* cell = player->GetParentCell();
+            if (!cell) {
+                return "현재 셀을 찾을 수 없습니다. 이동을 마치고 다시 시도하세요.";
             }
-            SKSE::log::info("MapDeviceRuntime: death escape executed (arena4={}, survivedMap={}, portalsRemaining={}).",
-                snap.isArena4, survivedMap, snap.portalsRemaining);
+            if (MapPackRuntime::OwnsCell(cell)) {
+                return "지도 팩 셀 안에서는 입장을 요청할 수 없습니다. 먼저 귀환하세요.";
+            }
+            if (player->IsInCombat()) {
+                return "전투 중에는 입장을 요청할 수 없습니다.";
+            }
+            return {};
+        }
+
+        MapActionResult RequestEntry(RE::PlayerCharacter* player, MapTravelKind kind,
+            const MapPackRuntime::DungeonForms& forms, TravelContext context, std::string message)
+        {
+            auto* marker = forms.entryMarker;
+            if (!marker || marker->IsDeleted() || marker->GetParentCell() != forms.cell) {
+                return { false, "지도 입구 마커를 찾을 수 없습니다." };
+            }
+            auto target = CaptureLocation(*marker);
+            target.marker = marker->GetFormID();
+            context.entryOrigin = CaptureLocation(*player);
+            return StartTravel(player, kind, target, context, std::move(message));
         }
     }
 
@@ -687,7 +1062,8 @@ namespace SkyrimPoE::Runtime
         const Core::PassiveTreeData* treeData,
         const Core::Config* config,
         Core::EnergyShieldPool* esPool,
-        Core::CharmSystem* charmSystem)
+        Core::CharmSystem* charmSystem,
+        const Core::MapTravelSettings& travelSettings)
     {
         g_queue = queue;
         g_statEngine = statEngine;
@@ -696,6 +1072,23 @@ namespace SkyrimPoE::Runtime
         g_config = config;
         g_esPool = esPool;
         g_charmSystem = charmSystem;
+        g_travelSettings = travelSettings;
+        ResolveSafeReturnMarker();
+    }
+
+    void MapDeviceRuntime::InstallReturnDoorSink()
+    {
+        static MapReturnDoorSink sink;
+        static bool installed = false;
+        if (installed) {
+            return;
+        }
+        if (auto* source = RE::ScriptEventSourceHolder::GetSingleton()) {
+            source->AddEventSink<RE::TESActivateEvent>(&sink);
+            installed = true;
+        } else {
+            SKSE::log::error("MapDeviceRuntime: could not register the return door activation sink.");
+        }
     }
 
     void MapDeviceRuntime::BindDataPack(const Core::DataPack* dataPack)
@@ -740,342 +1133,146 @@ namespace SkyrimPoE::Runtime
 
     void MapDeviceRuntime::Tick(double deltaSec, bool gamePaused)
     {
-        if (g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
+        if (IsUninstallCleanupArmed()) {
             return;
         }
         auto* player = RE::PlayerCharacter::GetSingleton();
-        auto* cell = player ? player->GetParentCell() : nullptr;
-        const RE::FormID curCellId = cell ? cell->GetFormID() : 0u;
-        const RE::FormID activeCellId = g_activeCellFormId.load(std::memory_order_acquire);
-        const bool isActiveRun = g_activeMapRun.load(std::memory_order_acquire);
-        const bool nowInMapCell = isActiveRun && activeCellId != 0u && curCellId == activeCellId;
-        const bool prevInMapCell = g_playerInActiveMapCell.exchange(nowInMapCell, std::memory_order_acq_rel);
-
-        if (nowInMapCell != prevInMapCell) {
-            SyncMapLayer2ToStatEngine();
-        }
-
-        if (gamePaused || !player) {
+        if (!player) {
+            if (g_playerInActiveMapCell.exchange(false, std::memory_order_acq_rel)) {
+                SyncMapLayer2ToStatEngine();
+            }
             return;
         }
-
-        auto* ui = RE::UI::GetSingleton();
-        const bool loading = ui && (
-            ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
-            ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
-
-        // 검수 C-2 + Major #2: 사망 탈출 무적/중복 방지 플래그는 로딩·일시정지 해제 후
-        // 플레이어 3D가 지도 셀 밖에서 실제로 로드된 상태로 1.5초 경과해야 해제한다.
-        if (g_deathEscapeInFlight.load(std::memory_order_acquire)) {
-            if (!nowInMapCell && !loading && player->Is3DLoaded() &&
-                std::isfinite(deltaSec) && deltaSec > 0.0) {
-                bool releaseNow = false;
-                {
-                    std::scoped_lock lk(g_mutex);
-                    g_deathEscapeExitElapsedSec += deltaSec;
-                    if (g_deathEscapeExitElapsedSec >= kDeathEscapeReleaseCooldownSec) {
-                        g_deathEscapeExitElapsedSec = 0.0;
-                        releaseNow = true;
-                    }
-                }
-                if (releaseNow) {
-                    g_deathEscapeInFlight.store(false, std::memory_order_release);
-                }
-            }
+        auto observation = ObservePlayer(player);
+        if (observation.cell != g_activeCellFormId.load(std::memory_order_acquire) &&
+            g_playerInActiveMapCell.exchange(false, std::memory_order_acq_rel)) {
+            SyncMapLayer2ToStatEngine();
         }
+        AdvanceTravel(player, observation, deltaSec, gamePaused);
+        // 도착 처리에서 새 귀환을 요청하거나 재시도할 수 있으므로 엔진 상태를 다시 읽는다.
+        observation = ObservePlayer(player);
 
+        bool accessChanged = false;
+        bool warnUnauthorized = false;
         bool shouldSpawnNow = false;
         {
             std::scoped_lock lk(g_mutex);
-            if (g_activeMap.active && g_arenaPhaseInvulnSec > 0.0 &&
-                std::isfinite(deltaSec) && deltaSec > 0.0) {
-                g_arenaPhaseInvulnSec = std::max(0.0, g_arenaPhaseInvulnSec - deltaSec);
-            }
-            if (g_activeMap.active && !g_spawnedForCurrentRun &&
-                g_pendingSpawnRunId != 0 && g_pendingSpawnRunId == g_activeMap.runId &&
-                nowInMapCell) {
-                if (!loading && player->Is3DLoaded()) {
-                    shouldSpawnNow = true;
+            const auto access = GetEntryAccessLocked(observation);
+            g_permittedCell = access.permittedCell;
+            accessChanged = g_playerInActiveMapCell.exchange(access.inActiveMap, std::memory_order_acq_rel) != access.inActiveMap;
+            const auto& pending = g_travel.Current();
+            if (!observation.loading) {
+                if (!access.unauthorized) {
+                    g_warnedUnauthorizedCell = 0;
+                } else if (observation.cell != g_warnedUnauthorizedCell && !pending) {
+                    g_warnedUnauthorizedCell = observation.cell;
+                    warnUnauthorized = true;
                 }
+            }
+            if (!gamePaused && !observation.loading) {
+                const bool validDelta = std::isfinite(deltaSec) && deltaSec > 0.0;
+                if (g_deathEscapeInFlight.load(std::memory_order_acquire)) {
+                    if (observation.inPackCell || !observation.loaded3D || observation.cell == 0) {
+                        g_deathEscapeExitElapsedSec = 0.0;
+                    } else if (validDelta) {
+                        g_deathEscapeExitElapsedSec += deltaSec;
+                        if (g_deathEscapeExitElapsedSec >= kDeathEscapeReleaseCooldownSec) {
+                            g_deathEscapeExitElapsedSec = 0.0;
+                            g_deathEscapeInFlight.store(false, std::memory_order_release);
+                        }
+                    }
+                }
+                if (g_activeMap.active && g_arenaPhaseInvulnSec > 0.0 && validDelta) {
+                    g_arenaPhaseInvulnSec = std::max(0.0, g_arenaPhaseInvulnSec - deltaSec);
+                }
+                shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !g_spawnedForCurrentRun &&
+                    g_pendingSpawnRunId != 0 && g_pendingSpawnRunId == g_activeMap.runId;
             }
         }
 
+        if (accessChanged) {
+            SyncMapLayer2ToStatEngine();
+        }
+        if (warnUnauthorized) {
+            RE::SendHUDMessage::ShowHUDMessage("입장 허가가 없습니다. 귀환 문이나 지도 탭의 안전 탈출을 이용하세요.");
+        }
         if (shouldSpawnNow) {
             SpawnMapEncounterOnMainThread(player);
         }
     }
 
     MapActionResult MapDeviceRuntime::OpenNormalMap(
-        RE::PlayerCharacter* player,
-        const Core::InventoryItemKey& mapKey,
-        RE::FormID baseFormId)
+        RE::PlayerCharacter* player, const Core::InventoryItemKey& mapKey, RE::FormID baseFormId)
     {
-        if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
-            return { false, reason };
+        if (auto reason = EntryUnavailable(player, MapTravelKind::OpenMap); !reason.empty()) {
+            return { false, std::move(reason) };
         }
-        if (!player) {
-            return { false, "플레이어를 찾을 수 없습니다." };
-        }
-        if (g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
-            return { false, "안전 제거 정리 완료 상태입니다. 세이브 후 종료하거나 다시 불러오세요." };
-        }
-        if (g_playerInActiveMapCell.load(std::memory_order_acquire)) {
-            return { false, "지도 내부에서는 새 지도를 열 수 없습니다. 먼저 포털로 귀환하세요." };
-        }
-        if (player->IsInCombat()) {
-            return { false, "전투 중에는 지도를 열 수 없습니다." };
-        }
-
-        const auto localId = FormIds::ResolveLocalFormIdIfOurs(baseFormId);
-        const auto tierOpt = FormIds::MapTierFromLocalFormId(localId);
-        if (!tierOpt) {
+        const auto tier = FormIds::MapTierFromLocalFormId(FormIds::ResolveLocalFormIdIfOurs(baseFormId));
+        if (!tier) {
             return { false, "유효한 지도 아이템이 아닙니다." };
         }
-        const std::uint8_t tier = *tierOpt;
-        const auto& pack = MapPackRuntime::Manifest();
-        const auto* dungeon = pack.ForTier(tier);
+        const auto* dungeon = MapPackRuntime::Manifest().ForTier(*tier);
         const auto* forms = MapPackRuntime::FindForms(dungeon);
         if (!forms) {
             return { false, "지도 티어에 해당하는 복제 던전을 찾을 수 없습니다." };
         }
-        auto* miscObj = RE::TESForm::LookupByID<RE::TESBoundObject>(baseFormId);
-        if (!miscObj) {
+
+        auto* item = RE::TESForm::LookupByID<RE::TESBoundObject>(baseFormId);
+        if (!item) {
             return { false, "지도 베이스 폼을 찾을 수 없습니다." };
         }
-
-        std::optional<Core::PoEItemRecord> consumedTrackedRecord;
-        std::vector<Core::RolledAffix> rolledMods;
-        bool consumed = false;
-        SaveLoad::RunSerializedTransaction([&]() {
-            if (mapKey.IsValid()) {
-                // 배치2 검수 Major #3: 추적 제작 지도가 지정됐는데 찾지 못하면 일반 지도로 폴백 오소비하지 않고 실패 반환
-                const auto tracked = ItemTracker::FindByKey(mapKey);
-                if (!tracked) {
-                    return;
-                }
-                auto* extra = ItemTracker::FindExtraListByKey(player, miscObj, mapKey);
-                if (!extra) {
-                    return;
-                }
-                consumedTrackedRecord = *tracked;
-                rolledMods = tracked->affixes;
-                (void)player->RemoveItem(miscObj, 1, RE::ITEM_REMOVE_REASON::kRemove, extra, nullptr);
-                ItemTracker::RemoveByKey(mapKey);
-                consumed = true;
-                return;
+        if (mapKey.IsValid()) {
+            if (!ItemTracker::FindByKey(mapKey) || !ItemTracker::FindExtraListByKey(player, item, mapKey)) {
+                return { false, "인벤토리에서 해당 지도를 찾지 못했습니다." };
             }
-            if (UniqueIdUtil::RemovePlainItem(player, miscObj, 1)) {
-                consumed = true;
-            }
-        });
-        if (!consumed) {
-            return { false, "인벤토리에서 해당 지도를 소비하지 못했습니다." };
+        } else if (UniqueIdUtil::CountRemovablePlainItems(player, item) <= 0) {
+            // 도착 때 소비(RemovePlainItem)와 같은 기준이어야 이름·즐겨찾기 등 보호된 지도만 있을 때 헛걸음하지 않는다.
+            return { false, "인벤토리에 소비할 수 있는 일반 지도가 없습니다." };
         }
-
-        // 소비 확정 이후에만 기존 활성 지도 잔여물을 정리한다(소비 실패 시 기존 지도 파괴 방지)
-        if (g_activeMapRun.load(std::memory_order_acquire)) {
-            CleanupSpawnedRefsOnMainThread();
-        }
-
-        RE::FormID retCell = 0;
-        RE::FormID retWs = 0;
-        std::array<float, 3> retPos{};
-        std::array<float, 3> retAng{};
-        CaptureReturnLocation(player, retCell, retWs, retPos, retAng);
-
-        Core::ActiveMapState next{};
-        {
-            std::scoped_lock lk(g_mutex);
-            next = Core::MapSystem::CreateNormalMapRun(
-                g_nextRunId++, tier, rolledMods, retCell, retWs, retPos, retAng);
-            next.dungeonKey = dungeon->key;
-            next.packVersion = pack.version;
-            SetActiveMapLocked(next, consumedTrackedRecord);
-            g_spawnedForCurrentRun = false;
-            g_pendingSpawnRunId = next.runId;
-            g_arenaPhaseInvulnSec = 0.0;
-            g_deathEscapeExitElapsedSec = 0.0;
-            g_deathEscapeInFlight.store(false, std::memory_order_release);
-            RefreshAtomicsLocked();
-        }
-
-        if (!TeleportPlayerToDungeonEntry(player, *forms)) {
-            {
-                std::scoped_lock lk(g_mutex);
-                SetActiveMapLocked({});
-                g_spawnedForCurrentRun = false;
-                g_pendingSpawnRunId = 0;
-                RefreshAtomicsLocked();
-            }
-            if (!RefundEntryOnMainThread(player, tier, false, consumedTrackedRecord)) {
-                return { false, "지도 던전 입구로 이동하지 못했고 소모한 지도를 돌려주지 못했습니다." };
-            }
-            return { false, "지도 던전 입구 마커로 이동하지 못했습니다." };
-        }
-
-        SyncMapLayer2ToStatEngine();
-        const auto msg = std::format("T{} {} 입장 (Lv.{}, 남은 포털 {}/{})",
-            tier, dungeon->name, Core::MapSystem::RewardMonsterLevel(next), next.portalsRemaining, Core::kNormalMapMaxPortals);
-        RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
-        SKSE::log::info("MapDeviceRuntime: opened T{} map '{}' (cell=0x{:08X}, portals={}/{}).",
-            tier, dungeon->key, forms->cell->GetFormID(), next.portalsRemaining, Core::kNormalMapMaxPortals);
-        return { true, msg };
+        return RequestEntry(player, MapTravelKind::OpenMap, *forms, { .mapKey = mapKey, .item = baseFormId },
+            std::format("T{} {} 입장을 요청했습니다.", *tier, dungeon->name));
     }
 
     MapActionResult MapDeviceRuntime::OpenArena4(RE::PlayerCharacter* player)
     {
-        if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
-            return { false, reason };
+        if (auto reason = EntryUnavailable(player, MapTravelKind::OpenArena); !reason.empty()) {
+            return { false, std::move(reason) };
         }
-        if (!player) {
-            return { false, "플레이어를 찾을 수 없습니다." };
-        }
-        if (g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
-            return { false, "안전 제거 정리 완료 상태입니다." };
-        }
-        if (g_playerInActiveMapCell.load(std::memory_order_acquire)) {
-            return { false, "지도 내부에서는 4차 전직 결투장을 열 수 없습니다. 먼저 귀환하세요." };
-        }
-        if (player->IsInCombat()) {
-            return { false, "전투 중에는 4차 전직 결투장을 열 수 없습니다." };
-        }
-
-        const auto& pack = MapPackRuntime::Manifest();
-        const auto* arena = MapPackRuntime::FindForms(&pack.arena);
-        if (!arena) {
+        const auto& dungeon = MapPackRuntime::Manifest().arena;
+        const auto* forms = MapPackRuntime::FindForms(&dungeon);
+        if (!forms) {
             return { false, "복제 결투장을 찾을 수 없습니다." };
         }
-        auto* tributeObj = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
-        if (!tributeObj) {
-            return { false, "4차 전직의 공물 폼을 찾을 수 없습니다." };
-        }
-        if (CountPlayerTributes(player) <= 0) {
+        auto* tribute = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute);
+        if (!tribute || CountPlayerTributes(player) <= 0) {
             return { false, "4차 전직의 공물이 필요합니다 (T6+ 지도 보스 처치로 획득)." };
         }
-
-        bool consumed = false;
-        SaveLoad::RunSerializedTransaction([&]() {
-            consumed = UniqueIdUtil::RemovePlainItem(player, tributeObj, 1);
-            if (!consumed && CountPlayerTributes(player) > 0) {
-                (void)player->RemoveItem(tributeObj, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-                consumed = true;
-            }
-        });
-        if (!consumed) {
-            return { false, "4차 전직의 공물을 소비하지 못했습니다." };
-        }
-
-        if (g_activeMapRun.load(std::memory_order_acquire)) {
-            CleanupSpawnedRefsOnMainThread();
-        }
-
-        RE::FormID retCell = 0;
-        RE::FormID retWs = 0;
-        std::array<float, 3> retPos{};
-        std::array<float, 3> retAng{};
-        CaptureReturnLocation(player, retCell, retWs, retPos, retAng);
-
-        Core::ActiveMapState next{};
-        {
-            std::scoped_lock lk(g_mutex);
-            next = Core::MapSystem::CreateArena4Run(g_nextRunId++, retCell, retWs, retPos, retAng);
-            next.dungeonKey = pack.arena.key;
-            next.packVersion = pack.version;
-            SetActiveMapLocked(next);
-            g_spawnedForCurrentRun = false;
-            g_pendingSpawnRunId = next.runId;
-            g_arenaPhaseInvulnSec = 0.0;
-            g_deathEscapeExitElapsedSec = 0.0;
-            g_deathEscapeInFlight.store(false, std::memory_order_release);
-            RefreshAtomicsLocked();
-        }
-
-        if (!TeleportPlayerToDungeonEntry(player, *arena)) {
-            {
-                std::scoped_lock lk(g_mutex);
-                SetActiveMapLocked({});
-                g_spawnedForCurrentRun = false;
-                g_pendingSpawnRunId = 0;
-                RefreshAtomicsLocked();
-            }
-            if (!RefundEntryOnMainThread(player, next.tier, true, std::nullopt)) {
-                return { false, "4차 전직 결투장 입구로 이동하지 못했고 공물을 돌려주지 못했습니다." };
-            }
-            return { false, "4차 전직 결투장 입구로 이동하지 못했습니다." };
-        }
-
-        SyncMapLayer2ToStatEngine();
-        const auto msg = std::format("4차 전직 결투장 {} 입장 (단판 1포털 · 3페이즈 보스전)", pack.arena.name);
-        RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
-        SKSE::log::info("MapDeviceRuntime: opened Arena4 '{}' (cell=0x{:08X}, rewardLv={}).",
-            pack.arena.key, arena->cell->GetFormID(), Core::kArena4MonsterLevel);
-        return { true, msg };
+        return RequestEntry(player, MapTravelKind::OpenArena, *forms, { .item = tribute->GetFormID() },
+            std::format("4차 전직 결투장 {} 입장을 요청했습니다.", dungeon.name));
     }
 
     MapActionResult MapDeviceRuntime::ReenterActiveMap(RE::PlayerCharacter* player)
     {
-        if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
-            return { false, reason };
+        if (auto reason = EntryUnavailable(player, MapTravelKind::Reenter); !reason.empty()) {
+            return { false, std::move(reason) };
         }
-        if (!player) {
-            return { false, "플레이어를 찾을 수 없습니다." };
-        }
-        if (g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
-            return { false, "안전 제거 정리 완료 상태입니다." };
-        }
-        if (g_playerInActiveMapCell.load(std::memory_order_acquire)) {
-            return { false, "이미 활성 지도 내부에 있습니다." };
-        }
-
-        // 배치2 검수 Major #3: 엔진 API(CaptureReturnLocation)는 g_mutex 밖에서 호출
-        RE::FormID retCell = 0;
-        RE::FormID retWs = 0;
-        std::array<float, 3> retPos{};
-        std::array<float, 3> retAng{};
-        CaptureReturnLocation(player, retCell, retWs, retPos, retAng);
-
-        Core::ActiveMapState snap;
         const MapPackRuntime::DungeonForms* forms = nullptr;
+        std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (!g_activeMap.active || g_activeMap.failed) {
+            if (!g_activeMap.active || g_activeMap.failed || g_activeMap.isArena4) {
                 return { false, "재입장 가능한 활성 지도가 없습니다." };
             }
-            forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
-            if (!forms) {
-                return { false, "저장된 회차와 일치하는 복제 던전을 찾을 수 없습니다." };
-            }
-            if (!Core::MapSystem::TryConsumePortalForReenter(g_activeMap)) {
+            if (g_activeMap.portalsRemaining == 0) {
                 return { false, "남은 포털이 없습니다." };
             }
-            g_activeMap.returnCellFormId = retCell;
-            g_activeMap.returnWorldspaceFormId = retWs;
-            g_activeMap.returnPos = retPos;
-            g_activeMap.returnAngle = retAng;
-            if (!g_spawnedForCurrentRun) {
-                g_pendingSpawnRunId = g_activeMap.runId;
-            }
-            // 배치2 검수 Critical #2: 1.5초 이내 재입장 시 g_deathEscapeInFlight 영구 무적 고착 방지
-            g_deathEscapeExitElapsedSec = 0.0;
-            g_deathEscapeInFlight.store(false, std::memory_order_release);
-            snap = g_activeMap;
-            RefreshAtomicsLocked();
+            forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
+            runId = g_activeMap.runId;
         }
-
-        if (!TeleportPlayerToDungeonEntry(player, *forms)) {
-            // 배치2 검수 Minor #6: 텔레포트 실패 시 차감한 포털 1개 환급
-            std::scoped_lock lk(g_mutex);
-            if (g_activeMap.active && g_activeMap.runId == snap.runId &&
-                g_activeMap.portalsRemaining < Core::kNormalMapMaxPortals) {
-                ++g_activeMap.portalsRemaining;
-            }
-            return { false, "활성 지도 재입장에 실패했습니다." };
+        if (!forms) {
+            return { false, "저장된 회차와 일치하는 복제 던전을 찾을 수 없습니다." };
         }
-        SyncMapLayer2ToStatEngine();
-        const auto msg = std::format("지도 재입장 완료 (남은 포털: {}/{})",
-            snap.portalsRemaining, snap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals);
-        RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
-        return { true, msg };
+        return RequestEntry(player, MapTravelKind::Reenter, *forms, { .runId = runId }, "지도 재입장을 요청했습니다.");
     }
 
     MapActionResult MapDeviceRuntime::ReturnPortal(RE::PlayerCharacter* player)
@@ -1083,61 +1280,90 @@ namespace SkyrimPoE::Runtime
         if (!player) {
             return { false, "플레이어를 찾을 수 없습니다." };
         }
-        Core::ActiveMapState snap;
+        const auto observation = ObservePlayer(player);
+        Core::MapTravelTarget saved;
+        std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
+            if (g_travel.Current()) {
+                return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
+            }
             if (!g_activeMap.active) {
                 return { false, "활성 지도가 없습니다." };
             }
-            snap = g_activeMap;
+            const auto access = GetEntryAccessLocked(observation);
+            if (!access.inActiveMap && (observation.inPackCell || g_retryReturnRunId != g_activeMap.runId)) {
+                return { false, "허가된 회차 셀에서 귀환을 요청할 수 있습니다." };
+            }
+            saved = SavedReturn(g_activeMap);
+            runId = g_activeMap.runId;
         }
-        if (!TeleportPlayerToSavedReturn(player, snap)) {
-            return { false, "원래 위치로 귀환하지 못했습니다." };
-        }
-        g_playerInActiveMapCell.store(false, std::memory_order_release);
-        SyncMapLayer2ToStatEngine();
-        const auto msg = std::format("포털 귀환 완료 (남은 포털: {}/{})",
-            snap.portalsRemaining, snap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals);
-        RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
-        return { true, msg };
+        return RequestReturn(player, MapTravelKind::Return, saved, runId, "포털 귀환을 요청했습니다.");
     }
 
     MapActionResult MapDeviceRuntime::AbandonActiveMap(RE::PlayerCharacter* player)
     {
-        Core::ActiveMapState snap;
-        bool wasInCell = false;
+        if (!player) {
+            return { false, "플레이어를 찾을 수 없습니다." };
+        }
+        Core::MapTravelTarget saved;
+        std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
+            if (g_travel.Current()) {
+                return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
+            }
             if (!g_activeMap.active) {
                 return { false, "종료할 활성 지도가 없습니다." };
             }
-            snap = g_activeMap;
-            wasInCell = g_playerInActiveMapCell.load(std::memory_order_acquire);
+            saved = SavedReturn(g_activeMap);
+            runId = g_activeMap.runId;
         }
+        const auto* cell = player->GetParentCell();
+        if (!cell) {
+            return { false, "현재 셀을 찾을 수 없습니다. 이동을 마치고 다시 시도하세요." };
+        }
+        if (MapPackRuntime::OwnsCell(cell)) {
+            return RequestReturn(player, MapTravelKind::Abandon, saved, runId, "회차 포기를 위한 귀환을 요청했습니다.");
+        }
+        EndRunOnMainThread();
+        return { true, "지도 회차를 종료했습니다." };
+    }
 
-        if (player && wasInCell) {
-            (void)TeleportPlayerToSavedReturn(player, snap);
+    MapActionResult MapDeviceRuntime::SafeEscape(RE::PlayerCharacter* player)
+    {
+        const auto status = GetTravelStatus(player);
+        if (status.kind) {
+            return { false, "이동 중입니다. 도착 후 다시 시도하세요." };
         }
-        CleanupSpawnedRefsOnMainThread();
-        {
-            std::scoped_lock lk(g_mutex);
-            SetActiveMapLocked({});
-            g_spawnedForCurrentRun = false;
-            g_pendingSpawnRunId = 0;
-            g_arenaPhaseInvulnSec = 0.0;
-            g_deathEscapeExitElapsedSec = 0.0;
-            g_deathEscapeInFlight.store(false, std::memory_order_release);
-            RefreshAtomicsLocked();
+        if (!status.unauthorized) {
+            return { false, "입장 허가 없이 지도 팩 셀에 있을 때 안전 탈출을 사용할 수 있습니다." };
         }
-        SyncMapLayer2ToStatEngine();
-        RE::SendHUDMessage::ShowHUDMessage("활성 지도를 닫았습니다.");
-        return { true, "활성 지도를 닫았습니다." };
+        return RequestReturn(player, MapTravelKind::SafeEscape, {}, 0, "안전 탈출을 요청했습니다.");
+    }
+
+    MapTravelStatus MapDeviceRuntime::GetTravelStatus(RE::PlayerCharacter* player)
+    {
+        const auto observation = ObservePlayer(player);
+        std::scoped_lock lk(g_mutex);
+        const auto& pending = g_travel.Current();
+        return { pending ? std::optional(pending->kind) : std::nullopt, observation.inPackCell,
+            GetEntryAccessLocked(observation).unauthorized, g_retryReturnRunId != 0 };
+    }
+
+    double MapDeviceRuntime::GetTravelArrivalRadius() noexcept
+    {
+        return g_travelSettings.arrivalRadius;
     }
 
     MapActionResult MapDeviceRuntime::RunSafeUninstallCleanup(RE::PlayerCharacter* player)
     {
         if (!player) {
             return { false, "플레이어를 찾을 수 없습니다." };
+        }
+        const auto travel = GetTravelStatus(player);
+        if (travel.kind || travel.inPackCell || !player->GetParentCell()) {
+            return { false, "이동을 마치고 지도 밖에서 실행하세요." };
         }
 
         // 배치2 검수 Major #1: 사이클론 즉시 중단 + 바닥 드랍/빛기둥을 활성 지도 시체 삭제·이탈 전에 먼저 정리
@@ -1146,7 +1372,7 @@ namespace SkyrimPoE::Runtime
         (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
 
         if (g_activeMapRun.load(std::memory_order_acquire)) {
-            (void)AbandonActiveMap(player);
+            EndRunOnMainThread();
             (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
         }
 
@@ -1295,6 +1521,10 @@ namespace SkyrimPoE::Runtime
 
     void MapDeviceRuntime::OnActorKilled(RE::FormID actorId, RE::Actor* victim, std::uint64_t runId)
     {
+        if (runId != 0) {
+            auto expected = runId;
+            (void)g_bossDeathPendingRunId.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+        }
         if (actorId == 0 || runId == 0 || g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
             return;
         }
@@ -1302,7 +1532,7 @@ namespace SkyrimPoE::Runtime
         std::uint8_t tier = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (!g_activeMap.active || g_activeMap.runId != runId ||
+            if (!g_activeMap.active || g_activeMap.failed || g_activeMap.runId != runId ||
                 g_activeMap.bossRefFormId != actorId || g_activeMap.bossKilled) {
                 return;
             }
@@ -1399,7 +1629,7 @@ namespace SkyrimPoE::Runtime
         std::uint64_t runId = 0;
         {
             std::scoped_lock lk(g_mutex);
-            if (!g_activeMap.active || !g_activeMap.isArena4 || g_activeMap.bossRefFormId != bossId) {
+            if (!g_activeMap.active || g_activeMap.failed || !g_activeMap.isArena4 || g_activeMap.bossRefFormId != bossId) {
                 return rawSkyrimDamage;
             }
             clampRes = Core::MapSystem::ClampArenaBossDamage(
@@ -1427,9 +1657,10 @@ namespace SkyrimPoE::Runtime
         double curHp,
         double effectiveDamage)
     {
-        if (!g_config || !g_config->mapDeathInterceptEnabled) {
+        if (!g_queue || !g_config || !g_config->mapDeathInterceptEnabled) {
             return false;
         }
+        const auto generation = g_queue->CurrentGeneration();
         if (g_uninstallCleanupArmed.load(std::memory_order_acquire)) {
             return false;
         }
@@ -1445,14 +1676,9 @@ namespace SkyrimPoE::Runtime
         if ((curHp - effectiveDamage) <= 1.0) {
             bool expected = false;
             if (g_deathEscapeInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                if (g_queue) {
-                    g_queue->Enqueue([]() {
-                        ExecuteDeathEscapeOnMainThread();
-                    });
-                } else {
-                    g_deathEscapeInFlight.store(false, std::memory_order_release);
-                    return false;
-                }
+                g_queue->EnqueueForGeneration(generation, []() {
+                    ExecuteDeathEscapeOnMainThread();
+                });
             }
             return true;
         }
@@ -1534,6 +1760,11 @@ namespace SkyrimPoE::Runtime
         }
         auto context = g_mapKillContext;
         context.isBoss = actorId == g_mapActorBossId;
+        // 결정 176 ④: 허가 없이 셀에 들어왔거나(재입장 포털 없이 처치) 실패한 회차의 처치는 지도 보상을 주지 않는다.
+        context.rewardBlocked = context.runFailed || !g_playerInActiveMapCell.load(std::memory_order_acquire);
+        if (context.isBoss && !context.rewardBlocked) {
+            g_bossDeathPendingRunId.store(context.runId, std::memory_order_release);
+        }
         return context;
     }
 
@@ -1646,12 +1877,18 @@ namespace SkyrimPoE::Runtime
     Core::ActiveMapState MapDeviceRuntime::TakeSnapshotForSave()
     {
         std::scoped_lock lk(g_mutex);
-        return g_activeMap;
+        auto snapshot = g_activeMap;
+        // 결정 176 ④: 도착 확인을 거친 허가만 저장한다. 허가 없이 셀에 있던 세이브는 불러와도 허가가 생기지 않는다.
+        const auto activeCell = g_activeCellFormId.load(std::memory_order_acquire);
+        snapshot.playerAuthorized = g_activeMap.active && activeCell != 0 && g_permittedCell == activeCell;
+        return snapshot;
     }
 
     void MapDeviceRuntime::RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell)
     {
         std::scoped_lock lk(g_mutex);
+        g_permittedCell = 0;
+        g_playerInActiveMapCell.store(false, std::memory_order_release);
         g_incompatibleSavedRun.reset();
         if (saved.active && saved.runId == 0) {
             // 회차 번호 0은 "회차 밖"을 뜻하므로, 손상된 세이브의 활성 회차에는 새 번호를 준다.
@@ -1687,6 +1924,15 @@ namespace SkyrimPoE::Runtime
         g_uninstallCleanupArmed.store(false, std::memory_order_release);
         auto* player = RE::PlayerCharacter::GetSingleton();
         auto* cell = player ? player->GetParentCell() : nullptr;
+        {
+            std::scoped_lock lk(g_mutex);
+            // 저장하지 않는 요청과 허가는 불러온 세이브에서 새로 시작한다.
+            g_travel.Clear();
+            g_travelContext = {};
+            g_permittedCell = 0;
+            g_warnedUnauthorizedCell = 0;
+            g_retryReturnRunId = 0;
+        }
 
         if (player) {
             std::optional<IncompatibleSavedRun> cancelled;
@@ -1697,8 +1943,8 @@ namespace SkyrimPoE::Runtime
                     cancelled = std::exchange(g_incompatibleSavedRun, std::nullopt);
                 }
                 // 보스를 처치한 회차는 보상(아틀라스·첫 공물·4차 해금)을 이미 받았으므로 소모품을 돌려주지 않는다.
-                // 돌려주면 팩 판이 바뀔 때마다 보상을 받고 지도까지 돌려받는 복제가 생긴다.
-                if (cancelled && !cancelled->state.bossKilled) {
+                // 돌려주면 팩 판이 바뀔 때마다 보상을 받고 지도까지 돌려받는 복제가 생긴다. 실패한 회차도 이미 소모가 끝났다.
+                if (cancelled && !cancelled->state.bossKilled && !cancelled->state.failed) {
                     const auto& snap = cancelled->state;
                     refunded = RefundEntryOnMainThread(player, snap.tier, snap.isArena4, RecreateSavedMapRefund(snap));
                 }
@@ -1724,12 +1970,19 @@ namespace SkyrimPoE::Runtime
         RE::FormID bossId = 0;
         std::uint8_t arenaPhase = 1;
         Core::MapModSummary summaryCopy{};
+        bool endRunAfterLoad = false;
         {
             std::scoped_lock lk(g_mutex);
             if (g_activeMap.active) {
                 const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::Manifest().ForRun(g_activeMap));
-                const bool inCell = forms && cell == forms->cell;
+                // 결정 176 ④: 저장 때 허가된 입장이었던 경우만 허가를 되살린다. 셀을 아직 못 읽었어도 허가를 두고,
+                // 다른 셀로 확인되면 Tick의 허가 판정이 푼다.
+                const bool authorized = forms && g_activeMap.playerAuthorized;
+                g_permittedCell = authorized ? forms->cellId : 0;
+                const bool inCell = authorized && cell == forms->cell;
                 g_playerInActiveMapCell.store(inCell, std::memory_order_release);
+                // 결정 175: 끝나야 할 회차(보스 처치·포털 0)인데 플레이어가 이미 지도 팩 밖이면, 귀환 확정 전에 저장된 것이다.
+                endRunAfterLoad = cell && !MapPackRuntime::OwnsCell(cell) && Core::MapSystem::ShouldEndOnReturn(g_activeMap);
                 isArena4 = g_activeMap.isArena4;
                 bossId = g_activeMap.bossRefFormId;
                 arenaPhase = g_activeMap.arenaPhase;
@@ -1738,6 +1991,12 @@ namespace SkyrimPoE::Runtime
                 g_playerInActiveMapCell.store(false, std::memory_order_release);
             }
             RefreshAtomicsLocked();
+        }
+
+        if (endRunAfterLoad) {
+            EndRunOnMainThread();
+            SKSE::log::info("MapDeviceRuntime: ended a run saved outside the pack after its boss kill or last portal.");
+            return;
         }
 
         if (bossId != 0) {
@@ -1772,6 +2031,11 @@ namespace SkyrimPoE::Runtime
     void MapDeviceRuntime::ResetOnRevert()
     {
         std::scoped_lock lk(g_mutex);
+        g_travel.Clear();
+        g_travelContext = {};
+        g_permittedCell = 0;
+        g_warnedUnauthorizedCell = 0;
+        g_retryReturnRunId = 0;
         g_incompatibleSavedRun.reset();
         SetActiveMapLocked({});
         g_spawnedForCurrentRun = false;

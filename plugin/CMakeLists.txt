@@ -52,6 +52,7 @@ add_library(skyrimpoe_core STATIC
     src/core/WorldStampLink.cpp
     src/core/MapSystem.cpp
     src/core/MapPack.cpp
+    src/core/MapTravel.cpp
 )
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
@@ -123,6 +124,7 @@ add_executable(skyrimpoe_tests
     tests/test_stage6.cpp
     tests/test_map_difficulty.cpp
     tests/test_map_pack.cpp
+    tests/test_map_travel.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE

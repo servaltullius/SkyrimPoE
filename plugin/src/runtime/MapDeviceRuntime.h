@@ -2,10 +2,12 @@
 
 #include "core/CharmSystem.h"
 #include "core/CommandQueue.h"
+#include "core/Config.h"
 #include "core/EnergyShield.h"
 #include "core/ItemData.h"
 #include "core/ItemTypes.h"
 #include "core/MapSystem.h"
+#include "core/MapTravel.h"
 #include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
@@ -30,6 +32,19 @@ namespace SkyrimPoE::Runtime
         double bonusIiqPct = 0.0;
         double bonusIirPct = 0.0;
         bool isBoss = false;
+        bool runFailed = false;
+        // 결정 176 ④: 회차 액터이지만 허가 없이 셀에 있거나 실패한 회차라 지도 보상을 주지 않는다.
+        bool rewardBlocked = false;
+    };
+
+    struct MapTravelStatus
+    {
+        std::optional<Core::MapTravelKind> kind;
+        bool inPackCell = false;
+        bool unauthorized = false;
+        bool canRetryReturn = false;
+
+        bool operator==(const MapTravelStatus&) const = default;
     };
 
     struct PlayerMapItemEntry
@@ -56,7 +71,9 @@ namespace SkyrimPoE::Runtime
             const Core::PassiveTreeData* treeData,
             const Core::Config* config,
             Core::EnergyShieldPool* esPool,
-            Core::CharmSystem* charmSystem);
+            Core::CharmSystem* charmSystem,
+            const Core::MapTravelSettings& travelSettings);
+        static void InstallReturnDoorSink();
         static void BindDataPack(const Core::DataPack* dataPack);
 
         // 주 갱신 스레드 프레임 틱: 셀 소속 원자 갱신, 비동기 셀 로드 완료 후 스폰, 3페이즈 무적 타이머, 탈출 쿨다운
@@ -71,6 +88,9 @@ namespace SkyrimPoE::Runtime
         static MapActionResult ReenterActiveMap(RE::PlayerCharacter* player);
         static MapActionResult ReturnPortal(RE::PlayerCharacter* player);
         static MapActionResult AbandonActiveMap(RE::PlayerCharacter* player);
+        static MapActionResult SafeEscape(RE::PlayerCharacter* player);
+        [[nodiscard]] static MapTravelStatus GetTravelStatus(RE::PlayerCharacter* player);
+        [[nodiscard]] static double GetTravelArrivalRadius() noexcept;
 
         // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차(검수 C-4: 완료 후 g_uninstallCleanupArmed=true로 재오염 차단)
         static MapActionResult RunSafeUninstallCleanup(RE::PlayerCharacter* player);
@@ -110,7 +130,7 @@ namespace SkyrimPoE::Runtime
             RE::FormID actorId, Core::MapModSummary* mods = nullptr);
         [[nodiscard]] static MapKillContext GetMapKillContext(RE::FormID actorId);
 
-        // 주 갱신 스레드 전용: 인벤토리 보유 지도 목록·4차 공물 수량·안전 텔레포트 래퍼
+        // 주 갱신 스레드 전용: 인벤토리 보유 지도 목록·4차 공물 수량·엔진 이동 요청
         [[nodiscard]] static std::vector<PlayerMapItemEntry> ListPlayerMaps(RE::PlayerCharacter* player);
         [[nodiscard]] static std::int32_t CountPlayerTributes(RE::PlayerCharacter* player);
         static bool MovePlayerToSpace(

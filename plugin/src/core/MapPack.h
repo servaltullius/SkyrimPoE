@@ -21,6 +21,7 @@ namespace SkyrimPoE::Core
         std::string type;
         std::uint32_t cell = 0;
         std::uint32_t entryMarker = 0;
+        std::vector<std::uint32_t> returnDoors;
         std::uint32_t bossAnchor = 0;
         std::vector<std::uint32_t> packAnchors;
         std::uint32_t bossNpc = 0;
