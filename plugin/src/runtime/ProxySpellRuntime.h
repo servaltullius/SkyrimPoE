@@ -27,6 +27,8 @@ namespace SkyrimPoE::Runtime
 
         // 주 갱신 스레드 전용: 현재 PersistentState 슬롯(0..8)과 StatSnapshot을 18개 대리 레코드에 반영
         static void SyncProxySpellsFromState();
+        // 6단계 안전 제거 정리용: 플레이어에게 부여된 대리 주문·파워 18종 일괄 제거
+        static void RemoveAllProxySpells(RE::PlayerCharacter* player);
 
         // 주 갱신 스레드 틱: Molten Shell 가드 버프 타이머·만료 폭발·Layer2 방어도 동기화
         static void Tick(double deltaSec, bool gamePaused);

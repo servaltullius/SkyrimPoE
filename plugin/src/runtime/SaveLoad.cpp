@@ -6,12 +6,14 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/UniqueIdUtil.h"
 #include "runtime/WorldDropTracker.h"
 
 #include "core/ItemAffixParser.h"
+#include "core/MapSystem.h"
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
 #include "core/SaveCapPolicy.h"
@@ -391,10 +393,10 @@ namespace SkyrimPoE::Runtime
             // 검수 C5: 단일 Layer1 조합 지점 — 장비 스냅샷을 항상 병합해 레벨업/패시브/젬 변경 시 덮어쓰기를 방지
             l1.equippedGear = EquipmentSync::GetCurrentGearSnapshot();
 
-            // 5단계(결정 161, 164): 정신력 오라 토글, 보스 이정표 달성 수, 패시브 주얼 소켓 선합산
+            // 5~6단계(결정 161, 164, 166): 정신력 오라 토글, 보스·4차 결투장 이정표 달성 수(0xFu), 패시브 주얼 소켓 선합산
             l1.activeAuraMask = state.activeAuraMask;
             l1.completedMilestoneCount = static_cast<std::uint8_t>(
-                std::popcount(static_cast<std::uint32_t>(state.tree.ascendancyMilestonesBitmask & 0x7u)));
+                std::popcount(static_cast<std::uint32_t>(state.tree.ascendancyMilestonesBitmask & 0xFu)));
             if (g_itemData && g_itemData->IsLoaded() && !state.socketedJewels.empty()) {
                 l1.socketedJewelStats.reserve(state.socketedJewels.size());
                 for (const auto& [nodeId, rec] : state.socketedJewels) {
@@ -419,6 +421,7 @@ namespace SkyrimPoE::Runtime
             ItemTracker::Clear();
             EquipmentSync::Clear();
             WorldDropTracker::Clear();
+            MapDeviceRuntime::ResetOnRevert();
             if (g_charmSystem) {
                 g_charmSystem->ResetOnRevert();
             }
@@ -466,6 +469,7 @@ namespace SkyrimPoE::Runtime
             std::vector<TrackedGemEntry> tracked;
             std::vector<TrackedItemEntry> trackedItems;
             std::vector<SavedWorldDropEntry> savedWorldDrops;
+            Core::ActiveMapState savedMapState;
             {
                 std::scoped_lock txLock(g_txMutex);
                 state = SaveLoad::GetStateCopy();
@@ -475,6 +479,7 @@ namespace SkyrimPoE::Runtime
                 tracked = GemInventory::TakeSnapshotForSave();
                 trackedItems = ItemTracker::TakeSnapshotForSave();
                 savedWorldDrops = WorldDropTracker::TakeSnapshotForSave();
+                savedMapState = MapDeviceRuntime::TakeSnapshotForSave();
             }
             // Q-1 + M-2: 세이브 시점에 적용 중인 NPC kTemporary SpeedMult 델타 + 아직 미원복 잔여(미로드 NPC) 합산 스냅샷
             std::unordered_map<RE::FormID, float> mergedSpeedMods;
@@ -717,10 +722,55 @@ namespace SkyrimPoE::Runtime
                 }
             }
 
+            // 6단계(결정 166 · 검수 C-3): 아틀라스 진행 + 활성 지도/결투장 + 보스/스폰 참조('MAPS' v1)
+            std::uint32_t mapSpawnCount = 0;
+            if (intfc->OpenRecord(SaveLoad::kRecordMaps, SaveLoad::kMapsVersion)) {
+                const auto& atl = state.atlas;
+                const std::uint8_t tribByte = atl.firstTributeGiven ? 1 : 0;
+                bool mapsOk = intfc->WriteRecordData(&atl.completedTierMask, sizeof(atl.completedTierMask));
+                mapsOk = mapsOk && intfc->WriteRecordData(&atl.totalMapsCleared, sizeof(atl.totalMapsCleared));
+                mapsOk = mapsOk && intfc->WriteRecordData(&atl.highestTierCleared, sizeof(atl.highestTierCleared));
+                mapsOk = mapsOk && intfc->WriteRecordData(&tribByte, sizeof(tribByte));
+
+                const auto& am = savedMapState;
+                const std::uint8_t activeByte = am.active ? 1 : 0;
+                const std::uint8_t arenaByte = am.isArena4 ? 1 : 0;
+                const std::uint8_t bossKilledByte = am.bossKilled ? 1 : 0;
+                const std::uint8_t failedByte = am.failed ? 1 : 0;
+                mapsOk = mapsOk && intfc->WriteRecordData(&activeByte, sizeof(activeByte));
+                mapsOk = mapsOk && intfc->WriteRecordData(&arenaByte, sizeof(arenaByte));
+                mapsOk = mapsOk && intfc->WriteRecordData(&bossKilledByte, sizeof(bossKilledByte));
+                mapsOk = mapsOk && intfc->WriteRecordData(&failedByte, sizeof(failedByte));
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.runId, sizeof(am.runId));
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.tier, sizeof(am.tier));
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.dungeonIndex, sizeof(am.dungeonIndex));
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.portalsRemaining, sizeof(am.portalsRemaining));
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.arenaPhase, sizeof(am.arenaPhase));
+                mapsOk = mapsOk && WriteAffixList(intfc, am.mods);
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.returnCellFormId, sizeof(am.returnCellFormId));
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.returnWorldspaceFormId, sizeof(am.returnWorldspaceFormId));
+                mapsOk = mapsOk && intfc->WriteRecordData(am.returnPos.data(), static_cast<std::uint32_t>(sizeof(am.returnPos)));
+                mapsOk = mapsOk && intfc->WriteRecordData(am.returnAngle.data(), static_cast<std::uint32_t>(sizeof(am.returnAngle)));
+                mapsOk = mapsOk && intfc->WriteRecordData(&am.bossRefFormId, sizeof(am.bossRefFormId));
+
+                mapSpawnCount = static_cast<std::uint32_t>(
+                    std::min<std::size_t>(am.spawnedRefFormIds.size(), Core::kMaxMapSpawnedActors));
+                mapsOk = mapsOk && intfc->WriteRecordData(&mapSpawnCount, sizeof(mapSpawnCount));
+                for (std::uint32_t s = 0; s < mapSpawnCount && mapsOk; ++s) {
+                    mapsOk = mapsOk && intfc->WriteRecordData(&am.spawnedRefFormIds[s], sizeof(std::uint32_t));
+                }
+                if (!mapsOk) {
+                    SKSE::log::error("SaveLoad: error while writing MAPS record.");
+                }
+            } else {
+                SKSE::log::error("SaveLoad: failed to open MAPS record for writing.");
+            }
+
             SKSE::log::info(
-                "SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}), SPRT(0x{:X}), GEAR(jewels={}), SPDM({}).",
+                "SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}), SPRT(0x{:X}), GEAR(jewels={}), SPDM({}), MAPS(atlas=0x{:04X}, active={}, spawns={}).",
                 state.exileLevel, trackedCount, nodeCount, itemCount, wdrpCount,
-                state.activeAuraMask, jewelCount, spdmCount);
+                state.activeAuraMask, jewelCount, spdmCount,
+                state.atlas.completedTierMask, savedMapState.active, mapSpawnCount);
         }
 
         // SKSE 코세이브 콜백: 불러오기(순수 메모리 복원만 수행, 엔진 조작은 주 갱신으로 이연)
@@ -755,6 +805,9 @@ namespace SkyrimPoE::Runtime
             std::vector<TrackedItemEntry> loadedItems;
             std::vector<SavedWorldDropEntry> loadedWorldDrops;
             std::vector<std::pair<RE::FormID, float>> loadedSpeedMods;
+            Core::AtlasState loadedAtlas{};
+            Core::ActiveMapState loadedActiveMap{};
+            bool hasMaps = false;
 
             std::uint32_t type = 0;
             std::uint32_t version = 0;
@@ -900,7 +953,7 @@ namespace SkyrimPoE::Runtime
                     ok = ok && ReadExactPod(intfc, tmpTree.ascendancyMilestonesBitmask);
                     if (ok) {
                         tmpTree.classSelected = (clsSelByte != 0);
-                        tmpTree.ascendancyMilestonesBitmask &= 0x7u;
+                        tmpTree.ascendancyMilestonesBitmask &= 0xFu;
                         loadedTree = std::move(tmpTree);
                         hasTree = true;
                     } else {
@@ -1143,11 +1196,115 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse SPDM record.");
                     }
+                } else if (type == SaveLoad::kRecordMaps) {
+                    if (version != SaveLoad::kMapsVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported MAPS record version {} (expected {}).", version, SaveLoad::kMapsVersion);
+                        continue;
+                    }
+                    Core::AtlasState tmpAtlas{};
+                    Core::ActiveMapState tmpMap{};
+                    std::uint8_t tribByte = 0;
+                    std::uint8_t activeByte = 0, arenaByte = 0, bossKilledByte = 0, failedByte = 0;
+                    RE::FormID rawRetCell = 0, rawRetWs = 0, rawBossRef = 0;
+                    std::uint32_t spawnCount = 0;
+                    bool ok = true;
+                    ok = ok && ReadExactPod(intfc, tmpAtlas.completedTierMask);
+                    ok = ok && ReadExactPod(intfc, tmpAtlas.totalMapsCleared);
+                    ok = ok && ReadExactPod(intfc, tmpAtlas.highestTierCleared);
+                    ok = ok && ReadExactPod(intfc, tribByte);
+
+                    ok = ok && ReadExactPod(intfc, activeByte);
+                    ok = ok && ReadExactPod(intfc, arenaByte);
+                    ok = ok && ReadExactPod(intfc, bossKilledByte);
+                    ok = ok && ReadExactPod(intfc, failedByte);
+                    ok = ok && ReadExactPod(intfc, tmpMap.runId);
+                    ok = ok && ReadExactPod(intfc, tmpMap.tier);
+                    ok = ok && ReadExactPod(intfc, tmpMap.dungeonIndex);
+                    ok = ok && ReadExactPod(intfc, tmpMap.portalsRemaining);
+                    ok = ok && ReadExactPod(intfc, tmpMap.arenaPhase);
+                    ok = ok && ReadAffixList(intfc, tmpMap.mods);
+                    ok = ok && ReadExactPod(intfc, rawRetCell);
+                    ok = ok && ReadExactPod(intfc, rawRetWs);
+                    ok = ok && ReadExact(intfc, tmpMap.returnPos.data(), static_cast<std::uint32_t>(sizeof(tmpMap.returnPos)));
+                    ok = ok && ReadExact(intfc, tmpMap.returnAngle.data(), static_cast<std::uint32_t>(sizeof(tmpMap.returnAngle)));
+                    ok = ok && ReadExactPod(intfc, rawBossRef);
+                    ok = ok && ReadExactPod(intfc, spawnCount);
+
+                    if (ok && spawnCount <= Core::kMaxMapSpawnedActors) {
+                        tmpMap.spawnedRefFormIds.reserve(spawnCount);
+                        for (std::uint32_t s = 0; s < spawnCount && ok; ++s) {
+                            RE::FormID rawSpawn = 0;
+                            ok = ok && ReadExactPod(intfc, rawSpawn);
+                            if (ok && rawSpawn != 0) {
+                                RE::FormID resSpawn = 0;
+                                // 배치2 검수 Major #4: 동적 생성 참조(0xFFxxxxxx) 대역만 스폰 목록으로 허용
+                                if (intfc->ResolveFormID(rawSpawn, resSpawn) &&
+                                    (resSpawn & 0xFF000000u) == 0xFF000000u) {
+                                    tmpMap.spawnedRefFormIds.push_back(resSpawn);
+                                }
+                            }
+                        }
+                    } else {
+                        ok = false;
+                    }
+
+                    if (ok) {
+                        tmpAtlas.highestTierCleared = std::min<std::uint8_t>(tmpAtlas.highestTierCleared, Core::kMaxMapTier);
+                        tmpAtlas.firstTributeGiven = (tribByte != 0);
+
+                        tmpMap.active = (activeByte != 0);
+                        tmpMap.isArena4 = (arenaByte != 0);
+                        tmpMap.bossKilled = (bossKilledByte != 0);
+                        tmpMap.failed = (failedByte != 0);
+                        tmpMap.tier = std::clamp<std::uint8_t>(tmpMap.tier, Core::kMinMapTier, Core::kMaxMapTier);
+                        tmpMap.dungeonIndex = tmpMap.isArena4
+                            ? 5u
+                            : static_cast<std::uint8_t>(tmpMap.dungeonIndex % Core::kMapDungeonCount);
+                        tmpMap.portalsRemaining = std::min<std::uint8_t>(
+                            tmpMap.portalsRemaining,
+                            tmpMap.isArena4 ? Core::kArena4MaxPortals : Core::kNormalMapMaxPortals);
+                        tmpMap.arenaPhase = std::clamp<std::uint8_t>(tmpMap.arenaPhase, 1u, 3u);
+                        tmpMap.summary = Core::MapSystem::AggregateMapMods(tmpMap.mods);
+                        for (float& c : tmpMap.returnPos) {
+                            if (!std::isfinite(c)) c = 0.0f;
+                        }
+                        for (float& a : tmpMap.returnAngle) {
+                            if (!std::isfinite(a)) a = 0.0f;
+                        }
+                        if (rawRetCell != 0) {
+                            RE::FormID res = 0;
+                            if (intfc->ResolveFormID(rawRetCell, res) && res != 0) {
+                                tmpMap.returnCellFormId = res;
+                            }
+                        }
+                        if (rawRetWs != 0) {
+                            RE::FormID res = 0;
+                            if (intfc->ResolveFormID(rawRetWs, res) && res != 0) {
+                                tmpMap.returnWorldspaceFormId = res;
+                            }
+                        }
+                        if (rawBossRef != 0) {
+                            RE::FormID res = 0;
+                            if (intfc->ResolveFormID(rawBossRef, res) &&
+                                (res & 0xFF000000u) == 0xFF000000u) {
+                                tmpMap.bossRefFormId = res;
+                            }
+                        }
+
+                        loadedAtlas = tmpAtlas;
+                        loadedActiveMap = std::move(tmpMap);
+                        hasMaps = true;
+                    } else {
+                        SKSE::log::error("SaveLoad: failed to parse MAPS record.");
+                    }
                 } else {
                     SKSE::log::warn("SaveLoad: ignoring unknown record type 0x{:08X}.", type);
                 }
             }
 
+            if (hasMaps) {
+                loadedState.atlas = loadedAtlas;
+            }
             if (hasTree) {
                 if (g_treeData && g_treeData->IsLoaded()) {
                     Core::PassiveTree::SanitizeLoadedState(*g_treeData, loadedTree);
@@ -1160,7 +1317,8 @@ namespace SkyrimPoE::Runtime
                 }
                 if (g_treeData && g_treeData->IsLoaded() && g_config) {
                     const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                        *g_treeData, loadedState.tree, loadedState.exileLevel, *g_config);
+                        *g_treeData, loadedState.tree, loadedState.exileLevel, *g_config,
+                        loadedState.atlas.completedTierMask);
                     loadedState.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
                 }
             }
@@ -1203,7 +1361,7 @@ namespace SkyrimPoE::Runtime
                 loadedState.charmSlots = loadedCharms;
                 loadedState.socketedJewels = std::move(loadedJewels);
             }
-            if (hasCore || hasTree || hasItems || hasSpirit || hasGear || sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
+            if (hasCore || hasTree || hasItems || hasSpirit || hasGear || hasMaps || sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
                 // C-3: CORE만 손상되고 다른 SPOE 레코드가 살아 있는 세이브에서 시작 젬·화폐 중복 지급을 막는다.
                 if (!hasCore) {
                     loadedState.starterGemsGiven = true;
@@ -1228,6 +1386,11 @@ namespace SkyrimPoE::Runtime
             GemInventory::RestoreFromSave(std::move(loadedGems));
             ItemTracker::RestoreFromSave(std::move(loadedItems));
             WorldDropTracker::RestoreFromSave(std::move(loadedWorldDrops));
+            if (hasMaps) {
+                MapDeviceRuntime::RestoreFromSave(std::move(loadedActiveMap));
+            } else {
+                MapDeviceRuntime::ResetOnRevert();
+            }
             {
                 std::scoped_lock lock(g_speedModMutex);
                 g_pendingSpeedModReverts = std::move(loadedSpeedMods);
@@ -1235,10 +1398,10 @@ namespace SkyrimPoE::Runtime
             SaveLoad::SyncStateToStatEngine();
 
             SKSE::log::info(
-                "SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}), SPRT({}), GEAR(jewels={}).",
+                "SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}), SPRT({}), GEAR(jewels={}), MAPS(atlas=0x{:04X}).",
                 hasCore, loadedState.tree.allocatedNodes.size(),
                 GemInventory::CountTracked(), ItemTracker::CountTracked(), WorldDropTracker::ActiveCount(),
-                hasSpirit, loadedState.socketedJewels.size());
+                hasSpirit, loadedState.socketedJewels.size(), loadedState.atlas.completedTierMask);
         }
     }
 
@@ -1279,6 +1442,7 @@ namespace SkyrimPoE::Runtime
 
     void SaveLoad::SchedulePostLoadOrNewGameInit(bool isNewGame)
     {
+        MapDeviceRuntime::DisarmUninstallCleanup();
         if (isNewGame) {
             ResetMemoryState();
         }
@@ -1415,9 +1579,10 @@ namespace SkyrimPoE::Runtime
                 });
             }
 
-            // 검수 M3 & C4: 로드 직후 착용 장비(논리 10칸 + 벨트 참 슬롯) 즉시 스캔 및 미추적 고아 빛기둥 스윕
+            // 검수 M3 & C4 & 6단계 C-3: 로드 직후 착용 장비 스캔, 고아 빛기둥 스윕, 활성 지도/결투장 보스 재바인딩
             EquipmentSync::RefreshFromPlayerNow();
             (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
+            MapDeviceRuntime::OnPostLoadRebind();
 
             SaveLoad::SyncStateToStatEngine();
             if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
@@ -1541,5 +1706,19 @@ namespace SkyrimPoE::Runtime
         const auto slots = g_charmSystem->Slots();
         std::scoped_lock lock(g_stateMutex);
         g_state.charmSlots = slots;
+    }
+
+    // 6단계 안전 제거: 맡겨 둔 SpeedMult 원복을 지금 시도한다.
+    // 재검수 R-9의 ApplyPendingSpeedRevertsNow와 같은 규칙을 쓴다. 지금 찾지 못한 액터의 항목은 버리지 않고 남겨,
+    // 주 갱신의 재시도와 세이브(SPDM)에 그대로 둔다(6단계 재작업 계획 D-10: 실패분은 보존).
+    void SaveLoad::RevertAllPendingSpeedModsNow()
+    {
+        const auto [reverted, remaining] = ApplyPendingSpeedRevertsNow();
+        if (remaining > 0) {
+            SKSE::log::warn("SaveLoad: uninstall cleanup reverted {} SpeedMult entr(ies); {} actor(s) not found now and kept for retry.",
+                reverted, remaining);
+        } else {
+            SKSE::log::info("SaveLoad: uninstall cleanup reverted {} SpeedMult entr(ies).", reverted);
+        }
     }
 }

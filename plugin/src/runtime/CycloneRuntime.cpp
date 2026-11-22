@@ -4,6 +4,7 @@
 #include "runtime/AilmentRuntime.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
@@ -393,7 +394,7 @@ namespace SkyrimPoE::Runtime
                 if (isCrit) {
                     poeHit *= std::max(1.0, cycStats.critMultiplierPct / 100.0);
                 }
-                const double convertedSkyrimDmg = Core::ConvertOffenseHit(poeHit, snap.exileLevel, *g_dataPack, *g_config);
+                const double convertedSkyrimDmg = Core::ConvertOffenseHit(poeHit, snap.combatAreaLevel, *g_dataPack, *g_config);
 
                 const float healthBefore = targetAv->GetActorValue(RE::ActorValue::kHealth);
                 bool absorbedByMonsterEs = false;
@@ -539,7 +540,8 @@ namespace SkyrimPoE::Runtime
                     return reinterpret_cast<Fn>(orig)(a_this, a_event);
                 };
 
-                if (t_sendingGraphEvent || !g_config || !g_statEngine || !g_dataPack || !g_dataPack->IsLoaded()) {
+                if (t_sendingGraphEvent || !g_config || !g_statEngine || !g_dataPack || !g_dataPack->IsLoaded() ||
+                    MapDeviceRuntime::IsUninstallCleanupArmed()) {
                     return callOrig();
                 }
 

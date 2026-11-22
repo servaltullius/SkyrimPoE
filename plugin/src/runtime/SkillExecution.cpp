@@ -2,6 +2,7 @@
 #include "runtime/SkillExecution.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 
 namespace SkyrimPoE::Runtime
@@ -133,7 +134,9 @@ namespace SkyrimPoE::Runtime
 
     bool SkillExecution::IsBossOrDragon(const RE::Actor* actor) noexcept
     {
-        return IsDragonActor(actor) || HasLocationBossRefType(actor);
+        return IsDragonActor(actor) ||
+               HasLocationBossRefType(actor) ||
+               (actor && MapDeviceRuntime::IsActiveMapOrArenaBoss(actor->GetFormID()));
     }
 
     bool SkillExecution::CanDamageTarget(RE::PlayerCharacter* player, RE::Actor* target, bool isDirectHit)
@@ -245,8 +248,9 @@ namespace SkyrimPoE::Runtime
                 }
             }
         }
+        // DoDamage(..., a_dontAdjustDifficulty=true)는 fDiffMultHPByPC를 곱하지 않고 1:1 차감하므로 engineDiffMult=1.0 전달
         const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(
-            targetId, scaledDmg, dominantType, bypassesMonsterEs);
+            targetId, scaledDmg, dominantType, bypassesMonsterEs, target, 1.0);
         if (!hitRes.hadAnyImpact) {
             return false;
         }

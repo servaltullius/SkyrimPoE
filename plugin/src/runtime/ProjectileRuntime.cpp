@@ -743,7 +743,7 @@ namespace SkyrimPoE::Runtime
             return;
         }
         const double avgPoe = 0.5 * (snap.heraldOfIceExplosionMin + snap.heraldOfIceExplosionMax);
-        const double skDmg = Core::ConvertOffenseHit(avgPoe, snap.exileLevel, *g_dataPack, *g_config);
+        const double skDmg = Core::ConvertOffenseHit(avgPoe, snap.combatAreaLevel, *g_dataPack, *g_config);
         (void)SkillExecution::ExecuteAoESpell(origin, 260.0f, skDmg, FormIds::kVfxIceNova, Core::DamageType::Cold);
     }
 

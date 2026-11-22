@@ -309,6 +309,17 @@ namespace SkyrimPoE::Core
                 } else {
                     warnInvalid();
                 }
+            } else if (section == "Maps") {
+                std::uint32_t u = 0;
+                if (key == "MapPanelKey") {
+                    if (ParseUint(val, u) && u <= 0xFF) c.mapPanelKey = u; else warnInvalid();
+                } else if (key == "MapDeathInterceptEnabled") {
+                    if (!ParseBool(val, c.mapDeathInterceptEnabled)) warnInvalid();
+                } else if (key == "MapBasePackCount") {
+                    if (ParseUint(val, u) && u >= 1 && u <= 6) c.mapBasePackCount = u; else warnInvalid();
+                } else {
+                    warnInvalid();
+                }
             } else {
                 // C-11: 알 수 없는 INI 섹션(오타 등)은 조용히 무시하지 않고 경고를 남긴다.
                 result.warnings.emplace_back("Unknown INI section [" + section + "] for key " + std::string(key));

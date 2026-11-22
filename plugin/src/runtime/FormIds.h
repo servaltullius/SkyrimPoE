@@ -12,7 +12,7 @@ namespace SkyrimPoE::Runtime::FormIds
 {
     inline constexpr std::string_view kPluginName = "SkyrimPoE.esp";
 
-    // houseCARL 생성 고정 FormID (esp/records.json, 0x800..0x8AD, 총 174폼 ESL)
+    // houseCARL 생성 고정 FormID (esp/records.json, 0x800..0x8BF, 총 192폼 ESL)
     inline constexpr RE::FormID kProxySpellEffect = 0x000800;
     inline constexpr RE::FormID kProxyPowerEffect = 0x000801;
 
@@ -137,6 +137,18 @@ namespace SkyrimPoE::Runtime::FormIds
     inline constexpr RE::FormID kUniqueSealedToken = 0x0008AC;
     inline constexpr RE::FormID kLootBeamUnique = 0x0008AD;
 
+    // 6단계(결정 166): 지도 아이템 T1..T16 (0x0008AE..0x0008BD), 4차 전직 공물 (0x0008BE), 지도 빛기둥 (0x0008BF)
+    inline constexpr RE::FormID kMapItemBase = 0x0008AE;
+    inline constexpr std::size_t kMapItemCount = 16;
+    inline constexpr std::array<RE::FormID, kMapItemCount> kMapItemForms = {
+        0x0008AE, 0x0008AF, 0x0008B0, 0x0008B1,
+        0x0008B2, 0x0008B3, 0x0008B4, 0x0008B5,
+        0x0008B6, 0x0008B7, 0x0008B8, 0x0008B9,
+        0x0008BA, 0x0008BB, 0x0008BC, 0x0008BD,
+    };
+    inline constexpr RE::FormID kAscendancy4Tribute = 0x0008BE;
+    inline constexpr RE::FormID kLootBeamMap = 0x0008BF;
+
     // houseCARL 대조 완료 Skyrim.esm 드랍 효과음 SoundDescriptor
     inline constexpr RE::FormID kSfxLootRare = 0x000C8C71;      // UIEnchantingItemCreate
     inline constexpr RE::FormID kSfxLootHighOrb = 0x000ECF93;   // UISpellLearned
@@ -222,6 +234,30 @@ namespace SkyrimPoE::Runtime::FormIds
             return std::nullopt;
         }
         return static_cast<Core::CharmKind>(localId - kCharmBaseStart);
+    }
+
+    [[nodiscard]] inline RE::FormID MapItemLocalFormId(std::uint8_t tier) noexcept
+    {
+        const std::uint8_t clamped = (tier < 1u) ? 1u : (tier > 16u ? 16u : tier);
+        return kMapItemForms[clamped - 1u];
+    }
+
+    [[nodiscard]] inline std::optional<std::uint8_t> MapTierFromLocalFormId(RE::FormID localId) noexcept
+    {
+        if (localId < kMapItemBase || localId >= kMapItemBase + kMapItemCount) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint8_t>((localId - kMapItemBase) + 1u);
+    }
+
+    [[nodiscard]] inline bool IsMapItemLocalFormId(RE::FormID localId) noexcept
+    {
+        return MapTierFromLocalFormId(localId).has_value();
+    }
+
+    [[nodiscard]] inline bool IsAscendancy4TributeLocalFormId(RE::FormID localId) noexcept
+    {
+        return localId == kAscendancy4Tribute;
     }
 
     [[nodiscard]] inline RE::FormID SealedTokenLocalFormId(

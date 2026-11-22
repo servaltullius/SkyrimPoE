@@ -128,12 +128,13 @@ namespace SkyrimPoE::Core
             cursor = (idx + 1) % maxSockets;
 
             const double poeAvgDmg = stats.baseHitDamage.TotalAverage();
-            const double skyrimDmg = ConvertOffenseHit(poeAvgDmg, snapshot.exileLevel, pack, config);
+            const std::uint32_t areaLv = snapshot.combatAreaLevel > 0 ? snapshot.combatAreaLevel : snapshot.exileLevel;
+            const double skyrimDmg = ConvertOffenseHit(poeAvgDmg, areaLv, pack, config);
 
             TriggeredSpellCast cast;
             cast.spellInstanceId = spellInst.instanceId;
             cast.gemId = stats.gemId;
-            cast.exileLevel = snapshot.exileLevel;
+            cast.exileLevel = areaLv;
             cast.poeBaseHitDamage = stats.baseHitDamage;
             cast.effectiveCritChancePct = stats.EffectiveCritChancePct();
             cast.critMultiplierPct = stats.critMultiplierPct;
@@ -216,12 +217,13 @@ namespace SkyrimPoE::Core
         }
 
         const double poeAvgDmg = stats.baseHitDamage.TotalAverage();
-        const double skyrimDmg = ConvertOffenseHit(poeAvgDmg, snapshot.exileLevel, pack, config);
+        const std::uint32_t areaLv = snapshot.combatAreaLevel > 0 ? snapshot.combatAreaLevel : snapshot.exileLevel;
+        const double skyrimDmg = ConvertOffenseHit(poeAvgDmg, areaLv, pack, config);
 
         TriggeredSpellCast cast;
         cast.spellInstanceId = slot.gem.instanceId;
         cast.gemId = stats.gemId;
-        cast.exileLevel = snapshot.exileLevel;
+        cast.exileLevel = areaLv;
         cast.poeBaseHitDamage = stats.baseHitDamage;
         cast.effectiveCritChancePct = stats.EffectiveCritChancePct();
         cast.critMultiplierPct = stats.critMultiplierPct;
@@ -311,9 +313,10 @@ namespace SkyrimPoE::Core
                 snapshot.exileLevel, pack, config));
         // 검수 M3: 반사 화염 피해는 방어 체력 배율(baseSkyrimMaxHealth)에 종속되지 않도록 ConvertOffenseHit 선형 환산 계수로 계산
         const double reflectPct = std::max(0.0, stats.moltenShellReflectPct);
+        const std::uint32_t reflectAreaLv = snapshot.combatAreaLevel > 0 ? snapshot.combatAreaLevel : snapshot.exileLevel;
         const double fullReflectOffenseSkyrim = ConvertOffenseHit(
             stats.moltenShellAbsorbCapPoe * (reflectPct / 100.0),
-            snapshot.exileLevel,
+            reflectAreaLv,
             pack,
             config);
 

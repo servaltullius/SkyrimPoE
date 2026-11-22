@@ -597,4 +597,26 @@ namespace SkyrimPoE::Runtime
         g_lastSyncedSnapVersion = 0;
         SyncGuardArmourToLayer2(0.0);
     }
+
+    void ProxySpellRuntime::RemoveAllProxySpells(RE::PlayerCharacter* player)
+    {
+        if (!player) {
+            return;
+        }
+        for (std::size_t i = 0; i < Core::kSkillSlotCount; ++i) {
+            if (auto* sp = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[i])) {
+                if (player->HasSpell(sp)) {
+                    player->RemoveSpell(sp);
+                }
+            }
+            if (auto* pw = FormIds::Lookup<RE::SpellItem>(FormIds::kProxyPowers[i])) {
+                if (player->HasSpell(pw)) {
+                    player->RemoveSpell(pw);
+                }
+            }
+            g_bindings[i].isSpellActive.store(false, std::memory_order_release);
+            g_bindings[i].isPowerActive.store(false, std::memory_order_release);
+        }
+        SyncGuardArmourToLayer2(0.0);
+    }
 }

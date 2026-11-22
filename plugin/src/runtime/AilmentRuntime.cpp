@@ -246,7 +246,7 @@ namespace SkyrimPoE::Runtime
         }
 
         const auto snap = g_statEngine->GetSnapshot();
-        const std::uint32_t exileLv = snap ? snap->exileLevel : 1u;
+        const std::uint32_t areaLv = snap ? snap->combatAreaLevel : 1u;
 
         for (const auto fid : ids) {
             auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid);
@@ -283,15 +283,15 @@ namespace SkyrimPoE::Runtime
             SyncActorSpeedFromAilment(actor);
 
             if (dot.firePoeDamage > 0.0) {
-                const double skDmg = Core::ConvertOffenseHit(dot.firePoeDamage, exileLv, *g_dataPack, *g_config);
+                const double skDmg = Core::ConvertOffenseHit(dot.firePoeDamage, areaLv, *g_dataPack, *g_config);
                 (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Fire, false, false);
             }
             if (dot.physPoeDamage > 0.0 && !actor->IsDead()) {
-                const double skDmg = Core::ConvertOffenseHit(dot.physPoeDamage, exileLv, *g_dataPack, *g_config);
+                const double skDmg = Core::ConvertOffenseHit(dot.physPoeDamage, areaLv, *g_dataPack, *g_config);
                 (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Physical, false, false);
             }
             if (dot.chaosPoeDamage > 0.0 && !actor->IsDead()) {
-                const double skDmg = Core::ConvertOffenseHit(dot.chaosPoeDamage, exileLv, *g_dataPack, *g_config);
+                const double skDmg = Core::ConvertOffenseHit(dot.chaosPoeDamage, areaLv, *g_dataPack, *g_config);
                 (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Chaos, false, true);
             }
         }
@@ -314,7 +314,7 @@ namespace SkyrimPoE::Runtime
             return res;
         }
         const auto snap = g_statEngine->GetSnapshot();
-        const std::uint32_t exileLv = snap ? snap->exileLevel : 1u;
+        const std::uint32_t areaLv = snap ? snap->combatAreaLevel : 1u;
 
         std::uniform_real_distribution<double> u01(0.0, 1.0);
         Core::HitAilmentInput in{};
@@ -323,7 +323,7 @@ namespace SkyrimPoE::Runtime
         in.coldHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Cold)].Average();
         in.lightningHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Lightning)].Average();
         in.chaosHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Chaos)].Average();
-        in.targetAilmentThresholdPoe = std::max(20.0, g_dataPack->MonsterLife(exileLv));
+        in.targetAilmentThresholdPoe = std::max(20.0, g_dataPack->MonsterLife(areaLv));
         in.isCrit = isCrit;
         in.isBossOrDragon = IsBossOrDragon(target);
         in.starforgeShock = starforgeShock || (snap && snap->starforgeShock);
@@ -505,6 +505,30 @@ namespace SkyrimPoE::Runtime
         std::scoped_lock lk(g_mutex);
         g_ailments.RemoveActor(actorId);
         g_deadGraceElapsed.erase(actorId);
+    }
+
+    void AilmentRuntime::ClearPlayerAilments() noexcept
+    {
+        std::scoped_lock lk(g_mutex);
+        g_playerAilments = PlayerActiveAilments{};
+    }
+
+    void AilmentRuntime::RevertAllTrackedSpeedsNow()
+    {
+        std::vector<RE::FormID> fids;
+        {
+            std::scoped_lock lk(g_mutex);
+            fids.reserve(g_appliedSpeedDelta.size());
+            for (const auto& [fid, _] : g_appliedSpeedDelta) {
+                fids.push_back(fid);
+            }
+        }
+        for (const auto fid : fids) {
+            RevertTrackedSpeedByFormId(fid);
+        }
+        std::scoped_lock lk(g_mutex);
+        g_ailments.ClearAll();
+        g_deadGraceElapsed.clear();
     }
 
     std::vector<std::pair<RE::FormID, float>> AilmentRuntime::TakeActiveSpeedDeltasForSave()

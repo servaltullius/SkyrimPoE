@@ -3,6 +3,7 @@
 #include "runtime/Addresses.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
@@ -248,6 +249,9 @@ namespace SkyrimPoE::Runtime
             if (!target || !hit || !g_statEngine || !g_dataPack || !g_config || !g_dataPack->IsLoaded()) {
                 return;
             }
+            if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                return;
+            }
             if (SkillExecution::IsInPluginDirectDamage()) {
                 return;
             }
@@ -257,6 +261,16 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             const auto aggressor = hit->aggressor.get();
+
+            // 6단계(검수 C-5): 동료/NPC가 4차 전직 결투장 보스를 타격해도 3페이즈 하한을 건너뛰지 못하도록 동기 클램프
+            if (!target->IsPlayerRef() && (!aggressor || aggressor.get() != player) &&
+                siteIdx < 7 && !hit->flags.any(RE::HitData::Flag::kPredictDamage) &&
+                hit->totalDamage > 0.0f && MapDeviceRuntime::IsActiveArena4Boss(target->GetFormID())) {
+                const double clamped = MapDeviceRuntime::FilterArena4BossIncomingDamage(
+                    target, static_cast<double>(hit->totalDamage), 1.0);
+                hit->totalDamage = static_cast<float>(std::max(0.0, clamped));
+                return;
+            }
 
             // (A) 플레이어가 적을 공격하는 경로
             if (aggressor && aggressor.get() == player && !target->IsPlayerRef()) {
@@ -294,7 +308,8 @@ namespace SkyrimPoE::Runtime
                         }
                     }
                     const auto monRes = MonsterRuntime::ApplyPlayerHitToMonster(
-                        target->GetFormID(), dmg, Core::DamageType::Physical, false);
+                        target->GetFormID(), dmg, Core::DamageType::Physical, false,
+                        target, SkillExecution::GetDifficultyMultiplier(false));
                     hit->totalDamage = static_cast<float>(std::max(0.0, monRes.remainingHealthDamage));
                     if (monRes.absorbedByEs > 1e-4) {
                         // 검수 M3: 적 ES가 사이클론 타격을 100% 흡수해도 CoC·상태이상 발동 경로에 적중 전달
@@ -316,14 +331,14 @@ namespace SkyrimPoE::Runtime
                         const bool isHitCrit = hit->flags.any(RE::HitData::Flag::kCritical);
                         const RE::ActorHandle targetHandle = target->GetHandle();
                         const double rawHitDmg = dmg;
-                        const std::uint32_t exileLv = snap->exileLevel;
-                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, exileLv]() {
+                        const std::uint32_t areaLv = snap->combatAreaLevel;
+                        g_queue->Enqueue([targetHandle, rawHitDmg, isHitCrit, areaLv]() {
                             auto ptr = targetHandle.get();
                             auto* tgt = ptr.get();
                             if (!tgt || tgt->IsDead() || !g_dataPack) {
                                 return;
                             }
-                            const double monLife = std::max(20.0, g_dataPack->MonsterLife(exileLv));
+                            const double monLife = std::max(20.0, g_dataPack->MonsterLife(areaLv));
                             const double estPoePhys = rawHitDmg * (monLife / 100.0);
                             Core::DamagePacket pkt{};
                             pkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { estPoePhys, estPoePhys };
@@ -335,9 +350,32 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            // (B) 플레이어가 타격을 받는 경로(siteIdx 0..6; 7=task_queue는 앞선 자리에서 이미 환산됐으므로 제외)
+            // 6단계(검수 C-2 + Minor #1): siteIdx==7(task_queue) 포함 탈출 진행 중 무효화 + 지연 치명타 가로채기
+            if (target->IsPlayerRef() && siteIdx == 7) {
+                if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    hit->totalDamage = 0.0f;
+                    return;
+                }
+                if (!target->IsDead() && !target->IsInKillMove() &&
+                    !hit->flags.any(RE::HitData::Flag::kPredictDamage) &&
+                    hit->totalDamage > 0.0f && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+                    const double diffMult7 = SkillExecution::GetDifficultyMultiplier(true);
+                    const auto* pav = player->AsActorValueOwner();
+                    const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(hit->totalDamage) * diffMult7)) {
+                        hit->totalDamage = 0.0f;
+                    }
+                }
+                return;
+            }
+
+            // (B) 플레이어가 타격을 받는 경로(siteIdx 0..6; 7=task_queue는 위에서 탈출 가드 후 제외)
             if (target->IsPlayerRef() && siteIdx < 7) {
                 if (target->IsDead() || target->IsInKillMove() || hit->flags.any(RE::HitData::Flag::kPredictDamage)) {
+                    return;
+                }
+                if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    hit->totalDamage = 0.0f;
                     return;
                 }
 
@@ -359,9 +397,15 @@ namespace SkyrimPoE::Runtime
                 if (aggressor && !aggressor->IsPlayerRef()) {
                     monOut = MonsterRuntime::GetOutgoingModifier(aggressor->GetFormID());
                     preBlock *= monOut.damageMultiplier;
-                    // N-2: Deadly(치명) 몬스터는 20% 확률로 1.3배 치명타
-                    if (monOut.isDeadly && RollUnit() < 0.20) {
-                        preBlock *= 1.30;
+                    // N-2 + 6단계 지도 치명타 수치 반영: Deadly(치명) 몬스터 치명타 확률
+                    if (monOut.isDeadly) {
+                        const double critIncPct = MapDeviceRuntime::IsPlayerInActiveMapCell()
+                            ? MapDeviceRuntime::GetActiveMapModSummary().monsterCritChanceIncPct
+                            : 0.0;
+                        const double critProb = std::clamp(0.20 * (1.0 + critIncPct / 100.0), 0.20, 0.50);
+                        if (RollUnit() < critProb) {
+                            preBlock *= 1.30;
+                        }
                     }
                 }
                 // C-22, N-3: 플레이어가 적 감전 상태면 받는 피해 증폭
@@ -376,9 +420,9 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
 
-                // 1) PoE 회피 판정(결정 72)
+                // 1) PoE 회피 판정(결정 72, 6단계 지도 내 combatAreaLevel 기준)
                 if (snap->evasion > 0.0) {
-                    const double acc = g_dataPack->MonsterAccuracy(snap->exileLevel);
+                    const double acc = g_dataPack->MonsterAccuracy(snap->combatAreaLevel);
                     const double hitChance = Core::EvasionHitChance(snap->evasion, acc, g_dataPack->Constants().minHitChance);
                     if (RollUnit() >= hitChance) {
                         hit->totalDamage = 0.0f;
@@ -394,31 +438,35 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
 
-                // 3) PoE 물리 방어 + N-2 승격 적 추가 원소 피해 + 기대 방어 되돌림 환산
+                // 3) PoE 물리 방어 + N-2 승격 적 추가 원소 피해 + 기대 방어 되돌림 환산 (6단계 combatAreaLevel 사용)
                 Core::StatSnapshot effectiveSnap = *snap;
                 ApplyPendingCharmBonuses(effectiveSnap);
                 double postDefense = Core::ConvertDefensePhysicalHit(
-                    preBlock, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                    preBlock, effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
+                // 6단계 지도 취약(Vulnerability) 모드: 플레이어 받는 물리 피해 +%
+                if (effectiveSnap.inActiveMap && effectiveSnap.activeMapMods.playerPhysTakenIncPct > 0.0 && postDefense > 0.0) {
+                    postDefense *= (1.0 + effectiveSnap.activeMapMods.playerPhysTakenIncPct / 100.0);
+                }
                 // U5 확정(2026-11-20): Astramentis(-4 Physical Damage taken from Attack Hits) 등 고정 물리 공격 피해 감산
                 if (effectiveSnap.flatPhysTakenFromAttacksDelta < 0.0 && postDefense > 0.0) {
-                    const double monDmg = std::max(1.0, g_dataPack->MonsterDamage(effectiveSnap.exileLevel));
+                    const double monDmg = std::max(1.0, g_dataPack->MonsterDamage(effectiveSnap.combatAreaLevel));
                     const double flatSkyrimDelta = effectiveSnap.flatPhysTakenFromAttacksDelta * (10.0 / monDmg);
                     postDefense = std::max(0.0, postDefense + flatSkyrimDelta);
                 }
                 if (monOut.extraFireRatio > 0.0) {
                     postDefense += Core::ConvertDefenseResistDamage(
                         preBlock * monOut.extraFireRatio, Core::DamageType::Fire,
-                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                        effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
                 }
                 if (monOut.extraColdRatio > 0.0) {
                     postDefense += Core::ConvertDefenseResistDamage(
                         preBlock * monOut.extraColdRatio, Core::DamageType::Cold,
-                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                        effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
                 }
                 if (monOut.extraLightningRatio > 0.0) {
                     postDefense += Core::ConvertDefenseResistDamage(
                         preBlock * monOut.extraLightningRatio, Core::DamageType::Lightning,
-                        effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                        effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
                 }
 
                 // C-22, N-3: 유효 물리 타격(최대 체력의 5% 이상) 시 20% 확률로 적->플레이어 출혈 판정(정화의 참이 실제 출혈을 차단)
@@ -449,6 +497,16 @@ namespace SkyrimPoE::Runtime
                 }
                 remainingRaw = ApplyMindOverMatterIfActive(remainingRaw, diffMult, effectiveSnap, player);
                 TryTriggerBastionOnProjectedLowLife(player, remainingRaw, diffMult);
+
+                // 6단계(검수 C-2): 지도·결투장 내부 치명타 가로채기(난이도 배율 diffMult 반영, 발동 시 피해 0.0f 클램프)
+                if (remainingRaw > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+                    const auto* pav = player->AsActorValueOwner();
+                    const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, remainingRaw * diffMult)) {
+                        hit->totalDamage = 0.0f;
+                        return;
+                    }
+                }
                 hit->totalDamage = static_cast<float>(std::max(0.0, remainingRaw));
             }
         }
@@ -606,6 +664,9 @@ namespace SkyrimPoE::Runtime
             if (!self || !actor || !(value < 0.0f)) {
                 return value;
             }
+            if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                return value;
+            }
             const auto actualAv = (av == RE::ActorValue::kNone) ? self->actorValue : av;
             // 결정 83: 냉기·전격의 지구력·매지카 몫은 건드리지 않고 체력 몫만 PoE 방어 적용
             if (actualAv != RE::ActorValue::kHealth) {
@@ -640,12 +701,19 @@ namespace SkyrimPoE::Runtime
                         const bool bypassEs = (mapping.type == Core::DamageType::Chaos);
                         // 검수 Minor 8: 저항 변수 없는 무속성 마법(체력 흡수 등)은 FireResistant 오적용 방지를 위해 DamageType::Count 전달
                         const auto monDmgType = mapping.useAverageElemental ? Core::DamageType::Count : mapping.type;
-                        const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(targetId, magDmg, monDmgType, bypassEs);
+                        const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(
+                            targetId, magDmg, monDmgType, bypassEs,
+                            actor, SkillExecution::GetDifficultyMultiplier(false));
                         if (hitRes.absorbedByEs > 0.0 && g_killTracker) {
                             g_killTracker->ConfirmDamageContribution(targetId, hitRes.absorbedByEs);
                         }
                         return -static_cast<float>(std::max(0.0, hitRes.remainingHealthDamage));
                     }
+                } else if (value < 0.0f && MapDeviceRuntime::IsActiveArena4Boss(actor->GetFormID())) {
+                    // 6단계(검수 C-5): 동료/NPC 마법도 4차 전직 보스 페이즈 하한을 건너뛰지 못하도록 동기 클램프
+                    const double clamped = MapDeviceRuntime::FilterArena4BossIncomingDamage(
+                        actor, static_cast<double>(-value), 1.0);
+                    return -static_cast<float>(std::max(0.0, clamped));
                 }
                 return value;
             }
@@ -655,8 +723,20 @@ namespace SkyrimPoE::Runtime
                 !g_statEngine || !g_dataPack || !g_config || !g_dataPack->IsLoaded()) {
                 return value;
             }
+            if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                return 0.0f;
+            }
             if (!self->spell || !self->effect || !self->effect->baseEffect) {
-                // 결정 77: 주문/효과 정보 없는 환경 피해는 엔진 그대로 둔다
+                // 6단계(검수 C-2): 주문/효과 정보 없는 마법·환경 체력 피해라도 지도 내부 치명타면 사망 가로채기 적용
+                if (MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+                    const double diffMultEnv = SkillExecution::GetDifficultyMultiplier(true);
+                    const auto* pav = player->AsActorValueOwner();
+                    const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
+                    if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, static_cast<double>(-value) * diffMultEnv)) {
+                        return 0.0f;
+                    }
+                }
+                // 결정 77: 그 외 환경 피해는 엔진 그대로 둔다
                 return value;
             }
             const auto* baseEffect = self->effect->baseEffect;
@@ -713,8 +793,14 @@ namespace SkyrimPoE::Runtime
             if (const auto caster = self->GetCasterActor(); caster && !caster->IsPlayerRef()) {
                 const auto monOut = MonsterRuntime::GetOutgoingModifier(caster->GetFormID());
                 preResistD *= monOut.damageMultiplier;
-                if (monOut.isDeadly && RollUnit() < 0.20) {
-                    preResistD *= 1.30;
+                if (monOut.isDeadly) {
+                    const double critIncPct = MapDeviceRuntime::IsPlayerInActiveMapCell()
+                        ? MapDeviceRuntime::GetActiveMapModSummary().monsterCritChanceIncPct
+                        : 0.0;
+                    const double critProb = std::clamp(0.20 * (1.0 + critIncPct / 100.0), 0.20, 0.50);
+                    if (RollUnit() < critProb) {
+                        preResistD *= 1.30;
+                    }
                 }
             }
             // C-22, N-3: 플레이어 감전 상태 시 받는 마법 피해 증폭
@@ -809,17 +895,17 @@ namespace SkyrimPoE::Runtime
             // 방금 켜진 참뿐 아니라 같은 프레임 직전 타격에서 켜진 참 보너스도 모두 즉시 반영(검수 M6)
             ApplyPendingCharmBonuses(effectiveSnap);
 
-            // 3) PoE 저항 + PoE 3.30 인내 원소 피해 감소 + 기대 저항 되돌림(결정 71, 74, 142)
+            // 3) PoE 저항 + PoE 3.30 인내 원소 피해 감소 + 기대 저항 되돌림(결정 71, 74, 142, 6단계 combatAreaLevel)
             double postDefense = 0.0;
             if (mapping.useAverageElemental) {
                 Core::StatSnapshot avgSnap = effectiveSnap;
                 avgSnap.fireResist = (effectiveSnap.fireResist + effectiveSnap.coldResist + effectiveSnap.lightningResist) / 3.0;
                 avgSnap.maxFireResist = (effectiveSnap.maxFireResist + effectiveSnap.maxColdResist + effectiveSnap.maxLightningResist) / 3.0;
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, Core::DamageType::Fire, effectiveSnap.exileLevel, avgSnap, *g_dataPack, *g_config);
+                    preResistD, Core::DamageType::Fire, effectiveSnap.combatAreaLevel, avgSnap, *g_dataPack, *g_config);
             } else {
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, mapping.type, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                    preResistD, mapping.type, effectiveSnap.combatAreaLevel, effectiveSnap, *g_dataPack, *g_config);
             }
 
             // C-22, N-3: 유효 원소 마법 타격(최대 체력의 5% 이상) 시 적->플레이어 상태이상(점화·냉각/빙결·감전) 적용
@@ -858,6 +944,15 @@ namespace SkyrimPoE::Runtime
             }
             finalRaw = ApplyMindOverMatterIfActive(finalRaw, diffMult, effectiveSnap, player);
             TryTriggerBastionOnProjectedLowLife(player, finalRaw, diffMult);
+
+            // 6단계(검수 C-2): 지도·결투장 내부 치명 마법 피해 가로채기(diffMult 반영, 발동 시 0.0f 클램프)
+            if (finalRaw > 0.0 && MapDeviceRuntime::IsPlayerInActiveMapCell()) {
+                const auto* pav = player->AsActorValueOwner();
+                const double curHp = pav ? static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth)) : 100.0;
+                if (MapDeviceRuntime::TryInterceptLethalHitFromHook(curHp, finalRaw * diffMult)) {
+                    return 0.0f;
+                }
+            }
             return -static_cast<float>(std::max(0.0, finalRaw));
         }
 
@@ -1118,6 +1213,9 @@ namespace SkyrimPoE::Runtime
 
     void CombatHooks::TickPlayerPools(double deltaSec, bool gamePaused)
     {
+        if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
+            return;
+        }
         if (g_esPool) {
             g_esPool->Tick(deltaSec, gamePaused);
         }

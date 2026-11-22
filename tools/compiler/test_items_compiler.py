@@ -189,5 +189,19 @@ class TestItemsCompiler(unittest.TestCase):
         self.assertEqual(disk["meta"]["rollableAffixes"], self.pack["meta"]["rollableAffixes"])
 
 
+    def test_stage6_map_affixes(self) -> None:
+        map_affs = [a for a in self.pack["affixes"] if a["rollable"] and any(k == "map" for k, _ in a["weights"])]
+        self.assertEqual(len(map_affs), 16)
+        prefixes = [a for a in map_affs if a["type"] == "Prefix"]
+        suffixes = [a for a in map_affs if a["type"] == "Suffix"]
+        self.assertEqual(len(prefixes), 8)
+        self.assertEqual(len(suffixes), 8)
+        # 지도 어픽스는 일반 장비(default/helmet/sword)나 주얼(jewel)에 절대 롤링되지 않아야 함
+        for a in map_affs:
+            self.assertEqual(resolve_weight(a["weights"], {"default", "helmet", "armour"}), 0)
+            self.assertEqual(resolve_weight(a["weights"], {"jewel"}), 0)
+            self.assertEqual(resolve_weight(a["weights"], {"map"}), 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

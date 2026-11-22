@@ -26,13 +26,17 @@ namespace SkyrimPoE::Runtime
     public:
         static void Initialize(const Core::ItemData* itemData, const Core::Config* config);
 
-        // DeathListener 주 갱신 콜백에서 호출: 처치 드랍 판정 및 시체/바닥 배출
+        // DeathListener 주 갱신 콜백에서 호출: 처치 드랍 판정 및 시체/바닥 배출 (6단계 지도 티어·IIQ·IIR 연동)
         static void OnKillAwarded(
             RE::ActorHandle corpseHandle,
             std::uint32_t effectiveMonsterLevel,
             bool isBoss,
             bool isDragon,
-            Core::MonsterRarity monsterRarity = Core::MonsterRarity::Normal);
+            Core::MonsterRarity monsterRarity = Core::MonsterRarity::Normal,
+            std::uint8_t activeMapTier = 0,
+            double bonusIiqPct = 0.0,
+            double bonusIirPct = 0.0,
+            bool guaranteeFirstTribute = false);
 
         // 명시적 바닥 드랍 + 빛기둥 생성 헬퍼(AutoTest E7 및 내부 공용)
         static bool SpawnPhysicalDropFromContainer(
@@ -40,7 +44,8 @@ namespace SkyrimPoE::Runtime
             RE::TESBoundObject* itemObj,
             std::uint8_t worldDropTier,
             bool isCurrencyDrop,
-            bool isUniqueDrop = false);
+            bool isUniqueDrop = false,
+            bool isMapDrop = false);
 
         // 주 갱신 스레드 틱: 줍기 감지·빛기둥 위치 동기화·시간 초과/셀 이탈 시체 회수·고아 스윕
         static void Tick(double dt, bool paused);

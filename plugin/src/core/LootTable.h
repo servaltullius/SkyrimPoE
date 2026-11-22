@@ -16,14 +16,16 @@ namespace SkyrimPoE::Core
         UniqueToken = 2,
         Jewel = 3,
         Charm = 4,
-        SkillGem = 5
+        SkillGem = 5,
+        MapItem = 6,            // 6단계(결정 166): T1..T16 지도 아이템 (tier = 1..16)
+        AscendancyTribute = 7   // 6단계(결정 18, 166): 4차 전직 결투장 공물
     };
 
     struct DropEntry
     {
         DropKind kind = DropKind::SealedToken;
         // SealedToken / UniqueToken 전용
-        std::uint8_t tier = 1;  // 1..5
+        std::uint8_t tier = 1;  // 1..5 (MapItem: 1..16)
         ItemRarity rarity = ItemRarity::Magic;
         TokenSlotGroup slotGroup = TokenSlotGroup::OneHandWeapon;
         // CurrencyOrb 전용
@@ -49,6 +51,10 @@ namespace SkyrimPoE::Core
             const Config& config,
             const ItemData& itemData,
             std::mt19937_64& rng,
-            MonsterRarity monsterRarity = MonsterRarity::Normal);
+            MonsterRarity monsterRarity = MonsterRarity::Normal,
+            std::uint8_t activeMapTier = 0,
+            double bonusIiqPct = 0.0,
+            double bonusIirPct = 0.0,
+            bool guaranteeFirstTribute = false);
     };
 }
