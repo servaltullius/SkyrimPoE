@@ -2,6 +2,7 @@
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/CycloneRuntime.h"
+#include "runtime/DeathListener.h"
 #include "runtime/EquipmentSync.h"
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
@@ -65,9 +66,12 @@ namespace SkyrimPoE::Runtime
             RE::FormID runCellId = 0;
             std::optional<double> untilLookupSec;
             double ageSec = 0.0;
+            std::optional<double> firstDisabledAgeSec;
         };
         std::deque<PendingActorDelete> g_pendingActorDeletes;
         std::uint64_t g_pendingActorDeleteGeneration = 0;
+        // 삭제 대기에서 빠진 뒤에도 같은 회차의 액터에 Disable을 중복 예약하지 않는다.
+        std::vector<RE::FormID> g_runSpawnDisableRequests;
         Core::ActiveMapState g_activeMap{};
         std::optional<Core::PoEItemRecord> g_consumedMapRecord;
         Core::MapTravelSettings g_travelSettings;
@@ -84,9 +88,32 @@ namespace SkyrimPoE::Runtime
             std::uint64_t runId = 0;
         };
         TravelContext g_travelContext;
+        // 회차와 목표는 g_travelContext와 g_travel에 유지한다. 이 단계에서 도착 시계는 돌리지 않는다.
+        struct PendingTravelDisable
+        {
+            std::uint64_t requestFrame;
+            std::vector<RE::FormID> actorIds;
+            double elapsedSec = 0.0;
+            // 결정 179 개정: 사망이 시작된 보스의 확정·처치 반영이 남았으면 비활성화 요청 자체를 미룬다.
+            // 비활성화된 보스는 사망 확정이 오지 않을 수 있다.
+            bool awaitingBossDeath = false;
+            double bossWaitSec = 0.0;
+            // 보스 대기를 한 번 마쳤으면 이동 직전 재확인에서 다시 기다리지 않는다(큐가 멈춘 경우의 무한 대기 방지).
+            bool bossHoldDone = false;
+        };
+        std::optional<PendingTravelDisable> g_pendingTravelDisable;
         RE::FormID g_permittedCell = 0;
         RE::FormID g_warnedUnauthorizedCell = 0;
         std::uint64_t g_retryReturnRunId = 0;
+        struct CellResetRejection
+        {
+            RE::TESObjectCELL::CellState cellState;
+            bool attached;
+            RE::VMHandle handle;
+            bool handleAvailable;
+            bool handleIsCell;
+            bool operator==(const CellResetRejection&) const = default;
+        };
         // 결정 177 ①: Reset은 VM이 호출을 마쳤다는 콜백이 와야 대기에서 뺀다. 접수만으로는 새 회차를 열지 않는다.
         struct PendingCellReset
         {
@@ -95,6 +122,7 @@ namespace SkyrimPoE::Runtime
             bool inFlight = false;       // VM이 접수했고 콜백을 기다리는 중
             double waitedSec = 0.0;      // 대기에 들어온 뒤 지난 시간(일시정지·로딩 제외)
             double inFlightSec = 0.0;    // 접수 뒤 지난 시간(일시정지·로딩 제외)
+            std::optional<CellResetRejection> lastRejection;
         };
         // 콜백이 이 시간 안에 오지 않으면 다시 보낸다.
         constexpr double kCellResetCallbackTimeoutSec = 10.0;
@@ -133,12 +161,15 @@ namespace SkyrimPoE::Runtime
         std::uint64_t g_pendingSpawnRunId = 0;
         double g_arenaPhaseInvulnSec = 0.0;
         std::uint8_t g_completedArenaPhase = Core::kArena4FirstPhase;
-        struct ArenaBossDeathStart
+        // 결정 179 개정(2026-11-23): 회차가 실패하기 전에 보스의 사망이 시작됐을 때만 남긴다. 처치의 실패·보상 차단과
+        // 결투장 페이즈 조건은 이 시점(치명타)의 값으로 판정한다.
+        struct MapBossDeathStart
         {
             std::uint64_t runId;
-            Core::Arena4BossDeathState state;
+            bool rewardBlocked;
+            std::optional<Core::Arena4BossDeathState> arena;
         };
-        std::optional<ArenaBossDeathStart> g_arenaBossDeathStart;
+        std::optional<MapBossDeathStart> g_bossDeathStart;
         double g_deathEscapeExitElapsedSec = 0.0;
 
         // 락프리 원자 상태(CombatHooks 워커 스레드 안전 조회용)
@@ -162,6 +193,13 @@ namespace SkyrimPoE::Runtime
             Core::MapTravelKind kind;
         };
         std::optional<PendingReturnConfirmation> g_pendingReturnConfirmation;
+
+        void ClearTravelLocked()
+        {
+            g_pendingTravelDisable.reset();
+            g_travel.Clear();
+            g_travelContext = {};
+        }
 
         std::optional<Core::MapTravelKind> PendingTravelKindLocked()
         {
@@ -192,6 +230,18 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        bool IsMapRewardBlockedLocked(RE::FormID playerCellId)
+        {
+            return playerCellId == 0 || playerCellId != g_permittedCell ||
+                !g_playerInActiveMapCell.load(std::memory_order_acquire);
+        }
+
+        // 결정 179 ⑦: 이 회차 보스의 사망이 시작됐거나 확정됐는데 처치 반영(큐)이 아직 끝나지 않았는지.
+        bool BossKillProcessingPendingLocked(std::uint64_t runId)
+        {
+            return runId != 0 && ((g_bossDeathStart && g_bossDeathStart->runId == runId) || g_bossDeathPendingRunId == runId);
+        }
+
         MapKillContext GetMapKillContextLocked(RE::FormID actorId, RE::FormID playerCellId)
         {
             std::scoped_lock actorLock(g_mapActorsMutex);
@@ -204,13 +254,20 @@ namespace SkyrimPoE::Runtime
             context.dropMapTier = g_activeMap.isArena4 ? std::uint8_t{ 0 } : g_activeMap.tier;
             context.bonusIiqPct = g_activeMap.summary.bonusIiqPct;
             context.bonusIirPct = g_activeMap.summary.bonusIirPct;
-            context.runFailed = g_activeMap.failed;
             context.isBoss = actorId == g_activeMap.bossRefFormId;
-            context.rewardBlocked = playerCellId == 0 || playerCellId != g_permittedCell ||
-                !g_playerInActiveMapCell.load(std::memory_order_acquire);
+            context.playerCellId = playerCellId;
+            context.permittedCellId = g_permittedCell;
+            context.playerInActiveCell = g_playerInActiveMapCell.load(std::memory_order_acquire);
+            const auto* deathStart = context.isBoss && g_bossDeathStart && g_bossDeathStart->runId == context.runId
+                ? &*g_bossDeathStart : nullptr;
+            context.judgedAtDeathStart = deathStart != nullptr;
+            const auto judged = Core::MapSystem::JudgeBossKill(deathStart != nullptr,
+                deathStart && deathStart->rewardBlocked, g_activeMap.failed, IsMapRewardBlockedLocked(playerCellId));
+            context.runFailed = judged.runFailed;
+            context.rewardBlocked = judged.rewardBlocked;
             if (context.isBoss && g_activeMap.isArena4) {
-                context.arenaBossDeath = g_arenaBossDeathStart && g_arenaBossDeathStart->runId == context.runId
-                    ? g_arenaBossDeathStart->state
+                context.arenaBossDeath = deathStart && deathStart->arena
+                    ? *deathStart->arena
                     : Core::Arena4BossDeathState{ g_completedArenaPhase, IsArena4PhaseInvulnerableLocked() };
             }
             return context;
@@ -238,12 +295,19 @@ namespace SkyrimPoE::Runtime
         void SetActiveMapLocked(Core::ActiveMapState state, std::optional<Core::PoEItemRecord> consumedMap = std::nullopt)
         {
             if (g_activeMap.runId != state.runId) {
+                if (g_pendingTravelDisable) {
+                    if (Core::MapSystem::ReleaseDeathEscape(g_deathEscapeRunId, g_travelContext.runId)) {
+                        g_deathEscapeExitElapsedSec = 0.0;
+                    }
+                    ClearTravelLocked();
+                }
+                g_runSpawnDisableRequests.clear();
                 g_bossDeathPendingRunId = 0;
                 g_bossDeathConfirmedRunId = 0;
                 g_firstBossDeathReturnDeferral.reset();
                 g_pendingReturnConfirmation.reset();
                 g_completedArenaPhase = Core::kArena4FirstPhase;
-                g_arenaBossDeathStart.reset();
+                g_bossDeathStart.reset();
                 g_bossMissingSec = 0.0;
             }
             g_activeMap = std::move(state);
@@ -321,10 +385,9 @@ namespace SkyrimPoE::Runtime
             g_safeReturnTarget = destination;
         }
 
-        void DisableRunSpawnsOnMainThread(std::uint64_t runId);
+        std::vector<RE::FormID> DisableRunSpawnsOnMainThread(std::uint64_t runId);
 
-        bool IssueTravelMove(RE::PlayerCharacter* player, const Core::MapTravelTarget& target,
-            std::uint64_t endingRunId = 0)
+        bool IssueTravelMove(RE::PlayerCharacter* player, const Core::MapTravelTarget& target)
         {
             auto* cell = target.cell ? RE::TESForm::LookupByID<RE::TESObjectCELL>(target.cell) : nullptr;
             auto* world = target.worldspace ? RE::TESForm::LookupByID<RE::TESWorldSpace>(target.worldspace) : nullptr;
@@ -343,10 +406,6 @@ namespace SkyrimPoE::Runtime
                 handle = marker->GetHandle();
             } else {
                 handle = player->CreateRefHandle();
-            }
-            // 이동 목표 검증과 요청 접수 뒤, 엔진이 현재 셀을 떼기 전에 처리한다.
-            if (endingRunId != 0) {
-                DisableRunSpawnsOnMainThread(endingRunId);
             }
             return InvokeMoveToImpl(player, handle, cell, world, pos, angle);
         }
@@ -444,7 +503,8 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        std::string_view DispatchCellReset(RE::TESObjectCELL* cell, std::uint64_t seq)
+        std::string_view DispatchCellReset(RE::TESObjectCELL* cell, std::uint64_t seq,
+            std::optional<CellResetRejection>& rejection)
         {
             if (!cell) {
                 return "cell lookup failed";
@@ -460,6 +520,8 @@ namespace SkyrimPoE::Runtime
             }
             RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new CellResetCallback(cell->GetFormID(), seq) };
             if (!vm->DispatchMethodCall2(handle, "Cell", "Reset", RE::MakeFunctionArguments(), callback)) {
+                rejection = CellResetRejection{ cell->cellState.get(), cell->IsAttached(), handle,
+                    policy->IsHandleObjectAvailable(handle), policy->HandleIsType(RE::FormType::Cell, handle) };
                 return "VM rejected the request";
             }
             return {};
@@ -495,7 +557,8 @@ namespace SkyrimPoE::Runtime
                 if (!IsCellDetachedForReset(cell)) {
                     continue;
                 }
-                const auto failure = DispatchCellReset(cell, seq);
+                std::optional<CellResetRejection> rejection;
+                const auto failure = DispatchCellReset(cell, seq, rejection);
                 std::scoped_lock lk(g_mutex);
                 const auto pending = g_pendingCellResets.find(cellId);
                 if (pending == g_pendingCellResets.end() || pending->second.seq != seq) {
@@ -505,8 +568,15 @@ namespace SkyrimPoE::Runtime
                     if (!std::exchange(pending->second.warned, true)) {
                         SKSE::log::warn("MapDeviceRuntime: Cell.Reset dispatch failed for 0x{:08X} ({}); will retry.", cellId, failure);
                     }
+                    if (rejection && pending->second.lastRejection != rejection) {
+                        SKSE::log::info("MapDeviceRuntime: Cell.Reset VM rejected cell=0x{:08X}, cellState={}, IsAttached={}, handle=0x{:016X}, IsHandleObjectAvailable={}, HandleIsType(Cell)={}.",
+                            cellId, static_cast<unsigned>(rejection->cellState), rejection->attached, rejection->handle,
+                            rejection->handleAvailable, rejection->handleIsCell);
+                    }
+                    pending->second.lastRejection = rejection;
                     continue;
                 }
+                pending->second.lastRejection.reset();
                 pending->second.inFlight = true;
                 pending->second.inFlightSec = 0.0;
                 ++g_sentCellResets[cellId];
@@ -602,8 +672,11 @@ namespace SkyrimPoE::Runtime
             return true;
         }
 
+        // waitForDisabled: 호출자가 방금 Disable을 요청한 액터(자동 취소된 회차의 정리 등). 비어 있지 않으면 끝낼 귀환과
+        // 같이 그 액터들이 비활성화된 것을 확인한 다음 프레임에 이동한다.
         MapActionResult StartTravel(RE::PlayerCharacter* player, MapTravelKind kind,
-            const Core::MapTravelTarget& target, const TravelContext& context, std::string message)
+            const Core::MapTravelTarget& target, const TravelContext& context, std::string message,
+            std::vector<RE::FormID> waitForDisabled = {})
         {
             if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
                 // 정리 완료 뒤에는 이동을 갱신하지 않아 도착 확인도 시간 초과도 오지 않는다.
@@ -623,6 +696,8 @@ namespace SkyrimPoE::Runtime
             };
             bool sync = false;
             std::uint64_t endingRunId = 0;
+            bool awaitBossDeath = false;
+            bool awaitCleanupDisable = false;
             const auto bossId = kind == MapTravelKind::Return
                 ? g_activeBossFormId.load(std::memory_order_acquire) : 0u;
             const bool bossDeadNow = IsBossDeadNow(bossId);
@@ -650,31 +725,67 @@ namespace SkyrimPoE::Runtime
                         // 이동 실패 뒤에도 종료 요청을 유지한다. 회차 스폰은 이미 비활성화됐을 수 있다.
                         g_activeMap.endRequested = true;
                     }
-                    if (Core::MapSystem::ShouldEndOnReturn(g_activeMap)) {
-                        endingRunId = context.runId;
+                    const bool ending = Core::MapSystem::ShouldEndOnReturn(g_activeMap);
+                    // 결정 179 ⑦: 사망이 시작된 보스의 처치 반영 전에는 회차를 끝내는 귀환과 사망 귀환이 떠나지 않는다.
+                    // 처치가 반영되면 결정 175대로 이 귀환이 회차를 끝내고, 비활성화된 보스는 사망 확정이 오지 않을 수 있다.
+                    awaitBossDeath = (ending || kind == MapTravelKind::DeathEscape) &&
+                        Core::MapSystem::ShouldHoldEndingDisableForBossDeath(
+                            BossKillProcessingPendingLocked(context.runId), g_activeMap.bossKilled, 0.0);
+                    if (ending || awaitBossDeath) {
+                        g_pendingTravelDisable = PendingTravelDisable{ MainUpdateHook::TickCount(), {} };
+                        g_pendingTravelDisable->awaitingBossDeath = awaitBossDeath;
+                        // 일반 귀환이 이미 보스 처리를 기다리며 거절됐던 시간은 이 대기의 상한에 넣는다(10초를 두 번 기다리지 않게).
+                        if (awaitBossDeath && g_firstBossDeathReturnDeferral) {
+                            g_pendingTravelDisable->bossWaitSec = std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() - *g_firstBossDeathReturnDeferral).count();
+                        }
                     }
+                    if (ending) {
+                        endingRunId = context.runId;
+                        // 어떤 귀환이 회차를 끝내는지(사망 귀환으로 실패한 결투장 등) 실행 기록에서 가리기 위한 진단.
+                        SKSE::log::info("MapDeviceRuntime: ending return accepted for run {} (kind={}, failed={}, bossKilled={}, endRequested={}, portals={}).",
+                            context.runId, static_cast<int>(kind), g_activeMap.failed, g_activeMap.bossKilled,
+                            g_activeMap.endRequested, g_activeMap.portalsRemaining);
+                    }
+                }
+                if (!entry && !waitForDisabled.empty() && !g_pendingTravelDisable) {
+                    g_pendingTravelDisable = PendingTravelDisable{ MainUpdateHook::TickCount(), std::move(waitForDisabled) };
+                    awaitCleanupDisable = true;
                 }
             }
             if (sync) {
                 MapDeviceRuntime::SyncMapLayer2ToStatEngine();
             }
-            if (!IssueTravelMove(player, target, endingRunId)) {
+            if (awaitBossDeath) {
+                SKSE::log::info("MapDeviceRuntime: return run {} (kind={}, ending={}) waits for the dying boss to be processed.",
+                    context.runId, static_cast<int>(kind), endingRunId != 0);
+            } else if (awaitCleanupDisable) {
+                SKSE::log::info("MapDeviceRuntime: return (kind={}) waits for cleaned-up spawns to be disabled before moving.",
+                    static_cast<int>(kind));
+            } else if (endingRunId != 0) {
+                auto actorIds = DisableRunSpawnsOnMainThread(endingRunId);
                 std::scoped_lock lk(g_mutex);
-                g_travel.Clear();
-                g_travelContext = {};
+                if (!g_pendingTravelDisable || g_travelContext.runId != endingRunId) {
+                    return { false, "회차가 바뀌어 귀환 요청을 취소했습니다." };
+                }
+                g_pendingTravelDisable->actorIds = std::move(actorIds);
+            } else if (!IssueTravelMove(player, target)) {
+                std::scoped_lock lk(g_mutex);
+                ClearTravelLocked();
                 return { false, "이동을 요청하지 못했습니다. 다시 시도하세요." };
             }
             return { true, std::move(message) };
         }
 
         MapActionResult RequestReturn(RE::PlayerCharacter* player, MapTravelKind kind,
-            const Core::MapTravelTarget& saved, std::uint64_t runId, std::string message)
+            const Core::MapTravelTarget& saved, std::uint64_t runId, std::string message,
+            std::vector<RE::FormID> waitForDisabled = {})
         {
             const auto target = kind == MapTravelKind::SafeEscape ? g_safeReturnTarget : ResolveReturnTarget(saved);
             if (!target) {
                 return { false, "안전 귀환 마커를 찾을 수 없어 이동을 요청하지 못했습니다. 다시 시도하세요." };
             }
-            return StartTravel(player, kind, *target, { .runId = runId }, std::move(message));
+            return StartTravel(player, kind, *target, { .runId = runId }, std::move(message), std::move(waitForDisabled));
         }
 
         void ShowMapMessage(const MapActionResult& result)
@@ -843,7 +954,7 @@ namespace SkyrimPoE::Runtime
                     evictedActorId = g_pendingActorDeletes.front().actorId;
                     g_pendingActorDeletes.pop_front();
                 }
-                g_pendingActorDeletes.push_back({ actorId, runId, actorBaseId, runCellId, std::nullopt, 0.0 });
+                g_pendingActorDeletes.push_back({ actorId, runId, actorBaseId, runCellId, std::nullopt, 0.0, std::nullopt });
             }
             if (evictedActorId != 0) {
                 ResetMapSpawnTracking(evictedActorId);
@@ -853,24 +964,39 @@ namespace SkyrimPoE::Runtime
             return true;
         }
 
-        void DisableRunSpawnsOnMainThread(std::uint64_t runId)
+        std::vector<RE::FormID> DisableRunSpawnsOnMainThread(std::uint64_t runId)
         {
             std::vector<RE::FormID> spawnedIds;
+            std::vector<RE::FormID> requestedIds;
             RE::FormID cellId = 0;
             {
                 std::scoped_lock lk(g_mutex);
                 if (!g_activeMap.active || g_activeMap.runId != runId) {
-                    return;
+                    return {};
                 }
                 spawnedIds = Core::MapSystem::MapSpawnCleanupIds(g_activeMap);
+                requestedIds = g_runSpawnDisableRequests;
                 cellId = g_activeCellFormId.load(std::memory_order_relaxed);
                 g_activeMap.spawnsDisabled = true;
                 g_bossMissingSec = 0.0;
             }
             const auto templateIds = SpawnTemplateIdsForCell(cellId);
+            const auto previouslyRequested = requestedIds.size();
             for (const auto id : spawnedIds) {
-                DisableMapSpawnOnMainThread(id, runId, cellId, templateIds);
+                if (std::ranges::find(requestedIds, id) == requestedIds.end() &&
+                    DisableMapSpawnOnMainThread(id, runId, cellId, templateIds)) {
+                    requestedIds.push_back(id);
+                }
             }
+            SKSE::log::info("MapDeviceRuntime: ending return run {} requested Disable for {} actor(s) (tracking {}, frame={}).",
+                runId, requestedIds.size() - previouslyRequested, requestedIds.size(), MainUpdateHook::TickCount());
+            {
+                std::scoped_lock lk(g_mutex);
+                if (g_activeMap.active && g_activeMap.runId == runId) {
+                    g_runSpawnDisableRequests = requestedIds;
+                }
+            }
+            return requestedIds;
         }
 
         void TickPendingActorDeletes(double deltaSec)
@@ -937,8 +1063,10 @@ namespace SkyrimPoE::Runtime
                     .actorBaseId = base ? base->GetFormID() : 0,
                     .cellId = cell ? cell->GetFormID() : 0
                 };
-                if (actor && !cell && !observed.isPlayer && observed.isDisabled && observed.actorBaseId == pending.actorBaseId) {
-                    // 원형이 맞는 비활성 액터만 셀이 다시 읽힐 때까지 기다린다.
+                if (actor && !observed.isPlayer && observed.actorBaseId == pending.actorBaseId &&
+                    ((!cell && observed.isDisabled) || (cell && observed.cellId == pending.runCellId && !observed.isDisabled))) {
+                    // 원형이 맞는 액터는 셀이 다시 읽히거나(비활성인데 셀 없음), 예약된 Disable이 아직 실행되지 않았으면
+                    // (그 셀에 있고 아직 활성) 다시 관찰한다. 끝내 안 되면 포기 시간(kMapActorDeleteGiveUpSec)에 정리된다.
                     continue;
                 }
                 {
@@ -953,7 +1081,15 @@ namespace SkyrimPoE::Runtime
                     }
                 }
                 if (actor && Core::MapSystem::CanDeleteMapSpawn(pending.actorBaseId, pending.runCellId, observed)) {
+                    const auto actorId = actor->GetFormID();
+                    const auto cellState = cell->cellState.get();
+                    const bool loaded3D = actor->Is3DLoaded();
+                    // 귀환 대기에서 관찰하지 않은 액터는 이 삭제 검사에서 처음 kDisabled를 확인했다.
+                    const double sinceDisabled = pending.ageSec - pending.firstDisabledAgeSec.value_or(pending.ageSec);
                     actor->SetDelete(true);
+                    SKSE::log::info("MapDeviceRuntime: SetDelete run {}, actor=0x{:08X}, base=0x{:08X}, cell=0x{:08X}, cellState={}, Is3DLoaded={}, sinceDisableRequest={:.3f}s, sinceFirstObservedDisabled={:.3f}s, IsDeleted={}.",
+                        pending.runId, actorId, observed.actorBaseId, observed.cellId, static_cast<unsigned>(cellState),
+                        loaded3D, pending.ageSec, sinceDisabled, actor->IsDeleted());
                 } else {
                     SKSE::log::warn("MapDeviceRuntime: skipped deleting actor 0x{:08X}: actor={}, player={}, disabled={}, base=0x{:08X}/0x{:08X}, cell=0x{:08X}/0x{:08X}.",
                         pending.actorId, observed.isActor, observed.isPlayer, observed.isDisabled,
@@ -963,18 +1099,27 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void CleanupClosedRunOnMainThread(std::span<const RE::FormID> spawnedIds, std::uint64_t runId, RE::FormID cellId)
+        // 이번에 Disable을 요청한 액터 목록을 돌려준다. 플레이어가 아직 그 셀에 있으면 이동 전에 비활성화를 기다려야 한다.
+        std::vector<RE::FormID> CleanupClosedRunOnMainThread(std::span<const RE::FormID> spawnedIds, std::uint64_t runId,
+            RE::FormID cellId, std::span<const RE::FormID> disableRequested = {})
         {
             WorldDropTracker::DiscardDropsFromCorpses(spawnedIds, cellId);
+            // 회차가 닫힌 뒤 늦게 온 사망 확정이 등록부 밖(오픈월드) 처치로 보상받지 않게 기여 기록을 지운다.
+            DeathListener::ForgetKillRecords(spawnedIds);
             // 목록 밖의 보스도 정리하되, 삭제 전에 원형과 셀을 확인한다.
             const auto templateIds = SpawnTemplateIdsForCell(cellId);
+            std::vector<RE::FormID> requested;
             for (const auto id : spawnedIds) {
-                DisableMapSpawnOnMainThread(id, runId, cellId, templateIds);
+                if (std::ranges::find(disableRequested, id) == disableRequested.end() &&
+                    DisableMapSpawnOnMainThread(id, runId, cellId, templateIds)) {
+                    requested.push_back(id);
+                }
             }
             if (cellId != 0) {
                 std::scoped_lock lk(g_mutex);
                 QueueCellResetLocked(cellId);
             }
+            return requested;
         }
 
         void FinishCancelledRunOnMainThread(
@@ -982,7 +1127,7 @@ namespace SkyrimPoE::Runtime
             std::optional<bool> refunded, std::string_view reason, RE::FormID cellId)
         {
             // refunded: nullopt = 돌려줄 대상이 아님(보스를 처치했거나 실패한 회차), true/false = 환불 성공 여부
-            CleanupClosedRunOnMainThread(Core::MapSystem::MapSpawnCleanupIds(snap), snap.runId, cellId);
+            auto disabledIds = CleanupClosedRunOnMainThread(Core::MapSystem::MapSpawnCleanupIds(snap), snap.runId, cellId);
             const std::string_view refundText = !refunded.has_value()
                 ? "이미 끝난 회차(보스 처치 또는 실패)라 소모품은 돌려주지 않습니다."
                 : (*refunded ? (snap.isArena4 ? "공물을 돌려받았습니다." : "지도를 돌려받았습니다.")
@@ -991,7 +1136,9 @@ namespace SkyrimPoE::Runtime
             SKSE::log::warn("MapDeviceRuntime: cancelled run {}. {}", snap.runId, msg);
             RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
             if (returnPlayer) {
-                ShowMapMessage(RequestReturn(player, MapTravelKind::CancelledRun, SavedReturn(snap), 0, "귀환을 요청했습니다."));
+                // 끝낼 귀환과 같이, 방금 요청한 Disable이 실행된 뒤에 셀을 떠난다(Disable은 작업 풀 예약이라 비동기).
+                ShowMapMessage(RequestReturn(player, MapTravelKind::CancelledRun, SavedReturn(snap), 0, "귀환을 요청했습니다.",
+                    std::move(disabledIds)));
             }
         }
 
@@ -1281,6 +1428,7 @@ namespace SkyrimPoE::Runtime
         void EndRunOnMainThread()
         {
             std::vector<std::uint32_t> toClean;
+            std::vector<RE::FormID> disableRequested;
             RE::FormID cellId = 0;
             std::uint64_t runId = 0;
             {
@@ -1288,6 +1436,7 @@ namespace SkyrimPoE::Runtime
                 cellId = g_activeCellFormId.load(std::memory_order_relaxed);
                 runId = g_activeMap.runId;
                 toClean = Core::MapSystem::MapSpawnCleanupIds(g_activeMap);
+                disableRequested = std::move(g_runSpawnDisableRequests);
                 SetActiveMapLocked({});
                 g_spawnedForCurrentRun = false;
                 g_pendingSpawnRunId = 0;
@@ -1296,7 +1445,7 @@ namespace SkyrimPoE::Runtime
                 g_retryReturnRunId = 0;
                 RefreshAtomicsLocked();
             }
-            CleanupClosedRunOnMainThread(toClean, runId, cellId);
+            CleanupClosedRunOnMainThread(toClean, runId, cellId, disableRequested);
             MapDeviceRuntime::SyncMapLayer2ToStatEngine();
             RE::SendHUDMessage::ShowHUDMessage("지도 회차를 종료했습니다.");
         }
@@ -1377,7 +1526,7 @@ namespace SkyrimPoE::Runtime
                         g_bossMissingSec = 0.0;
                         g_bossDeathPendingRunId = 0;
                         g_bossDeathConfirmedRunId = 0;
-                        g_arenaBossDeathStart.reset();
+                        g_bossDeathStart.reset();
                         RefreshMapActorsLocked();
                         RefreshAtomicsLocked();
                         return;
@@ -1609,9 +1758,148 @@ namespace SkyrimPoE::Runtime
                     : "귀환 위치에 도착하지 못했습니다. 다시 시도하세요.");
         }
 
+        bool AdvancePendingTravelDisable(RE::PlayerCharacter* player, const Core::MapTravelObservation& observation,
+            double deltaSec, bool gamePaused)
+        {
+            std::uint64_t runId = 0;
+            std::uint64_t requestFrame = 0;
+            std::vector<RE::FormID> actorIds;
+            bool releaseBossWait = false;
+            bool disableOnRelease = false;
+            double bossWaitSec = 0.0;
+            {
+                std::scoped_lock lk(g_mutex);
+                if (!g_pendingTravelDisable) {
+                    return false;
+                }
+                requestFrame = g_pendingTravelDisable->requestFrame;
+                // 큐는 Tick보다 먼저 돈다. 그 큐에서 요청했어도 엔진에 최소 한 프레임을 준다.
+                if (gamePaused || observation.loading || requestFrame == MainUpdateHook::TickCount()) {
+                    return true;
+                }
+                runId = g_travelContext.runId;
+                if (g_pendingTravelDisable->awaitingBossDeath) {
+                    // 결정 179 ⑦: 사망이 시작된 보스의 확정과 처치 반영(큐)이 끝나거나 상한이 지나야 떠난다.
+                    g_pendingTravelDisable->bossWaitSec += deltaSec;
+                    const bool currentRun = g_activeMap.active && g_activeMap.runId == runId;
+                    const bool pending = currentRun && BossKillProcessingPendingLocked(runId);
+                    if (pending && Core::MapSystem::ShouldHoldEndingDisableForBossDeath(
+                            true, g_activeMap.bossKilled, g_pendingTravelDisable->bossWaitSec)) {
+                        return true;
+                    }
+                    bossWaitSec = g_pendingTravelDisable->bossWaitSec;
+                    if (pending && !g_activeMap.bossKilled && g_bossDeathStart && g_bossDeathStart->runId == runId &&
+                        g_bossDeathConfirmedRunId != runId) {
+                        // 상한까지 확정이 오지 않았다. 기록을 지워 다음 귀환이 다시 기다리지 않게 하고,
+                        // 늦게 온 사망 확정은 그때의 상태로 판정한다. 이미 확정됐으면 큐의 처치 반영이 이 기록을 쓰므로 둔다.
+                        g_bossDeathStart.reset();
+                    }
+                    // 처치가 반영됐으면 결정 175대로 이 귀환이 회차를 끝내므로 그때 비활성화 여부를 다시 정한다.
+                    disableOnRelease = currentRun && Core::MapSystem::ShouldEndOnReturn(g_activeMap);
+                    releaseBossWait = true;
+                } else {
+                    actorIds = g_pendingTravelDisable->actorIds;
+                }
+            }
+            if (releaseBossWait) {
+                if (bossWaitSec >= Core::kBossDeathProcessWaitSec) {
+                    SKSE::log::warn("MapDeviceRuntime: return run {} stopped waiting for the dying boss after {:.3f}s.",
+                        runId, bossWaitSec);
+                }
+                // 비활성화하지 않는 귀환은 빈 목록으로 다음 프레임에 바로 이동한다.
+                auto disabledIds = disableOnRelease ? DisableRunSpawnsOnMainThread(runId) : std::vector<RE::FormID>{};
+                std::scoped_lock lk(g_mutex);
+                if (!g_pendingTravelDisable || g_pendingTravelDisable->requestFrame != requestFrame ||
+                    g_travelContext.runId != runId) {
+                    return true;
+                }
+                g_pendingTravelDisable->awaitingBossDeath = false;
+                g_pendingTravelDisable->bossHoldDone = true;
+                // 이동 직전 재확인으로 다시 기다린 경우 앞서 요청한 액터도 계속 확인한다.
+                auto& waitIds = g_pendingTravelDisable->actorIds;
+                for (const auto id : disabledIds) {
+                    if (std::ranges::find(waitIds, id) == waitIds.end()) {
+                        waitIds.push_back(id);
+                    }
+                }
+                g_pendingTravelDisable->requestFrame = MainUpdateHook::TickCount();
+                g_pendingTravelDisable->elapsedSec = 0.0;
+                SKSE::log::info("MapDeviceRuntime: return run {} resumed after waiting {:.3f}s for the dying boss (disable={}, bossKilled={}).",
+                    runId, bossWaitSec, disableOnRelease, g_activeMap.bossKilled);
+                return true;
+            }
+
+            std::vector<RE::FormID> disabled;
+            std::vector<RE::FormID> remaining;
+            for (const auto id : actorIds) {
+                const RE::NiPointer<RE::Actor> actor{ RE::TESForm::LookupByID<RE::Actor>(id) };
+                if (!actor || actor->IsDeleted()) {
+                    continue;
+                }
+                (actor->IsDisabled() ? disabled : remaining).push_back(id);
+            }
+
+            Core::MapTravelTarget target;
+            MapTravelKind kind;
+            Core::MapSpawnDisableWaitResult wait;
+            {
+                std::scoped_lock lk(g_mutex);
+                if (!g_pendingTravelDisable || g_pendingTravelDisable->requestFrame != requestFrame ||
+                    g_travelContext.runId != runId) {
+                    return true;
+                }
+                for (auto& pending : g_pendingActorDeletes) {
+                    if (pending.runId == runId && !pending.firstDisabledAgeSec &&
+                        std::ranges::find(disabled, pending.actorId) != disabled.end()) {
+                        pending.firstDisabledAgeSec = pending.ageSec;
+                    }
+                }
+                wait = Core::AdvanceMapSpawnDisableWait(g_pendingTravelDisable->elapsedSec, deltaSec, remaining.size());
+                if (wait.outcome == Core::MapSpawnDisableWaitOutcome::Waiting) {
+                    g_pendingTravelDisable->elapsedSec = wait.elapsedSec;
+                    return true;
+                }
+                // 결정 179 ⑦: 귀환을 접수한 뒤 이동하기 전에 보스의 사망이 시작됐으면, 처치 반영을 기다린 뒤 다시 확인한다.
+                if (!g_pendingTravelDisable->bossHoldDone && g_activeMap.active && g_activeMap.runId == runId &&
+                    Core::MapSystem::ShouldHoldEndingDisableForBossDeath(
+                        BossKillProcessingPendingLocked(runId), g_activeMap.bossKilled, 0.0)) {
+                    g_pendingTravelDisable->awaitingBossDeath = true;
+                    g_pendingTravelDisable->bossWaitSec = 0.0;
+                    SKSE::log::info("MapDeviceRuntime: return run {} found a boss death started before moving; waiting for it.", runId);
+                    return true;
+                }
+                target = g_travel.Current()->target;
+                kind = g_travel.Current()->kind;
+                g_pendingTravelDisable.reset();
+            }
+            if (wait.outcome == Core::MapSpawnDisableWaitOutcome::TimedOut) {
+                std::string ids;
+                for (const auto id : remaining) {
+                    ids += std::format(" 0x{:08X}", id);
+                }
+                SKSE::log::info("MapDeviceRuntime: ending return run {} Disable wait timed out with {} actor(s) remaining:{}.",
+                    runId, remaining.size(), ids);
+            }
+            SKSE::log::info("MapDeviceRuntime: ending return run {} issuing move after {:.3f}s (kDisabled={}, absentOrDeleted={}, remaining={}, requestFrame={}, moveFrame={}).",
+                runId, wait.elapsedSec, disabled.size(), actorIds.size() - disabled.size() - remaining.size(), remaining.size(),
+                requestFrame, MainUpdateHook::TickCount());
+            if (!IssueTravelMove(player, target)) {
+                SKSE::log::warn("MapDeviceRuntime: could not issue ending return move for run {}.", runId);
+                {
+                    std::scoped_lock lk(g_mutex);
+                    ClearTravelLocked();
+                }
+                ReportTravelFailure(kind, runId);
+            }
+            return true;
+        }
+
         void AdvanceTravel(RE::PlayerCharacter* player, const Core::MapTravelObservation& observation,
             double deltaSec, bool gamePaused)
         {
+            if (AdvancePendingTravelDisable(player, observation, deltaSec, gamePaused)) {
+                return;
+            }
             std::optional<Core::MapTravelRequest> request;
             TravelContext context;
             Core::MapTravelOutcome outcome;
@@ -1654,8 +1942,7 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
                 std::scoped_lock lk(g_mutex);
-                g_travel.Clear();
-                g_travelContext = {};
+                ClearTravelLocked();
             }
             ReportTravelFailure(request->kind, context.runId);
         }
@@ -1707,10 +1994,7 @@ namespace SkyrimPoE::Runtime
             }
 
             if (failedRun) {
-                if (alreadyReturning) {
-                    // 이미 접수된 귀환이 사망 실패로 회차를 끝내게 된 경우도 스폰을 정리한다.
-                    DisableRunSpawnsOnMainThread(runId);
-                }
+                // 이미 이동을 낸 귀환에 합류하면 도착 후 회차를 닫을 때 스폰을 정리한다.
                 RE::SendHUDMessage::ShowHUDMessage(arenaRun
                     ? "[4차 전직 결투장] 치명타로 도전에 실패했습니다. 귀환합니다."
                     : "[지도 장치] 남은 포털이 없어 지도에 실패했습니다. 귀환합니다.");
@@ -2520,6 +2804,10 @@ namespace SkyrimPoE::Runtime
             g_statEngine->SetLayer2(Core::Layer2Input{});
         }
 
+        {
+            std::scoped_lock lk(g_mutex);
+            ClearTravelLocked();
+        }
         g_uninstallCleanupStatus.store(CleanupStatus::Armed, std::memory_order_release);
         if (g_queue) {
             g_queue->InvalidatePending();
@@ -2555,7 +2843,9 @@ namespace SkyrimPoE::Runtime
                 if (!g_activeMap.active || g_activeMap.runId != runId || g_activeMap.bossRefFormId != actorId) {
                     return;
                 }
-                if (g_activeMap.failed || g_activeMap.bossKilled) {
+                // 결정 179 개정: 회차가 실패하기 전에 사망이 시작된 보스는 그 뒤 실패해도 처치를 반영한다.
+                const bool killedBeforeFailure = g_bossDeathStart && g_bossDeathStart->runId == runId;
+                if ((g_activeMap.failed && !killedBeforeFailure) || g_activeMap.bossKilled) {
                     g_bossDeathPendingRunId = 0;
                     return;
                 }
@@ -2592,6 +2882,8 @@ namespace SkyrimPoE::Runtime
         if (!progressed) {
             return;
         }
+        SKSE::log::info("MapDeviceRuntime: boss {:08X} kill progressed run {} (reward={}, arena4={}, tier={}, firstClear={}).",
+            actorId, runId, static_cast<int>(reward), isArena4, static_cast<unsigned>(tier), firstClear);
         if (reward != MapKillReward::Eligible) {
             if (!isArena4) {
                 RE::SendHUDMessage::ShowHUDMessage(reward == MapKillReward::NoPlayerContribution
@@ -2809,6 +3101,15 @@ namespace SkyrimPoE::Runtime
                g_activeMap.bossRefFormId == actorId && IsArena4PhaseInvulnerableLocked();
     }
 
+    Arena4BossPhaseStatus MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(RE::FormID actorId)
+    {
+        std::scoped_lock lk(g_mutex);
+        if (actorId == 0 || !g_activeMap.active || !g_activeMap.isArena4 || g_activeMap.bossRefFormId != actorId) {
+            return {};
+        }
+        return { g_activeMap.arenaPhase, g_completedArenaPhase, IsArena4PhaseInvulnerableLocked() };
+    }
+
     bool MapDeviceRuntime::IsDeathEscapeInFlight() noexcept
     {
         return g_deathEscapeRunId.load(std::memory_order_acquire) != 0;
@@ -2854,6 +3155,15 @@ namespace SkyrimPoE::Runtime
         return runId != 0 && g_activeMap.active && !g_activeMap.failed && g_activeMap.runId == runId;
     }
 
+    bool MapDeviceRuntime::IsActiveRunMapActor(RE::FormID actorFormId)
+    {
+        if (actorFormId == 0) {
+            return false;
+        }
+        std::scoped_lock lk(g_mapActorsMutex);
+        return g_mapActors.Find(actorFormId).has_value();
+    }
+
     Core::MapActorScaling MapDeviceRuntime::GetMapActorScaling(RE::FormID actorId, Core::MapModSummary* mods)
     {
         std::scoped_lock lk(g_mapActorsMutex);
@@ -2864,29 +3174,46 @@ namespace SkyrimPoE::Runtime
         return actor.value_or(Core::MapActorScaling{});
     }
 
-    void MapDeviceRuntime::NoteArena4BossDeathStart(RE::FormID actorId)
+    void MapDeviceRuntime::NoteMapBossDeathStart(RE::FormID actorId, RE::FormID playerCellId)
     {
-        if (!IsActiveArena4Boss(actorId)) {
+        if (actorId == 0 || g_activeBossFormId.load(std::memory_order_acquire) != actorId) {
             return;
         }
         std::scoped_lock lk(g_mutex);
-        if (g_activeMap.active && !g_activeMap.failed && g_activeMap.isArena4 && !g_activeMap.bossKilled &&
-            g_activeMap.bossRefFormId == actorId && !g_arenaBossDeathStart) {
-            g_arenaBossDeathStart = ArenaBossDeathStart{
-                g_activeMap.runId, { g_completedArenaPhase, IsArena4PhaseInvulnerableLocked() }
-            };
+        if (!g_activeMap.active || g_activeMap.failed || g_activeMap.bossKilled ||
+            g_activeMap.bossRefFormId != actorId ||
+            (g_bossDeathStart && g_bossDeathStart->runId == g_activeMap.runId)) {
+            return;
         }
+        g_bossDeathStart = MapBossDeathStart{
+            g_activeMap.runId,
+            IsMapRewardBlockedLocked(playerCellId),
+            g_activeMap.isArena4
+                ? std::optional<Core::Arena4BossDeathState>{ { g_completedArenaPhase, IsArena4PhaseInvulnerableLocked() } }
+                : std::nullopt
+        };
+        SKSE::log::info("MapDeviceRuntime: boss {:08X} death started in run {} (rewardBlocked={}, arenaPhase={}, invulnerable={}).",
+            actorId, g_activeMap.runId, g_bossDeathStart->rewardBlocked,
+            g_bossDeathStart->arena ? static_cast<unsigned>(g_bossDeathStart->arena->completedPhase) : 0u,
+            g_bossDeathStart->arena && g_bossDeathStart->arena->invulnerable);
     }
 
-    void MapDeviceRuntime::ClearArena4BossDeathStart(RE::FormID actorId)
+    void MapDeviceRuntime::ClearMapBossDeathStart(RE::FormID actorId)
     {
-        if (!IsActiveArena4Boss(actorId)) {
+        if (actorId == 0 || g_activeBossFormId.load(std::memory_order_acquire) != actorId) {
             return;
         }
         std::scoped_lock lk(g_mutex);
-        if (g_activeMap.active && g_activeMap.isArena4 && g_activeMap.bossRefFormId == actorId) {
-            g_arenaBossDeathStart.reset();
+        // 사망 확정 뒤의 리셋은 이미 확정된 처치를 취소하지 않는다(큐의 처치 반영이 이 기록을 쓴다).
+        if (!g_activeMap.active || g_activeMap.bossRefFormId != actorId ||
+            !g_bossDeathStart || g_bossDeathStart->runId != g_activeMap.runId ||
+            g_bossDeathConfirmedRunId == g_activeMap.runId) {
+            return;
         }
+        // 확정 전 리셋으로 사망이 취소됐다. 귀환 대기(BossKillProcessingPendingLocked)도 이 기록이 사라지면 풀린다.
+        // 이 사망 때문에 시작한 귀환 지연 시계도 다음 사망에 이어지지 않게 지운다.
+        g_bossDeathStart.reset();
+        g_firstBossDeathReturnDeferral.reset();
     }
 
     MapKillContext MapDeviceRuntime::GetMapKillContext(RE::FormID actorId, RE::FormID playerCellId)
@@ -2901,10 +3228,13 @@ namespace SkyrimPoE::Runtime
         const auto context = GetMapKillContextLocked(actorId, playerCellId);
         if (context.isBoss) {
             if (g_activeMap.bossKilled || g_bossDeathConfirmedRunId == context.runId) {
+                SKSE::log::info("MapDeviceRuntime: boss {:08X} death confirm ignored for run {} (bossKilled={}, alreadyConfirmed={}).",
+                    actorId, context.runId, g_activeMap.bossKilled, g_bossDeathConfirmedRunId == context.runId);
                 return std::nullopt;
             }
             // 결정 175·179: 허가와 관계없이 보스 처리가 끝날 때까지 귀환 확정을 미룬다.
-            if (!g_activeMap.failed) {
+            // 치명타가 회차 실패보다 먼저였으면(결정 179 개정) context.runFailed가 거짓이라 함께 미룬다.
+            if (!context.runFailed) {
                 g_bossDeathPendingRunId = context.runId;
             }
             g_bossDeathConfirmedRunId = context.runId;
@@ -3033,6 +3363,8 @@ namespace SkyrimPoE::Runtime
     void MapDeviceRuntime::RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell, bool atlasDamaged, bool runDamaged)
     {
         std::scoped_lock lk(g_mutex);
+        ClearTravelLocked();
+        g_runSpawnDisableRequests.clear();
         g_atlasDamagedAfterLoad = atlasDamaged;
         g_runDamagedAfterLoad = runDamaged;
         g_runDamageEscapeReady = false;
@@ -3080,13 +3412,12 @@ namespace SkyrimPoE::Runtime
                 atlasDamaged = std::exchange(g_atlasDamagedAfterLoad, false);
             }
             // 저장하지 않는 요청과 허가는 불러온 세이브에서 새로 시작한다.
-            g_travel.Clear();
-            g_travelContext = {};
+            ClearTravelLocked();
             g_pendingReturnConfirmation.reset();
             g_bossDeathPendingRunId = 0;
             g_bossDeathConfirmedRunId = 0;
             g_firstBossDeathReturnDeferral.reset();
-            g_arenaBossDeathStart.reset();
+            g_bossDeathStart.reset();
             g_permittedCell = 0;
             g_warnedUnauthorizedCell = 0;
             g_retryReturnRunId = 0;
@@ -3213,8 +3544,8 @@ namespace SkyrimPoE::Runtime
     void MapDeviceRuntime::ResetOnRevert()
     {
         std::scoped_lock lk(g_mutex);
-        g_travel.Clear();
-        g_travelContext = {};
+        ClearTravelLocked();
+        g_runSpawnDisableRequests.clear();
         g_permittedCell = 0;
         g_warnedUnauthorizedCell = 0;
         g_retryReturnRunId = 0;

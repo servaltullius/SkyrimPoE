@@ -72,6 +72,7 @@ namespace SkyrimPoE::Runtime
         constexpr RE::FormID kEncSkeeverId = 0x00023AB7;     // EncSkeever (Skyrim.esm 순정, Aggressive, Lv1)
         constexpr RE::FormID kNeutralNpcId = 0x0010D13E;     // AADeleteWhenDoneTestJeremyRegular (순정, 무팩션·Unaggressive·NoCrime)
         constexpr RE::FormID kFireboltId = 0x00012FD0;       // Skyrim.esm Firebolt (프로토타입 6 대조 주문)
+        constexpr float kTestIsolationRadius = 1200.0f;
         constexpr auto kFrenzyPlugin = "BerserkerFrenzy.esp"sv;
         constexpr RE::FormID kFrenzyEffectLocalId = 0x800;
 
@@ -84,7 +85,9 @@ namespace SkyrimPoE::Runtime
         }
 
         // A~G의 저장 왕복, H의 이동·셀 초기화, 새 포털/경로 시험을 포함한 벽시계 예산.
-        constexpr double kDefaultAutoTestTimeoutSec = 1500.0;
+        // 2026-11-23 실측: H5~H7이 끝까지 돌면 H23 정리 20회까지 약 25~28분이 걸리고, 그 뒤 H26·H27 착지 탐침(17곳)과 H8이 남는다.
+        constexpr double kDefaultAutoTestTimeoutSec = 2700.0;
+        constexpr double kMaxAutoTestTimeoutSec = 7200.0;
 
         struct AutoTestConfig
         {
@@ -496,11 +499,12 @@ namespace SkyrimPoE::Runtime
         std::int32_t g_hEntryItemCount = 0;
         bool g_hEntryPendingWithoutConsumption = false;
         bool g_hUnauthorizedEntryObserved = false;
-        // 최대 설정(입장 120초, 귀환 5회 + 마커 1회)에 로딩 여유 시간을 더한다.
+        // 최대 설정(입장 120초, 귀환 5회 + 마커 1회)에 비활성화 대기와 로딩 여유 시간을 더한다.
         constexpr double kMapEntryWaitSec = 150.0;
-        constexpr double kMapReturnWaitSec = 780.0;
+        constexpr double kMapReturnWaitSec = 780.0 + Core::kMapSpawnDisableWaitTimeoutSec;
         constexpr double kMapFallWaitSec = 10.0;
-        constexpr double kMapBossKillWaitSec = 8.0;
+        // 제품이 보스 처치 반영을 기다리는 상한(Core::kBossDeathProcessWaitSec, 10초)보다 길게 둔다.
+        constexpr double kMapBossKillWaitSec = 12.0;
         constexpr double kMapBossLoadWaitSec = 15.0;
         constexpr double kArenaPhase3InvulnerabilityWaitSec = 8.0;
         // 셀이 떨어진 뒤 보내고 VM 콜백까지 기다린다(콜백 시간 초과 10초로 다시 보내는 경우 포함).
@@ -565,6 +569,7 @@ namespace SkyrimPoE::Runtime
         bool g_hArenaPhase1Clamped = false;
         bool g_hArenaInvulnBlocked = false;
         bool g_hArenaPhase2Clamped = false;
+        std::uint8_t g_hArenaLastLoggedTransition = Core::kArena4FirstPhase;
         Core::AtlasState g_hAtlasBeforeCosave;
         std::uint32_t g_hMilestonesBeforeCosave = 0;
         Core::ActiveMapState g_hRunBeforeCosave;
@@ -617,6 +622,8 @@ namespace SkyrimPoE::Runtime
         // 시나리오 B 추적 상태
         std::vector<RE::ActorHandle> g_spawnedSkeevers;
         int g_extraSkeeverWavesSpawned = 0;
+        // B6: B가 만든 쥐의 사망 확정(보상 청구)이 모두 끝난 첫 시각. 확정 뒤 경험치는 한 프레임 늦게 큐에서 반영된다.
+        std::optional<double> g_bKillsSettledAtSec;
         std::uint64_t g_teammateHitsBeforeB = 0;
         bool g_observedOarOne = false;
         bool g_observedMagickaDrop = false;
@@ -636,6 +643,9 @@ namespace SkyrimPoE::Runtime
         double g_cEsSettledAt = 0.0;
         int g_cEsRestarts = 0;  // C1~C2 사이에 스탯이 다시 빌드돼 ES 최대치가 바뀌면 C를 다시 시작한 횟수(Codex 지적 25)
         constexpr double kCEsSettleSec = 3.0;
+        // B6: 쥐 사망 확정 뒤 경험치 반영(큐)까지의 여유와, 확정을 기다리는 상한(게임 시간, 일시정지 제외).
+        constexpr double kBKillXpApplySec = 0.5;
+        constexpr double kBKillSettleCapSec = 15.0;
         double g_esAfterHit = 0.0;
         CycloneTelemetry g_telBeforeStagger{};
         RE::ActorHandle g_foxHandle{};
@@ -940,6 +950,15 @@ namespace SkyrimPoE::Runtime
 
         bool ScheduleHCheckpointRestore(const std::string& reason);
 
+        // CommonLib의 PlayerCharacter::SetGodMode는 이 함수를 멤버처럼 (this, enable)로 부르지만, AE 1.6.1170의 40500은
+        // 첫 인자(cl)를 무적 플래그 전역에 쓰는 정적 함수다(2026-11-23 실행 파일 바이트: mov byte ptr [rip+...], cl; ret).
+        // 그래서 켜려던 값 대신 플레이어 포인터의 하위 바이트가 들어간다. IsGodMode가 읽는 같은 전역에 직접 쓴다.
+        void SetPlayerGodModeFlag(bool enable)
+        {
+            static REL::Relocation<bool*> flag{ RELOCATION_ID(517711, 404238) };
+            *flag = enable;
+        }
+
         bool RestoreHGodMode(RE::PlayerCharacter* player)
         {
             if (!g_hRouteGodModeBefore) {
@@ -948,7 +967,7 @@ namespace SkyrimPoE::Runtime
             if (!player) {
                 return false;
             }
-            player->SetGodMode(*g_hRouteGodModeBefore);
+            SetPlayerGodModeFlag(*g_hRouteGodModeBefore);
             if (RE::PlayerCharacter::IsGodMode() != *g_hRouteGodModeBefore) {
                 return false;
             }
@@ -1170,7 +1189,8 @@ namespace SkyrimPoE::Runtime
                 } else if (key == "timeout_sec") {
                     try {
                         const double sec = std::stod(val);
-                        if (std::isfinite(sec) && sec >= 30.0 && sec <= 1800.0) {
+                        // 기본값(kDefaultAutoTestTimeoutSec)보다 넉넉히 늘릴 수 있게 상한을 둔다. tools/autotest.ps1과 같은 범위.
+                        if (std::isfinite(sec) && sec >= 30.0 && sec <= kMaxAutoTestTimeoutSec) {
                             out.globalTimeoutSec = sec;
                         }
                     } catch (...) {
@@ -1401,11 +1421,57 @@ namespace SkyrimPoE::Runtime
                 : std::numeric_limits<double>::quiet_NaN();
         }
 
-        bool ArenaBossAtFloor(RE::Actor* boss, double floor, std::uint8_t phase)
+        struct HArenaBossObservation
         {
-            const double ratio = BossHealthRatio(boss);
-            return boss && !boss->IsDead() && ratio >= floor - kHArenaHealthRatioTolerance &&
-                ratio <= floor + kHArenaHealthRatioTolerance && MapDeviceRuntime::GetActiveMapStateCopy().arenaPhase == phase;
+            double health = std::numeric_limits<double>::quiet_NaN();
+            double permanentHealth = std::numeric_limits<double>::quiet_NaN();
+            bool alive = false;
+            std::optional<Core::MonsterProfile> profile;
+            Arena4BossPhaseStatus phase;
+
+            [[nodiscard]] double HealthRatio() const
+            {
+                return permanentHealth > 0.0 ? health / permanentHealth : std::numeric_limits<double>::quiet_NaN();
+            }
+        };
+
+        HArenaBossObservation ObserveHArenaBoss(RE::Actor* boss, Arena4BossPhaseStatus phase)
+        {
+            HArenaBossObservation result;
+            result.phase = phase;
+            result.alive = boss && !boss->IsDead();
+            if (const auto* values = boss ? boss->AsActorValueOwner() : nullptr) {
+                result.health = values->GetActorValue(RE::ActorValue::kHealth);
+                result.permanentHealth = values->GetPermanentActorValue(RE::ActorValue::kHealth);
+                result.profile = MonsterRuntime::GetProfileCopy(g_hArenaBossFormId);
+            }
+            return result;
+        }
+
+        std::string DescribeHArenaBoss(const HArenaBossObservation& boss)
+        {
+            const auto shield = boss.profile
+                ? std::format("{:.2f}/{:.2f}", boss.profile->currentEsSkyrim, boss.profile->maxEsSkyrim)
+                : "unavailable";
+            return std::format(
+                "boss=0x{:08X}, alive={}, health={:.2f}, permanentMaxHealth={:.2f}, ratio={:.4f}, monsterES={}, phase(requested={}, completed={}), invulnerable={}",
+                g_hArenaBossFormId, boss.alive, boss.health, boss.permanentHealth, boss.HealthRatio(), shield,
+                boss.phase.requested, boss.phase.completed, boss.phase.invulnerable);
+        }
+
+        bool ArenaBossAtFloor(const HArenaBossObservation& boss, double floor, std::uint8_t from, std::uint8_t to)
+        {
+            const auto ratio = boss.HealthRatio();
+            return boss.alive && ratio >= floor - kHArenaHealthRatioTolerance && ratio <= floor + kHArenaHealthRatioTolerance &&
+                boss.phase.requested == to && boss.phase.completed == from;
+        }
+
+        void LogHArenaTransition(RE::Actor* boss, Arena4BossPhaseStatus phase, std::uint8_t expected)
+        {
+            if (phase.completed == expected && g_hArenaLastLoggedTransition != expected) {
+                LogInfo(std::format("H6 phase {} transition complete: {}", expected, DescribeHArenaBoss(ObserveHArenaBoss(boss, phase))));
+                g_hArenaLastLoggedTransition = expected;
+            }
         }
 
         std::int64_t CountArenaCorpseItems(RE::Actor* boss)
@@ -1771,7 +1837,10 @@ namespace SkyrimPoE::Runtime
                     if (g_killTracker) {
                         g_killTracker->RecordFirstHitHostility(actor->GetFormID(), true);
                     }
-                    (void)actor->DoDamage(1200.0f, player, true);
+                    // 난이도 배율(전설 0.4)과 시험용 추가 체력을 넘어 한 번에 죽도록 남은 체력의 10배 이상을 준다.
+                    const auto* values = actor->AsActorValueOwner();
+                    const float health = values ? values->GetActorValue(RE::ActorValue::kHealth) : 0.0f;
+                    (void)actor->DoDamage(std::max(1200.0f, health * 10.0f), player, true);
                 }
             }
         }
@@ -1796,7 +1865,8 @@ namespace SkyrimPoE::Runtime
 
 
         // Default budget covers the portal sequence, 20 closures/reattachments and 17 landings.
-        constexpr double kHContractBaseBudgetSec = 1050.0;
+        // 2026-11-23 실행 9: 계약 시작부터 정리 20회 끝까지 970초가 걸려 1050초로는 착지 탐침 17곳을 마치지 못했다.
+        constexpr double kHContractBaseBudgetSec = 1500.0;
         constexpr double kHContractLongTravelBudgetMultiplier = 2.0;
         constexpr double kHContractTravelMarginSec = 20.0;
         constexpr double kHContractResetSec = 45.0;
@@ -1810,7 +1880,7 @@ namespace SkyrimPoE::Runtime
         constexpr float kHRouteArrivalXY = 192.0f;
         constexpr float kHContractLowHealth = 2.0f;
         constexpr float kHContractMagicMagnitude = 1000.0f;
-        constexpr float kHOtherHostileRadius = 1200.0f;
+        constexpr float kHContractMagicEffectiveness = 1.0f;
         constexpr unsigned kHDeathBurstHits = 3;
         constexpr unsigned kHCleanupCycles = 20;
         constexpr std::uint8_t kHRegressionMapTier = 1;
@@ -1822,7 +1892,8 @@ namespace SkyrimPoE::Runtime
         double HContractTravelSec()
         {
             const auto settings = MapDeviceRuntime::GetTravelSettings();
-            return settings.timeoutSec * (settings.maxAttempts + 1) + kHContractTravelMarginSec;
+            return settings.timeoutSec * (settings.maxAttempts + 1) + kHContractTravelMarginSec +
+                Core::kMapSpawnDisableWaitTimeoutSec;
         }
 
         enum class HContractStage
@@ -1950,7 +2021,9 @@ namespace SkyrimPoE::Runtime
             bool movedToBoss = false;
             double attackWindowStarted = -1.0;
             unsigned damageRequests = 0;
-            unsigned magicEffectsAccepted = 0;
+            unsigned magicCastsSent = 0;
+            std::optional<float> magicHealthBeforeBurst;
+            float magicMaxHealthLoss = 0.0f;
             double nextDamageAt = 0.0;
             std::int32_t tributeBefore = 0;
             Core::ActiveMapState lastPortalSave;
@@ -2100,13 +2173,51 @@ namespace SkyrimPoE::Runtime
                 auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
                 if (actor && actor != boss && actor != player && !actor->IsDead() && !actor->IsDisabled() &&
                     !actor->IsDeleted() && actor->IsHostileToActor(player) &&
-                    (actor->GetPosition() - player->GetPosition()).Length() <= kHOtherHostileRadius) {
+                    (actor->GetPosition() - player->GetPosition()).Length() <= kTestIsolationRadius) {
                     found = true;
                     return RE::BSContainer::ForEachResult::kStop;
                 }
                 return RE::BSContainer::ForEachResult::kContinue;
             });
             return found;
+        }
+
+        // 2026-11-23 실행 8: 플레이어 쪽 StopCombat만으로는 10초 동안 전투가 풀리지 않았다. 플레이어와 싸우는 액터 전부의
+        // 전투·경보도 멈춘다(Papyrus StopCombatAlarm이 부르는 엔진 함수).
+        void StopPlayerCombatAndAlarms(RE::PlayerCharacter* player)
+        {
+            if (!player) {
+                return;
+            }
+            player->StopCombat();
+            if (auto* lists = RE::ProcessLists::GetSingleton()) {
+                lists->StopCombatAndAlarmOnActor(player, false);
+            }
+        }
+
+        // 플레이어를 전투 대상으로 잡고 있는 처리 중 액터(FormID, 셀, 거리). 재입장 전 전투가 안 풀릴 때 진단용.
+        std::string DescribePlayerCombatants(RE::PlayerCharacter* player)
+        {
+            auto* lists = RE::ProcessLists::GetSingleton();
+            if (!player || !lists) {
+                return "unavailable";
+            }
+            std::string out;
+            std::size_t count = 0;
+            lists->ForAllActors([&](RE::Actor* actor) {
+                if (!actor || actor == player || actor->IsDead() || !actor->IsCombatTarget(player)) {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                const auto* cell = actor->GetParentCell();
+                const bool sameCell = cell && cell == player->GetParentCell();
+                out += std::format("{}0x{:08X}(cell=0x{:08X}, {})", count == 0 ? "" : ", ", actor->GetFormID(),
+                    cell ? cell->GetFormID() : 0u,
+                    sameCell ? std::format("dist={:.0f}", (actor->GetPosition() - player->GetPosition()).Length())
+                             : std::string("other cell"));
+                ++count;
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            return count == 0 ? std::string("none found") : out;
         }
 
         bool HAtSavedReturn(RE::PlayerCharacter* player, const Core::ActiveMapState& run)
@@ -2126,35 +2237,42 @@ namespace SkyrimPoE::Runtime
         bool ApplyHFirebolt(RE::Actor* caster, RE::PlayerCharacter* player)
         {
             auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(kFireboltId);
-            auto* target = player->AsMagicTarget();
-            if (!spell || !target) {
+            auto* magicCaster = caster->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
+            if (!spell || !magicCaster) {
                 return false;
             }
-            // Feed the stock effect straight to AddTarget so projectile aim and travel time
-            // can't turn the magic damage trial into a different test.
-            for (auto* effect : spell->effects) {
-                const auto* base = effect ? effect->baseEffect : nullptr;
-                if (!base || !base->IsDetrimental() || base->data.primaryAV != RE::ActorValue::kHealth ||
-                    base->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kRecover)) {
-                    continue;
-                }
-                RE::MagicTarget::AddTargetData data{};
-                data.caster = caster;
-                data.magicItem = spell;
-                data.effect = effect;
-                data.magnitude = kHContractMagicMagnitude;
-                data.power = 1.0f;
-                data.castingSource = RE::MagicSystem::CastingSource::kInstant;
-                return target->AddTarget(data);
+            magicCaster->CastSpellImmediate(
+                spell, false, player, kHContractMagicEffectiveness, false, kHContractMagicMagnitude, caster);
+            return true;
+        }
+
+        void ObserveHMagicHealthLoss(HContractState& test, const RE::ActorValueOwner* values)
+        {
+            if (test.magicHealthBeforeBurst && values) {
+                const auto currentHealth = values->GetActorValue(RE::ActorValue::kHealth);
+                test.magicMaxHealthLoss = std::max(test.magicMaxHealthLoss, *test.magicHealthBeforeBurst - currentHealth);
             }
-            return false;
+        }
+
+        bool HObservedMagicDamage(const HContractState& test, std::uint64_t clamps)
+        {
+            return test.magicCastsSent > 0 && (clamps > 0 || test.magicMaxHealthLoss > 0.0f);
+        }
+
+        std::string DescribeHMagicDelivery(const HContractState& test, std::uint64_t clamps)
+        {
+            return std::format("CastSpellImmediate calls={}/{}, last pre-burst HP={:.2f}, max HP loss={:.2f}, magic clamps={}",
+                test.magicCastsSent, test.damageRequests,
+                test.magicHealthBeforeBurst.value_or(std::numeric_limits<float>::quiet_NaN()), test.magicMaxHealthLoss, clamps);
         }
 
         void BeginHDamageTrial(const Core::ActiveMapState& run)
         {
             auto& test = g_hContract;
             test.damageRequests = 0;
-            test.magicEffectsAccepted = 0;
+            test.magicCastsSent = 0;
+            test.magicHealthBeforeBurst.reset();
+            test.magicMaxHealthLoss = 0.0f;
             test.movedToBoss = false;
             test.attackWindowStarted = -1.0;
             test.firstDamageAt = {};
@@ -2516,7 +2634,7 @@ namespace SkyrimPoE::Runtime
 
             case Stage::Reenter:
                 if (elapsed >= kHCombatStopWaitSec) {
-                    failTrial("H reentry could not clear combat.");
+                    failTrial(std::format("H reentry could not clear combat. Combatants: {}", DescribePlayerCombatants(player)));
                 } else if (outside && !player->IsInCombat()) {
                     const auto result = MapDeviceRuntime::ReenterActiveMap(player);
                     if (result.ok) {
@@ -2526,7 +2644,7 @@ namespace SkyrimPoE::Runtime
                         failTrial(std::format("H positive reentry was rejected: {}", result.message));
                     }
                 } else if (outside) {
-                    player->StopCombat();
+                    StopPlayerCombatAndAlarms(player);
                 }
                 break;
 
@@ -2551,7 +2669,7 @@ namespace SkyrimPoE::Runtime
                     }
                 } else if (elapsed < travelSec) {
                     if (outside && player->IsInCombat()) {
-                        player->StopCombat();
+                        StopPlayerCombatAndAlarms(player);
                     }
                     break;
                 }
@@ -2589,6 +2707,11 @@ namespace SkyrimPoE::Runtime
             }
 
             case Stage::Damage: {
+                const bool magic = test.trial == Trial::Magic;
+                auto* av = player ? player->AsActorValueOwner() : nullptr;
+                if (magic) {
+                    ObserveHMagicHealthLoss(test, av);
+                }
                 if (MapDeviceRuntime::IsDeathEscapeInFlight() && test.damageRequests != 0) {
                     test.deathMarkedFailed = run.failed;
                     EnterHContract(Stage::DeathReturn);
@@ -2597,12 +2720,31 @@ namespace SkyrimPoE::Runtime
                 if (!player || player->IsDead() ||
                     (test.attackWindowStarted < 0.0 ? elapsed >= kMapBossLoadWaitSec :
                         elapsed - test.attackWindowStarted >= kHDeathTriggerWaitSec)) {
-                    AbortHContract(std::format("H lethal damage did not trigger the escape (requests={}, effects accepted={}).",
-                        test.damageRequests, test.magicEffectsAccepted));
+                    if (magic) {
+                        const auto clamps = test.damageRequests == 0 ? 0 :
+                            CombatHooks::GetMapDeathDamageClampCount(true) - test.deathClampsBefore;
+                        const auto reason = HObservedMagicDamage(test, clamps)
+                            ? "Firebolt damage observed without a death escape"
+                            : "시험 주입 실패 (no Firebolt damage observed)";
+                        Check(kHMagicBurstCheck, false, std::format("{}; {}", reason, DescribeHMagicDelivery(test, clamps)));
+                        if (player && !player->IsDead()) {
+                            RestorePlayerVitals(player, true, true);
+                            EnterHContract(Stage::Close);
+                        } else {
+                            AbortHContract("H20 could not close the trial run with a living player.");
+                        }
+                    } else {
+                        AbortHContract(std::format("H lethal damage did not trigger the escape (requests={}).", test.damageRequests));
+                    }
                     break;
                 }
                 if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
-                    AbortHContract("H death escape was already in flight before the test's first hit.");
+                    if (magic) {
+                        Check(kHMagicBurstCheck, false, "시험 주입 실패 (death escape was in flight before the first Firebolt cast).");
+                        EnterHContract(Stage::Close);
+                    } else {
+                        AbortHContract("H death escape was already in flight before the test's first hit.");
+                    }
                     break;
                 }
                 if (!entered || elapsed < test.nextDamageAt) {
@@ -2619,12 +2761,11 @@ namespace SkyrimPoE::Runtime
                     }
                     break;
                 }
-                auto* av = player->AsActorValueOwner();
                 if (!av) {
                     break;
                 }
                 if (!failedTrial && HHasOtherNearbyHostile(player, boss)) {
-                    Check(test.trial == Trial::Magic ? kHMagicBurstCheck : kHPhysicalBurstCheck, false,
+                    Check(magic ? kHMagicBurstCheck : kHPhysicalBurstCheck, false,
                         "Another hostile actor was within the test's isolation radius; no lethal damage was applied on this tick.");
                     EnterHContract(Stage::Close);
                     break;
@@ -2643,21 +2784,26 @@ namespace SkyrimPoE::Runtime
                     av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, kHContractLowHealth - hp);
                 }
                 if (test.damageRequests == 0) {
-                    const bool magic = test.trial == Trial::Magic;
                     test.deathRequestsBefore = MapDeviceRuntime::GetDeathEscapeRequestCount();
                     test.deathClampsBefore = CombatHooks::GetMapDeathDamageClampCount(magic);
                     test.deathRepeatClampsBefore = CombatHooks::GetMapDeathRepeatClampCount(magic);
                     test.firstDamageAt = Clock::now();
                 }
-                // Keep delivery in one tick so the main queue cannot drain between repeated hits.
+                if (magic) {
+                    test.magicHealthBeforeBurst = av->GetActorValue(RE::ActorValue::kHealth);
+                }
+                // Submit the burst in one tick. Firebolt projectiles can apply damage on later ticks.
                 const unsigned hits = failedTrial ? 1u : kHDeathBurstHits;
                 for (unsigned i = 0; i < hits && !player->IsDead(); ++i) {
                     ++test.damageRequests;
-                    if (test.trial == Trial::Magic) {
-                        test.magicEffectsAccepted += ApplyHFirebolt(boss, player) ? 1u : 0u;
+                    if (magic) {
+                        test.magicCastsSent += ApplyHFirebolt(boss, player) ? 1u : 0u;
                     } else {
                         CallDealDamage(boss, player, nullptr, false);
                     }
+                }
+                if (magic) {
+                    ObserveHMagicHealthLoss(test, av);
                 }
                 if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
                     test.deathMarkedFailed = MapDeviceRuntime::GetActiveMapStateCopy().failed;
@@ -2683,14 +2829,23 @@ namespace SkyrimPoE::Runtime
                 const auto repeats = CombatHooks::GetMapDeathRepeatClampCount(magic) - test.deathRepeatClampsBefore;
                 const bool acceptedTestAttack = test.damageRequests != 0 && acceptance.acceptedAt >= test.firstDamageAt &&
                     acceptance.attackerId == test.enteredRun.bossRefFormId;
+                // Repeat magic clamps can also occur after a physical hit requests the escape.
+                const bool magicRequestedEscape = magic && test.magicCastsSent > 0 && clamped > repeats;
                 const bool sameOrigin = HAtSavedReturn(player, test.enteredRun);
                 const bool ok = returned && sameOrigin && requests == 1 && acceptedTestAttack &&
+                    (!magic || magicRequestedEscape) &&
                     (failedTrial ? clamped >= 1 : repeats >= 1) && test.deathMarkedFailed == failedTrial &&
                     (failedTrial ? !run.active : run.active && run.runId == test.runId &&
                         run.portalsRemaining == test.portalsBeforeDeath && !run.failed);
-                const auto detail = std::format("damage requests={}, effects accepted={}, damage clamped={}, repeat clamps={}, escape requests={}, test attack accepted={}, failed={}, active={}, portals={}/{}, returned={}, origin={}",
-                    test.damageRequests, test.magicEffectsAccepted, clamped, repeats, requests, acceptedTestAttack, test.deathMarkedFailed, run.active,
+                auto detail = std::format("damage requests={}, damage clamped={}, repeat clamps={}, escape requests={}, test attack accepted={}, failed={}, active={}, portals={}/{}, returned={}, origin={}",
+                    test.damageRequests, clamped, repeats, requests, acceptedTestAttack, test.deathMarkedFailed, run.active,
                     run.portalsRemaining, test.portalsBeforeDeath, returned, sameOrigin);
+                if (magic) {
+                    detail += std::format("; {}, initial magic clamp={}", DescribeHMagicDelivery(test, clamped), magicRequestedEscape);
+                    if (!HObservedMagicDamage(test, clamped)) {
+                        detail = "시험 주입 실패 (no Firebolt damage observed); " + detail;
+                    }
+                }
                 if (test.trial == Trial::Portals) {
                     Check(kHLastPortalCheck, ok, detail);
                 } else if (test.trial == Trial::Arena) {
@@ -2870,7 +3025,7 @@ namespace SkyrimPoE::Runtime
                     LogInfo(std::format("H route {}: automatic exits={}/{}.", key, routeDungeon->autoExits.size(), expectedExits));
                 }
                 g_hRouteGodModeBefore = RE::PlayerCharacter::IsGodMode();
-                player->SetGodMode(true);
+                SetPlayerGodModeFlag(true);
                 if (!RE::PlayerCharacter::IsGodMode()) {
                     Check(kHBossRouteCheck, false, "God mode could not be verified before the boss landing probes.");
                     Check(kHExitRouteCheck, false, "God mode could not be verified before the exit landing probes.");
@@ -3076,8 +3231,52 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        void LogScenarioIsolation(std::string_view scenario)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* tes = RE::TES::GetSingleton();
+            if (!player || !tes) {
+                return;
+            }
+            std::vector<RE::NiPointer<RE::Actor>> nearbyActors;
+            tes->ForEachReferenceInRange(player, kTestIsolationRadius, [&](RE::TESObjectREFR* ref) {
+                if (auto* actor = ref->As<RE::Actor>(); actor && actor != player) {
+                    nearbyActors.emplace_back(actor);
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            std::size_t foreignHostiles = 0;
+            for (const auto& actor : nearbyActors) {
+                if (actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() || !actor->IsHostileToActor(player)) {
+                    continue;
+                }
+                if (std::ranges::any_of(g_spawnedSkeevers, [&](const auto& handle) { return handle.get().get() == actor.get(); })) {
+                    continue;
+                }
+                const auto* base = actor->GetBaseObject();
+                const auto* name = actor->GetDisplayFullName();
+                const auto distance = (actor->GetPosition() - player->GetPosition()).Length();
+                LogInfo(std::format("Scenario {} external hostile: form=0x{:08X}, base=0x{:08X}, distance={:.1f}, name='{}'",
+                    scenario, actor->GetFormID(), base ? base->GetFormID() : 0, distance, name ? name : ""));
+                ++foreignHostiles;
+            }
+            if (foreignHostiles != 0) {
+                LogWarn(std::format("Scenario {} 격리 위반(시험 무효) (hostiles={}, radius={:.0f}).",
+                    scenario, foreignHostiles, kTestIsolationRadius));
+            }
+        }
+
+        void BeginScenarioB()
+        {
+            LogScenarioIsolation("B");
+            EnterPhase(Phase::ScenarioB_PrepareWeapon);
+        }
+
         void BeginScenarioC_Es()
         {
+            if (g_cEsRestarts == 0) {
+                LogScenarioIsolation("C");
+            }
             const auto st = SaveLoad::GetStateCopy();
             g_esMaxForC = 0.0;
             g_esAfterHit = 0.0;
@@ -3725,7 +3924,7 @@ namespace SkyrimPoE::Runtime
                 }
                 Check("A9_SaveLoadRoundTrip", false,
                     std::format("Timed out waiting for kSaveGame('{}') after {} attempts.", g_cfg.tempSave, g_saveAttempts));
-                EnterPhase(Phase::ScenarioB_PrepareWeapon);
+                BeginScenarioB();
                 break;
             }
             const auto now = Clock::now();
@@ -3746,7 +3945,7 @@ namespace SkyrimPoE::Runtime
             LogInfo(std::format("Reloading temp save '{}' to verify SPOE co-save round-trip...", g_cfg.tempSave));
             if (!RequestLoadSave(g_cfg.tempSave)) {
                 Check("A9_SaveLoadRoundTrip", false, "BGSSaveLoadManager singleton unavailable.");
-                EnterPhase(Phase::ScenarioB_PrepareWeapon);
+                BeginScenarioB();
                 break;
             }
             EnterPhase(Phase::ScenarioA_AwaitReload);
@@ -3790,7 +3989,7 @@ namespace SkyrimPoE::Runtime
             Check("A9_SaveLoadRoundTrip", layoutOk && std::abs(var09) < 1e-3f,
                 std::format("var09={:.3f}, {}", var09, detail));
 
-            EnterPhase(Phase::ScenarioB_PrepareWeapon);
+            BeginScenarioB();
             break;
         }
 
@@ -3966,6 +4165,7 @@ namespace SkyrimPoE::Runtime
                 std::format("playerToTeammateHits={}", teammateHitsDelta));
 
             FinishRemainingSpawnedSkeevers(player);
+            g_bKillsSettledAtSec.reset();
             EnterPhase(Phase::ScenarioB_KillWait);
             break;
         }
@@ -3977,14 +4177,31 @@ namespace SkyrimPoE::Runtime
             const auto cycXpNow = stAfter.slots[0].occupied ? stAfter.slots[0].gem.xp : 0;
             const bool gemGained = (cycLvlNow > g_cycGemLvlBeforeB) || (cycXpNow > g_cycGemXpBeforeB);
 
-            // 스카이림 TESDeathEvent(dead=true)는 사망 모션(~2.5초) 뒤에 발송되므로 최대 5초까지 대기한다.
-            if (!(exileGained && gemGained) && g_unpausedAccumSec < 5.0 && PhaseElapsedSec() < 8.0) {
+            // 스카이림 TESDeathEvent(dead=true)는 사망 모션 뒤에 온다. 2026-11-23 실행 9(전설 난이도)에서 5초 안에 확정이 오지 않아
+            // B6가 실패하고 늦은 처치 경험치가 C6 측정에 섞였다. B의 쥐 전부의 사망 확정(보상 청구)을 기다린 뒤,
+            // 큐에서 경험치가 반영될 시간(0.5초)을 더 주고 C로 넘어간다. 확정이 끝내 안 오는 쥐는 상한에서 끊는다.
+            std::size_t unconfirmedKills = 0;
+            for (const auto& h : g_spawnedSkeevers) {
+                const auto actor = h.get();
+                if (!actor || actor->IsDeleted()) {
+                    continue;
+                }
+                if (!g_killTracker || !g_killTracker->GetActorRecordSnapshot(actor->GetFormID()).rewardClaimed) {
+                    ++unconfirmedKills;
+                }
+            }
+            if (unconfirmedKills == 0 && !g_bKillsSettledAtSec) {
+                g_bKillsSettledAtSec = g_unpausedAccumSec;
+            }
+            const bool killsSettled = g_bKillsSettledAtSec && g_unpausedAccumSec - *g_bKillsSettledAtSec >= kBKillXpApplySec;
+            if (!killsSettled && g_unpausedAccumSec < kBKillSettleCapSec && PhaseElapsedSec() < kBKillSettleCapSec + 3.0) {
                 break;
             }
 
-            Check("B6_KillTrackerExileAndGemXp", exileGained && gemGained,
-                std::format("wait={:.2f}s, exile Lv{} XP {} -> Lv{} XP {}, Cyclone Lv{} XP {} -> Lv{} XP {}",
-                    g_unpausedAccumSec,
+            // 미확정 쥐가 남으면 그 처치 경험치가 C 측정에 섞이므로 B6를 통과시키지 않는다.
+            Check("B6_KillTrackerExileAndGemXp", exileGained && gemGained && unconfirmedKills == 0,
+                std::format("wait={:.2f}s, unconfirmedKills={}, exile Lv{} XP {} -> Lv{} XP {}, Cyclone Lv{} XP {} -> Lv{} XP {}",
+                    g_unpausedAccumSec, unconfirmedKills,
                     g_exileLevelBeforeB, g_exileXpBeforeB, stAfter.exileLevel, stAfter.exileXp,
                     g_cycGemLvlBeforeB, g_cycGemXpBeforeB, cycLvlNow, cycXpNow));
 
@@ -7012,7 +7229,7 @@ namespace SkyrimPoE::Runtime
         case Phase::ScenarioH_ReenterStart: {
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (player && player->IsInCombat() && PhaseElapsedSec() < kHCombatStopWaitSec) {
-                player->StopCombat();
+                StopPlayerCombatAndAlarms(player);
                 break;
             }
             // H5: 재입장(5->4) 후 보스 처치 -> 아틀라스 T10 첫 클리어 +1P & 첫 T6+ 공물 확정
@@ -7115,8 +7332,12 @@ namespace SkyrimPoE::Runtime
             }
             // 결정 175: 보스 처치 후 귀환하면 남은 포털 수와 관계없이 회차가 끝난다.
             const auto resetBeforeReturn = MapDeviceRuntime::GetCellResetStatus(g_hMapCellId);
-            const auto returnRes = act.bossKilled ? MapDeviceRuntime::ReturnPortal(player)
-                : MapActionResult{ false, "Boss did not die from the test attack in time." };
+            // 결정 179 ⑦: 처치 뒤 사망 귀환이 먼저 접수됐으면 그 귀환이 보스 처치로 회차를 끝낸다(H6과 같음).
+            const bool deathEscapeReturning = act.bossKilled && MapDeviceRuntime::IsDeathEscapeInFlight();
+            const auto returnRes = !act.bossKilled
+                ? MapActionResult{ false, "Boss did not die from the test attack in time." }
+                : deathEscapeReturning ? MapActionResult{ true, "사망 귀환이 이미 진행 중(치명타 뒤 사망)" }
+                : MapDeviceRuntime::ReturnPortal(player);
             const bool h5Ok = g_hMapBossDamageKill && t10Cleared && act.bossKilled &&
                 act.portalsRemaining == kHReentryPortals && availAfter == g_hAvailPtsBeforeBoss + 1 &&
                 stNow.atlas.firstTributeGiven && oneTributeGranted && returnRes.ok;
@@ -7349,6 +7570,7 @@ namespace SkyrimPoE::Runtime
             g_hArenaPhase1Clamped = false;
             g_hArenaInvulnBlocked = false;
             g_hArenaPhase2Clamped = false;
+            g_hArenaLastLoggedTransition = Core::kArena4FirstPhase;
             g_hArenaDamageKill = false;
             g_hArenaResultBeforeReturn.reset();
             g_hTributesBeforeArena = g_hEarnedTributeBagCount;
@@ -7474,14 +7696,20 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (earned) {
+                const auto entryPhase = MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(g_hArenaBossFormId);
+                LogInfo("H6 arena entry: " + DescribeHArenaBoss(ObserveHArenaBoss(boss, entryPhase)));
                 const bool hit = SkillExecution::DealDirectSkillDamage(
                     boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
-                g_hArenaPhase1Clamped = hit && ArenaBossAtFloor(boss, kHArenaFloorFirst, kHArenaSecondPhase);
-                const auto ratio = BossHealthRatio(boss);
-                const bool blocked = MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId) &&
+                // The phase promotion is queued. Sample the clamp before returning from this tick.
+                const auto requested = MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(g_hArenaBossFormId);
+                const auto afterHit = ObserveHArenaBoss(boss, requested);
+                g_hArenaPhase1Clamped = hit &&
+                    ArenaBossAtFloor(afterHit, kHArenaFloorFirst, Core::kArena4FirstPhase, kHArenaSecondPhase);
+                LogInfo(std::format("H6 phase 1 floor hit (same tick, damageApplied={}): {}", hit, DescribeHArenaBoss(afterHit)));
+                const bool blocked = requested.invulnerable &&
                     !SkillExecution::DealDirectSkillDamage(boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
                 g_hArenaInvulnBlocked = blocked && !boss->IsDead() &&
-                    std::abs(BossHealthRatio(boss) - ratio) <= kHArenaPhaseHealthUnchangedTolerance;
+                    std::abs(BossHealthRatio(boss) - afterHit.HealthRatio()) <= kHArenaPhaseHealthUnchangedTolerance;
                 EnterPhase(Phase::ScenarioH_Arena4Phase2Wait);
                 break;
             }
@@ -7506,6 +7734,8 @@ namespace SkyrimPoE::Runtime
                 RestorePlayerVitals(player, true, true);
             }
             auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId);
+            const auto phase = MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(g_hArenaBossFormId);
+            LogHArenaTransition(boss, phase, kHArenaSecondPhase);
             if (!g_hArenaCosaveAttempted) {
                 const auto run = MapDeviceRuntime::TakeSnapshotForSave();
                 const bool ready = run.playerAuthorized && run.isArena4 && run.arenaPhase == kHArenaSecondPhase &&
@@ -7518,21 +7748,24 @@ namespace SkyrimPoE::Runtime
                     }
                     break;
                 }
-                if (boss && !boss->IsDead() && PhaseElapsedSec() < kMapBossKillWaitSec &&
-                    MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
+                if (boss && !boss->IsDead() && PhaseElapsedSec() < kMapBossKillWaitSec && phase.invulnerable) {
                     break;
                 }
                 Check(kHArenaCosaveCheck, false, "Could not request a save with a living phase 2 boss and a partial immunity timer.");
                 g_hArenaCosaveAttempted = true;
             }
-            if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId) &&
-                PhaseElapsedSec() < kArenaPhase3InvulnerabilityWaitSec) {
+            if (phase.invulnerable && PhaseElapsedSec() < kArenaPhase3InvulnerabilityWaitSec) {
                 break;
             }
             if (boss && !boss->IsDead()) {
+                LogInfo("H6 phase 2 before floor hit: " + DescribeHArenaBoss(ObserveHArenaBoss(boss, phase)));
                 const bool hit = SkillExecution::DealDirectSkillDamage(
                     boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
-                g_hArenaPhase2Clamped = hit && ArenaBossAtFloor(boss, kHArenaFloorSecond, Core::kArena4FinalPhase);
+                const auto requested = MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(g_hArenaBossFormId);
+                const auto afterHit = ObserveHArenaBoss(boss, requested);
+                g_hArenaPhase2Clamped = hit &&
+                    ArenaBossAtFloor(afterHit, kHArenaFloorSecond, kHArenaSecondPhase, Core::kArena4FinalPhase);
+                LogInfo(std::format("H6 phase 2 floor hit (same tick, damageApplied={}): {}", hit, DescribeHArenaBoss(afterHit)));
             }
             EnterPhase(Phase::ScenarioH_Arena4Phase3Wait);
             break;
@@ -7542,8 +7775,10 @@ namespace SkyrimPoE::Runtime
             if (auto* player = RE::PlayerCharacter::GetSingleton()) {
                 RestorePlayerVitals(player, true, true);
             }
-            if (MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId) &&
-                PhaseElapsedSec() < kArenaPhase3InvulnerabilityWaitSec) {
+            auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId);
+            const auto phase = MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(g_hArenaBossFormId);
+            LogHArenaTransition(boss, phase, Core::kArena4FinalPhase);
+            if (phase.invulnerable && PhaseElapsedSec() < kArenaPhase3InvulnerabilityWaitSec) {
                 break;
             }
             g_hNextBossHitSec = 0.0;
@@ -7558,27 +7793,40 @@ namespace SkyrimPoE::Runtime
             }
             const auto act = MapDeviceRuntime::GetActiveMapStateCopy();
             auto* boss = RE::TESForm::LookupByID<RE::Actor>(g_hArenaBossFormId);
-            if (!g_hArenaDamageKill && boss && !boss->IsDead() && g_hArenaPhase2Clamped && PhaseElapsedSec() >= g_hNextBossHitSec &&
-                PhaseElapsedSec() < kMapBossKillWaitSec && act.arenaPhase == Core::kArena4FinalPhase &&
-                !MapDeviceRuntime::IsArena4BossInvulnerable(g_hArenaBossFormId)) {
-                g_hNextBossHitSec = PhaseElapsedSec() + kHBossHitIntervalSec;
+            const auto phase = MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(g_hArenaBossFormId);
+            LogHArenaTransition(boss, phase, Core::kArena4FinalPhase);
+            const auto elapsed = PhaseElapsedSec();
+            if (!g_hArenaDamageKill && boss && !boss->IsDead() && elapsed >= g_hNextBossHitSec &&
+                elapsed < kMapBossKillWaitSec && phase.completed == Core::kArena4FinalPhase && !phase.invulnerable) {
+                g_hNextBossHitSec = elapsed + kHBossHitIntervalSec;
+                const auto beforeHit = ObserveHArenaBoss(boss, phase);
                 const bool hit = SkillExecution::DealDirectSkillDamage(
-                    boss, kHArenaHitDamage, Core::DamageType::Physical, true, true);
-                g_hArenaDamageKill = hit && (boss->IsDead() || BossHealthRatio(boss) <= 0.0);
+                    boss, kHArenaHitDamage, Core::DamageType::Physical, true, false);
+                const auto afterHit = ObserveHArenaBoss(boss, MapDeviceRuntime::GetArena4BossPhaseStatusForAutoTest(g_hArenaBossFormId));
+                g_hArenaDamageKill = hit && (!afterHit.alive || afterHit.health <= 0.0);
+                LogInfo(std::format("H6 phase 3 kill attempt (t={:.2f}s, damageApplied={}): before ({}), after ({})",
+                    elapsed, hit, DescribeHArenaBoss(beforeHit), DescribeHArenaBoss(afterHit)));
             }
             const auto stNow = SaveLoad::GetStateCopy();
             const bool asc4Done = (stNow.tree.ascendancyMilestonesBitmask & Core::kArena4MilestoneBit) != 0u;
-            if (!(g_hArenaDamageKill && act.bossKilled && asc4Done) && PhaseElapsedSec() < kMapBossKillWaitSec) {
+            const bool killConfirmed = g_hArenaDamageKill && act.bossKilled && asc4Done;
+            if (!killConfirmed && elapsed < kMapBossKillWaitSec) {
                 break;
             }
+            const auto timeoutDetail = killConfirmed ? std::string{} :
+                std::format(", phase 3 kill wait timed out; final boss ({})", DescribeHArenaBoss(ObserveHArenaBoss(boss, phase)));
             if (g_dataPack && g_dataPack->IsLoaded()) {
                 (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
             }
             const auto snap = g_statEngine->GetSnapshot();
             const auto ascAfter = Core::PassiveTree::ComputeEarnedAscendancyPoints(stNow.tree, *g_config);
             const std::uint32_t spiritAfter = snap ? snap->baseMaxSpirit : 0u;
-            const auto returned = act.bossKilled ? MapDeviceRuntime::ReturnPortal(player)
-                : MapActionResult{ false, "Boss death not confirmed." };
+            // 결정 179 개정: 처치 타격 뒤 사망 연출 동안 증원이 플레이어를 쓰러뜨리면 사망 귀환이 이미 회차를 끝내러 가고 있다.
+            // 그때도 클리어는 인정되므로 그 귀환을 이 시험의 귀환으로 받는다.
+            const bool deathEscapeReturning = act.bossKilled && MapDeviceRuntime::IsDeathEscapeInFlight();
+            const auto returned = !act.bossKilled ? MapActionResult{ false, "Boss death not confirmed." }
+                : deathEscapeReturning ? MapActionResult{ true, "사망 귀환이 이미 진행 중(치명타 뒤 사망)" }
+                : MapDeviceRuntime::ReturnPortal(player);
             g_hArenaReturnRequested = returned.ok;
             g_hArenaReturnState = act;
             g_hArenaResultBeforeReturn = g_hArenaPhase1Clamped && g_hArenaInvulnBlocked && g_hArenaPhase2Clamped &&
@@ -7587,7 +7835,7 @@ namespace SkyrimPoE::Runtime
             g_hArenaResultDetail = std::format(
                 "p1Clamp={}, invulnBlocked={}, p2Clamp={}, damageKill={}, bossKilled={}, bit8={}, asc={}->{}, baseSpirit={}->{}, return={}",
                 g_hArenaPhase1Clamped, g_hArenaInvulnBlocked, g_hArenaPhase2Clamped, g_hArenaDamageKill, act.bossKilled,
-                asc4Done, g_hAscPtsBeforeArena4, ascAfter, g_hSpiritBeforeArena4, spiritAfter, returned.message);
+                asc4Done, g_hAscPtsBeforeArena4, ascAfter, g_hSpiritBeforeArena4, spiritAfter, returned.message) + timeoutDetail;
             if (!returned.ok) {
                 CloseHRun(player);
             }

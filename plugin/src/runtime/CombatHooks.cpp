@@ -308,7 +308,7 @@ namespace SkyrimPoE::Runtime
                 const bool isRealHit = !hit->flags.any(RE::HitData::Flag::kPredictDamage);
                 if (g_killTracker && isRealHit) {
                     g_killTracker->RecordFirstHitHostility(
-                        target->GetFormID(), target->IsHostileToActor(player), !target->IsDead());
+                        target->GetFormID(), SkillExecution::IsHostileForFirstHitReward(target, player), !target->IsDead());
                 }
 
                 // M6: 사이클론 근접 타격 문맥 활성 시(38627+0x4A8) PoE 피해로 치환(결정 65, 66, 93)
@@ -663,7 +663,8 @@ namespace SkyrimPoE::Runtime
                             // Q-4: 바닐라 주문·마법부여 첫 피해 적용(35086)보다 앞선 SetEffectiveness에서 사전 적대 선기록
                             if (const auto caster = self->GetCasterActor(); caster && caster->IsPlayerRef()) {
                                 g_killTracker->RecordFirstHitHostility(
-                                    target->GetFormID(), target->IsHostileToActor(caster.get()), !target->IsDead());
+                                    target->GetFormID(), SkillExecution::IsHostileForFirstHitReward(target, caster.get()),
+                                    !target->IsDead());
                             }
                         }
                     }
@@ -740,7 +741,8 @@ namespace SkyrimPoE::Runtime
                 if (const auto caster = self->GetCasterActor(); caster && caster.get() == player) {
                     const RE::FormID targetId = actor->GetFormID();
                     if (g_killTracker) {
-                        g_killTracker->RecordFirstHitHostility(targetId, actor->IsHostileToActor(player), !actor->IsDead());
+                        g_killTracker->RecordFirstHitHostility(
+                            targetId, SkillExecution::IsHostileForFirstHitReward(actor, player), !actor->IsDead());
                     }
                     // 결정 81·172: kRecover(만료 때 엔진이 원래 크기로 되돌리는 일시 체력 감소)는 피해가 아니므로
                     // 생명 배율·ES·희귀도 보정을 걸지 않는다. 걸 때만 줄이면 되돌릴 때 체력이 늘어난 채 남는다.

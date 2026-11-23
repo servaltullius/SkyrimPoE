@@ -2,6 +2,8 @@
 
 #include "core/MapSystem.h"
 
+#include <limits>
+
 using namespace SkyrimPoE::Core;
 
 POE_TEST("Map pack size scales total actors, rounds halves up and reserves the boss slot")
@@ -70,6 +72,35 @@ POE_TEST("Map return defers for unresolved boss death only until the timeout")
         POE_CHECK(!MapSystem::ShouldDeferReturnForBossDeath(false, true, killPending, killPending, 10.0));
         POE_CHECK(!MapSystem::ShouldDeferReturnForBossDeath(false, true, killPending, killPending, 10.001));
     }
+}
+
+POE_TEST("Boss kill failure and reward block are judged at the lethal blow when it came first")
+{
+    // 치명타가 회차 실패보다 먼저였으면, 사망 확정 전에 실패·셀 이탈이 생겨도 그때의 판정을 쓴다.
+    auto judged = MapSystem::JudgeBossKill(true, false, true, true);
+    POE_CHECK(!judged.runFailed);
+    POE_CHECK(!judged.rewardBlocked);
+    // 치명타 때 이미 허가 셀 밖이었으면 그 차단은 유지된다.
+    judged = MapSystem::JudgeBossKill(true, true, false, false);
+    POE_CHECK(!judged.runFailed);
+    POE_CHECK(judged.rewardBlocked);
+    // 사망 시작 기록이 없으면(실패 뒤 치명타, 기록 누락) 지금 상태를 그대로 쓴다.
+    judged = MapSystem::JudgeBossKill(false, false, true, false);
+    POE_CHECK(judged.runFailed);
+    POE_CHECK(!judged.rewardBlocked);
+    judged = MapSystem::JudgeBossKill(false, false, false, true);
+    POE_CHECK(!judged.runFailed);
+    POE_CHECK(judged.rewardBlocked);
+}
+
+POE_TEST("Ending returns hold spawn Disable only while a boss kill is pending and within the cap")
+{
+    POE_CHECK(MapSystem::ShouldHoldEndingDisableForBossDeath(true, false, 0.0));
+    POE_CHECK(MapSystem::ShouldHoldEndingDisableForBossDeath(true, false, 9.999));
+    POE_CHECK(!MapSystem::ShouldHoldEndingDisableForBossDeath(true, false, kBossDeathProcessWaitSec));
+    POE_CHECK(!MapSystem::ShouldHoldEndingDisableForBossDeath(true, true, 0.0));
+    POE_CHECK(!MapSystem::ShouldHoldEndingDisableForBossDeath(false, false, 0.0));
+    POE_CHECK(!MapSystem::ShouldHoldEndingDisableForBossDeath(true, false, std::numeric_limits<double>::quiet_NaN()));
 }
 
 POE_TEST("An abandoned map ends on return even with portals and a living boss")

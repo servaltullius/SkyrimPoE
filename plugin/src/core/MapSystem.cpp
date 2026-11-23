@@ -451,11 +451,25 @@ namespace SkyrimPoE::Core
     bool MapSystem::ShouldDeferReturnForBossDeath(
         bool bossKilled, bool bossDeadNow, bool deathConfirmed, bool killPending, double waitedSec) noexcept
     {
-        constexpr double kBossDeathReturnTimeoutSec = 10.0;
-        if (bossKilled || waitedSec >= kBossDeathReturnTimeoutSec) {
+        if (bossKilled || waitedSec >= kBossDeathProcessWaitSec) {
             return false;
         }
         return killPending || (bossDeadNow && !deathConfirmed);
+    }
+
+    MapBossKillJudgement MapSystem::JudgeBossKill(bool deathStartedBeforeFailure,
+        bool rewardBlockedAtDeathStart, bool runFailedNow, bool rewardBlockedNow) noexcept
+    {
+        if (deathStartedBeforeFailure) {
+            return { false, rewardBlockedAtDeathStart };
+        }
+        return { runFailedNow, rewardBlockedNow };
+    }
+
+    bool MapSystem::ShouldHoldEndingDisableForBossDeath(bool killPending, bool bossKilled, double waitedSec) noexcept
+    {
+        const double waited = std::isfinite(waitedSec) ? waitedSec : kBossDeathProcessWaitSec;
+        return killPending && !bossKilled && waited < kBossDeathProcessWaitSec;
     }
 
     std::size_t MapSystem::MapPackActorCount(std::uint32_t basePacks, double packSizePct) noexcept

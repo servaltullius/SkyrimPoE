@@ -292,13 +292,15 @@ namespace SkyrimPoE::Runtime
         std::uint8_t activeMapTier,
         double bonusIiqPct,
         double bonusIirPct,
-        bool guaranteeFirstTribute)
+        bool guaranteeFirstTribute,
+        bool deliverToPlayer)
     {
         auto corpsePtr = corpseHandle.get();
         auto* corpse = corpsePtr.get();
+        auto* bagOwner = deliverToPlayer ? RE::PlayerCharacter::GetSingleton() : nullptr;
         // 회차를 끝낼 귀환으로 비활성화된 시체에 넣으면 회차 종료 정리로 사라지므로 닿을 수 없는 것으로 본다.
         if (!g_config || !g_config->enableLootDrops || !g_itemData || !g_itemData->IsLoaded() ||
-            !corpse || corpse->IsDeleted() || corpse->IsDisabled()) {
+            (deliverToPlayer ? !bagOwner : (!corpse || corpse->IsDeleted() || corpse->IsDisabled()))) {
             if (!guaranteeFirstTribute) {
                 return false;
             }
@@ -362,16 +364,17 @@ namespace SkyrimPoE::Runtime
             }
 
             const bool isTribute = d.kind == Core::DropKind::AscendancyTribute;
-            const auto countBefore = isTribute ? CountItemInContainer(corpse, misc) : 0;
+            RE::TESObjectREFR* container = bagOwner ? static_cast<RE::TESObjectREFR*>(bagOwner) : corpse;
+            const auto countBefore = isTribute ? CountItemInContainer(container, misc) : 0;
             bool onGround = false;
-            if (g_config->worldDropEnabled && d.worldDropTier >= g_config->worldDropMinTier) {
+            if (!bagOwner && g_config->worldDropEnabled && d.worldDropTier >= g_config->worldDropMinTier) {
                 // 바닥 배출에 실패해도 시체에 남았을 수 있으므로 중복 추가하지 않는다.
                 onGround = SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr, isUniq, isMap);
             } else {
-                corpse->AddObjectToContainer(misc, nullptr, 1, nullptr);
+                container->AddObjectToContainer(misc, nullptr, 1, nullptr);
             }
             if (isTribute) {
-                tributeCreated = onGround || CountItemInContainer(corpse, misc) > countBefore;
+                tributeCreated = onGround || CountItemInContainer(container, misc) > countBefore;
             }
         }
         return tributeCreated;

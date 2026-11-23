@@ -358,7 +358,7 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        // 6단계(배치2 검수 Critical #1): 호출부가 전달한 실제 엔진 난이도 배율(DoDamage(...,true)=1.0, CombatHooks=fDiffMultHPByPC)과
+        // 6단계(배치2 검수 Critical #1): 호출부가 전달한 실제 엔진 난이도 배율(직접 피해·CombatHooks 모두 fDiffMultHPByPC, 결정 53)과
         // 직접 RE::Actor* 포인터를 사용해 이중 역보정 및 워커 스레드 LookupByID 전역 폼 락을 제거한다.
         if (res.remainingHealthDamage > 0.0 && targetActor && MapDeviceRuntime::IsActiveArena4Boss(actorId)) {
             res.remainingHealthDamage = MapDeviceRuntime::FilterArena4BossIncomingDamage(

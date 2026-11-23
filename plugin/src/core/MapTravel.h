@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -47,6 +48,17 @@ namespace SkyrimPoE::Core
 
     enum class MapTravelOutcome { Waiting, Arrived, Retry, Fallback, Failed };
 
+    constexpr double kMapSpawnDisableWaitTimeoutSec = 3.0;
+    enum class MapSpawnDisableWaitOutcome { Waiting, Ready, TimedOut };
+
+    struct MapSpawnDisableWaitResult
+    {
+        double elapsedSec;
+        MapSpawnDisableWaitOutcome outcome;
+    };
+
+    [[nodiscard]] MapSpawnDisableWaitResult AdvanceMapSpawnDisableWait(
+        double elapsedSec, double deltaSec, std::size_t remaining) noexcept;
     [[nodiscard]] bool HasArrived(const MapTravelRequest& request, const MapTravelObservation& player) noexcept;
     [[nodiscard]] bool HasFallenBelowMap(const MapTravelObservation& player, double navmeshMinZ, double margin) noexcept;
 

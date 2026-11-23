@@ -76,6 +76,16 @@ namespace SkyrimPoE::Core
         bool invulnerable;
     };
 
+    // 보스 사망 시작(치명타)부터 사망 확정·처치 반영까지 귀환을 미루는 상한. 사망 연출은 실측 약 1.5초.
+    inline constexpr double kBossDeathProcessWaitSec = 10.0;
+
+    // 결정 179 개정(2026-11-23): 보스 처치의 회차 실패·보상 차단은 치명타(사망 시작) 시점으로 판정한다.
+    struct MapBossKillJudgement
+    {
+        bool runFailed;
+        bool rewardBlocked;
+    };
+
     struct MapActorScaling
     {
         std::uint64_t runId = 0;
@@ -159,6 +169,12 @@ namespace SkyrimPoE::Core
         [[nodiscard]] static bool ShouldEndOnReturn(const ActiveMapState& state) noexcept;
         [[nodiscard]] static bool ShouldDeferReturnForBossDeath(
             bool bossKilled, bool bossDeadNow, bool deathConfirmed, bool killPending, double waitedSec) noexcept;
+        // 사망 시작 기록(실패 전에만 남김)이 있으면 그때의 판정을, 없으면 지금 판정을 쓴다.
+        [[nodiscard]] static MapBossKillJudgement JudgeBossKill(bool deathStartedBeforeFailure,
+            bool rewardBlockedAtDeathStart, bool runFailedNow, bool rewardBlockedNow) noexcept;
+        // 회차를 끝내는 귀환이 스폰 비활성화를 미뤄야 하는지: 보스 처치 처리가 남았고 상한 안일 때.
+        [[nodiscard]] static bool ShouldHoldEndingDisableForBossDeath(
+            bool killPending, bool bossKilled, double waitedSec) noexcept;
         [[nodiscard]] static bool CanCheckBossLoss(
             const ActiveMapState& state, const MapBossLossObservation& observation) noexcept;
         [[nodiscard]] static MapBossLossProgress ObserveBossLoss(const ActiveMapState& state,

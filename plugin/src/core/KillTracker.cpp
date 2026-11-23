@@ -236,7 +236,9 @@ namespace SkyrimPoE::Core
         snap.wasHostileOnFirstHit = it->second.wasHostileOnFirstHit;
         snap.playerContributed = it->second.playerContributed;
         snap.deathStarted = it->second.deathStarted;
+        snap.deathExcluded = it->second.deathExcluded;
         snap.rewardClaimed = it->second.rewardClaimed;
+        snap.directHitActive = it->second.directHitDepth != 0;
         snap.lifeGeneration = it->second.lifeGeneration;
         return snap;
     }

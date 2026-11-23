@@ -29,6 +29,7 @@ namespace SkyrimPoE::Runtime
 
         // DeathListener 주 갱신 콜백에서 호출: 처치 드랍 판정 및 시체/바닥 배출 (6단계 지도 티어·IIQ·IIR 연동)
         // 공물이 실제로 생겼으면 true. 첫 공물 보장 시 일반 드랍이 꺼졌거나 시체가 없으면 가방에 넣는다.
+        // deliverToPlayer: 플레이어가 시체에 닿을 수 없는 처치(결정 179 ⑦, 치명타 뒤 사망 귀환)는 드랍을 모두 가방에 넣는다.
         [[nodiscard]] static bool OnKillAwarded(
             RE::ActorHandle corpseHandle,
             std::uint32_t effectiveMonsterLevel,
@@ -38,7 +39,8 @@ namespace SkyrimPoE::Runtime
             std::uint8_t activeMapTier = 0,
             double bonusIiqPct = 0.0,
             double bonusIirPct = 0.0,
-            bool guaranteeFirstTribute = false);
+            bool guaranteeFirstTribute = false,
+            bool deliverToPlayer = false);
 
         // 명시적 바닥 드랍 + 빛기둥 생성 헬퍼(AutoTest E7 및 내부 공용)
         static bool SpawnPhysicalDropFromContainer(

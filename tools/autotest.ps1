@@ -7,7 +7,7 @@ param(
     [string]$Save = "",
     [string]$TempSave = "SkyrimPoE_autotest",
     [bool]$Quit = $true,
-    [ValidateRange(30, 1800)]
+    [ValidateRange(30, 7200)]
     [int]$TimeoutSec
 )
 

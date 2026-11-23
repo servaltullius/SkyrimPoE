@@ -38,7 +38,9 @@ namespace SkyrimPoE::Core
         bool wasHostileOnFirstHit = false;
         bool playerContributed = false;
         bool deathStarted = false;
+        bool deathExcluded = false;
         bool rewardClaimed = false;
+        bool directHitActive = false;
         std::uint32_t lifeGeneration = 0;
     };
 

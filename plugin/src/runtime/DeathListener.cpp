@@ -69,7 +69,12 @@ namespace SkyrimPoE::Runtime
 
                 const auto actorId = actor->GetFormID();
                 if (!event->dead) {
-                    MapDeviceRuntime::NoteArena4BossDeathStart(actorId);
+                    // 결정 179 개정: 지도·결투장 보스의 처치 판정은 치명타(사망 시작) 시점 기준이다.
+                    {
+                        const auto* startPlayer = RE::PlayerCharacter::GetSingleton();
+                        const auto* startCell = startPlayer ? startPlayer->GetParentCell() : nullptr;
+                        MapDeviceRuntime::NoteMapBossDeathStart(actorId, startCell ? startCell->GetFormID() : 0);
+                    }
                     // 결정 114, 115: 사망 시작(dead=false) 시 소환/되살림/지배 상태 고정.
                     // 듀얼 SE+AE 안전 규칙: IsReanimated()는 반드시 AsActorState()를 거쳐 호출한다.
                     const auto* actorState = actor->AsActorState();
@@ -105,6 +110,10 @@ namespace SkyrimPoE::Runtime
                     actor->IsCommandedActor();
 
                 const auto stateCopy = SaveLoad::GetStateCopy();
+                // 지도 보스는 보상 자격 판정의 입력을 진단 로그로 남긴다. 청구 표시가 바뀌기 전에 기록을 떠 둔다.
+                const bool logMapBossEligibility = mapKill.runId != 0 && mapKill.isBoss;
+                const auto recordBeforeClaim = logMapBossEligibility
+                    ? g_killTracker->GetActorRecordSnapshot(actorId) : Core::ActorKillRecordSnapshot{};
                 const auto reward = g_killTracker->OnDeathConfirm(
                     actorId,
                     enemyLvl,
@@ -127,6 +136,26 @@ namespace SkyrimPoE::Runtime
                 const bool killRewardEligible = mapKill.arenaBossDeath
                     ? Core::MapSystem::IsArena4ClearEligible(mapRewardEligible, *mapKill.arenaBossDeath)
                     : mapRewardEligible;
+                if (logMapBossEligibility) {
+                    const auto& rec = recordBeforeClaim;
+                    SKSE::log::info(
+                        "DeathListener: map boss {:08X} run {} eligibility={} (awarded={}, contributed={}, "
+                        "record[found={}, life={}, firstHostility={}, hostileOnFirstHit={}, contributed={}, deathStarted={}, "
+                        "excluded={}, directHit={}, claimedBefore={}], fallbackExcluded={}, hostileNow={}, "
+                        "rewardBlocked={} [playerCell={:08X}, permitted={:08X}, inActiveCell={}], runFailed={}, "
+                        "judgedAtDeathStart={}, arena={}).",
+                        actorId, mapKill.runId, killRewardEligible, reward.awarded, reward.playerContributed,
+                        rec.found, rec.lifeGeneration, rec.firstHostilityRecorded, rec.wasHostileOnFirstHit,
+                        rec.playerContributed, rec.deathStarted, rec.deathExcluded, rec.directHitActive, rec.rewardClaimed,
+                        fallbackExcluded, player && actor->IsHostileToActor(player),
+                        mapKill.rewardBlocked, mapKill.playerCellId, mapKill.permittedCellId, mapKill.playerInActiveCell,
+                        mapKill.runFailed, mapKill.judgedAtDeathStart,
+                        mapKill.arenaBossDeath
+                            ? std::format("phase={}, invulnerable={}",
+                                  static_cast<unsigned>(mapKill.arenaBossDeath->completedPhase),
+                                  mapKill.arenaBossDeath->invulnerable)
+                            : std::string("none"));
+                }
                 if (!killRewardEligible) {
                     const auto eligibility = reward.playerContributed ? MapKillReward::Ineligible : MapKillReward::NoPlayerContribution;
                     g_queue->EnqueueForGeneration(generation, [actorId, corpseHandle, runId = mapKill.runId, eligibility]() {
@@ -162,7 +191,14 @@ namespace SkyrimPoE::Runtime
                     const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
 
                     // 종료된 회차의 시체도 승격·상태이상·SpeedMult를 여기서 정리한다.
-                    const bool allowKillEffects = mapKill.runId == 0 || MapDeviceRuntime::IsRunRewardable(mapKill.runId);
+                    // 결정 179 개정: 치명타가 회차 실패보다 먼저였던 보스는 그 뒤 실패했어도 처치 효과와 드랍을 준다.
+                    // 일반 몬스터는 쓰는 시점마다 회차 실패를 다시 본다(그 사이 치명타 훅이 실패를 표시할 수 있음).
+                    const auto runRewardableNow = [&mapKill]() {
+                        return mapKill.runId == 0 || (mapKill.judgedAtDeathStart
+                            ? MapDeviceRuntime::IsRunActive(mapKill.runId)
+                            : MapDeviceRuntime::IsRunRewardable(mapKill.runId));
+                    };
+                    const bool allowKillEffects = runRewardableNow();
                     const bool wasChilledOrFrozen = allowKillEffects &&
                         (AilmentRuntime::IsFrozen(actorId) || AilmentRuntime::ChillSlowRatio(actorId) > 0.0);
                     const auto killedProf = MonsterRuntime::OnMonsterKilled(actorId, allowKillEffects && snap && snap->headhunter);
@@ -236,7 +272,7 @@ namespace SkyrimPoE::Runtime
                     }
 
                     // 4~6단계(결정 16, 157~159, 164, 166): 지도·아틀라스 IIQ/IIR 반영 시체/바닥 드랍 + 지도/결투장 보스 처치 처리
-                    if (mapKill.runId == 0 || MapDeviceRuntime::IsRunRewardable(mapKill.runId)) {
+                    if (runRewardableNow()) {
                         const auto curSt = SaveLoad::GetStateCopy();
                         double mapIiq = mapKill.bonusIiqPct;
                         double mapIir = mapKill.bonusIirPct + (snap ? snap->itemRarityPct : 0.0);
@@ -247,9 +283,13 @@ namespace SkyrimPoE::Runtime
                         }
                         const bool guarantee = Core::MapSystem::ShouldGuaranteeFirstTribute(
                             activeRun, mapKill.isBoss, mapKill.rewardBlocked, mapKill.dropMapTier, curSt.atlas.firstTributeGiven);
+                        // 결정 179 ⑦: 치명타 뒤 사망 귀환 중이면 보스 처치로 이번 귀환이 회차를 끝내(결정 175) 시체·바닥 드랍이
+                        // 회차 종료 정리로 사라진다. 플레이어가 주울 수 없으므로 가방에 바로 넣는다.
+                        // 치명타 기록이 상한으로 지워졌거나 사망 시작 통지 없이 확정만 온 보스도 같은 이유로 가방에 넣는다.
+                        const bool deliverToPlayer = mapKill.isBoss && MapDeviceRuntime::IsDeathEscapeInFlight();
                         const bool tributeCreated = WorldDropTracker::OnKillAwarded(
                             corpseHandle, reward.effectiveMonsterLevel, isBoss, isDragon, killedProf.rarity,
-                            mapKill.dropMapTier, mapIiq, mapIir, guarantee);
+                            mapKill.dropMapTier, mapIiq, mapIir, guarantee, deliverToPlayer);
                         if (guarantee && tributeCreated) {
                             SaveLoad::UpdateState([](PersistentState& st) {
                                 st.atlas.firstTributeGiven = true;
@@ -306,7 +346,7 @@ namespace SkyrimPoE::Runtime
                 if (event && event->object) {
                     const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                     const auto id = event->object->GetFormID();
-                    MapDeviceRuntime::ClearArena4BossDeathStart(id);
+                    MapDeviceRuntime::ClearMapBossDeathStart(id);
                     if (g_killTracker) {
                         g_killTracker->OnActorReset(id);
                     }
@@ -326,6 +366,16 @@ namespace SkyrimPoE::Runtime
         private:
             ResetEventSink() = default;
         };
+    }
+
+    void DeathListener::ForgetKillRecords(std::span<const RE::FormID> actorIds)
+    {
+        if (!g_killTracker) {
+            return;
+        }
+        for (const auto id : actorIds) {
+            g_killTracker->OnActorReset(id);
+        }
     }
 
     bool DeathListener::Install(

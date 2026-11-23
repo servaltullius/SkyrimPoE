@@ -130,6 +130,7 @@ add_executable(skyrimpoe_tests
     tests/test_map_runtime_rules.cpp
     tests/test_map_kill_rewards.cpp
     tests/test_map_travel.cpp
+    tests/test_map_spawn_disable_wait.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE

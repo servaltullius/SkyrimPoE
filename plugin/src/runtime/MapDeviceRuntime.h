@@ -65,6 +65,12 @@ namespace SkyrimPoE::Runtime
         bool runFailed = false;
         // 결정 176 ④: 플레이어가 허가된 회차 셀 안에 없으면 보상을 주지 않는다.
         bool rewardBlocked = false;
+        // rewardBlocked를 정한 입력. 보스 처치 보상 자격 진단 로그에 쓴다.
+        RE::FormID playerCellId = 0;
+        RE::FormID permittedCellId = 0;
+        bool playerInActiveCell = false;
+        // 결정 179 개정: 보스의 사망이 회차 실패 전에 시작돼 runFailed·rewardBlocked를 그 시점 값으로 정했는지.
+        bool judgedAtDeathStart = false;
         std::optional<Core::Arena4BossDeathState> arenaBossDeath;
     };
 
@@ -91,6 +97,13 @@ namespace SkyrimPoE::Runtime
         bool pending = false;
         std::size_t dispatched = 0;   // VM이 접수한 횟수
         std::size_t completed = 0;    // 호출 완료 콜백이 온 횟수
+    };
+
+    struct Arena4BossPhaseStatus
+    {
+        std::uint8_t requested = 0;
+        std::uint8_t completed = 0;
+        bool invulnerable = false;
     };
 
     struct PlayerMapItemEntry
@@ -176,6 +189,8 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static std::uint8_t GetActiveMapTier() noexcept;
         [[nodiscard]] static bool IsActiveMapOrArenaBoss(RE::FormID actorFormId) noexcept;
         [[nodiscard]] static bool IsActiveArena4Boss(RE::FormID actorFormId) noexcept;
+        // 활성 회차가 스폰해 등록한 액터(보스·무리·결투장 증원)인지. 결정 181의 첫 타격 적대 판정에 쓴다.
+        [[nodiscard]] static bool IsActiveRunMapActor(RE::FormID actorFormId);
         [[nodiscard]] static bool IsDeathEscapeInFlight() noexcept;
         [[nodiscard]] static std::uint64_t GetDeathEscapeRequestCount() noexcept;
         [[nodiscard]] static bool IsUninstallCleanupArmed() noexcept;
@@ -184,6 +199,7 @@ namespace SkyrimPoE::Runtime
 
         // 뮤텍스 보호 스냅샷 조회
         [[nodiscard]] static bool IsArena4BossInvulnerable(RE::FormID actorId);
+        [[nodiscard]] static Arena4BossPhaseStatus GetArena4BossPhaseStatusForAutoTest(RE::FormID actorId);
         [[nodiscard]] static Core::ActiveMapState GetActiveMapStateCopy();
         [[nodiscard]] static std::uint64_t GetActiveRunId();
         [[nodiscard]] static bool IsRunActive(std::uint64_t runId);
@@ -195,8 +211,9 @@ namespace SkyrimPoE::Runtime
             RE::FormID actorId, Core::MapModSummary* mods = nullptr);
         // 처치 보상은 회차 잠금과 액터 등록부 잠금으로 함께 확인한다.
         [[nodiscard]] static MapKillContext GetMapKillContext(RE::FormID actorId, RE::FormID playerCellId);
-        static void NoteArena4BossDeathStart(RE::FormID actorId);
-        static void ClearArena4BossDeathStart(RE::FormID actorId);
+        // 결정 179 개정: 회차가 실패하기 전에 시작된 보스 사망(치명타)을 기록하고, 리셋으로 취소되면 지운다.
+        static void NoteMapBossDeathStart(RE::FormID actorId, RE::FormID playerCellId);
+        static void ClearMapBossDeathStart(RE::FormID actorId);
         // 사망 확정과 회차 처리 대기를 표시한다. 같은 회차 보스의 중복 확정은 건너뛴다.
         [[nodiscard]] static std::optional<MapKillContext> ConfirmMapKill(
             RE::FormID actorId, RE::FormID playerCellId);

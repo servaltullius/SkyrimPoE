@@ -9,6 +9,21 @@ namespace SkyrimPoE::Core
         return kind == MapTravelKind::OpenMap || kind == MapTravelKind::OpenArena || kind == MapTravelKind::Reenter;
     }
 
+    MapSpawnDisableWaitResult AdvanceMapSpawnDisableWait(
+        double elapsedSec, double deltaSec, std::size_t remaining) noexcept
+    {
+        if (std::isfinite(deltaSec) && deltaSec > 0.0) {
+            elapsedSec += deltaSec;
+        }
+        if (remaining == 0) {
+            return { elapsedSec, MapSpawnDisableWaitOutcome::Ready };
+        }
+        if (elapsedSec >= kMapSpawnDisableWaitTimeoutSec) {
+            return { elapsedSec, MapSpawnDisableWaitOutcome::TimedOut };
+        }
+        return { elapsedSec, MapSpawnDisableWaitOutcome::Waiting };
+    }
+
     bool HasArrived(const MapTravelRequest& request, const MapTravelObservation& player) noexcept
     {
         if (player.loading || !player.loaded3D || (request.requireOutsidePack && (player.cell == 0 || player.inPackCell))) {

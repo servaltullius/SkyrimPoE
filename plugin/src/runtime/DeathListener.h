@@ -19,5 +19,9 @@ namespace SkyrimPoE::Runtime
             const Core::Config* config,
             Core::StatEngine* statEngine = nullptr,
             Core::CharmSystem* charmSystem = nullptr);
+
+        // 끝난 지도 회차의 스폰은 첫 적대·기여 기록을 지운다. 회차가 닫힌 뒤 늦게 온 사망 확정이
+        // 회차 밖(오픈월드) 처치로 보상받지 않게 한다(2026-11-23 Codex 검토).
+        static void ForgetKillRecords(std::span<const RE::FormID> actorIds);
     };
 }
