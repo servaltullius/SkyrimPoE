@@ -154,6 +154,8 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static double GetFallMargin() noexcept;
         // 입구로 옮긴 낙하 복귀 횟수(자동 시험 H10)
         [[nodiscard]] static std::size_t GetFallRecoveryCount();
+        // 셀이 다시 붙었을 때 남은 스폰으로 찾아 끄기를 요청한 누적 액터 수(결정 178 ⑦ 보완, 자동 시험 H23·H25)
+        [[nodiscard]] static std::size_t GetLeftoverSweepCleanedCount() noexcept;
         [[nodiscard]] static MapCellResetStatus GetCellResetStatus(RE::FormID cellId);
 
         // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차

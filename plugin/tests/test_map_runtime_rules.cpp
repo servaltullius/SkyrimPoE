@@ -47,6 +47,59 @@ POE_TEST("Map spawn deletion requires a disabled non-player actor with the recor
     POE_CHECK(!MapSystem::CanDeleteMapSpawn(baseId, 0, observed));
 }
 
+POE_TEST("A leftover map spawn is an enabled, undeleted, unregistered template actor in the attached swept cell")
+{
+    constexpr std::uint32_t cellId = 0xC2000800u;
+    constexpr std::uint32_t bossBase = 0x0003DF0Cu;
+    constexpr std::uint32_t packBase = 0x00039D21u;
+    const std::uint32_t templates[] = { bossBase, packBase };
+    const std::uint32_t currentRun[] = { 0xFF003800u, 0xFF003801u };
+    constexpr MapLeftoverObservation leftover{ true, false, false, false, false, 0xFF000D25u, bossBase, cellId };
+    POE_CHECK(MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, leftover));
+    POE_CHECK(MapSystem::IsLeftoverMapSpawn(cellId, true, templates, {}, leftover));
+
+    // 셀이 붙어 있지 않으면 건드리지 않는다(결정 178 ⑦).
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, false, templates, currentRun, leftover));
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(0, true, templates, currentRun, leftover));
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId + 1, true, templates, currentRun, leftover));
+
+    // 지금 회차에 등록된 액터는 남은 스폰이 아니다.
+    auto observed = leftover;
+    observed.formId = 0xFF003801u;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+
+    observed = leftover;
+    observed.isActor = false;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    observed = leftover;
+    observed.isPlayer = true;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    observed = leftover;
+    observed.isFollowerOrCommanded = true;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    observed = leftover;
+    observed.isDeleted = true;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    observed = leftover;
+    observed.isDisabled = true;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    // 플러그인에 배치된 참조(동적이 아님)와 다른 원형은 남은 스폰이 아니다.
+    observed = leftover;
+    observed.formId = 0x0005A1F0u;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    observed = leftover;
+    observed.actorBaseId = 0x00012345u;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    observed = leftover;
+    observed.actorBaseId = 0;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    observed = leftover;
+    observed.cellId = 0;
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, templates, currentRun, observed));
+    // 원형 목록이 비면(던전을 모름) 아무것도 남은 스폰으로 보지 않는다.
+    POE_CHECK(!MapSystem::IsLeftoverMapSpawn(cellId, true, {}, currentRun, leftover));
+}
+
 POE_TEST("First tribute is guaranteed only for an eligible T6+ boss in the active run")
 {
     POE_CHECK(MapSystem::ShouldGuaranteeFirstTribute(true, true, false, 6, false));

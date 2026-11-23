@@ -139,6 +139,15 @@ namespace SkyrimPoE::Runtime
         bool g_runDamageEscapeReady = false;
         // 입구로 옮긴 뒤에도 다음 판정에서 여전히 문턱 아래면 포털 귀환으로 바꾼다.
         std::uint32_t g_fallRecoveryStreak = 0;
+        // 문턱 아래인데 복귀를 미룬 이유를 한 낙하에 한 번만 남긴다.
+        bool g_fallSkipLogged = false;
+        // 남은 스폰을 훑은 지도 팩 셀. 팩 밖으로 나가거나 불러오기 중이면 비워, 다시 들어오면 한 번 더 훑는다.
+        RE::FormID g_leftoverSweptCell = 0;
+        // 남은 스폰으로 찾아 끄기를 요청한 액터 수(자동 시험 H23·H25가 보고).
+        std::atomic<std::size_t> g_leftoverSweepCleaned{ 0 };
+        // 남은 스폰 청소가 Disable을 요청했고 아직 꺼진 것을 확인하지 못한 액터. 귀환은 이것도 꺼진 뒤에 떠난다(Codex 검토:
+        // 청소 직후 귀환이 시작되면 예약된 Disable이 셀이 떨어진 뒤 실행될 수 있었다).
+        std::vector<RE::FormID> g_sweepDisableRequested;
         double g_fallRecoveryCooldownSec = 0.0;
         std::size_t g_fallRecoveryCount = 0;
         std::atomic<std::uint64_t> g_deathEscapeRequestCount{ 0 };
@@ -672,6 +681,29 @@ namespace SkyrimPoE::Runtime
             return true;
         }
 
+        // 남은 스폰 청소가 Disable을 요청한 액터 가운데 아직 꺼지지 않은 것. 꺼졌거나 사라진 것은 목록에서 뺀다.
+        std::vector<RE::FormID> TakeUndisabledSweepRequests()
+        {
+            std::vector<RE::FormID> requested;
+            {
+                std::scoped_lock lk(g_mutex);
+                requested = g_sweepDisableRequested;
+            }
+            std::vector<RE::FormID> undisabled;
+            for (const auto id : requested) {
+                const RE::NiPointer<RE::Actor> actor{ RE::TESForm::LookupByID<RE::Actor>(id) };
+                if (actor && !actor->IsDeleted() && !actor->IsDisabled()) {
+                    undisabled.push_back(id);
+                }
+            }
+            std::scoped_lock lk(g_mutex);
+            std::erase_if(g_sweepDisableRequested, [&](RE::FormID id) {
+                return std::ranges::find(requested, id) != requested.end() &&
+                    std::ranges::find(undisabled, id) == undisabled.end();
+            });
+            return undisabled;
+        }
+
         // waitForDisabled: 호출자가 방금 Disable을 요청한 액터(자동 취소된 회차의 정리 등). 비어 있지 않으면 끝낼 귀환과
         // 같이 그 액터들이 비활성화된 것을 확인한 다음 프레임에 이동한다.
         MapActionResult StartTravel(RE::PlayerCharacter* player, MapTravelKind kind,
@@ -694,6 +726,13 @@ namespace SkyrimPoE::Runtime
                 retrySavedReturn ? g_safeReturnTarget : std::nullopt,
                 entry ? 1u : g_travelSettings.maxAttempts, g_travelSettings.timeoutSec
             };
+            if (!entry) {
+                for (const auto id : TakeUndisabledSweepRequests()) {
+                    if (std::ranges::find(waitForDisabled, id) == waitForDisabled.end()) {
+                        waitForDisabled.push_back(id);
+                    }
+                }
+            }
             bool sync = false;
             std::uint64_t endingRunId = 0;
             bool awaitBossDeath = false;
@@ -732,7 +771,7 @@ namespace SkyrimPoE::Runtime
                         Core::MapSystem::ShouldHoldEndingDisableForBossDeath(
                             BossKillProcessingPendingLocked(context.runId), g_activeMap.bossKilled, 0.0);
                     if (ending || awaitBossDeath) {
-                        g_pendingTravelDisable = PendingTravelDisable{ MainUpdateHook::TickCount(), {} };
+                        g_pendingTravelDisable = PendingTravelDisable{ MainUpdateHook::TickCount(), waitForDisabled };
                         g_pendingTravelDisable->awaitingBossDeath = awaitBossDeath;
                         // 일반 귀환이 이미 보스 처리를 기다리며 거절됐던 시간은 이 대기의 상한에 넣는다(10초를 두 번 기다리지 않게).
                         if (awaitBossDeath && g_firstBossDeathReturnDeferral) {
@@ -768,7 +807,12 @@ namespace SkyrimPoE::Runtime
                 if (!g_pendingTravelDisable || g_travelContext.runId != endingRunId) {
                     return { false, "회차가 바뀌어 귀환 요청을 취소했습니다." };
                 }
-                g_pendingTravelDisable->actorIds = std::move(actorIds);
+                auto& waitIds = g_pendingTravelDisable->actorIds;
+                for (const auto id : actorIds) {
+                    if (std::ranges::find(waitIds, id) == waitIds.end()) {
+                        waitIds.push_back(id);
+                    }
+                }
             } else if (!IssueTravelMove(player, target)) {
                 std::scoped_lock lk(g_mutex);
                 ClearTravelLocked();
@@ -901,19 +945,66 @@ namespace SkyrimPoE::Runtime
             return ids;
         }
 
+        // 진단(2026-11-23 실행 15): 붙지 않은 셀에 남긴 스폰 가운데 보스만 셀 초기화 뒤에도 살아 남았다. 무엇이 다른지 가르려고
+        // 엔진 쪽 상태(전투·처리 단계·영속 표시 등)를 남긴다. 동작은 바꾸지 않는다.
+        std::string DescribeSpawnEngineState(const RE::Actor* actor)
+        {
+            if (!actor) {
+                return "actor=null";
+            }
+            auto* self = const_cast<RE::Actor*>(actor);
+            const auto& runtime = self->GetActorRuntimeData();
+            const auto* process = runtime.currentProcess;
+            const char* processLevel = !process ? "none"
+                : process->InHighProcess() ? "high"
+                : process->InMiddleHighProcess() ? "middle-high"
+                : "low-or-middle-low";
+            const auto target = runtime.currentCombatTarget.get();
+            const auto* player = RE::PlayerCharacter::GetSingleton();
+            return std::format(
+                "dead={}, disabled={}, deleted={}, inCombat={}, target={}, angryWithPlayer={}, process={}, 3D={}, persistent={}, teammate={}, commanded={}",
+                self->IsDead(), self->IsDisabled(), self->IsDeleted(), self->IsInCombat(),
+                !target ? "none" : target.get() == player ? "player" : std::format("0x{:08X}", target->GetFormID()),
+                self->IsAngryWithPlayer(), processLevel, self->Is3DLoaded(), self->IsPersistent(), self->IsPlayerTeammate(),
+                self->IsCommandedActor());
+        }
+
         void ResetMapSpawnTracking(RE::FormID actorId)
         {
             AilmentRuntime::OnActorReset(actorId);
             MonsterRuntime::OnActorReset(actorId);
         }
 
+        enum class DisableSpawnResult
+        {
+            Requested,        // Disable을 예약하고 삭제 대기에 넣음
+            AlreadyPending,   // 같은 회차로 이미 삭제 대기 중
+            Missing,          // 조회 불가·삭제 표시·플레이어·동적 FormID 아님
+            NotOwned,         // 회차 셀·스폰 원형이 맞지 않음(FormID 재사용 대비)
+            CellDetached,     // 셀이 붙어 있지 않아 Disable하지 않음(결정 178 ⑦)
+            Stale             // 처리 중 불러오기 등으로 세대가 바뀜
+        };
+
+        const char* DisableSpawnResultName(DisableSpawnResult result) noexcept
+        {
+            switch (result) {
+                case DisableSpawnResult::Requested: return "requested";
+                case DisableSpawnResult::AlreadyPending: return "pending";
+                case DisableSpawnResult::Missing: return "missing";
+                case DisableSpawnResult::NotOwned: return "not-owned";
+                case DisableSpawnResult::CellDetached: return "cell-detached";
+                case DisableSpawnResult::Stale: return "stale";
+            }
+            return "?";
+        }
+
         // 결정 178 ①: 비활성화할 때도 우리 스폰임을 입증한다. FormID가 재사용돼 다른 액터(소환수 등)를
         // 끄거나 지우지 않도록, 그 회차 셀에 있고 기본 객체가 그 던전의 스폰 원형인 액터만 끈다.
-        bool DisableMapSpawnOnMainThread(RE::FormID actorId, std::uint64_t runId, RE::FormID runCellId,
+        DisableSpawnResult DisableMapSpawnOnMainThread(RE::FormID actorId, std::uint64_t runId, RE::FormID runCellId,
             std::span<const RE::FormID> templateIds)
         {
             if ((actorId & kDynamicFormMask) != kDynamicFormMask || runCellId == 0 || templateIds.empty()) {
-                return false;
+                return DisableSpawnResult::Missing;
             }
             std::uint64_t generation = 0;
             {
@@ -921,24 +1012,32 @@ namespace SkyrimPoE::Runtime
                 if (std::ranges::any_of(g_pendingActorDeletes, [actorId, runId](const PendingActorDelete& entry) {
                         return entry.actorId == actorId && entry.runId == runId;
                     })) {
-                    return false;
+                    return DisableSpawnResult::AlreadyPending;
                 }
                 generation = g_pendingActorDeleteGeneration;
             }
             const RE::NiPointer<RE::Actor> actor{ RE::TESForm::LookupByID<RE::Actor>(actorId) };
             if (!actor || actor->IsPlayerRef() || actor->IsDeleted()) {
-                return false;
+                return DisableSpawnResult::Missing;
             }
             const auto* cell = actor->GetParentCell();
             const auto* baseObject = actor->GetBaseObject();
             const RE::FormID actorBaseId = baseObject ? baseObject->GetFormID() : 0;
             if (!cell || cell->GetFormID() != runCellId ||
                 std::ranges::find(templateIds, actorBaseId) == templateIds.end()) {
-                return false;
+                return DisableSpawnResult::NotOwned;
             }
             // 사망한 액터의 희귀도와 상태이상은 예약된 처치 처리가 읽고 정리한다.
             if (!actor->IsDead()) {
                 ResetMapSpawnTracking(actorId);
+            }
+            // 결정 178 ⑦(2026-11-23 사용자 확인): 붙어 있지 않은 셀의 임시 액터는 엔진이 정리하며 지울 수 있다. 예약된 Disable이
+            // 삭제된 액터에서 실행되며 CTD가 난 기록이 두 번 있다(실행 2의 1·13회차, 그 Disable을 우리가 예약했는지는 미확정).
+            // 그런 액터는 끄지 않고 회차 종료 때 예약하는 셀 초기화에 맡긴다.
+            if (!cell->IsAttached()) {
+                SKSE::log::info("MapDeviceRuntime: run {} spawn 0x{:08X} (base 0x{:08X}) left to Cell.Reset in detached cell 0x{:08X}: {}.",
+                    runId, actorId, actorBaseId, runCellId, DescribeSpawnEngineState(actor.get()));
+                return DisableSpawnResult::CellDetached;
             }
             actor->Disable();
 
@@ -946,7 +1045,7 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lk(g_mutex);
                 if (generation != g_pendingActorDeleteGeneration) {
-                    return false;
+                    return DisableSpawnResult::Stale;
                 }
                 // 다른 회차의 같은 FormID는 번호가 재사용된 것이므로 새 대기 항목으로 바꾼다.
                 std::erase_if(g_pendingActorDeletes, [actorId](const PendingActorDelete& entry) { return entry.actorId == actorId; });
@@ -961,8 +1060,33 @@ namespace SkyrimPoE::Runtime
                 SKSE::log::warn("MapDeviceRuntime: dropped pending deletion of actor 0x{:08X} at queue capacity {}.",
                     evictedActorId, kMaxPendingMapActorDeletes);
             }
-            return true;
+            return DisableSpawnResult::Requested;
         }
+
+        // 스폰 정리 결과를 종류별 개수와 FormID로 남긴다(정리 경로에서 누구에게 Disable을 걸었는지 가리기 위함).
+        struct DisableSpawnTally
+        {
+            std::array<std::vector<RE::FormID>, 6> ids;
+
+            void Add(DisableSpawnResult result, RE::FormID id) { ids[static_cast<std::size_t>(result)].push_back(id); }
+
+            [[nodiscard]] std::string Describe() const
+            {
+                std::string out;
+                for (std::size_t i = 0; i < ids.size(); ++i) {
+                    if (ids[i].empty()) {
+                        continue;
+                    }
+                    out += std::format("{}{}={}[", out.empty() ? "" : " ",
+                        DisableSpawnResultName(static_cast<DisableSpawnResult>(i)), ids[i].size());
+                    for (std::size_t k = 0; k < ids[i].size(); ++k) {
+                        out += std::format("{}{:08X}", k == 0 ? "" : ",", ids[i][k]);
+                    }
+                    out += "]";
+                }
+                return out.empty() ? std::string("none") : out;
+            }
+        };
 
         std::vector<RE::FormID> DisableRunSpawnsOnMainThread(std::uint64_t runId)
         {
@@ -982,14 +1106,21 @@ namespace SkyrimPoE::Runtime
             }
             const auto templateIds = SpawnTemplateIdsForCell(cellId);
             const auto previouslyRequested = requestedIds.size();
+            DisableSpawnTally tally;
             for (const auto id : spawnedIds) {
-                if (std::ranges::find(requestedIds, id) == requestedIds.end() &&
-                    DisableMapSpawnOnMainThread(id, runId, cellId, templateIds)) {
+                if (std::ranges::find(requestedIds, id) != requestedIds.end()) {
+                    continue;
+                }
+                const auto result = DisableMapSpawnOnMainThread(id, runId, cellId, templateIds);
+                if (result == DisableSpawnResult::Requested) {
                     requestedIds.push_back(id);
+                } else {
+                    tally.Add(result, id);
                 }
             }
-            SKSE::log::info("MapDeviceRuntime: ending return run {} requested Disable for {} actor(s) (tracking {}, frame={}).",
-                runId, requestedIds.size() - previouslyRequested, requestedIds.size(), MainUpdateHook::TickCount());
+            SKSE::log::info("MapDeviceRuntime: ending return run {} requested Disable for {} actor(s) (tracking {}, frame={}; not disabled: {}).",
+                runId, requestedIds.size() - previouslyRequested, requestedIds.size(), MainUpdateHook::TickCount(),
+                tally.Describe());
             {
                 std::scoped_lock lk(g_mutex);
                 if (g_activeMap.active && g_activeMap.runId == runId) {
@@ -1109,12 +1240,21 @@ namespace SkyrimPoE::Runtime
             // 목록 밖의 보스도 정리하되, 삭제 전에 원형과 셀을 확인한다.
             const auto templateIds = SpawnTemplateIdsForCell(cellId);
             std::vector<RE::FormID> requested;
+            DisableSpawnTally tally;
             for (const auto id : spawnedIds) {
-                if (std::ranges::find(disableRequested, id) == disableRequested.end() &&
-                    DisableMapSpawnOnMainThread(id, runId, cellId, templateIds)) {
+                if (std::ranges::find(disableRequested, id) != disableRequested.end()) {
+                    continue;
+                }
+                const auto result = DisableMapSpawnOnMainThread(id, runId, cellId, templateIds);
+                tally.Add(result, id);
+                if (result == DisableSpawnResult::Requested) {
                     requested.push_back(id);
                 }
             }
+            const auto* cell = cellId != 0 ? RE::TESForm::LookupByID<RE::TESObjectCELL>(cellId) : nullptr;
+            SKSE::log::info("MapDeviceRuntime: closed run {} cleanup of {} spawn(s) (already handled {}; cell 0x{:08X} attached={}, frame={}): {}.",
+                runId, spawnedIds.size(), disableRequested.size(), cellId, cell && cell->IsAttached(),
+                MainUpdateHook::TickCount(), tally.Describe());
             if (cellId != 0) {
                 std::scoped_lock lk(g_mutex);
                 QueueCellResetLocked(cellId);
@@ -1235,7 +1375,7 @@ namespace SkyrimPoE::Runtime
             }
             if (!registered) {
                 const RE::FormID spawnedTemplate[] = { npcBase->GetFormID() };
-                DisableMapSpawnOnMainThread(actorId, runId, cell->GetFormID(), spawnedTemplate);
+                (void)DisableMapSpawnOnMainThread(actorId, runId, cell->GetFormID(), spawnedTemplate);
                 return {};
             }
             actor->StartCombat(player);
@@ -1315,6 +1455,119 @@ namespace SkyrimPoE::Runtime
                 ? std::format("[4차 전직 결투장] 보스 {}페이즈 돌입! 증원군 출현!", newPhase)
                 : std::format("[4차 전직 결투장] 보스 {}페이즈 돌입!", newPhase);
             RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
+        }
+
+        // 결정 178 ⑦ 보완(2026-11-23 사용자 확인 "보완해서 고침"): 붙지 않은 셀이라 끄지 않고 셀 초기화에 맡긴 스폰이 초기화 뒤에도
+        // 살아 남는 일이 있었다(실행 15, 보스 하나, 원인 미확정). 그 셀이 다시 붙으면(플레이어가 들어와 셀이 안정되었을 때와 새 회차를
+        // 스폰한 직후) 지금 회차에 등록되지 않은 스폰 원형 액터를 찾아, 셀이 붙은 상태에서만 끄고 지연 삭제에 넘긴다.
+        // 기억해 둔 목록이 아니라 셀을 직접 훑으므로 저장·불러오기 뒤에도 같은 기준으로 찾는다.
+        // 셀을 실제로 훑었으면 true(남은 스폰이 없었어도). 훑지 못했으면 false라 다음 틱에 다시 시도한다.
+        bool SweepLeftoverSpawnsInCell(RE::FormID cellId, std::string_view when)
+        {
+            if (cellId == 0 || MapDeviceRuntime::IsUninstallCleanupActive()) {
+                return false;
+            }
+            auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(cellId);
+            auto templateIds = SpawnTemplateIdsForCell(cellId);
+            if (!cell || templateIds.empty() || !cell->IsAttached()) {
+                return false;
+            }
+            std::vector<RE::FormID> current;
+            std::vector<RE::FormID> pendingDeletes;
+            std::uint64_t activeRunId = 0;
+            RE::FormID bossId = 0;
+            bool bossUnresolved = false;
+            bool bossSettled = true;
+            {
+                std::scoped_lock lk(g_mutex);
+                // 이동이 걸렸거나 사망 귀환 중이면 미룬다(입장·스폰 두 경로 공통). Disable은 작업 풀 예약이라 셀이 떨어진 뒤 실행될 수 있다.
+                if (PendingTravelKindLocked() || g_deathEscapeRunId.load(std::memory_order_acquire) != 0) {
+                    return false;
+                }
+                // 다른 회차 번호로 이미 끄기를 요청해 삭제를 기다리는 액터는 다시 끄지 않는다(Disable 실행 전이면 아직 활성으로 보인다).
+                for (const auto& entry : g_pendingActorDeletes) {
+                    pendingDeletes.push_back(entry.actorId);
+                }
+                if (g_activeMap.active && g_activeCellFormId.load(std::memory_order_relaxed) == cellId) {
+                    current = Core::MapSystem::MapSpawnCleanupIds(g_activeMap);
+                    activeRunId = g_activeMap.runId;
+                    bossId = g_activeMap.bossRefFormId;
+                    bossUnresolved = g_activeMap.unresolvedBossRefFormId != 0;
+                    bossSettled = g_activeMap.bossKilled || g_activeMap.spawnsDisabled || !g_spawnedForCurrentRun;
+                }
+            }
+            bool bossDeferred = false;
+            if (activeRunId != 0 && !bossSettled) {
+                // 지금 회차의 보스를 찾지 못하는 동안(불러온 뒤 참조가 풀리지 않음 등)에는 보스 분실 복구
+                // (RecoverMissingBossOnMainThread)가 셀에서 같은 원형의 액터를 찾아 다시 보스로 묶는다. 그 후보를 여기서 끄지 않는다.
+                // 보스가 있는지는 분실 감시와 같은 기준(LookupMapBoss: 원형·셀 일치)으로 본다.
+                if (bossUnresolved || !LookupMapBoss(bossId, cellId)) {
+                    const auto* forms = MapPackRuntime::FindForms(MapPackRuntime::FindDungeonByCell(cellId));
+                    if (forms && forms->bossNpc) {
+                        std::erase(templateIds, forms->bossNpc->GetFormID());
+                        bossDeferred = true;
+                    }
+                }
+            }
+            std::vector<RE::NiPointer<RE::Actor>> leftovers;
+            cell->ForEachReference([&](RE::TESObjectREFR* reference) {
+                auto* actor = reference ? reference->As<RE::Actor>() : nullptr;
+                const auto* base = actor ? actor->GetBaseObject() : nullptr;
+                const auto* parent = actor ? actor->GetParentCell() : nullptr;
+                const Core::MapLeftoverObservation observed{
+                    .isActor = actor != nullptr,
+                    .isPlayer = actor && actor->IsPlayerRef(),
+                    .isFollowerOrCommanded = actor && (actor->IsPlayerTeammate() || actor->IsCommandedActor()),
+                    .isDeleted = actor && actor->IsDeleted(),
+                    .isDisabled = actor && actor->IsDisabled(),
+                    .formId = actor ? actor->GetFormID() : 0u,
+                    .actorBaseId = base ? base->GetFormID() : 0u,
+                    .cellId = parent ? parent->GetFormID() : 0u
+                };
+                if (Core::MapSystem::IsLeftoverMapSpawn(cellId, true, templateIds, current, observed) &&
+                    std::ranges::find(pendingDeletes, observed.formId) == pendingDeletes.end()) {
+                    leftovers.emplace_back(actor);
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            if (leftovers.empty()) {
+                // 보스 원형을 미뤘으면 보스가 다시 묶인 뒤 남은 같은 원형 액터를 찾도록 이 입장을 끝난 것으로 기록하지 않는다.
+                return !bossDeferred;
+            }
+            std::vector<RE::FormID> ids;
+            ids.reserve(leftovers.size());
+            for (const auto& actor : leftovers) {
+                const auto pos = actor->GetPosition();
+                SKSE::log::warn("MapDeviceRuntime: found leftover map actor 0x{:08X} (base 0x{:08X}) in attached cell 0x{:08X} on {} (active run {}) at {:.0f},{:.0f},{:.0f}: {}.",
+                    actor->GetFormID(), actor->GetBaseObject()->GetFormID(), cellId, when, activeRunId, pos.x, pos.y, pos.z,
+                    DescribeSpawnEngineState(actor.get()));
+                ids.push_back(actor->GetFormID());
+            }
+            // 기여 기록만 지운다. 바닥 드랍은 지우지 않는다: DiscardDropsFromCorpses는 그 셀에 있는 추적 드랍을 모두 지워
+            // 지금 회차의 드랍까지 없앤다(Codex 검토). 남은 액터의 회차 드랍은 그 회차를 닫을 때 이미 지웠다.
+            DeathListener::ForgetKillRecords(ids);
+            DisableSpawnTally tally;
+            std::vector<RE::FormID> requested;
+            for (const auto id : ids) {
+                // 회차 번호 0: 어느 회차에서 남았는지 알 수 없는 정리. 삭제 대기는 원형과 셀로 다시 확인한다.
+                const auto result = DisableMapSpawnOnMainThread(id, 0, cellId, templateIds);
+                tally.Add(result, id);
+                if (result == DisableSpawnResult::Requested) {
+                    requested.push_back(id);
+                }
+            }
+            {
+                std::scoped_lock lk(g_mutex);
+                for (const auto id : requested) {
+                    if (std::ranges::find(g_sweepDisableRequested, id) == g_sweepDisableRequested.end()) {
+                        g_sweepDisableRequested.push_back(id);
+                    }
+                }
+            }
+            g_leftoverSweepCleaned.fetch_add(requested.size(), std::memory_order_relaxed);
+            SKSE::log::warn("MapDeviceRuntime: swept {} leftover map actor(s) in cell 0x{:08X} on {} (disable requested {}): {}.",
+                ids.size(), cellId, when, requested.size(), tally.Describe());
+            return !bossDeferred;
         }
 
         void SpawnMapEncounterOnMainThread(RE::PlayerCharacter* player)
@@ -1423,6 +1676,7 @@ namespace SkyrimPoE::Runtime
 
             SKSE::log::info("MapDeviceRuntime: spawned {} actor(s) (boss=0x{:08X}, arena4={}, T{}, rewardLv={}).",
                 spawnedCount, bossId, snap.isArena4, snap.tier, Core::MapSystem::RewardMonsterLevel(snap));
+            (void)SweepLeftoverSpawnsInCell(dungeon ? dungeon->cellId : 0, "spawn");
         }
 
         void EndRunOnMainThread()
@@ -2230,6 +2484,7 @@ namespace SkyrimPoE::Runtime
         std::uint64_t bossCheckRunId = 0;
         RE::FormID bossCheckFormId = 0;
         bool stableRunCell = false;
+        RE::FormID leftoverSweepCell = 0;
         const Core::MapDungeonDef* fallDungeon = nullptr;
         std::vector<std::pair<RE::FormID, std::uint64_t>> resetCandidates;
         {
@@ -2252,6 +2507,7 @@ namespace SkyrimPoE::Runtime
             }
             if (observation.loading) {
                 g_lastObservedCell = 0;
+                g_leftoverSweptCell = 0;
             }
             if (g_endCheckAfterLoad && !observation.loading && observation.cell != 0) {
                 // 결정 175: 불러온 직후 셀을 못 읽었던 회차의 종료 판단을 셀이 확인된 뒤에 한다.
@@ -2282,17 +2538,34 @@ namespace SkyrimPoE::Runtime
                     g_fallRecoveryCooldownSec = std::max(0.0, g_fallRecoveryCooldownSec - deltaSec);
                     AdvanceCellResetTimersLocked(deltaSec);
                 }
+                if (cellStable && !observation.inPackCell) {
+                    // 지도 팩 밖에서 관측되면 앞선 낙하 복귀의 이동(안전 탈출·포털 귀환)은 끝났다. 대기 시간은 로딩 중
+                    // 줄지 않으므로, 다시 들어와 곧바로 떨어지면 남은 대기 때문에 판정을 건너뛰었다(2026-11-23 실행 11 H27).
+                    g_fallRecoveryCooldownSec = 0.0;
+                    g_fallRecoveryStreak = 0;
+                    g_fallSkipLogged = false;
+                    g_leftoverSweptCell = 0;
+                }
                 if (cellStable && observation.inPackCell) {
                     const auto* dungeon = MapPackRuntime::FindDungeonByCell(observation.cell);
                     belowMap = dungeon && Core::HasFallenBelowMap(observation, dungeon->navmeshMinZ, g_travelSettings.fallMargin);
+                    const bool deathEscaping = g_deathEscapeRunId.load(std::memory_order_acquire) != 0;
                     if (!belowMap) {
                         g_fallRecoveryStreak = 0;
-                    } else if (!pending && g_fallRecoveryCooldownSec == 0.0 &&
-                               g_deathEscapeRunId.load(std::memory_order_acquire) == 0) {
+                        g_fallSkipLogged = false;
+                    } else if (!pending && g_fallRecoveryCooldownSec == 0.0 && !deathEscaping) {
                         fallDungeon = dungeon;
                         fallAuthorized = access.inActiveMap;
                         fallUsePortal = ++g_fallRecoveryStreak >= 2;
                         g_fallRecoveryCooldownSec = kFallRecoveryCooldownSec;
+                        g_fallSkipLogged = false;
+                        SKSE::log::info("MapDeviceRuntime: fell below {} at Z={:.1f} (threshold {:.1f}); recovering (authorized={}, portal={}).",
+                            dungeon->key, observation.position[2], dungeon->navmeshMinZ - g_travelSettings.fallMargin,
+                            fallAuthorized, fallUsePortal);
+                    } else if (!g_fallSkipLogged) {
+                        g_fallSkipLogged = true;
+                        SKSE::log::info("MapDeviceRuntime: fell below {} at Z={:.1f} but recovery waits (travelPending={}, cooldown={:.2f}s, deathEscape={}).",
+                            dungeon->key, observation.position[2], pending.has_value(), g_fallRecoveryCooldownSec, deathEscaping);
                     }
                 }
                 if (const auto escapeRunId = g_deathEscapeRunId.load(std::memory_order_acquire); escapeRunId != 0) {
@@ -2311,11 +2584,21 @@ namespace SkyrimPoE::Runtime
                 }
                 shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !belowMap && !g_spawnedForCurrentRun &&
                     g_pendingSpawnRunId != 0 && g_pendingSpawnRunId == g_activeMap.runId;
+                // 남은 스폰 청소는 이동이 시작되지 않을 때만 한다. Disable은 작업 풀 예약이라, 같은 틱에 이동(낙하 복귀·안전 탈출·
+                // 사망 귀환)이 걸리면 셀이 떨어진 뒤 실행될 수 있다(결정 178 ⑥과 같은 위험). 청소를 마친 뒤에 그 셀을 기록한다.
+                if (cellStable && observation.inPackCell && observation.cell != g_leftoverSweptCell && !pending && !belowMap &&
+                    !fallDungeon && !escapeDamagedRun && g_deathEscapeRunId.load(std::memory_order_acquire) == 0) {
+                    leftoverSweepCell = observation.cell;
+                }
             }
         }
 
         if (accessChanged) {
             SyncMapLayer2ToStatEngine();
+        }
+        if (leftoverSweepCell != 0 && SweepLeftoverSpawnsInCell(leftoverSweepCell, "entry")) {
+            std::scoped_lock lk(g_mutex);
+            g_leftoverSweptCell = leftoverSweepCell;
         }
         if (atlasDamaged) {
             ShowAtlasDamageOnMainThread();
@@ -2531,6 +2814,11 @@ namespace SkyrimPoE::Runtime
     double MapDeviceRuntime::GetFallMargin() noexcept
     {
         return g_travelSettings.fallMargin;
+    }
+
+    std::size_t MapDeviceRuntime::GetLeftoverSweepCleanedCount() noexcept
+    {
+        return g_leftoverSweepCleaned.load(std::memory_order_relaxed);
     }
 
     std::size_t MapDeviceRuntime::GetFallRecoveryCount()
@@ -3044,6 +3332,10 @@ namespace SkyrimPoE::Runtime
         g_queue->EnqueueForGeneration(generation, [runId]() {
             ExecuteDeathEscapeOnMainThread(runId);
         });
+        // 무엇이 사망 귀환을 일으켰는지 남긴다(실행 15의 H4는 시험이 피해를 보내기 전에 이미 귀환 중이었다). 사망 귀환을 새로
+        // 접수할 때만 닿는다(귀환이 실패하거나 팩 밖에서 표시가 풀리면 같은 회차에서 다시 닿을 수 있다).
+        SKSE::log::info("MapDeviceRuntime: death escape requested for run {} (attacker=0x{:08X}, health={:.1f}, damage={:.1f}).",
+            runId, attackerId, curHp, effectiveDamage);
         return true;
     }
 
@@ -3429,6 +3721,9 @@ namespace SkyrimPoE::Runtime
             g_fallRecoveryCooldownSec = 0.0;
             g_fallRecoveryStreak = 0;
             g_lastObservedCell = 0;
+            g_leftoverSweptCell = 0;
+            g_sweepDisableRequested.clear();
+            g_fallSkipLogged = false;
             g_endCheckAfterLoad = false;
         }
 
@@ -3557,6 +3852,9 @@ namespace SkyrimPoE::Runtime
         g_fallRecoveryCooldownSec = 0.0;
         g_fallRecoveryStreak = 0;
         g_lastObservedCell = 0;
+        g_leftoverSweptCell = 0;
+        g_sweepDisableRequested.clear();
+        g_fallSkipLogged = false;
         g_endCheckAfterLoad = false;
         g_atlasDamagedAfterLoad = false;
         g_runDamagedAfterLoad = false;

@@ -493,6 +493,28 @@ namespace SkyrimPoE::Core
             runCellId != 0 && runCellId == observed.cellId;
     }
 
+    bool MapSystem::IsLeftoverMapSpawn(std::uint32_t sweptCellId, bool cellAttached,
+        std::span<const std::uint32_t> templateIds, std::span<const std::uint32_t> currentRunIds,
+        const MapLeftoverObservation& observed) noexcept
+    {
+        constexpr std::uint32_t kDynamicFormMask = 0xFF000000u;
+        if (!cellAttached || sweptCellId == 0 || observed.cellId != sweptCellId || !observed.isActor || observed.isPlayer ||
+            observed.isFollowerOrCommanded ||
+            observed.isDeleted || observed.isDisabled || (observed.formId & kDynamicFormMask) != kDynamicFormMask ||
+            observed.actorBaseId == 0) {
+            return false;
+        }
+        const auto contains = [](std::span<const std::uint32_t> ids, std::uint32_t id) {
+            for (const auto candidate : ids) {
+                if (candidate == id) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        return contains(templateIds, observed.actorBaseId) && !contains(currentRunIds, observed.formId);
+    }
+
     bool MapSystem::ShouldGuaranteeFirstTribute(bool activeRun, bool isMapBoss, bool rewardBlocked,
         std::uint8_t dropMapTier, bool firstTributeGiven) noexcept
     {

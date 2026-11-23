@@ -30,6 +30,20 @@ namespace SkyrimPoE::Core
         std::uint32_t cellId = 0;
     };
 
+    // 결정 178 ⑦ 보완: 셀이 다시 붙었을 때 앞선 회차의 지도 스폰이 남아 있는지 보려고 셀의 참조 하나를 관찰한 값.
+    struct MapLeftoverObservation
+    {
+        bool isActor = false;
+        bool isPlayer = false;
+        // 플레이어 동료나 지휘받는 액터(다른 모드가 데려온 같은 원형 NPC일 수 있음)는 남은 스폰으로 보지 않는다.
+        bool isFollowerOrCommanded = false;
+        bool isDeleted = false;
+        bool isDisabled = false;
+        std::uint32_t formId = 0;
+        std::uint32_t actorBaseId = 0;
+        std::uint32_t cellId = 0;
+    };
+
     inline constexpr double kMapBossMissingSec = 10.0;
 
     struct MapBossLossObservation
@@ -190,6 +204,12 @@ namespace SkyrimPoE::Core
         [[nodiscard]] static bool IsRunDrop(std::uint32_t corpseId, std::span<const std::uint32_t> spawnedRefIds) noexcept;
         [[nodiscard]] static bool CanDeleteMapSpawn(std::uint32_t actorBaseId, std::uint32_t runCellId,
             const MapSpawnDeletionObservation& observed) noexcept;
+        // 결정 178 ⑦ 보완(2026-11-23 사용자 확인): 붙지 않은 셀이라 끄지 않고 남긴 스폰 가운데 셀 초기화 뒤에도 살아 남은 것을,
+        // 셀이 다시 붙었을 때 찾는다. 붙은 그 셀에 있는, 지워지지도 꺼지지도 않은 동적(FF) 액터 가운데 그 던전의 스폰 원형이고
+        // 지금 회차에 등록되지 않은 것만 남은 스폰으로 본다.
+        [[nodiscard]] static bool IsLeftoverMapSpawn(std::uint32_t sweptCellId, bool cellAttached,
+            std::span<const std::uint32_t> templateIds, std::span<const std::uint32_t> currentRunIds,
+            const MapLeftoverObservation& observed) noexcept;
         [[nodiscard]] static bool ShouldGuaranteeFirstTribute(bool activeRun, bool isMapBoss, bool rewardBlocked,
             std::uint8_t dropMapTier, bool firstTributeGiven) noexcept;
 
