@@ -221,6 +221,63 @@ POE_TEST("Map fall requires a pack cell and a height strictly below the threshol
     POE_CHECK(!HasFallenBelowMap(player, minimumZ, margin));
 }
 
+// 결정 177 ③ 재보완: 출구 구역은 자동 출구 자리 중심의 3차원 구이고, 경계에 닿은 것(거리 == 반경)은 아직 밖이다.
+POE_TEST("Map exit zone uses a 3D sphere around each automatic exit and picks the nearest")
+{
+    const std::array<MapAutoExit, 2> exits{ {
+        { 0x81A, { 1000.0f, 0.0f, 0.0f }, 0.0f },
+        { 0x81B, { 0.0f, 1000.0f, 300.0f }, 0.0f },
+    } };
+    auto player = kAtEntrance;
+    player.position = { 1000.0f, 0.0f, 0.0f };
+    auto hit = FindExitZoneHit(player, exits, 350.0);
+    POE_CHECK(hit && hit->index == 0 && hit->distance == 0.0);
+    player.position = { 1000.0f - 349.0f, 0.0f, 0.0f };
+    POE_CHECK(FindExitZoneHit(player, exits, 350.0).has_value());
+    player.position = { 1000.0f - 350.0f, 0.0f, 0.0f };
+    POE_CHECK(!FindExitZoneHit(player, exits, 350.0));
+    // 높이 차도 거리에 들어간다(pinemoon 걷기 실측: 수평 329, 높이 108 → 약 346).
+    player.position = { 1000.0f - 329.0f, 0.0f, 108.0f };
+    hit = FindExitZoneHit(player, exits, 350.0);
+    POE_CHECK(hit && hit->distance > 340.0 && hit->distance < 350.0);
+    player.position = { 1000.0f - 200.0f, 0.0f, 300.0f };
+    POE_CHECK(!FindExitZoneHit(player, exits, 350.0));
+    // 두 구에 모두 들면 가까운 출구
+    player.position = { 550.0f, 650.0f, 150.0f };
+    const auto both = FindExitZoneHit(player, exits, 1000.0);
+    POE_CHECK(both && both->index == 1);
+    // 팩 밖, 반경 없음, 좌표가 유한하지 않으면 판정하지 않는다.
+    player.position = { 1000.0f, 0.0f, 0.0f };
+    player.inPackCell = false;
+    POE_CHECK(!FindExitZoneHit(player, exits, 350.0));
+    player.inPackCell = true;
+    POE_CHECK(!FindExitZoneHit(player, exits, 0.0));
+    POE_CHECK(!FindExitZoneHit(player, exits, std::numeric_limits<double>::quiet_NaN()));
+    POE_CHECK(!FindExitZoneHit(player, std::span<const MapAutoExit>{}, 350.0));
+    player.position[0] = std::numeric_limits<float>::infinity();
+    POE_CHECK(!FindExitZoneHit(player, exits, 350.0));
+}
+
+POE_TEST("Map exit zone latch holds within the same pack cell until the cell changes")
+{
+    auto player = kAtEntrance;
+    player.cell = 0xC2008800;
+    POE_CHECK(NextExitZoneLatch(0, player, false) == 0);
+    POE_CHECK(NextExitZoneLatch(0, player, true) == 0xC2008800);
+    // 거절 대기 중 구를 지나쳐 나가도 같은 셀이면 유지
+    POE_CHECK(NextExitZoneLatch(0xC2008800, player, false) == 0xC2008800);
+    // 다른 지도 팩 셀이면 잊고, 그 셀의 구역에 들면 그 셀로
+    player.cell = 0xC2002800;
+    POE_CHECK(NextExitZoneLatch(0xC2008800, player, false) == 0);
+    POE_CHECK(NextExitZoneLatch(0xC2008800, player, true) == 0xC2002800);
+    // 팩 밖이나 셀을 모르면 잊는다
+    player.inPackCell = false;
+    POE_CHECK(NextExitZoneLatch(0xC2002800, player, true) == 0);
+    player.inPackCell = true;
+    player.cell = 0;
+    POE_CHECK(NextExitZoneLatch(0xC2002800, player, true) == 0);
+}
+
 POE_TEST("Map fall margin INI accepts its bounds and defaults on invalid values")
 {
     POE_CHECK(LoadConfigFromString("[Maps]\n").mapTravel.fallMargin == 512.0);

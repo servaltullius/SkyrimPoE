@@ -155,10 +155,20 @@ string(JSON format_type ERROR_VARIABLE format_error TYPE "${json}" manifestForma
 if(NOT format_error)
     string(JSON format ERROR_VARIABLE format_error GET "${json}" manifestFormat)
 endif()
-if(format_error OR NOT format_type STREQUAL "NUMBER" OR NOT format STREQUAL "3")
-    message(FATAL_ERROR "지도 목록 형식 3이 필요합니다: ${manifest}")
+if(format_error OR NOT format_type STREQUAL "NUMBER" OR NOT format STREQUAL "4")
+    message(FATAL_ERROR "지도 목록 형식 4가 필요합니다: ${manifest}")
 endif()
-# 형식 3: 던전마다 숫자 navmeshMinZ가 있어야 런타임이 팩을 받는다(결정 177 ③).
+# 형식 4: 최상위 숫자 exitZoneRadius(결정 177 ③ 재보완)가 있어야 런타임이 팩을 받는다.
+string(JSON radius_type ERROR_VARIABLE radius_error TYPE "${json}" exitZoneRadius)
+if(radius_error OR NOT radius_type STREQUAL "NUMBER")
+    message(FATAL_ERROR "지도 목록에 숫자 exitZoneRadius가 없습니다: ${manifest}")
+endif()
+# 런타임(core/MapPack.h kMaxExitZoneRadius)과 같은 범위여야 설치 뒤 팩 전체가 거부되지 않는다.
+string(JSON radius GET "${json}" exitZoneRadius)
+if(NOT radius GREATER 0 OR radius GREATER 10000)
+    message(FATAL_ERROR "지도 목록의 exitZoneRadius(${radius})는 0보다 크고 10000 이하여야 합니다: ${manifest}")
+endif()
+# 형식 3부터: 던전마다 숫자 navmeshMinZ가 있어야 런타임이 팩을 받는다(결정 177 ③).
 string(JSON dungeon_count ERROR_VARIABLE dungeons_error LENGTH "${json}" dungeons)
 if(dungeons_error OR dungeon_count EQUAL 0)
     message(FATAL_ERROR "지도 목록의 dungeons를 읽지 못했습니다: ${manifest}")

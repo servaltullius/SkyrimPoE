@@ -5,9 +5,9 @@
 #include <filesystem>
 #include <fstream>
 
-POE_TEST("Map pack keeps automatic exit probe positions and rotation from format 3")
+POE_TEST("Map pack keeps automatic exit positions, rotation and the exit zone radius from format 4")
 {
-    std::ifstream input(std::filesystem::path(POE_TEST_PLUGIN_DIR) / "tests" / "maps_format3.json");
+    std::ifstream input(std::filesystem::path(POE_TEST_PLUGIN_DIR) / "tests" / "maps_format4.json");
     POE_CHECK(input.is_open());
     const auto pack = SkyrimPoE::Core::ParseMapManifest(input);
 

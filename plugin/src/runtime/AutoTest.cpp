@@ -47,6 +47,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+
+// 걷기 탐침이 게임 창이 앞에 있는지 보려고 쓴다. CommonLib의 REX 선언 방식을 따른다(Windows 헤더를 넣지 않음).
+REX_W32_IMPORT(REX::W32::HWND, GetForegroundWindow);
 #include <vector>
 
 namespace SkyrimPoE::Runtime
@@ -96,6 +99,8 @@ namespace SkyrimPoE::Runtime
             bool quitWhenDone = true;
             bool consumeMarker = true;
             double globalTimeoutSec = kDefaultAutoTestTimeoutSec;
+            // 조사용 단축 실행. "h27"이면 기준 세이브를 불러온 뒤 곧바로 경로 탐침(H26·H27)만 돌고 끝낸다(앞 시나리오 상태 없이).
+            bool routeOnly = false;
         };
 
         enum class Phase : std::uint8_t
@@ -429,8 +434,9 @@ namespace SkyrimPoE::Runtime
         constexpr auto kHFreshRunCheck = "H25_FreshRunAfterCellReset";
         constexpr auto kHBossRouteCheck = "H26_BossAnchorLanding";
         constexpr auto kHExitRouteCheck = "H27_AutoExitFallProbes";
+        constexpr auto kHExitZoneReturnCheck = "H28_ExitZonePortalReturn";
         constexpr std::size_t kOriginalHCheckCount = 17;
-        constexpr std::array<std::string_view, kOriginalHCheckCount + 13> kHChecks = {
+        constexpr std::array<std::string_view, kOriginalHCheckCount + 14> kHChecks = {
             "H1_Stage6Esp192FormsAndMapKey", "H2_MapCraftingAndItemLevel", kHAffixCheck, kHDungeonCheck,
             kHOutdoorReturnCheck, "H5_MapReenterBossKillAndAtlasPoint", kHArenaCheck,
             "H7_MapsAndTreeCosaveRoundTrip", kHArenaCosaveCheck, "H8_SafeUninstallCleanupAndNoReapply",
@@ -438,7 +444,7 @@ namespace SkyrimPoE::Runtime
             "H12_Arena4Prerequisites", kHBypassCheck, kHCompanionCheck, "H14_MapBossWithoutContribution",
             kHPortalCheck, kHNormalReturnCheck, kHLastPortalCheck, kHArenaDeathCheck, kHPhysicalBurstCheck,
             kHMagicBurstCheck, kHIniOffCheck, kHOpenWorldCheck, kHCleanupCheck, kHReentrySpawnsCheck,
-            kHFreshRunCheck, kHBossRouteCheck, kHExitRouteCheck
+            kHFreshRunCheck, kHBossRouteCheck, kHExitRouteCheck, kHExitZoneReturnCheck
         };
         std::array<bool, kHChecks.size()> g_hChecksReported{};
         std::optional<bool> g_hDeathInterceptBefore;
@@ -514,7 +520,7 @@ namespace SkyrimPoE::Runtime
         constexpr double kArenaPhase3InvulnerabilityWaitSec = 8.0;
         // 셀이 떨어진 뒤 보내고 VM 콜백까지 기다린다(콜백 시간 초과 10초로 다시 보내는 경우 포함).
         constexpr double kMapResetWaitSec = 60.0;
-        constexpr int kExpectedAutoTestChecks = 80;  // A~F 45건, G 5건, H 30건
+        constexpr int kExpectedAutoTestChecks = 81;  // A~F 45건, G 5건, H 31건
         static_assert(kExpectedAutoTestChecks == 50 + kHChecks.size());
         RE::FormID g_hMapCellId = 0;
         std::size_t g_hResetCountBeforeMap = 0;
@@ -947,6 +953,10 @@ namespace SkyrimPoE::Runtime
         void ReportMissingHChecks(const std::string& reason)
         {
             for (std::size_t i = 0; i < kHChecks.size(); ++i) {
+                const std::string_view name = kHChecks[i];
+                if (g_cfg.routeOnly && name != kHBossRouteCheck && name != kHExitRouteCheck) {
+                    continue;
+                }
                 if (!g_hChecksReported[i]) {
                     Check(kHChecks[i], false, std::format("Skipped in {}. {}", PhaseName(g_phase), reason));
                 }
@@ -1035,10 +1045,13 @@ namespace SkyrimPoE::Runtime
                 LogInfo(reason);
             }
             // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
-            const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == kExpectedAutoTestChecks;
+            // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
+            const int expectedChecks = g_cfg.routeOnly ? 2 : kExpectedAutoTestChecks;
+            const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
             const auto summary = std::format(
-                "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={} ===",
-                g_passCount, kExpectedAutoTestChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL");
+                "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={}{} ===",
+                g_passCount, expectedChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL",
+                g_cfg.routeOnly ? " (route-only investigation run)" : "");
             SKSE::log::info("AutoTest {}", summary);
             if (g_report.is_open()) {
                 g_report << summary << '\n';
@@ -1194,6 +1207,14 @@ namespace SkyrimPoE::Runtime
                     out.quitWhenDone = ParseBool(val, out.quitWhenDone);
                 } else if (key == "consume_marker") {
                     out.consumeMarker = ParseBool(val, out.consumeMarker);
+                } else if (key == "only") {
+                    const auto mode = ToLowerAscii(val);
+                    if (mode == "h27") {
+                        out.routeOnly = true;
+                    } else if (!mode.empty()) {
+                        SKSE::log::error("AutoTest: unknown only='{}' in the marker; supported: h27.", mode);
+                        return false;
+                    }
                 } else if (key == "timeout_sec") {
                     try {
                         const double sec = std::stod(val);
@@ -1244,6 +1265,71 @@ namespace SkyrimPoE::Runtime
                 ui && ui->IsMenuOpen(RE::FaderMenu::MENU_NAME),
                 travel.kind ? static_cast<int>(*travel.kind) : -1, travel.inPackCell, cell ? cell->GetFormID() : 0u,
                 pos.x, pos.y, pos.z, MapDeviceRuntime::GetFallRecoveryCount());
+        }
+
+        // 안전 탈출의 고정 도착 마커(화이트런 마구간 착지, Tamriel) 근처에 있는지. H9와 H27이 같은 판정을 쓴다.
+        struct HSafeEscapeArrival
+        {
+            bool inTamriel = false;
+            double distance = -1.0;
+            [[nodiscard]] bool AtMarker() const noexcept
+            {
+                return inTamriel && distance >= 0.0 && distance <= MapDeviceRuntime::GetTravelArrivalRadius();
+            }
+        };
+
+        HSafeEscapeArrival ObserveHSafeEscapeArrival(RE::PlayerCharacter* player)
+        {
+            constexpr RE::FormID kWhiterunStablesLanding = 0x0007287B;
+            constexpr RE::FormID kTamriel = 0x0000003C;
+            HSafeEscapeArrival arrival;
+            const auto* marker = RE::TESForm::LookupByID<RE::TESObjectREFR>(kWhiterunStablesLanding);
+            const auto* world = player ? player->GetWorldspace() : nullptr;
+            arrival.inTamriel = world && world->GetFormID() == kTamriel;
+            if (marker && player) {
+                arrival.distance = (player->GetPosition() - marker->GetPosition()).Length();
+            }
+            return arrival;
+        }
+
+        // 게임 창이 앞에 있는지. 다른 창이 앞에 있으면 자동 이동 입력이 이동으로 이어지지 않았다(전체 시험 2026-11-24).
+        // 엔진의 활성 표시(Main의 gameActive)가 실제 포커스를 따라가는지는 확인하지 못했으므로, 운영체제의 전면 창이 게임 창인지도 함께 본다.
+        struct GameWindowState
+        {
+            bool engineActive = false;
+            bool foreground = false;
+            [[nodiscard]] bool InFront() const noexcept { return engineActive && foreground; }
+        };
+
+        GameWindowState GetGameWindowState()
+        {
+            GameWindowState state;
+            if (const auto* main = RE::Main::GetSingleton()) {
+                state.engineActive = main->GetRuntimeData().gameActive;
+                state.foreground = main->wnd != nullptr && W32_IMPL_GetForegroundWindow() == main->wnd;
+            }
+            return state;
+        }
+
+        // 걷기 탐침 진단: 카메라·방향·자동 이동·조작 상태. 전체 시험 2026-11-24에서 걷기가 문 쪽으로 가지 않은 원인을 가르려고 남긴다.
+        std::string DescribeHWalkState(RE::PlayerCharacter* player, float walkYaw)
+        {
+            const auto* camera = RE::PlayerCamera::GetSingleton();
+            const auto* cameraState = camera ? camera->currentState.get() : nullptr;
+            const auto* controls = RE::PlayerControls::GetSingleton();
+            const auto* controlMap = RE::ControlMap::GetSingleton();
+            const auto* actorState = player ? player->AsActorState() : nullptr;
+            const auto window = GetGameWindowState();
+            return std::format(
+                "window(engineActive={}, foreground={}), camera(state={}, firstPerson={}, thirdPerson={}), heading={:.3f}, walkYaw={:.3f}, autoMove={}, "
+                "controls(movement={}, looking={}), moving={}, running={}, sneaking={}, weaponDrawn={}, aiEnabled={}",
+                window.engineActive, window.foreground,
+                cameraState ? static_cast<int>(cameraState->id) : -1, camera && camera->IsInFirstPerson(),
+                camera && camera->IsInThirdPerson(), player ? player->GetAngleZ() : 0.0f, walkYaw,
+                controls && controls->data.autoMove, controlMap && controlMap->IsMovementControlsEnabled(),
+                controlMap && controlMap->IsLookingControlsEnabled(), player && player->IsMoving(),
+                player && player->IsRunning(), player && player->IsSneaking(), actorState && actorState->IsWeaponDrawn(),
+                player && player->IsAIEnabled());
         }
 
         // 이동이 끝난 뒤 스폰·상태 반영을 기다리는 여유. 이동 요청이 실패로 사라졌으면 상한까지 기다리지 않는다.
@@ -1952,6 +2038,22 @@ namespace SkyrimPoE::Runtime
         // 출구 탐침은 떨어진 뒤 낙하 복귀나 착지까지 지켜봐야 하므로 더 길게 본다.
         constexpr double kHRouteExitProbeSec = 20.0;
         constexpr float kHRouteLandingStableZ = 1.0f;
+        // 같은 셀 안의 위치 변경은 이 거리 안에서만 한다. 입구에서 약 8300유닛을 한 번에 옮기자 로딩 화면 없이 Mist·Fader가 열려
+        // 닫히지 않았다(실행 22). 더 멀면 먼저 내비메쉬 위의 접근 자리로 엔진 이동을 한 뒤 짧게 옮긴다.
+        constexpr float kHRouteShortHop = 1000.0f;
+        // 로딩 화면 없이 Mist·Fader가 이만큼 열려 있으면 엔진 연출이 멈춘 것으로 보고 닫는다(실행 15·19·21·22).
+        constexpr double kHRouteMistStallSec = 5.0;
+        // 걷기 탐침이 접근 자리에서 문 쪽으로 걷는 최대 시간과, 접근 자리에 섰다고 보는 거리.
+        constexpr double kHRouteWalkSec = 12.0;
+        constexpr float kHRouteWalkStartRadius = 64.0f;
+        // 게임 창이 뒤에 있으면 엔진이 자동 이동 입력을 이동으로 바꾸지 않았다(전체 시험 2026-11-24, 사용자가 다른 창 사용).
+        // 그때는 위치를 문 쪽으로 조금씩 옮긴다(사용자 결정 "창이 뒤면 위치 이동"). 출구 구역 판정은 같고, 벽·지형 충돌은 보지 않는다.
+        // 위치 이동 속도(유닛/초). 플레이어 달리기 속도 정도로 둔다. 한 틱 이동량이 낙하 복귀의 순간이동 판정에 걸리지 않을 만큼 작다.
+        constexpr float kHRouteWalkStepSpeed = 250.0f;
+        // 접근 자리는 출구 구역(목록의 exitZoneRadius) 밖에 이만큼 더 떨어진 걸을 수 있는 자리여야 한다(결정 177 ③ 재보완).
+        constexpr float kHRouteApproachZoneClearance = 150.0f;
+        // H28: 포털 시험의 몇 번째 입장 뒤 귀환을 출구 구역으로 하는지(나머지 귀환은 직접 포털 귀환).
+        constexpr std::size_t kHExitZoneReturnEntry = 1;
         constexpr float kHContractLowHealth = 2.0f;
         constexpr float kHContractMagicMagnitude = 1000.0f;
         constexpr float kHContractMagicEffectiveness = 1.0f;
@@ -1993,10 +2095,11 @@ namespace SkyrimPoE::Runtime
             }
         };
 
-        // 결정 177 ③(낙하 복귀, 2026-11-23 사용자 확인): 자동 출구 너머는 빈 공간일 수 있고 떨어지면 낙하 복귀가 받는다.
-        // Boss: 보스 앵커에 서 있어야 함. Approach: 출구에서 가장 가까운 걸을 수 있는 내비메쉬 삼각형(셀에 들어간 뒤 계산)에
-        // 서 있어야 함. Exit: 출구 자리와 그 앞뒤. 서 있거나, 떨어지면 낙하 복귀로 입구에 돌아오거나 문턱 위 바닥에 멈춰야 함.
-        enum class HRouteKind { Boss, Approach, Exit };
+        // 결정 177 ③과 재보완(2026-11-24 사용자 확정 "구역 판정으로"): 출구는 런타임 출구 구역이 판정한다.
+        // Boss: 보스 앵커에 서 있어야 함. Approach: 출구 구역 밖에서 가장 가까운 걸을 수 있는 내비메쉬 삼각형(셀에 들어간 뒤 계산)에
+        // 서 있어야 함. Walk: 접근 자리에서 문 쪽으로 걸어 출구 구역이 안전 탈출을 걸어야 함. Exit: 출구 자리와 그 앞뒤(구역 안).
+        // 출구 구역이 안전 탈출을 걸어야 함.
+        enum class HRouteKind { Boss, Approach, Exit, Walk };
 
         struct HRouteSpot
         {
@@ -2127,6 +2230,43 @@ namespace SkyrimPoE::Runtime
             std::optional<float> routeRecoveryZ;
             double routeRecoveryStableSec = 0.0;
             std::size_t fallRecoveryBefore = 0;
+            // 먼 출구로 가려고 접근 자리로 엔진 이동을 요청했는지(같은 탐침 안에서 한 번).
+            bool routeStaged = false;
+            // 로딩 화면 없이 Mist·Fader가 열린 시각, 닫아 준 횟수, 그 때문에 다시 시도한 탐침 번호.
+            std::optional<Clock::time_point> routeMistSince;
+            std::size_t routeMistStalls = 0;
+            std::optional<std::size_t> routeRetriedIndex;
+            // 걷기 탐침의 방향(라디안)과 통과 수.
+            float walkYaw = 0.0f;
+            std::size_t walkSpotsPassed = 0;
+            // 걷기 탐침 동안 자동 이동을 건 틱(준비됨)과 걸지 못한 틱(준비 안 됨) 수. 실패 진단에 남긴다.
+            std::size_t walkReadyTicks = 0;
+            std::size_t walkNotReadyTicks = 0;
+            // 걷기 탐침이 1인칭·자동 이동을 건 뒤 아직 풀지 않았는지
+            bool walkActive = false;
+            // 걷기 탐침: 준비된 상태로 자동 이동을 건 시간, 시작 위치, 위치 이동 방식으로 바꿨는지와 그 출발점·누적 거리, 바꾼 걷기 수
+            double walkReadySec = 0.0;
+            // 걷기 탐침의 게임 시간(틱의 deltaSec 합). 시간 초과는 실제 시간이 아니라 이것으로 본다(창이 뒤에서 멈춰 있던 시간 제외).
+            double walkTickSec = 0.0;
+            // 출구 구역이 안전 탈출을 건 탐침 뒤, 실제로 고정 도착 마커에 닿았는지(Codex 검토 2026-11-24: 요청만으로 통과를 세지 않음).
+            bool routeEscapeExpected = false;
+            std::size_t routeEscapeArrived = 0;
+            std::size_t routeEscapeMissed = 0;
+            bool walkStepMode = false;
+            RE::NiPoint3 walkStepFrom;
+            float walkStepDistance = 0.0f;
+            std::size_t walkStepped = 0;
+            // 결정 177 ③ 재보완: 탐침을 놓기 전의 출구 구역 이동 수, 경로 탐침 동안 로딩 없이 Mist·Fader가 열린 횟수(엔진 자동 문 발동의
+            // 흔적, 0이어야 함), 경로 탐침 시작 때의 "켜져 있던 출구 문을 다시 끈 수".
+            std::size_t exitZoneBefore = 0;
+            bool routeMistOpen = false;
+            std::size_t routeMistOpenings = 0;
+            std::size_t exitDoorReenabledBefore = 0;
+            // H28: 출구 구역으로 귀환시키는 중인지와 그 전의 출구 구역 이동 수
+            bool exitZoneReturnPending = false;
+            std::size_t exitZoneReturnBefore = 0;
+            // 걷기 탐침이 1인칭으로 바꾸기 전 3인칭이었는지(경로 탐침이 끝나면 되돌림)
+            bool routeRestoreThirdPerson = false;
             // 정리 시험을 시작할 때의 남은 스폰 청소 누적 수(결정 178 ⑦ 보완). 셀 초기화가 놓친 액터를 제품이 치운 횟수를 보고한다.
             std::size_t leftoverSweepBefore = 0;
         };
@@ -2191,6 +2331,13 @@ namespace SkyrimPoE::Runtime
 
         void AbortHContract(const std::string& reason)
         {
+            // 걷기 탐침 도중에 중단되면 자동 이동과 1인칭이 남지 않게 한다(quit=false로 게임이 계속되는 경우).
+            if (auto* controls = RE::PlayerControls::GetSingleton(); controls && controls->data.autoMove) {
+                controls->data.autoMove = false;
+            }
+            if (auto* camera = RE::PlayerCamera::GetSingleton(); camera && std::exchange(g_hContract.routeRestoreThirdPerson, false)) {
+                (void)camera->ForceThirdPerson();
+            }
             g_runError = true;
             LogInfo(reason);
             FinishAndScheduleQuit(reason);
@@ -2448,9 +2595,9 @@ namespace SkyrimPoE::Runtime
             EnterHContract(HContractStage::RecoverCleanup);
         }
 
-        // 자동 출구에서 수평으로 가장 가까운 걸을 수 있는 내비메쉬 삼각형의 중심(높이 차 kHRouteApproachMaxDz 이하).
-        // 셀이 붙어 있어야 내비메쉬가 메모리에 있다.
-        std::optional<RE::NiPoint3> FindExitApproachPoint(RE::TESObjectCELL* cell, const RE::NiPoint3& door)
+        // 자동 출구에서 수평으로 가장 가까운 걸을 수 있는 내비메쉬 삼각형의 중심(높이 차 kHRouteApproachMaxDz 이하이고,
+        // 문에서 3차원으로 minDistance 이상: 출구 구역 밖). 셀이 붙어 있어야 내비메쉬가 메모리에 있다.
+        std::optional<RE::NiPoint3> FindExitApproachPoint(RE::TESObjectCELL* cell, const RE::NiPoint3& door, float minDistance)
         {
             auto* navMeshes = cell ? cell->GetRuntimeData().navMeshes : nullptr;
             if (!navMeshes) {
@@ -2474,7 +2621,8 @@ namespace SkyrimPoE::Runtime
                     const auto& b = vertices[tri.vertices[1]].location;
                     const auto& c = vertices[tri.vertices[2]].location;
                     const RE::NiPoint3 centroid{ (a.x + b.x + c.x) / 3.0f, (a.y + b.y + c.y) / 3.0f, (a.z + b.z + c.z) / 3.0f };
-                    if (!std::isfinite(centroid.z) || std::abs(centroid.z - door.z) > kHRouteApproachMaxDz) {
+                    if (!std::isfinite(centroid.z) || std::abs(centroid.z - door.z) > kHRouteApproachMaxDz ||
+                        (centroid - door).Length() < minDistance) {
                         continue;
                     }
                     const float distance = std::hypot(centroid.x - door.x, centroid.y - door.y);
@@ -2487,18 +2635,50 @@ namespace SkyrimPoE::Runtime
             return best;
         }
 
+        // 걷기 탐침이 건 자동 이동과 1인칭을 푼다. 1인칭 3D가 보이는 상태로 로딩하면 엔진의 1인칭 컬링
+        // (AE 36563 Main::unk_FPCulling)이 그리는 도중 사라진 1인칭 3D를 건드려 CTD가 났다(전체 시험 2026-11-24).
+        // routeRestoreThirdPerson은 지우지 않는다. 다음 걷기 탐침이 다시 1인칭으로 바꾸고, 경로가 끝날 때도 한 번 더 되돌린다.
+        void StopHWalk()
+        {
+            auto& test = g_hContract;
+            test.walkActive = false;
+            test.walkReadyTicks = 0;
+            test.walkNotReadyTicks = 0;
+            if (auto* controls = RE::PlayerControls::GetSingleton()) {
+                controls->data.autoMove = false;
+            }
+            if (auto* camera = RE::PlayerCamera::GetSingleton(); camera && test.routeRestoreThirdPerson && !camera->IsInThirdPerson()) {
+                (void)camera->ForceThirdPerson();
+            }
+        }
+
         void RecordHRouteSpot(bool ok, std::string_view reason, bool awaitRecovery = false)
         {
             auto& test = g_hContract;
             const auto& spot = test.route[test.routeIndex];
-            const char* label = spot.kind == HRouteKind::Boss ? "boss" : spot.kind == HRouteKind::Approach ? "approach" : "exit";
+            const char* label = spot.kind == HRouteKind::Boss ? "boss" : spot.kind == HRouteKind::Approach ? "approach"
+                : spot.kind == HRouteKind::Walk ? "walk" : "exit";
+            if (spot.kind == HRouteKind::Walk) {
+                if (!ok && test.walkActive) {
+                    // 자동 이동을 끄기 전의 상태를 남긴다(걷기를 시작하기 전의 실패에는 남길 것이 없다).
+                    LogInfo(std::format("H route walk diagnostics: {}, readyTicks={}, notReadyTicks={}.",
+                        DescribeHWalkState(RE::PlayerCharacter::GetSingleton(), test.walkYaw), test.walkReadyTicks,
+                        test.walkNotReadyTicks));
+                }
+                StopHWalk();
+            }
             LogInfo(std::format("H route {} {} 0x{:06X} offset={:+.0f}: {} ({}; startZ={:.1f}, minZ={:.1f}, samples={})",
                 spot.dungeon->key, label, spot.exitId, spot.exitOffset,
                 ok ? "PASS" : "FAIL", reason, spot.position.z, test.lowestZ, test.routeHeightSamples));
             if (ok) {
                 ++(spot.kind == HRouteKind::Boss ? test.bossSpotsPassed
-                    : spot.kind == HRouteKind::Approach ? test.approachSpotsPassed : test.exitSpotsPassed);
+                    : spot.kind == HRouteKind::Approach ? test.approachSpotsPassed
+                    : spot.kind == HRouteKind::Walk ? test.walkSpotsPassed : test.exitSpotsPassed);
             }
+            // 걷기·출구 탐침의 통과는 출구 구역이 안전 탈출을 건 것이다. 실제 도착은 RouteRecover가 확인한다.
+            test.routeEscapeExpected = ok && awaitRecovery && (spot.kind == HRouteKind::Walk || spot.kind == HRouteKind::Exit);
+            // 접근 자리 이동 요청 표시가 다음 탐침으로 넘어가면 그 탐침이 자기 이동을 요청하지 않는다(Codex 검토 2026-11-24).
+            test.routeStaged = false;
             test.routeRecoveryZ.reset();
             test.routeRecoveryStableSec = 0.0;
             ++test.routeIndex;
@@ -2514,6 +2694,43 @@ namespace SkyrimPoE::Runtime
             const double elapsed = std::chrono::duration<double>(now - test.stageStarted).count();
             const double travelSec = HContractTravelSec();
             const double contractBudgetSec = std::max(kHContractBaseBudgetSec, travelSec * kHContractLongTravelBudgetMultiplier);
+            if (test.stage >= Stage::RouteStart && test.stage <= Stage::RouteRecover) {
+                // 엔진이 로딩 화면 없이 Mist·Fader 연출을 시작하고 페이드인을 하지 않는 일이 있었다(실행 15·19·21·22, 원인 미확정).
+                // 그대로 두면 준비 판정이 풀리지 않아 계약 전체가 멈춘다. 기록하고 두 메뉴를 닫은 뒤, 관찰 중이던 탐침은 한 번 다시 시도한다.
+                auto* routeUi = RE::UI::GetSingleton();
+                const bool mistStall = routeUi && routeUi->IsMenuOpen(RE::MistMenu::MENU_NAME) &&
+                    routeUi->IsMenuOpen(RE::FaderMenu::MENU_NAME) && !routeUi->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+                // 결정 177 ③ 재보완: 출구 문이 꺼져 있으므로 로딩 없는 Mist·Fader 열림(엔진 자동 문 발동)은 없어야 한다.
+                if (mistStall && !test.routeMistOpen) {
+                    ++test.routeMistOpenings;
+                    LogInfo(std::format("H route saw Mist/Fader open without loading (spot {}/{}).", test.routeIndex + 1, test.route.size()));
+                }
+                test.routeMistOpen = mistStall;
+                if (!mistStall) {
+                    test.routeMistSince.reset();
+                } else if (!test.routeMistSince) {
+                    test.routeMistSince = now;
+                } else if (std::chrono::duration<double>(now - *test.routeMistSince).count() >= kHRouteMistStallSec) {
+                    test.routeMistSince.reset();
+                    ++test.routeMistStalls;
+                    if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
+                        queue->AddMessage(RE::MistMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                        queue->AddMessage(RE::FaderMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                    }
+                    LogInfo(std::format("H route dismissed an engine Mist/Fader stall in {} (spot {}/{}).",
+                        static_cast<int>(test.stage), test.routeIndex + 1, test.route.size()));
+                    if (test.stage == Stage::RouteObserve && test.routeRetriedIndex != test.routeIndex) {
+                        test.routeRetriedIndex = test.routeIndex;
+                        test.routeStaged = false;
+                        // 걷기 탐침이면 자동 이동·1인칭을 풀고 다시 시작한다(풀지 않으면 접근 자리로 옮기는 동안 다시 걸어 나간다).
+                        if (test.walkActive) {
+                            StopHWalk();
+                        }
+                        EnterHContract(Stage::RouteStart);
+                        return;
+                    }
+                }
+            }
             if (test.stage >= Stage::ClosePriorRun && test.stage < Stage::RestoreCheckpoint &&
                 std::chrono::duration<double>(now - test.started).count() >= contractBudgetSec) {
                 AbortHContract("H contract exceeded its time budget.");
@@ -2604,14 +2821,19 @@ namespace SkyrimPoE::Runtime
 
             case Stage::Open: {
                 if (!forms || elapsed >= travelSec) {
-                    failTrial("H contract could not prepare the next map or arena entry.");
+                    // 실행 21 H23 4·5회차: 83초 동안 열지 못했고 그 뒤 바깥에서 쓰러져 엔진이 마지막 저장을 불러왔다(추정).
+                    // 무엇이 막았는지 남긴다.
+                    failTrial(std::format("H contract could not prepare the next map or arena entry (outside={}, runActive={}, resetPending={}, inCombat={}, combatants={}).",
+                        outside, run.active, forms && MapDeviceRuntime::GetCellResetStatus(forms->cellId).pending,
+                        player && player->IsInCombat(), DescribePlayerCombatants(player)));
                     break;
                 }
                 if (!outside || run.active || MapDeviceRuntime::GetCellResetStatus(forms->cellId).pending) {
                     break;
                 }
                 if (player->IsInCombat()) {
-                    player->StopCombat();
+                    // 플레이어만 멈추면 상대의 전투·경보가 남아 다시 걸렸다. 재입장 전 처리와 같이 상대까지 멈춘다.
+                    StopPlayerCombatAndAlarms(player);
                     break;
                 }
                 test.runId = 0;
@@ -2681,7 +2903,17 @@ namespace SkyrimPoE::Runtime
                         EnterHContract(Stage::Close);
                     } else {
                         const bool priorActorSurvived = HHasPriorSpawn(*spawns, test.priorCleanupSpawns);
-                        const bool onlyCurrent = run.runId != test.lastCleanupRunId && !priorActorSurvived && HAllSpawnsBelongToRun(*spawns, run);
+                        bool onlyCurrent = run.runId != test.lastCleanupRunId && !priorActorSurvived && HAllSpawnsBelongToRun(*spawns, run);
+                        if (!onlyCurrent && run.runId != test.lastCleanupRunId && elapsed < travelSec) {
+                            // 결정 178 ⑦ 보완: 셀 초기화가 놓친 앞선 회차 액터를 제품이 스폰 직후 찾아 Disable을 요청했으면(작업 풀 예약이라
+                            // 한두 프레임 뒤 꺼짐) 꺼질 때까지 기다린다. 제품이 찾지 못한 액터가 섞였으면 그대로 실패로 본다(실행 18 7회차).
+                            auto unswept = *spawns;
+                            std::erase_if(unswept, [](const HMapSpawn& spawn) { return MapDeviceRuntime::IsLeftoverSweepPending(spawn.id); });
+                            if (unswept.size() != spawns->size() && !HHasPriorSpawn(unswept, test.priorCleanupSpawns) &&
+                                HAllSpawnsBelongToRun(unswept, run)) {
+                                break;
+                            }
+                        }
                         if (test.cleanupCycles == 1) {
                             Check(kHFreshRunCheck, onlyCurrent && !test.priorCleanupSpawns.empty(),
                                 std::format("Run {} -> {}, prior actors={}, current actors={}, prior actor survived={}; registration matched={}; leftover actors swept={}",
@@ -2743,6 +2975,19 @@ namespace SkyrimPoE::Runtime
                     if (!BeginHContractSave(g_cfg.tempSave, Stage::SaveLastPortal)) {
                         AbortHContract("H could not observe the last-portal save files before writing.");
                     }
+                } else if (test.entryCount == kHExitZoneReturnEntry) {
+                    // H28(결정 177 ③ 재보완): 허가된 회차에서 출구 구역에 들면 포털 귀환이어야 한다(회차와 포털 수 유지, 아래 Return이 확인).
+                    const auto* runDungeon = MapPackRuntime::Manifest().ForRun(run);
+                    if (!runDungeon || runDungeon->autoExits.empty()) {
+                        AbortHContract("H exit zone return needs a regression map with an automatic exit.");
+                        break;
+                    }
+                    const auto& exit = runDungeon->autoExits.front();
+                    test.exitZoneReturnBefore = MapDeviceRuntime::GetExitZoneTravelCount();
+                    test.exitZoneReturnPending = true;
+                    LogInfo(std::format("H28: placing the player on exit 0x{:06X} of {} in run {}.", exit.localId, runDungeon->key, run.runId));
+                    player->SetPosition(RE::NiPoint3{ exit.position[0], exit.position[1], exit.position[2] }, true);
+                    EnterHContract(Stage::Return);
                 } else if (const auto result = MapDeviceRuntime::ReturnPortal(player); result.ok) {
                     EnterHContract(Stage::Return);
                 } else {
@@ -2778,6 +3023,12 @@ namespace SkyrimPoE::Runtime
             case Stage::Return:
                 if (outside && HAtSavedReturn(player, test.enteredRun) && run.active && run.runId == test.runId &&
                     !run.failed && run.portalsRemaining == test.enteredRun.portalsRemaining) {
+                    if (std::exchange(test.exitZoneReturnPending, false)) {
+                        const auto zoneTravels = MapDeviceRuntime::GetExitZoneTravelCount() - test.exitZoneReturnBefore;
+                        Check(kHExitZoneReturnCheck, zoneTravels == 1,
+                            std::format("Authorized exit zone return: exit-zone travels={}, run {} kept with {} portals.",
+                                zoneTravels, run.runId, run.portalsRemaining));
+                    }
                     if (test.trial == Trial::Portals) {
                         ++test.normalReturns;
                         if (test.normalReturns == 1) {
@@ -2985,6 +3236,11 @@ namespace SkyrimPoE::Runtime
                 if (!returned && elapsed < travelSec) {
                     break;
                 }
+                if (!returned) {
+                    // 전체 시험 2026-11-24 06:14: 결투장 사망 귀환이 원위치에 도착했는데도 82초 동안 "돌아옴"이 되지 않았다. 무엇이 막았는지 남긴다.
+                    LogInfo(std::format("H death return wait ended; ready={}, deathEscapeInFlight={}, player state: {}",
+                        ready, MapDeviceRuntime::IsDeathEscapeInFlight(), DescribeHRoutePlayerState(player, paused, travel)));
+                }
                 if (test.trial == Trial::Portals && returned && player->IsInCombat() && elapsed < travelSec) {
                     player->StopCombat();
                     break;
@@ -3169,6 +3425,12 @@ namespace SkyrimPoE::Runtime
                     }
                     break;
                 }
+                // 단축 실행은 체크포인트 없이 기준 세이브에서 바로 탐침한다. 활성 회차가 있으면 탐침이 허가 없이 돈다는 전제가 깨지고,
+                // 끝낼 때 그 회차를 포기하게 되므로 시작하지 않는다(Codex 검토 2026-11-24).
+                if (g_cfg.routeOnly && run.active) {
+                    AbortHContract("The route-only run needs a baseline save without an active map run.");
+                    break;
+                }
                 std::vector<const Core::MapDungeonDef*> dungeons;
                 for (const auto& map : manifest.maps) {
                     dungeons.push_back(&map);
@@ -3189,6 +3451,9 @@ namespace SkyrimPoE::Runtime
                         const RE::NiPoint3 door{ exit.position[0], exit.position[1], exit.position[2] };
                         // 접근 자리는 셀에 들어간 뒤 내비메쉬로 정한다. 그때까지 문 위치를 기준점으로 둔다.
                         test.route.push_back({ routeDungeon, door, exit.localId, 0.0f, HRouteKind::Approach, false });
+                        // 걷기 탐침: 목표는 문 자리. 출발은 같은 출구의 접근 자리(앞의 접근 탐침이 정함, 출구 구역 밖).
+                        // 실제 플레이처럼 걸어서 출구 구역에 들면 우리 이동이 시작돼야 한다(결정 177 ③ 재보완).
+                        test.route.push_back({ routeDungeon, door, exit.localId, 0.0f, HRouteKind::Walk, true });
                         for (float offset : { 0.0f, kHRouteExitOffset, -kHRouteExitOffset }) {
                             test.route.push_back({ routeDungeon, {
                                 exit.position[0] + std::sin(exit.rotationZ) * offset,
@@ -3198,6 +3463,16 @@ namespace SkyrimPoE::Runtime
                     }
                     LogInfo(std::format("H route {}: automatic exits={}/{}.", key, routeDungeon->autoExits.size(), expectedExits));
                 }
+                test.exitDoorReenabledBefore = MapDeviceRuntime::GetExitDoorReenabledCount();
+                if (auto* camera = RE::PlayerCamera::GetSingleton()) {
+                    test.routeRestoreThirdPerson = camera->IsInThirdPerson();
+                }
+                test.routeMistOpenings = 0;
+                test.routeMistOpen = false;
+                test.walkStepped = 0;
+                test.routeEscapeExpected = false;
+                test.routeEscapeArrived = 0;
+                test.routeEscapeMissed = 0;
                 g_hRouteGodModeBefore = RE::PlayerCharacter::IsGodMode();
                 SetPlayerGodModeFlag(true);
                 if (!RE::PlayerCharacter::IsGodMode()) {
@@ -3223,12 +3498,20 @@ namespace SkyrimPoE::Runtime
                     constexpr auto expectedExitProbes = expectedExits * kHRouteProbesPerExit;
                     Check(kHBossRouteCheck, test.bossSpotsPassed == expectedBosses,
                         std::format("Boss anchor placements passed {}/{}.", test.bossSpotsPassed, expectedBosses));
-                    // 결정 177 ③: 출구 안쪽 접근 자리는 서 있어야 하고, 출구 자리와 앞뒤는 떨어져도 안전하게 끝나야 한다.
+                    // 결정 177 ③과 재보완: 출구 구역 밖 접근 자리는 서 있어야 하고, 걸어서 출구 구역에 들거나 출구 자리·앞뒤에 놓이면
+                    // 출구 구역이 안전 탈출을 해야 한다(탐침은 허가 없이 돈다). 출구 문은 꺼져 있어 엔진 연출이 열리지 않아야 한다.
+                    const auto reenabledDoors = MapDeviceRuntime::GetExitDoorReenabledCount() - test.exitDoorReenabledBefore;
                     Check(kHExitRouteCheck, test.exitCountsMatch && test.approachSpotsPassed == expectedExits &&
-                            test.exitSpotsPassed == expectedExitProbes,
-                        std::format("Exit approaches standable {}/{}; exit probes safe {}/{}; per-dungeon exit counts matched={}.",
-                            test.approachSpotsPassed, expectedExits, test.exitSpotsPassed, expectedExitProbes,
-                            test.exitCountsMatch));
+                            test.walkSpotsPassed == expectedExits && test.exitSpotsPassed == expectedExitProbes &&
+                            test.routeEscapeMissed == 0 && test.routeEscapeArrived == test.walkSpotsPassed + test.exitSpotsPassed &&
+                            test.routeMistOpenings == 0 && reenabledDoors == 0,
+                        std::format("Exit approaches standable {}/{}; walks taken by the exit zone {}/{} (stepped because the game window was behind: {}); "
+                                    "exit probes taken by the exit zone {}/{}; safe escapes arrived at the fixed marker {} (missed {}); "
+                                    "per-dungeon exit counts matched={}; Mist/Fader openings without loading={} (stalls dismissed={}); "
+                                    "enabled exit doors disabled again={}.",
+                            test.approachSpotsPassed, expectedExits, test.walkSpotsPassed, expectedExits, test.walkStepped, test.exitSpotsPassed,
+                            expectedExitProbes, test.routeEscapeArrived, test.routeEscapeMissed, test.exitCountsMatch, test.routeMistOpenings,
+                            test.routeMistStalls, reenabledDoors));
                     EnterHContract(Stage::CloseRoutes);
                     break;
                 }
@@ -3254,6 +3537,56 @@ namespace SkyrimPoE::Runtime
                 const bool atEntry = inCell &&
                     (player->GetPosition() - routeForms->entryMarker->GetPosition()).Length() <=
                         MapDeviceRuntime::GetTravelArrivalRadius();
+                if (inCell && spot.kind == HRouteKind::Walk) {
+                    const auto approach = std::ranges::find_if(test.route, [&spot](const HRouteSpot& other) {
+                        return other.kind == HRouteKind::Approach && other.dungeon == spot.dungeon &&
+                            other.exitId == spot.exitId && other.positionResolved;
+                    });
+                    if (approach == test.route.end()) {
+                        RecordHRouteSpot(false, "no resolved approach point to start the walk from");
+                        break;
+                    }
+                    if ((player->GetPosition() - approach->position).Length() > kHRouteWalkStartRadius) {
+                        if (!test.routeStaged) {
+                            if (!MapDeviceRuntime::MovePlayerToSpace(player, routeForms->cell, nullptr, approach->position, player->GetAngle())) {
+                                RecordHRouteSpot(false, "could not move to the approach point to start the walk");
+                                break;
+                            }
+                            test.routeStaged = true;
+                        } else if (elapsed >= travelSec) {
+                            RecordHRouteSpot(false, "the approach point was not reached before the walk");
+                        }
+                        break;
+                    }
+                    test.routeStaged = false;
+                    // 스카이림 방향: 0이 +Y(북), 시계 방향으로 증가. 앞으로 = (sin, cos).
+                    test.walkYaw = std::atan2(spot.position.x - approach->position.x, spot.position.y - approach->position.y);
+                    player->SetHeading(test.walkYaw);
+                    // 1인칭으로 바꾸기 전 상태를 남긴다(바꾼 뒤에 찍으면 원래 시점을 알 수 없다, Codex 검토 2026-11-24).
+                    const auto stateBeforeWalk = DescribeHWalkState(player, test.walkYaw);
+                    if (auto* camera = RE::PlayerCamera::GetSingleton()) {
+                        // 3인칭에서는 이동 방향이 카메라를 따르므로 1인칭으로 고정한다.
+                        (void)camera->ForceFirstPerson();
+                    }
+                    test.fallRecoveryBefore = MapDeviceRuntime::GetFallRecoveryCount();
+                    test.exitZoneBefore = MapDeviceRuntime::GetExitZoneTravelCount();
+                    test.lowestZ = player->GetPosition().z;
+                    test.routeHeightSamples = 0;
+                    test.routeFell = false;
+                    test.walkReadyTicks = 0;
+                    test.walkNotReadyTicks = 0;
+                    test.walkActive = true;
+                    test.walkReadySec = 0.0;
+                    test.walkTickSec = 0.0;
+                    test.walkStepMode = false;
+                    test.walkStepDistance = 0.0f;
+                    LogInfo(std::format("H route {} walk 0x{:06X}: starting at ({:.0f}, {:.0f}, {:.1f}) toward the door ({:.0f} units); before first person: {}.",
+                        spot.dungeon->key, spot.exitId, approach->position.x, approach->position.y, approach->position.z,
+                        std::hypot(spot.position.x - approach->position.x, spot.position.y - approach->position.y),
+                        stateBeforeWalk));
+                    EnterHContract(Stage::RouteObserve);
+                    break;
+                }
                 if (inCell && (spot.exitId || atEntry)) {
                     if (!spot.positionResolved) {
                         auto& mutableSpot = test.route[test.routeIndex];
@@ -3265,18 +3598,20 @@ namespace SkyrimPoE::Runtime
                             }
                             break;
                         }
-                        const auto approach = FindExitApproachPoint(player->GetParentCell(), mutableSpot.position);
+                        const auto keepOut = static_cast<float>(MapPackRuntime::Manifest().exitZoneRadius) + kHRouteApproachZoneClearance;
+                        const auto approach = FindExitApproachPoint(player->GetParentCell(), mutableSpot.position, keepOut);
                         if (!approach) {
-                            RecordHRouteSpot(false, "no walkable navmesh triangle near the exit");
+                            RecordHRouteSpot(false, "no walkable navmesh triangle near the exit outside the exit zone");
                             break;
                         }
-                        LogInfo(std::format("H route {} exit 0x{:06X} approach point ({:.0f}, {:.0f}, {:.1f}), {:.0f} units from the door.",
+                        LogInfo(std::format("H route {} exit 0x{:06X} approach point ({:.0f}, {:.0f}, {:.1f}), {:.0f} units from the door (3D, keep-out {:.0f}).",
                             mutableSpot.dungeon->key, mutableSpot.exitId, approach->x, approach->y, approach->z,
-                            std::hypot(approach->x - mutableSpot.position.x, approach->y - mutableSpot.position.y)));
+                            (*approach - mutableSpot.position).Length(), keepOut));
                         mutableSpot.position = *approach;
                         mutableSpot.positionResolved = true;
                     }
                     test.fallRecoveryBefore = MapDeviceRuntime::GetFallRecoveryCount();
+                    test.exitZoneBefore = MapDeviceRuntime::GetExitZoneTravelCount();
                     test.lowestZ = spot.position.z;
                     test.routeArrivalSeen = false;
                     test.routeHeightSamples = 0;
@@ -3284,7 +3619,36 @@ namespace SkyrimPoE::Runtime
                     test.routeFell = false;
                     test.routeLandingZ.reset();
                     test.routeLandingStableSec = 0.0;
-                    if (!MapDeviceRuntime::MovePlayerToSpace(player, routeForms->cell, nullptr, spot.position, player->GetAngle())) {
+                    // 출구 탐침 자리는 내비메쉬 밖의 허공일 수 있다. 엔진 MoveTo로 그런 자리에 놓으면 약 0.6초 뒤 엔진이 가장 가까운
+                    // 내비메쉬로 다시 옮기며 로딩용 연출(Mist·Fader)을 열고, 로딩 화면이 오지 않아 페이더가 닫히지 않는 일이 있었다
+                    // (실행 19·21, 가설). 같은 셀 안의 출구 탐침은 위치만 바꿔(SetPosition) 실제로 떨어지게 한다. 다른 셀로 갈 때는 MoveTo.
+                    const bool samePlacementCell = spot.kind == HRouteKind::Exit && player->GetParentCell() == routeForms->cell;
+                    if (samePlacementCell && (player->GetPosition() - spot.position).Length() > kHRouteShortHop) {
+                        // 먼 출구: 같은 출구의 접근 자리(내비메쉬 위)로 먼저 엔진 이동을 하고, 가까워진 뒤 짧게 옮긴다.
+                        if (!test.routeStaged) {
+                            const auto approach = std::ranges::find_if(test.route, [&spot](const HRouteSpot& other) {
+                                return other.kind == HRouteKind::Approach && other.dungeon == spot.dungeon &&
+                                    other.exitId == spot.exitId && other.positionResolved;
+                            });
+                            if (approach == test.route.end() ||
+                                !MapDeviceRuntime::MovePlayerToSpace(player, routeForms->cell, nullptr, approach->position, player->GetAngle())) {
+                                RecordHRouteSpot(false, "could not stage at the exit approach point");
+                                break;
+                            }
+                            test.routeStaged = true;
+                        } else if (elapsed >= travelSec) {
+                            RecordHRouteSpot(false, "the exit approach point was not reached before the probe");
+                        }
+                        break;
+                    }
+                    test.routeStaged = false;
+                    bool placed = true;
+                    if (samePlacementCell) {
+                        player->SetPosition(spot.position, true);
+                    } else {
+                        placed = MapDeviceRuntime::MovePlayerToSpace(player, routeForms->cell, nullptr, spot.position, player->GetAngle());
+                    }
+                    if (!placed) {
                         RecordHRouteSpot(false, "placement request rejected");
                     } else {
                         EnterHContract(Stage::RouteObserve);
@@ -3299,19 +3663,101 @@ namespace SkyrimPoE::Runtime
                 const auto& spot = test.route[test.routeIndex];
                 const auto* routeForms = MapPackRuntime::FindForms(spot.dungeon);
                 const bool exitProbe = spot.kind == HRouteKind::Exit;
-                if (travel.kind) {
-                    // 결정 177 ③: 회차 없이(허가 없이) 문턱 아래로 떨어지면 낙하 복귀는 안전 탈출을 한다. 탐침은 회차 없이 돈다.
-                    const bool fellBeforeEscape = test.routeFell || spot.position.z - test.lowestZ > kHRouteMaxDrop;
-                    const bool safeEscape = *travel.kind == Core::MapTravelKind::SafeEscape;
-                    const bool ok = exitProbe && safeEscape && fellBeforeEscape;
-                    RecordHRouteSpot(ok, ok ? "fell past the exit and the fall recovery escaped safely"
-                                            : "a travel started during the placement", true);
+                if (spot.kind == HRouteKind::Walk) {
+                    if (!player) {
+                        // 준비 판정은 플레이어가 없는 틱을 허용한다. 위치를 읽기 전에 막는다(Codex 검토 2026-11-24).
+                        ++test.walkNotReadyTicks;
+                        break;
+                    }
+                    if (std::isfinite(deltaSec) && deltaSec > 0.0) {
+                        test.walkTickSec += deltaSec;
+                    }
+                    auto* walkUi = RE::UI::GetSingleton();
+                    const bool mistNow = walkUi && walkUi->IsMenuOpen(RE::MistMenu::MENU_NAME) &&
+                        walkUi->IsMenuOpen(RE::FaderMenu::MENU_NAME) && !walkUi->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+                    const auto pos = player->GetPosition();
+                    const float doorDistance = (pos - spot.position).Length();
+                    test.lowestZ = std::min(test.lowestZ, pos.z);
+                    // 결정 177 ③ 재보완: 걸어서 출구 구역에 들면 우리 이동(이 탐침은 허가가 없어 안전 탈출)이 시작돼야 한다.
+                    // 엔진 연출(Mist·Fader)은 열리지 않아야 한다(경로 전체에서 따로 셈).
+                    const bool byExitZone = MapDeviceRuntime::GetExitZoneTravelCount() != test.exitZoneBefore;
+                    if (travel.kind || byExitZone || MapDeviceRuntime::GetFallRecoveryCount() != test.fallRecoveryBefore) {
+                        const bool ok = byExitZone && travel.kind == Core::MapTravelKind::SafeEscape;
+                        RecordHRouteSpot(ok, std::format("{} after {:.1f}s (travel={}, {:.0f} units from the door, mist={}, {})",
+                            ok ? "the exit zone started our safe escape"
+                               : byExitZone ? "the exit zone started a travel that is not a safe escape"
+                                            : "another travel or the fall recovery took over before the exit zone",
+                            elapsed, travel.kind ? static_cast<int>(*travel.kind) : -1, doorDistance, mistNow,
+                            test.walkStepMode ? "stepped" : "walked"), true);
+                        break;
+                    }
+                    // 우리 이동이 아닌 엔진 쪽 로딩·셀 변경·연출(켜진 출구 문 등)이 시작되면 1인칭이 남은 채 로딩되지 않게 바로 끝낸다.
+                    const bool loadingNow = walkUi && walkUi->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+                    if (mistNow || loadingNow || player->GetParentCell() != routeForms->cell) {
+                        RecordHRouteSpot(false, std::format("an engine {} started during the walk after {:.1f}s ({:.0f} units from the door)",
+                            mistNow ? "Mist/Fader opening" : loadingNow ? "loading screen" : "cell change", elapsed, doorDistance), true);
+                        break;
+                    }
+                    if (ready) {
+                        const bool tickOk = std::isfinite(deltaSec) && deltaSec > 0.0;
+                        if (!test.walkStepMode) {
+                            // 사용자 결정 "창이 뒤면 위치 이동": 창이 앞에 있는데 걷지 못하면 위치 이동으로 가리지 않고 시간 초과 실패로 남긴다.
+                            if (const auto window = GetGameWindowState(); !window.InFront()) {
+                                test.walkStepMode = true;
+                                test.walkStepFrom = pos;
+                                test.walkStepDistance = 0.0f;
+                                ++test.walkStepped;
+                                LogInfo(std::format("H route {} walk 0x{:06X}: the game window is behind another window, switching to stepped movement "
+                                                    "after {:.1f}s ({:.0f} units from the door); {}.",
+                                    spot.dungeon->key, spot.exitId, test.walkReadySec, doorDistance, DescribeHWalkState(player, test.walkYaw)));
+                                if (auto* controls = RE::PlayerControls::GetSingleton()) {
+                                    controls->data.autoMove = false;
+                                }
+                            }
+                        }
+                        if (test.walkStepMode) {
+                            // 출발점에서 문 자리로 곧게 옮긴다(3차원 구 판정이므로 높이도 함께 옮김).
+                            if (tickOk) {
+                                test.walkStepDistance += kHRouteWalkStepSpeed * static_cast<float>(deltaSec);
+                            }
+                            const auto path = spot.position - test.walkStepFrom;
+                            const float length = path.Length();
+                            const float t = length > 0.0f ? std::min(1.0f, test.walkStepDistance / length) : 1.0f;
+                            player->SetPosition(test.walkStepFrom + path * t, true);
+                        } else {
+                            if (auto* controls = RE::PlayerControls::GetSingleton()) {
+                                controls->data.autoMove = true;
+                            }
+                        }
+                        player->SetHeading(test.walkYaw);
+                        ++test.walkReadyTicks;
+                        if (tickOk) {
+                            test.walkReadySec += deltaSec;
+                        }
+                    } else {
+                        ++test.walkNotReadyTicks;
+                    }
+                    // 시간 초과는 게임 시간으로 본다. 창이 뒤에서 틱이 멈췄던 동안은 위치 이동 기회를 받지 못했다(Codex 검토 2026-11-24).
+                    if (test.walkTickSec >= kHRouteWalkSec) {
+                        RecordHRouteSpot(false, std::format("{} {:.0f}s without the exit zone taking over; ended at ({:.0f}, {:.0f}, {:.1f}), {:.0f} units from the door",
+                            test.walkStepMode ? "stepped" : "walked", kHRouteWalkSec, pos.x, pos.y, pos.z, doorDistance), true);
+                    }
+                    break;
+                }
+                const bool byExitZone = MapDeviceRuntime::GetExitZoneTravelCount() != test.exitZoneBefore;
+                if (travel.kind || byExitZone) {
+                    // 결정 177 ③ 재보완: 탐침은 회차 없이(허가 없이) 돈다. 출구 자리와 앞뒤 150유닛은 출구 구역 안이므로 출구 구역이
+                    // 같은 셀 안정 판정 직후(낙하 복귀보다 먼저) 안전 탈출을 걸어야 한다.
+                    const bool ok = exitProbe && byExitZone && travel.kind == Core::MapTravelKind::SafeEscape;
+                    RecordHRouteSpot(ok, ok ? "the exit zone started our safe escape"
+                        : !exitProbe ? "a travel started during the placement"
+                        : byExitZone ? "the exit zone started a travel that is not a safe escape"
+                                     : "a travel other than the exit zone started", true);
                     break;
                 }
                 if (MapDeviceRuntime::GetFallRecoveryCount() != test.fallRecoveryBefore) {
-                    // 결정 177 ③: 출구 너머로 떨어지면 낙하 복귀가 받는 것이 설계다. 입구 도착은 RouteRecover가 확인한다.
-                    RecordHRouteSpot(exitProbe, exitProbe ? "fell past the exit and fall recovery took over"
-                                                          : "fall recovery intervened", true);
+                    // 출구 탐침 자리는 출구 구역 안이라 낙하 복귀가 먼저 받으면 출구 구역이 놓친 것이다. 입구 도착은 RouteRecover가 확인한다.
+                    RecordHRouteSpot(false, exitProbe ? "fall recovery took over before the exit zone" : "fall recovery intervened", true);
                     break;
                 }
                 if (ready) {
@@ -3357,18 +3803,20 @@ namespace SkyrimPoE::Runtime
                         test.routeLandingStableSec = stable && std::isfinite(deltaSec) && deltaSec > 0.0
                             ? test.routeLandingStableSec + deltaSec : 0.0;
                         if (test.routeLandingStableSec >= kHRouteObserveSec) {
-                            // 한 번이라도 문턱 아래로 내려갔다면 우리 낙하 복귀가 받지 못한 것이다(엔진이 옮겨 놓은 자리에서 멈춘 경우 포함).
+                            // 결정 177 ③ 재보완: 출구 탐침 자리는 출구 구역 안이라 떨어져 멈출 때까지 출구 구역이 받지 않았으면 실패다.
                             const bool neverBelow = test.lowestZ >= threshold;
                             const bool aboveThreshold = pos.z >= threshold;
-                            RecordHRouteSpot(neverBelow && aboveThreshold,
-                                std::format("{} at Z={:.1f} (drop {:.0f}, fall threshold {:.1f})",
-                                    !neverBelow ? "went below the fall threshold without our recovery, then stopped"
-                                    : aboveThreshold ? "landed on a lower floor" : "settled below the fall threshold without recovery",
+                            RecordHRouteSpot(false,
+                                std::format("{} at Z={:.1f} without the exit zone taking over (drop {:.0f}, fall threshold {:.1f})",
+                                    !neverBelow ? "went below the fall threshold, then stopped"
+                                    : aboveThreshold ? "landed on a lower floor" : "settled below the fall threshold",
                                     pos.z, spot.position.z - pos.z, threshold), true);
                             break;
                         }
                     } else if (test.routeHeightSamples >= kHRouteMinHeightSamples && test.routeObservedSec >= kHRouteObserveSec) {
-                        RecordHRouteSpot(true, "placement reached and observed");
+                        // 출구 탐침 자리에 서 있기만 하면 출구 구역이 놓친 것이다.
+                        RecordHRouteSpot(!exitProbe, exitProbe ? "stood at the exit without the exit zone taking over"
+                                                               : "placement reached and observed");
                         break;
                     }
                 }
@@ -3398,13 +3846,29 @@ namespace SkyrimPoE::Runtime
                         test.routeRecoveryStableSec = 0.0;
                     }
                     // 다른 셀로 옮겨졌으면 지도 팩 밖이어야 한다(안전 탈출의 도착). 다른 팩 셀이면 기다리다 시간 초과로 중단한다.
-                    if ((player->GetParentCell() != priorForms->cell && !travel.inPackCell) || (recoveryTriggered && validZ && atEntry) ||
-                        test.routeRecoveryStableSec >= kHSpawnSettleSec) {
+                    const bool leftPack = player->GetParentCell() != priorForms->cell && !travel.inPackCell;
+                    if (leftPack || (recoveryTriggered && validZ && atEntry) || test.routeRecoveryStableSec >= kHSpawnSettleSec) {
+                        if (std::exchange(test.routeEscapeExpected, false)) {
+                            // 출구 구역이 건 안전 탈출은 고정 도착 마커에 닿아야 한다. 팩 안에 남았거나 다른 곳에 내렸으면 놓친 것이다.
+                            const auto arrival = ObserveHSafeEscapeArrival(player);
+                            if (leftPack && arrival.AtMarker()) {
+                                ++test.routeEscapeArrived;
+                            } else {
+                                ++test.routeEscapeMissed;
+                                LogInfo(std::format("H route safe escape after spot {}/{} did not arrive at the fixed marker (leftPack={}, inTamriel={}, "
+                                                    "markerDistance={:.0f}); player state: {}",
+                                    test.routeIndex, test.route.size(), leftPack, arrival.inTamriel, arrival.distance,
+                                    DescribeHRoutePlayerState(player, paused, travel)));
+                            }
+                        }
                         EnterHContract(Stage::RouteStart);
                         break;
                     }
                 }
                 if (elapsed >= travelSec) {
+                    if (std::exchange(test.routeEscapeExpected, false)) {
+                        ++test.routeEscapeMissed;
+                    }
                     LogInfo("H route recovery wait ended; player state: " + DescribeHRoutePlayerState(player, paused, travel));
                     AbortHContract("H route fall recovery did not settle before the next landing probe.");
                 }
@@ -3412,7 +3876,17 @@ namespace SkyrimPoE::Runtime
             }
 
             case Stage::CloseRoutes:
+                if (auto* controls = RE::PlayerControls::GetSingleton(); controls && controls->data.autoMove) {
+                    controls->data.autoMove = false;
+                }
+                if (auto* camera = RE::PlayerCamera::GetSingleton(); camera && std::exchange(test.routeRestoreThirdPerson, false)) {
+                    (void)camera->ForceThirdPerson();
+                }
                 if (outside && !run.active && RestoreHGodMode(player)) {
+                    if (g_cfg.routeOnly) {
+                        FinishAndScheduleQuit("Route-only investigation run finished.");
+                        break;
+                    }
                     EnterPhase(Phase::ScenarioH_UninstallPrepare);
                 } else if (elapsed >= travelSec) {
                     AbortHContract("H route exit or God mode restoration did not settle before H8.");
@@ -3878,6 +4352,10 @@ namespace SkyrimPoE::Runtime
             g_runError = true;
             const auto detail = std::format("GlobalTimeout exceeded {:.0f}s in {}.", g_cfg.globalTimeoutSec, PhaseName(g_phase));
             WriteLine("ERROR", detail);
+            // 걷기 탐침 도중이면 자동 이동·강제 1인칭을 풀고 끝낸다. 체크포인트 불러오기나 조작 반환이 그 상태로 일어나지 않게 한다.
+            if (g_hContract.walkActive) {
+                StopHWalk();
+            }
             FinishAndScheduleQuit(detail);
             if (g_phase != Phase::ScenarioH_Contract) {
                 return;
@@ -3885,6 +4363,25 @@ namespace SkyrimPoE::Runtime
         }
 
         auto* ui = RE::UI::GetSingleton();
+        // 시험 세이브 주변 NPC가 말을 걸어 대화 메뉴가 열리면 저장이 막혀 시나리오 전체가 건너뛰어졌다(실행 20, E7).
+        // 시험은 대화를 쓰지 않으므로 저장을 기다리는 동안 열린 대화 메뉴는 닫는다.
+        if (ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+            bool awaitingSave = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                // 저장이 확인된 뒤(g_saveMatched)에는 정상 대화를 닫지 않는다(Codex 검토 2026-11-24).
+                awaitingSave = !g_expectedSaveStem.empty() && !g_saveMatched;
+            }
+            // 닫기 요청은 메뉴가 실제로 닫힐 때까지 몇 틱 걸리므로 1초에 한 번만 보내고 남긴다.
+            static Clock::time_point lastDialogueClose{};
+            if (awaitingSave && Clock::now() - lastDialogueClose >= std::chrono::seconds(1)) {
+                if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
+                    lastDialogueClose = Clock::now();
+                    queue->AddMessage(RE::DialogueMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                    LogInfo(std::format("Closed a Dialogue Menu that blocked the pending test save in {}.", PhaseName(g_phase)));
+                }
+            }
+        }
         const bool paused = ui && ui->GameIsPaused();
         if (IsHCompanionCleanupPending()) {
             PumpHCompanionCleanup(!paused && IsPlayerReadyInWorld());
@@ -3950,6 +4447,14 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!domReady && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            if (g_cfg.routeOnly) {
+                // 조사용 단축 실행: 앞 시나리오와 H 계약 앞부분 없이 경로 탐침 준비로 바로 간다. 체크포인트가 없어 끝에 복원하지 않는다.
+                LogInfo("Route-only investigation run: skipping scenarios A-G and the H contract before the route probes.");
+                g_hContract.started = Clock::now();
+                EnterPhase(Phase::ScenarioH_Contract);
+                EnterHContract(HContractStage::RoutePrepare);
                 break;
             }
             EnterPhase(Phase::ScenarioA_Setup);
@@ -7452,21 +7957,11 @@ namespace SkyrimPoE::Runtime
             if (WaitForMapTravel(player, !travel.inPackCell, kMapReturnWaitSec)) {
                 break;
             }
-            constexpr RE::FormID kWhiterunStablesLanding = 0x0007287B;
-            constexpr RE::FormID kTamriel = 0x0000003C;
-            const auto* marker = RE::TESForm::LookupByID<RE::TESObjectREFR>(kWhiterunStablesLanding);
-            const auto* world = player ? player->GetWorldspace() : nullptr;
-            const bool inTamriel = world && world->GetFormID() == kTamriel;
-            double distance = -1.0;
-            if (marker && player) {
-                const auto displacement = player->GetPosition() - marker->GetPosition();
-                distance = displacement.Length();
-            }
-            const bool atMarker = !travel.kind && !travel.inPackCell && IsPlayerReadyInWorld() && inTamriel &&
-                distance >= 0.0 && distance <= MapDeviceRuntime::GetTravelArrivalRadius();
+            const auto arrival = ObserveHSafeEscapeArrival(player);
+            const bool atMarker = !travel.kind && !travel.inPackCell && IsPlayerReadyInWorld() && arrival.AtMarker();
             Check("H9_UnauthorizedEntryAndSafeEscape", g_hUnauthorizedEntryObserved && atMarker,
                 std::format("unauthorizedEntry={}, outsidePack={}, inTamriel={}, markerDistance={:.2f}, pending={}",
-                    g_hUnauthorizedEntryObserved, !travel.inPackCell, inTamriel, distance, travel.kind.has_value()));
+                    g_hUnauthorizedEntryObserved, !travel.inPackCell, arrival.inTamriel, arrival.distance, travel.kind.has_value()));
             EnterPhase(Phase::ScenarioH_ReenterStart);
             break;
         }

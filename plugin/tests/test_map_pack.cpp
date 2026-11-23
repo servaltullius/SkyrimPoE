@@ -21,7 +21,7 @@ namespace
 
     json ManifestFixture()
     {
-        std::ifstream input(std::filesystem::path(POE_TEST_PLUGIN_DIR) / "tests" / "maps_format3.json");
+        std::ifstream input(std::filesystem::path(POE_TEST_PLUGIN_DIR) / "tests" / "maps_format4.json");
         return json::parse(input);
     }
 
@@ -48,10 +48,11 @@ namespace
     }
 }
 
-POE_TEST("Map pack format 3: resolved local IDs, ordered tiers and arena selection")
+POE_TEST("Map pack format 4: resolved local IDs, ordered tiers, arena selection and exit zone radius")
 {
     const auto pack = Parse(ManifestFixture().dump());
     POE_CHECK(pack.version == 1 && pack.espSha256.size() == 64);
+    POE_CHECK_NEAR(pack.exitZoneRadius, 350.0, 1e-9);
     POE_CHECK(pack.maps.size() == 4);
     constexpr std::array<std::string_view, 4> keys{ "embershard", "pinemoon", "ironbind", "raldbthar" };
     for (std::uint8_t tier = 1; tier <= 16; ++tier) {
@@ -89,14 +90,22 @@ POE_TEST("Map pack format 3: resolved local IDs, ordered tiers and arena selecti
     POE_CHECK(pack.ForRun(run) == &mine);
 }
 
-POE_TEST("Map pack format 3 rejects invalid headers and missing dungeon fields")
+POE_TEST("Map pack format 4 rejects invalid headers, exit zone radii and missing dungeon fields")
 {
     const auto fixture = ManifestFixture();
     auto invalid = fixture;
-    invalid["manifestFormat"] = 2;
+    invalid["manifestFormat"] = 3;
     CheckRejected(invalid, "형식 번호");
-    invalid["manifestFormat"] = 3.0;
+    invalid["manifestFormat"] = 4.0;
     CheckRejected(invalid, "형식 번호");
+    for (const json radius : { json(0), json(-1.0), json("350"), json(nullptr), json(1.0e5) }) {
+        invalid = fixture;
+        invalid["exitZoneRadius"] = radius;
+        CheckRejected(invalid, "exitZoneRadius");
+    }
+    invalid = fixture;
+    invalid.erase("exitZoneRadius");
+    CheckRejected(invalid, "exitZoneRadius");
     invalid = fixture;
     invalid["plugin"] = "SkyrimPoE.esp";
     CheckRejected(invalid, "plugin");
@@ -119,7 +128,7 @@ POE_TEST("Map pack format 3 rejects invalid headers and missing dungeon fields")
     CheckRejected(invalid, "무리 앵커");
 }
 
-POE_TEST("Map pack format 3 rejects nonnumeric and nonfinite navmesh heights")
+POE_TEST("Map pack format 4 rejects nonnumeric and nonfinite navmesh heights")
 {
     auto invalid = ManifestFixture();
     invalid["dungeons"][0]["navmeshMinZ"] = "NaN";
@@ -134,7 +143,7 @@ POE_TEST("Map pack format 3 rejects nonnumeric and nonfinite navmesh heights")
     CheckRejectedText(overflow, "1e309");
 }
 
-POE_TEST("Map pack format 3 rejects duplicate keys, invalid role counts and missing NPC templates")
+POE_TEST("Map pack format 4 rejects duplicate keys, invalid role counts and missing NPC templates")
 {
     const auto fixture = ManifestFixture();
     auto invalid = fixture;

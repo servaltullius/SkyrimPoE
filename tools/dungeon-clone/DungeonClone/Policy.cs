@@ -44,6 +44,12 @@ internal static class Policy
     // 위치 참조 유형 "Boss"(LCRT). SourceIndex가 실행할 때 EditorID가 Boss인지 다시 확인한다.
     public static readonly FormKey BossLocRefType = FormKey.Factory("0130F7:Skyrim.esm");
     public const int PersistentFlag = 0x400;
+    // 배치 참조의 "처음부터 꺼짐"(Initially Disabled). 결정 177 ③ 재보완: 자동 출구 문은 엔진이 쓰지 않게 꺼 둔다.
+    public const int InitiallyDisabledFlag = 0x800;
+    // 엔진 자동 문 발동 거리(GMST). 런타임 출구 구역의 반경으로 목록 파일에 내보낸다(결정 177 ③ 재보완).
+    public const string AutoDoorActivateDistanceSetting = "fAutoDoorActivateDistance";
+    // 런타임(plugin/src/core/MapPack.h kMaxExitZoneRadius)이 받는 출구 구역 반경 상한(유닛)
+    public const float MaxExitZoneRadius = 10000f;
 
     // 바닐라 월드 상태: 복제본이 가리키면 안 되는 레코드 형식(검증의 바깥 연결 검사에도 쓴다).
     public static bool IsWorldState(IMajorRecordGetter target)

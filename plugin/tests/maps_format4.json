@@ -1,8 +1,9 @@
 {
-  "manifestFormat": 3,
+  "manifestFormat": 4,
+  "exitZoneRadius": 350,
   "plugin": "SkyrimPoE_Maps.esp",
   "packVersion": 1,
-  "espSha256": "17c89cac95e3ca02902a0c0ec43d365944e4633ba3b98c2f5c1c6ed07de64d8a",
+  "espSha256": "829451c399ebe0a3a538b243547390328d74eb38da468a7297649e068009b2f2",
   "sourceMaster": "Skyrim.esm",
   "dungeons": [
     {

@@ -1,9 +1,12 @@
 #pragma once
 
+#include "core/MapPack.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 namespace SkyrimPoE::Core
 {
@@ -61,6 +64,19 @@ namespace SkyrimPoE::Core
         double elapsedSec, double deltaSec, std::size_t remaining) noexcept;
     [[nodiscard]] bool HasArrived(const MapTravelRequest& request, const MapTravelObservation& player) noexcept;
     [[nodiscard]] bool HasFallenBelowMap(const MapTravelObservation& player, double navmeshMinZ, double margin) noexcept;
+
+    // 결정 177 ③ 재보완: 지도 팩 셀 안에서 자동 출구 자리로부터 3차원 거리가 반경보다 작으면 출구 구역에 든 것이다.
+    // 엔진 자동 문의 발동 범위(fAutoDoorActivateDistance)와 같은 구를 쓰되, 경계를 넘는 순간이 아니라 안에 있는 동안 계속 판정한다.
+    struct MapExitZoneHit
+    {
+        std::size_t index;
+        double distance;
+    };
+    [[nodiscard]] std::optional<MapExitZoneHit> FindExitZoneHit(
+        const MapTravelObservation& player, std::span<const MapAutoExit> exits, double radius) noexcept;
+    // 출구 구역에 든 셀을 이동이 시작될 때까지 기억한다(귀환이 거절된 동안 구를 지나쳐 나가도 다시 시도하게).
+    // 구역 안이면 그 셀, 같은 지도 팩 셀에 머무는 동안은 그대로, 셀이 바뀌거나 팩 밖이면 잊는다(0).
+    [[nodiscard]] std::uint32_t NextExitZoneLatch(std::uint32_t latchedCell, const MapTravelObservation& player, bool inZone) noexcept;
 
     class MapTravel
     {

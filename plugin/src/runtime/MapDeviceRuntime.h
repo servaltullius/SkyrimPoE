@@ -154,8 +154,13 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static double GetFallMargin() noexcept;
         // 입구로 옮긴 낙하 복귀 횟수(자동 시험 H10)
         [[nodiscard]] static std::size_t GetFallRecoveryCount();
+        // 출구 구역(결정 177 ③ 재보완)이 이동을 건 누적 횟수와, 켜져 있던 출구 문을 다시 끈 누적 수(자동 시험 H27)
+        [[nodiscard]] static std::size_t GetExitZoneTravelCount();
+        [[nodiscard]] static std::size_t GetExitDoorReenabledCount();
         // 셀이 다시 붙었을 때 남은 스폰으로 찾아 끄기를 요청한 누적 액터 수(결정 178 ⑦ 보완, 자동 시험 H23·H25)
         [[nodiscard]] static std::size_t GetLeftoverSweepCleanedCount() noexcept;
+        // 남은 스폰 청소가 Disable을 요청했고 아직 꺼진 것을 확인하지 못한 액터인지(자동 시험 H23·H25가 기다림)
+        [[nodiscard]] static bool IsLeftoverSweepPending(RE::FormID actorId);
         [[nodiscard]] static MapCellResetStatus GetCellResetStatus(RE::FormID cellId);
 
         // 주 갱신 스레드 전용: 안전 제거 일괄 정리 절차

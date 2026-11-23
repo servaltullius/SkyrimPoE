@@ -297,7 +297,7 @@
       travelStatus.hidden = !lastMapsData.travelInProgress && !lastMapsData.unauthorizedInPackCell;
       travelStatus.textContent = lastMapsData.travelInProgress
         ? `${lastMapsData.travelKind} · 이동 중`
-        : "입장 허가가 없습니다. 귀환 문이나 안전 탈출을 이용하세요.";
+        : "입장 허가가 없습니다. 귀환 문이나 출구, 안전 탈출을 이용하세요.";
     }
     if (btnSafeEscape) {
       btnSafeEscape.classList.toggle("hidden", !lastMapsData.unauthorizedInPackCell);

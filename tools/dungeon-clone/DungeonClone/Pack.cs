@@ -21,6 +21,9 @@ internal sealed class PackSpec
     [JsonRequired] public float AnchorMaxSnapDistance { get; set; }
     // 앵커끼리 이보다 가까우면 뒤의 것을 버린다(같은 자리에 무리가 겹치지 않게).
     [JsonRequired] public float AnchorMinSeparation { get; set; }
+    // 입구 마커와 앵커는 자동 출구에서 출구 구역 반경에 이 여유(유닛, 3차원)를 더한 거리보다 멀어야 한다.
+    // 들어오자마자, 또는 무리와 싸우다가 출구 구역에 걸리지 않게 한다(결정 177 ③ 재보완).
+    [JsonRequired] public float ExitZoneClearance { get; set; }
     [JsonRequired] public List<DungeonSpec> Dungeons { get; set; } = new();
 
     public static PackSpec Load(string path)
@@ -41,6 +44,7 @@ internal sealed class PackSpec
         if (AnchorMinDistanceFromEntry <= 0) throw new InvalidDataException("anchorMinDistanceFromEntry는 0보다 커야 합니다.");
         if (AnchorMaxSnapDistance <= 0) throw new InvalidDataException("anchorMaxSnapDistance는 0보다 커야 합니다.");
         if (AnchorMinSeparation <= 0) throw new InvalidDataException("anchorMinSeparation은 0보다 커야 합니다.");
+        if (!float.IsFinite(ExitZoneClearance) || ExitZoneClearance <= 0) throw new InvalidDataException("exitZoneClearance는 0보다 큰 유한한 수여야 합니다.");
         if (Dungeons.Count == 0) throw new InvalidDataException("dungeons가 비었습니다.");
         var keys = new HashSet<string>(StringComparer.Ordinal);
         var cells = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

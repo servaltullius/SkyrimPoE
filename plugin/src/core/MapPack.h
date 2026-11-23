@@ -13,7 +13,10 @@ namespace SkyrimPoE::Core
     // 결정 169·173: 복제 레코드와 스폰 원형의 로컬 FormID는 서로 다른 플러그인에 속한다.
     inline constexpr auto kMapsPluginName = "SkyrimPoE_Maps.esp";
     inline constexpr auto kMapsSourceMaster = "Skyrim.esm";
-    inline constexpr int kMapsManifestFormat = 3;
+    // 형식 4: 최상위 exitZoneRadius(결정 177 ③ 재보완)
+    inline constexpr int kMapsManifestFormat = 4;
+    // 손으로 고친 목록의 터무니없는 반경이 출구 판정을 망가뜨리지 않게 막는 상한(유닛). 엔진 기본값은 350이다.
+    inline constexpr double kMaxExitZoneRadius = 10000.0;
 
     struct MapAutoExit
     {
@@ -43,6 +46,8 @@ namespace SkyrimPoE::Core
     {
         std::uint32_t version = 0;
         std::string espSha256;
+        // 출구 구역 반경(유닛, 3차원). 복제 도구가 원본 GMST fAutoDoorActivateDistance를 옮긴 값이다.
+        double exitZoneRadius = 0.0;
         std::vector<MapDungeonDef> maps;
         MapDungeonDef arena;
 

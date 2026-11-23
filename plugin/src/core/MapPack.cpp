@@ -146,6 +146,12 @@ namespace SkyrimPoE::Core
         std::ranges::transform(pack.espSha256, pack.espSha256.begin(), [](char c) {
             return c >= 'A' && c <= 'F' ? static_cast<char>(c - 'A' + 'a') : c;
         });
+        const auto& radius = root.at("exitZoneRadius");
+        if (!radius.is_number() || !std::isfinite(radius.get<double>()) || radius.get<double>() <= 0.0 ||
+            radius.get<double>() > kMaxExitZoneRadius) {
+            throw std::runtime_error(std::format("exitZoneRadius는 0보다 크고 {} 이하인 실수여야 합니다.", kMaxExitZoneRadius));
+        }
+        pack.exitZoneRadius = radius.get<double>();
 
         std::unordered_set<std::string> keys;
         std::unordered_set<std::uint32_t> cells;

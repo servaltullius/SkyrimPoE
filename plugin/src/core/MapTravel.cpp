@@ -1,5 +1,6 @@
 #include "core/MapTravel.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace SkyrimPoE::Core
@@ -52,6 +53,37 @@ namespace SkyrimPoE::Core
     {
         const double z = player.position[2];
         return player.inPackCell && std::isfinite(z) && z < navmeshMinZ - margin;
+    }
+
+    std::optional<MapExitZoneHit> FindExitZoneHit(
+        const MapTravelObservation& player, std::span<const MapAutoExit> exits, double radius) noexcept
+    {
+        if (!player.inPackCell || !std::isfinite(radius) || radius <= 0.0 ||
+            !std::ranges::all_of(player.position, [](float axis) { return std::isfinite(axis); })) {
+            return std::nullopt;
+        }
+        std::optional<MapExitZoneHit> nearest;
+        for (std::size_t i = 0; i < exits.size(); ++i) {
+            const double dx = static_cast<double>(player.position[0]) - exits[i].position[0];
+            const double dy = static_cast<double>(player.position[1]) - exits[i].position[1];
+            const double dz = static_cast<double>(player.position[2]) - exits[i].position[2];
+            const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (std::isfinite(distance) && distance < radius && (!nearest || distance < nearest->distance)) {
+                nearest = MapExitZoneHit{ i, distance };
+            }
+        }
+        return nearest;
+    }
+
+    std::uint32_t NextExitZoneLatch(std::uint32_t latchedCell, const MapTravelObservation& player, bool inZone) noexcept
+    {
+        if (!player.inPackCell || player.cell == 0) {
+            return 0;
+        }
+        if (inZone) {
+            return player.cell;
+        }
+        return latchedCell == player.cell ? latchedCell : 0;
     }
 
     bool MapTravel::TryStart(MapTravelRequest request) noexcept

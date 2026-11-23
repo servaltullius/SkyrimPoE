@@ -5,6 +5,7 @@
   "anchorMinDistanceFromEntry": 600,
   "anchorMaxSnapDistance": 256,
   "anchorMinSeparation": 128,
+  "exitZoneClearance": 256,
   "dungeons": [
     {
       "key": "embershard",

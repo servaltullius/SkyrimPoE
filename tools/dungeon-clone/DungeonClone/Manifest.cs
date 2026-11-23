@@ -6,11 +6,15 @@ namespace SkyrimPoE.Tools.DungeonClone;
 
 internal sealed class PackManifest
 {
-    public const int CurrentFormat = 3;
+    // 형식 4: 출구 구역 반경(exitZoneRadius)을 더함(결정 177 ③ 재보완).
+    public const int CurrentFormat = 4;
 
     [JsonRequired] public int ManifestFormat { get; set; } = CurrentFormat;
     [JsonRequired] public string Plugin { get; set; } = "";
     [JsonRequired] public int PackVersion { get; set; }
+    // 출구 구역 반경(유닛, 3차원). 원본 마스터의 엔진 자동 문 발동 거리(GMST fAutoDoorActivateDistance)를 그대로 옮긴다.
+    // 런타임은 플레이어가 자동 출구 자리에서 이 거리 안이면 지도를 떠나게 하고, verify는 입구·앵커가 이 반경 밖인지 확인한다.
+    [JsonRequired] public float ExitZoneRadius { get; set; }
     // 함께 설치된 ESP가 이 목록과 짝인지 런타임이 확인한다(SHA-256, 소문자 16진수).
     [JsonRequired] public string EspSha256 { get; set; } = "";
     [JsonRequired] public string SourceMaster { get; set; } = "Skyrim.esm";
@@ -34,7 +38,8 @@ internal sealed class DungeonManifest
     public List<string>? AddNpcs { get; set; }
     // 직접 여는 바깥문(순간이동을 지움). 런타임은 이 문을 열면 귀환을 묻는다.
     [JsonRequired] public List<string> ReturnDoors { get; set; } = new();
-    // 닿으면 넘어가던 자동 문(순간이동을 지움). 그 너머는 빈 공간일 수 있다(실험 G-7).
+    // 닿으면 넘어가던 자동 문(순간이동을 지우고 처음부터 꺼 둠). 런타임은 이 자리를 중심으로 한 출구 구역으로 지도를 떠나게 한다.
+    // 그 너머는 빈 공간일 수 있다(실험 G-7).
     [JsonRequired] public List<AutoExit> AutoExits { get; set; } = new();
     // 다른 실내 칸으로 가던, 직접 여는 문(순간이동을 지움). 열어도 아무 데도 가지 않는다(물리적으로 막은 것은 아님).
     [JsonRequired] public List<string> SealedDoors { get; set; } = new();

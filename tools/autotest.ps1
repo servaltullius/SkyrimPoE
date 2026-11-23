@@ -8,7 +8,11 @@ param(
     [string]$TempSave = "SkyrimPoE_autotest",
     [bool]$Quit = $true,
     [ValidateRange(30, 7200)]
-    [int]$TimeoutSec
+    [int]$TimeoutSec,
+    # 조사용 단축 실행. h27이면 기준 세이브를 불러온 뒤 경로 탐침(H26·H27)만 돈다.
+    # 기존 위치 인자 호출(다섯 번째가 TimeoutSec)이 깨지지 않게 맨 뒤에 둔다.
+    [ValidateSet("", "h27")]
+    [string]$Only = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +58,9 @@ switch ($Action) {
             ("quit=" + ($Quit.ToString().ToLowerInvariant()))
             "consume_marker=true"
         )
+        if ($Only) {
+            $lines += "only=$Only"
+        }
         $timeoutDisplay = "DLL default"
         if ($PSBoundParameters.ContainsKey("TimeoutSec")) {
             $lines += "timeout_sec=$TimeoutSec"
@@ -68,7 +75,8 @@ switch ($Action) {
             }
             [System.IO.File]::WriteAllLines($markerPath, $lines, [System.Text.UTF8Encoding]::new($false))
             Write-Host "Armed AutoTest marker: $markerPath"
-            Write-Host "Target save: $cleanSave (temp_save=$cleanTemp, quit=$Quit, timeout=$timeoutDisplay)"
+            $onlyDisplay = if ($Only) { $Only } else { "all" }
+            Write-Host "Target save: $cleanSave (temp_save=$cleanTemp, quit=$Quit, timeout=$timeoutDisplay, only=$onlyDisplay)"
             Write-Host "Note: Skyrim is NOT launched by this script. Launch SKSE via MO2 when ready."
         }
     }

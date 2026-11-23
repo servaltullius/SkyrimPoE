@@ -40,6 +40,11 @@ namespace SkyrimPoE::Runtime
         constexpr RE::FormID kTamrielWorldspaceId = 0x0000003C;
         constexpr double kDeathEscapeReleaseCooldownSec = 1.5;
         constexpr double kFallRecoveryCooldownSec = 3.0;
+        // 결정 177 ③ 재보완: 출구 구역에 든 뒤 귀환이 거절되면 이 간격으로 다시 시도하고, 거절 안내는 이 간격보다 자주 띄우지 않는다.
+        constexpr double kExitZoneRetrySec = 0.5;
+        // 거절된 뒤에는 이 간격으로 다시 시도한다(보스 처치 처리 대기는 10초 안에 풀리고, 풀리지 않는 거절이 로그를 채우지 않게).
+        constexpr double kExitZoneRefusedRetrySec = 1.0;
+        constexpr double kExitZoneMessageSec = 3.0;
         constexpr double kMapActorDeleteDelaySec = 3.0;
         constexpr double kMapActorDeleteRetrySec = 1.0;
         // 이만큼(일시정지·로딩 제외) 조회되지 않으면 삭제를 포기한다. 비활성 상태로 남고 셀 초기화에 맡긴다.
@@ -150,6 +155,16 @@ namespace SkyrimPoE::Runtime
         std::vector<RE::FormID> g_sweepDisableRequested;
         double g_fallRecoveryCooldownSec = 0.0;
         std::size_t g_fallRecoveryCount = 0;
+        // 결정 177 ③ 재보완(g_mutex): 출구 구역에 든 지도 팩 셀. 이동이 시작돼 셀을 떠날 때까지(또는 불러오기·셀 변경까지)
+        // 귀환을 다시 시도한다. 0이면 없음.
+        RE::FormID g_exitZoneLatchCell = 0;
+        double g_exitZoneRetryCooldownSec = 0.0;
+        double g_exitZoneMessageCooldownSec = 0.0;
+        // 출구 구역이 이동을 건 횟수(자동 시험 H27)
+        std::size_t g_exitZoneTravelCount = 0;
+        // 출구 문이 켜져 있는지 확인한 지도 팩 셀(팩 밖으로 나가거나 불러오기 중이면 비워 다시 확인)과, 켜져 있어 다시 끈 수
+        RE::FormID g_exitDoorsCheckedCell = 0;
+        std::size_t g_exitDoorsReenabledCount = 0;
         std::atomic<std::uint64_t> g_deathEscapeRequestCount{ 0 };
         MapDeathEscapeRequestObservation g_lastDeathEscapeRequest;  // g_mutex
         // 셀이 막 바뀐 프레임(위치가 아직 옛 좌표일 수 있음)에는 낙하를 판정하지 않는다.
@@ -452,6 +467,59 @@ namespace SkyrimPoE::Runtime
             return ui && (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
         }
 
+        // 진단(2026-11-23 실행 19, H27 멈춤): 지도 팩 셀에서 플레이어가 출구 너머로 떨어지면 우리 낙하 복귀가 아닌 무언가가 화면을
+        // 어둡게 하고(FaderMenu) 던전 안쪽으로 옮겼고, 그 페이더가 100초 넘게 닫히지 않았다. 엔진의 "마지막 안전 위치로 되돌리기"
+        // (PlayerCharacter의 returnToLastKnownGoodPosition·lastKnownGoodPosition)인지 가르려고, 팩 셀 안에서 페이더 열림·닫힘과
+        // 우리 이동이 아닌 순간이동을 그때의 엔진 값과 함께 남긴다. 동작은 바꾸지 않는다.
+        struct FallSafetyProbe
+        {
+            bool faderOpen = false;
+            bool returnFlag = false;
+            std::optional<std::array<float, 3>> lastPos;
+            RE::FormID lastCell = 0;
+        };
+        FallSafetyProbe g_fallSafetyProbe;
+
+        void ObserveEngineFallSafety(RE::PlayerCharacter* player, const Core::MapTravelObservation& observation, bool travelPending)
+        {
+            auto& probe = g_fallSafetyProbe;
+            auto* ui = RE::UI::GetSingleton();
+            // observation.loading은 페이더도 로딩으로 본다. 페이더 열림을 보려고 로딩 화면일 때만 초기화한다.
+            const bool loadingMenu = ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
+            if (!player || loadingMenu || !observation.inPackCell) {
+                probe = {};
+                return;
+            }
+            const bool faderOpen = ui && ui->IsMenuOpen(RE::FaderMenu::MENU_NAME);
+            const bool mistOpen = ui && ui->IsMenuOpen(RE::MistMenu::MENU_NAME);
+            const auto& runtime = player->GetPlayerRuntimeData();
+            const bool returnFlag = runtime.playerFlags.returnToLastKnownGoodPosition;
+            const auto& good = runtime.lastKnownGoodPosition;
+            const auto& pos = observation.position;
+            const auto describe = [&]() {
+                return std::format("pos={:.0f},{:.0f},{:.0f}, lastKnownGood={:.0f},{:.0f},{:.0f}, returnFlag={}, fader={}, mist={}, travelPending={}, cell=0x{:08X}",
+                    pos[0], pos[1], pos[2], good.x, good.y, good.z, returnFlag, faderOpen, mistOpen, travelPending, observation.cell);
+            };
+            if (probe.lastCell == observation.cell && probe.lastPos) {
+                const auto& prev = *probe.lastPos;
+                const float dx = pos[0] - prev[0];
+                const float dy = pos[1] - prev[1];
+                const float dz = pos[2] - prev[2];
+                if (!travelPending && !faderOpen && dx * dx + dy * dy + dz * dz > 300.0f * 300.0f) {
+                    SKSE::log::info("MapDeviceRuntime: player jumped in pack cell from {:.0f},{:.0f},{:.0f} without our travel: {}.",
+                        prev[0], prev[1], prev[2], describe());
+                }
+            }
+            if (faderOpen != probe.faderOpen || returnFlag != probe.returnFlag) {
+                SKSE::log::info("MapDeviceRuntime: pack-cell fall safety changed (fader {}->{}, returnFlag {}->{}): {}.",
+                    probe.faderOpen, faderOpen, probe.returnFlag, returnFlag, describe());
+            }
+            probe.faderOpen = faderOpen;
+            probe.returnFlag = returnFlag;
+            probe.lastPos = pos;
+            probe.lastCell = observation.cell;
+        }
+
         Core::MapTravelObservation ObservePlayer(RE::PlayerCharacter* player)
         {
             const bool loading = IsTravelLoading();
@@ -727,10 +795,15 @@ namespace SkyrimPoE::Runtime
                 entry ? 1u : g_travelSettings.maxAttempts, g_travelSettings.timeoutSec
             };
             if (!entry) {
-                for (const auto id : TakeUndisabledSweepRequests()) {
+                const auto swept = TakeUndisabledSweepRequests();
+                for (const auto id : swept) {
                     if (std::ranges::find(waitForDisabled, id) == waitForDisabled.end()) {
                         waitForDisabled.push_back(id);
                     }
+                }
+                if (!swept.empty()) {
+                    SKSE::log::info("MapDeviceRuntime: return (kind={}) also waits for {} swept leftover actor(s) to be disabled.",
+                        static_cast<int>(kind), swept.size());
                 }
             }
             bool sync = false;
@@ -2268,6 +2341,20 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        // 귀환 문과 출구 구역(결정 177 ③ 재보완)이 함께 쓰는 지도 떠나기. 허가된 회차 셀이면 포털 귀환, 허가가 없거나 안전 제거
+        // 정리 상태면 안전 탈출. 이미 이동 중이면 아무것도 하지 않는다(nullopt).
+        std::optional<MapActionResult> LeaveMapThroughExit(RE::PlayerCharacter* player)
+        {
+            const auto status = MapDeviceRuntime::GetTravelStatus(player);
+            if (status.kind) {
+                return std::nullopt;
+            }
+            // 안전 제거 정리 뒤에도 갇히지 않도록 안전 탈출은 허용한다.
+            return status.unauthorized || MapDeviceRuntime::IsUninstallCleanupArmed()
+                ? MapDeviceRuntime::SafeEscape(player) : MapDeviceRuntime::ReturnPortal(player);
+        }
+
+        // 직접 여는 귀환 문의 활성화를 우리 귀환으로 바꾼다. 출구 자동 통로 문은 ESP에서 꺼 두고 출구 구역으로 판정한다.
         class MapReturnDoorSink final : public RE::BSTEventSink<RE::TESActivateEvent>
         {
         public:
@@ -2276,23 +2363,25 @@ namespace SkyrimPoE::Runtime
             {
                 if (event && event->actionRef && event->actionRef->IsPlayerRef() && event->objectActivated && g_queue) {
                     const auto generation = g_queue->CurrentGeneration();
-                    const auto cellId = MapPackRuntime::ReturnDoorCell(event->objectActivated->GetFormID());
+                    const auto doorId = event->objectActivated->GetFormID();
+                    const auto cellId = MapPackRuntime::ReturnDoorCell(doorId);
                     if (cellId != 0) {
                         const auto runId = MapDeviceRuntime::GetActiveRunId();
-                        g_queue->EnqueueForGeneration(generation, [cellId, runId]() {
+                        SKSE::log::info("MapDeviceRuntime: return door 0x{:08X} activated by the player in cell 0x{:08X} (run {}).",
+                            doorId, cellId, runId);
+                        g_queue->EnqueueForGeneration(generation, [cellId, runId, doorId]() {
                             if (MapDeviceRuntime::GetActiveRunId() != runId) {
                                 return;
                             }
                             auto* player = RE::PlayerCharacter::GetSingleton();
                             const auto observation = ObservePlayer(player);
                             if (observation.cell != cellId || observation.loading) {
+                                SKSE::log::info("MapDeviceRuntime: door 0x{:08X} return skipped (playerCell=0x{:08X}, expected=0x{:08X}, loading={}).",
+                                    doorId, observation.cell, cellId, observation.loading);
                                 return;
                             }
-                            const auto status = MapDeviceRuntime::GetTravelStatus(player);
-                            if (!status.kind) {
-                                // 안전 제거 정리 뒤에도 갇히지 않도록 안전 탈출은 허용한다.
-                                ShowMapMessage(status.unauthorized || MapDeviceRuntime::IsUninstallCleanupArmed()
-                                    ? MapDeviceRuntime::SafeEscape(player) : MapDeviceRuntime::ReturnPortal(player));
+                            if (const auto result = LeaveMapThroughExit(player)) {
+                                ShowMapMessage(*result);
                             }
                         });
                     }
@@ -2465,6 +2554,14 @@ namespace SkyrimPoE::Runtime
         if (!gamePaused && !observation.loading) {
             TickPendingActorDeletes(deltaSec);
         }
+        {
+            bool travelPending = false;
+            {
+                std::scoped_lock lk(g_mutex);
+                travelPending = PendingTravelKindLocked().has_value();
+            }
+            ObserveEngineFallSafety(player, observation, travelPending);
+        }
         if (observation.cell != g_activeCellFormId.load(std::memory_order_acquire) &&
             g_playerInActiveMapCell.exchange(false, std::memory_order_acq_rel)) {
             SyncMapLayer2ToStatEngine();
@@ -2485,6 +2582,8 @@ namespace SkyrimPoE::Runtime
         RE::FormID bossCheckFormId = 0;
         bool stableRunCell = false;
         RE::FormID leftoverSweepCell = 0;
+        bool exitZoneRequest = false;
+        RE::FormID exitDoorCheckCell = 0;
         const Core::MapDungeonDef* fallDungeon = nullptr;
         std::vector<std::pair<RE::FormID, std::uint64_t>> resetCandidates;
         {
@@ -2508,6 +2607,12 @@ namespace SkyrimPoE::Runtime
             if (observation.loading) {
                 g_lastObservedCell = 0;
                 g_leftoverSweptCell = 0;
+                g_exitDoorsCheckedCell = 0;
+                // 출구 구역 유지는 실제 로딩 화면에서만 푼다. 같은 셀의 페이드(낙하 복귀 등)로 풀면, 거절된 뒤 구역을 지나친
+                // 출구 귀환을 다시 걸 수 없다(Codex 검토 2026-11-24). 셀이 바뀌면 NextExitZoneLatch와 팩 밖 관측이 푼다.
+                if (auto* ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) {
+                    g_exitZoneLatchCell = 0;
+                }
             }
             if (g_endCheckAfterLoad && !observation.loading && observation.cell != 0) {
                 // 결정 175: 불러온 직후 셀을 못 읽었던 회차의 종료 판단을 셀이 확인된 뒤에 한다.
@@ -2536,6 +2641,8 @@ namespace SkyrimPoE::Runtime
                 const bool validDelta = std::isfinite(deltaSec) && deltaSec > 0.0;
                 if (validDelta) {
                     g_fallRecoveryCooldownSec = std::max(0.0, g_fallRecoveryCooldownSec - deltaSec);
+                    g_exitZoneRetryCooldownSec = std::max(0.0, g_exitZoneRetryCooldownSec - deltaSec);
+                    g_exitZoneMessageCooldownSec = std::max(0.0, g_exitZoneMessageCooldownSec - deltaSec);
                     AdvanceCellResetTimersLocked(deltaSec);
                 }
                 if (cellStable && !observation.inPackCell) {
@@ -2545,14 +2652,41 @@ namespace SkyrimPoE::Runtime
                     g_fallRecoveryStreak = 0;
                     g_fallSkipLogged = false;
                     g_leftoverSweptCell = 0;
+                    g_exitZoneLatchCell = 0;
+                    g_exitDoorsCheckedCell = 0;
                 }
                 if (cellStable && observation.inPackCell) {
                     const auto* dungeon = MapPackRuntime::FindDungeonByCell(observation.cell);
-                    belowMap = dungeon && Core::HasFallenBelowMap(observation, dungeon->navmeshMinZ, g_travelSettings.fallMargin);
                     const bool deathEscaping = g_deathEscapeRunId.load(std::memory_order_acquire) != 0;
+                    if (observation.cell != g_exitDoorsCheckedCell) {
+                        exitDoorCheckCell = observation.cell;
+                    }
+                    // 결정 177 ③ 재보완: 출구 구역은 같은 틱의 낙하 복귀보다 먼저 본다(출구에 닿았으면 지도를 떠나는 것이 맞다).
+                    // 한 번 구역에 들면 같은 셀에 있는 동안 이동이 시작될 때까지 다시 시도한다.
+                    const auto exitHit = dungeon
+                        ? Core::FindExitZoneHit(observation, dungeon->autoExits, MapPackRuntime::Manifest().exitZoneRadius)
+                        : std::nullopt;
+                    const auto latched = Core::NextExitZoneLatch(g_exitZoneLatchCell, observation, exitHit.has_value());
+                    if (exitHit && g_exitZoneLatchCell != latched) {
+                        const auto& exit = dungeon->autoExits[exitHit->index];
+                        SKSE::log::info("MapDeviceRuntime: entered the exit zone of {} exit 0x{:06X} at ({:.0f}, {:.0f}, {:.1f}), {:.0f} units "
+                                        "(radius {:.0f}); leaving the map (travelPending={}, deathEscape={}).",
+                            dungeon->key, exit.localId, observation.position[0], observation.position[1], observation.position[2],
+                            exitHit->distance, MapPackRuntime::Manifest().exitZoneRadius, pending.has_value(), deathEscaping);
+                    }
+                    g_exitZoneLatchCell = latched;
+                    // 사망 가로채기가 꺼져 있으면 deathEscaping이 서지 않으므로 플레이어 사망도 따로 본다(Codex 검토 2026-11-24).
+                    const bool playerDead = player && player->IsDead();
+                    if (latched != 0 && !pending && !deathEscaping && !playerDead && g_exitZoneRetryCooldownSec == 0.0) {
+                        exitZoneRequest = true;
+                        g_exitZoneRetryCooldownSec = kExitZoneRetrySec;
+                    }
+                    belowMap = dungeon && Core::HasFallenBelowMap(observation, dungeon->navmeshMinZ, g_travelSettings.fallMargin);
                     if (!belowMap) {
                         g_fallRecoveryStreak = 0;
                         g_fallSkipLogged = false;
+                    } else if (exitZoneRequest) {
+                        // 출구 구역의 이동을 이번 틱에 건다. 거절되면 다음 틱부터 낙하 복귀도 다시 판정한다.
                     } else if (!pending && g_fallRecoveryCooldownSec == 0.0 && !deathEscaping) {
                         fallDungeon = dungeon;
                         fallAuthorized = access.inActiveMap;
@@ -2582,12 +2716,13 @@ namespace SkyrimPoE::Runtime
                 if (g_activeMap.active && g_arenaPhaseInvulnSec > 0.0 && validDelta) {
                     g_arenaPhaseInvulnSec = std::max(0.0, g_arenaPhaseInvulnSec - deltaSec);
                 }
-                shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !belowMap && !g_spawnedForCurrentRun &&
+                shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !belowMap && g_exitZoneLatchCell == 0 &&
+                    !g_spawnedForCurrentRun &&
                     g_pendingSpawnRunId != 0 && g_pendingSpawnRunId == g_activeMap.runId;
                 // 남은 스폰 청소는 이동이 시작되지 않을 때만 한다. Disable은 작업 풀 예약이라, 같은 틱에 이동(낙하 복귀·안전 탈출·
                 // 사망 귀환)이 걸리면 셀이 떨어진 뒤 실행될 수 있다(결정 178 ⑥과 같은 위험). 청소를 마친 뒤에 그 셀을 기록한다.
                 if (cellStable && observation.inPackCell && observation.cell != g_leftoverSweptCell && !pending && !belowMap &&
-                    !fallDungeon && !escapeDamagedRun && g_deathEscapeRunId.load(std::memory_order_acquire) == 0) {
+                    !fallDungeon && !exitZoneRequest && !escapeDamagedRun && g_deathEscapeRunId.load(std::memory_order_acquire) == 0) {
                     leftoverSweepCell = observation.cell;
                 }
             }
@@ -2615,8 +2750,37 @@ namespace SkyrimPoE::Runtime
             SKSE::log::info("MapDeviceRuntime: ended a run loaded outside the pack once the player cell was known.");
             return;
         }
-        if (warnUnauthorized) {
-            RE::SendHUDMessage::ShowHUDMessage("입장 허가가 없습니다. 귀환 문이나 지도 탭의 안전 탈출을 이용하세요.");
+        if (exitDoorCheckCell != 0) {
+            const auto reenabled = MapPackRuntime::DisableEnabledExitDoors(exitDoorCheckCell);
+            std::scoped_lock lk(g_mutex);
+            g_exitDoorsCheckedCell = exitDoorCheckCell;
+            g_exitDoorsReenabledCount += reenabled;
+        }
+        if (warnUnauthorized && !exitZoneRequest) {
+            // 결정 177 ③ 재보완: 귀환 문이 없는 지도(파인문, 결투장)는 출구 구역으로 나갈 수 있으므로 함께 안내한다.
+            RE::SendHUDMessage::ShowHUDMessage("입장 허가가 없습니다. 귀환 문이나 출구, 지도 탭의 안전 탈출을 이용하세요.");
+        }
+        if (exitZoneRequest) {
+            if (const auto result = LeaveMapThroughExit(player)) {
+                bool show = false;
+                {
+                    std::scoped_lock lk(g_mutex);
+                    if (result->ok) {
+                        ++g_exitZoneTravelCount;
+                    } else {
+                        g_exitZoneRetryCooldownSec = kExitZoneRefusedRetrySec;
+                    }
+                    show = result->ok || g_exitZoneMessageCooldownSec == 0.0;
+                    if (show) {
+                        g_exitZoneMessageCooldownSec = kExitZoneMessageSec;
+                    }
+                }
+                if (show) {
+                    SKSE::log::info("MapDeviceRuntime: exit zone travel {} ({}).", result->ok ? "started" : "refused", result->message);
+                    ShowMapMessage(*result);
+                }
+            }
+            return;  // 다음 틱에서 이동 상태를 다시 관측한다.
         }
         if (fallDungeon) {
             {
@@ -2816,6 +2980,12 @@ namespace SkyrimPoE::Runtime
         return g_travelSettings.fallMargin;
     }
 
+    bool MapDeviceRuntime::IsLeftoverSweepPending(RE::FormID actorId)
+    {
+        std::scoped_lock lk(g_mutex);
+        return std::ranges::find(g_sweepDisableRequested, actorId) != g_sweepDisableRequested.end();
+    }
+
     std::size_t MapDeviceRuntime::GetLeftoverSweepCleanedCount() noexcept
     {
         return g_leftoverSweepCleaned.load(std::memory_order_relaxed);
@@ -2825,6 +2995,18 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lk(g_mutex);
         return g_fallRecoveryCount;
+    }
+
+    std::size_t MapDeviceRuntime::GetExitZoneTravelCount()
+    {
+        std::scoped_lock lk(g_mutex);
+        return g_exitZoneTravelCount;
+    }
+
+    std::size_t MapDeviceRuntime::GetExitDoorReenabledCount()
+    {
+        std::scoped_lock lk(g_mutex);
+        return g_exitDoorsReenabledCount;
     }
 
     MapCellResetStatus MapDeviceRuntime::GetCellResetStatus(RE::FormID cellId)
@@ -3722,6 +3904,10 @@ namespace SkyrimPoE::Runtime
             g_fallRecoveryStreak = 0;
             g_lastObservedCell = 0;
             g_leftoverSweptCell = 0;
+            g_exitZoneLatchCell = 0;
+            g_exitZoneRetryCooldownSec = 0.0;
+            g_exitZoneMessageCooldownSec = 0.0;
+            g_exitDoorsCheckedCell = 0;
             g_sweepDisableRequested.clear();
             g_fallSkipLogged = false;
             g_endCheckAfterLoad = false;
@@ -3853,6 +4039,10 @@ namespace SkyrimPoE::Runtime
         g_fallRecoveryStreak = 0;
         g_lastObservedCell = 0;
         g_leftoverSweptCell = 0;
+        g_exitZoneLatchCell = 0;
+        g_exitZoneRetryCooldownSec = 0.0;
+        g_exitZoneMessageCooldownSec = 0.0;
+        g_exitDoorsCheckedCell = 0;
         g_sweepDisableRequested.clear();
         g_fallSkipLogged = false;
         g_endCheckAfterLoad = false;
