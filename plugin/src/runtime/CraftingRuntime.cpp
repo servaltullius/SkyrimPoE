@@ -658,7 +658,7 @@ namespace SkyrimPoE::Runtime
         auto* tokenMisc = FormIds::Lookup<RE::TESObjectMISC>(tokenLocalId);
         auto* wisdomMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CurrencyLocalFormId(Core::CurrencyKind::ScrollOfWisdom));
         if (!tokenMisc || !wisdomMisc) {
-            res.message = "토큰 또는 지혜의 두루마리 폼을 찾을 수 없습니다.";
+            res.message = "토큰 또는 감정 주문서 폼을 찾을 수 없습니다.";
             return res;
         }
 
@@ -668,7 +668,7 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             if (CountBoundObjectInInventory(player, wisdomMisc) < 1) {
-                res.message = "지혜의 두루마리가 부족합니다.";
+                res.message = "감정 주문서가 부족합니다.";
                 return;
             }
 
@@ -722,7 +722,7 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            // 원자 반영: 토큰 1 + 지혜의 두루마리 1 차감 → AddObjectWithTrackedUniqueId로 엔진 최종 UID 확정 → ItemTracker 등록
+            // 원자 반영: 토큰 1 + 감정 주문서 1 차감 → AddObjectWithTrackedUniqueId로 엔진 최종 UID 확정 → ItemTracker 등록
             player->RemoveItem(tokenMisc, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
             player->RemoveItem(wisdomMisc, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
             bool untrackedLeft = false;
@@ -734,10 +734,10 @@ namespace SkyrimPoE::Runtime
                     res.message = "감정 장비의 고유 ID 추적에 실패했습니다. 장비는 어픽스 없이 가방에 들어갔고 토큰은 소모되었습니다.";
                     return;
                 }
-                // C-5: 추적 ID 확정 실패 시 차감한 토큰·지혜의 두루마리를 환불한다(장비는 들어가지 않았거나 되돌려짐).
+                // C-5: 추적 ID 확정 실패 시 차감한 토큰·감정 주문서를 환불한다(장비는 들어가지 않았거나 되돌려짐).
                 player->AddObjectToContainer(tokenMisc, nullptr, 1, nullptr);
                 player->AddObjectToContainer(wisdomMisc, nullptr, 1, nullptr);
-                res.message = "감정 장비의 고유 ID 추적에 실패해 토큰과 두루마리를 되돌렸습니다.";
+                res.message = "감정 장비의 고유 ID 추적에 실패해 토큰과 감정 주문서를 되돌렸습니다.";
                 return;
             }
             ItemTracker::Upsert(key, rolled, false);
@@ -763,7 +763,7 @@ namespace SkyrimPoE::Runtime
         auto* tokenMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kUniqueSealedToken);
         auto* wisdomMisc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CurrencyLocalFormId(Core::CurrencyKind::ScrollOfWisdom));
         if (!tokenMisc || !wisdomMisc) {
-            res.message = "고유 토큰 또는 지혜의 두루마리 폼을 찾을 수 없습니다.";
+            res.message = "고유 토큰 또는 감정 주문서 폼을 찾을 수 없습니다.";
             return res;
         }
 
@@ -773,7 +773,7 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             if (CountBoundObjectInInventory(player, wisdomMisc) < 1) {
-                res.message = "지혜의 두루마리가 부족합니다.";
+                res.message = "감정 주문서가 부족합니다.";
                 return;
             }
 
@@ -827,10 +827,10 @@ namespace SkyrimPoE::Runtime
                     res.message = "고유 아이템 추적 ID 등록에 실패했습니다. 베이스 아이템만 가방에 들어갔고 토큰은 소모되었습니다.";
                     return;
                 }
-                // C-5: 추적 ID 확정 실패 시 차감한 고유 토큰·지혜의 두루마리를 환불한다.
+                // C-5: 추적 ID 확정 실패 시 차감한 고유 토큰·감정 주문서를 환불한다.
                 player->AddObjectToContainer(tokenMisc, nullptr, 1, nullptr);
                 player->AddObjectToContainer(wisdomMisc, nullptr, 1, nullptr);
-                res.message = "고유 아이템 추적 ID 등록에 실패해 토큰과 두루마리를 되돌렸습니다.";
+                res.message = "고유 아이템 추적 ID 등록에 실패해 토큰과 감정 주문서를 되돌렸습니다.";
                 return;
             }
             ItemTracker::Upsert(key, rolled, false);
@@ -1047,7 +1047,7 @@ namespace SkyrimPoE::Runtime
 
         SaveLoad::RunSerializedTransaction([&]() {
             if (CountCurrency(player, Core::CurrencyKind::Jeweller) < 1) {
-                res.message = "쥬얼러의 오브가 부족합니다.";
+                res.message = "쥬얼러 오브가 부족합니다.";
                 return;
             }
 
@@ -1081,7 +1081,7 @@ namespace SkyrimPoE::Runtime
             }
 
             if (!ConsumeCurrency(player, Core::CurrencyKind::Jeweller, 1)) {
-                res.message = "쥬얼러의 오브 차감에 실패했습니다.";
+                res.message = "쥬얼러 오브 차감에 실패했습니다.";
                 return;
             }
             // C-30: 변경한 스킬 슬롯만 필드 단위로 병합

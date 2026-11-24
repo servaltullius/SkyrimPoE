@@ -191,7 +191,7 @@ CURRENCIES = [
     {
         "id": "ScrollOfWisdom",
         "enName": "Scroll of Wisdom",
-        "koName": "지혜의 두루마리",
+        "koName": "감정 주문서",
         "koDesc": "미감정 봉인 토큰을 감정해 장비와 어픽스를 확정합니다.",
         "dropWeight": 260,
         "worldDropTier": 0,
@@ -199,7 +199,7 @@ CURRENCIES = [
     {
         "id": "Transmutation",
         "enName": "Orb of Transmutation",
-        "koName": "변화의 오브",
+        "koName": "진화의 오브",
         "koDesc": "일반 장비를 매직 장비(어픽스 1~2개)로 업그레이드합니다.",
         "dropWeight": 190,
         "worldDropTier": 0,
@@ -207,7 +207,7 @@ CURRENCIES = [
     {
         "id": "Augmentation",
         "enName": "Orb of Augmentation",
-        "koName": "증폭의 오브",
+        "koName": "확장의 오브",
         "koDesc": "어픽스가 1개인 매직 장비에 새 어픽스를 1개 추가합니다.",
         "dropWeight": 160,
         "worldDropTier": 0,
@@ -215,7 +215,7 @@ CURRENCIES = [
     {
         "id": "Alteration",
         "enName": "Orb of Alteration",
-        "koName": "진화의 오브",
+        "koName": "변화의 오브",
         "koDesc": "매직 장비의 어픽스를 무작위로 다시 부여합니다.",
         "dropWeight": 170,
         "worldDropTier": 1,
@@ -279,7 +279,7 @@ CURRENCIES = [
     {
         "id": "Jeweller",
         "enName": "Jeweller's Orb",
-        "koName": "쥬얼러의 오브",
+        "koName": "쥬얼러 오브",
         "koDesc": "스킬·발동 젬의 보조 소켓 수를 1칸 늘립니다(최대 5칸).",
         "dropWeight": 90,
         "worldDropTier": 2,

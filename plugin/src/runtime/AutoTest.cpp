@@ -6015,7 +6015,7 @@ namespace SkyrimPoE::Runtime
                     g_eStrBefore, snapAfterGear->str, g_ePoeLifeBefore, snapAfterGear->poeMaxLife,
                     g_eFireResBefore, snapAfterGear->fireResist, g_ePermHpBefore, permHpAfter, circularBlocked));
 
-            // E5: 쥬얼러의 오브(스킬 젬 3->4->5 + 5 초과 거절 + 발동 젬 내부 주문 젬 3->4) & 후회의 오브 연동 회수
+            // E5: 쥬얼러 오브(스킬 젬 3->4->5 + 5 초과 거절 + 발동 젬 내부 주문 젬 3->4) & 후회의 오브 연동 회수
             (void)CraftingRuntime::GrantCurrency(player, Core::CurrencyKind::Jeweller, 5);
             const auto jw0 = CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Jeweller);
             const auto j1 = CraftingRuntime::ApplyJewellerToGem(0, 0);

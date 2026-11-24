@@ -1283,7 +1283,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "지혜의 두루마리"
+        "value": "감정 주문서"
       },
       {
         "field_path": "Model.File",
@@ -1305,7 +1305,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "변화의 오브"
+        "value": "진화의 오브"
       },
       {
         "field_path": "Model.File",
@@ -1327,7 +1327,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "증폭의 오브"
+        "value": "확장의 오브"
       },
       {
         "field_path": "Model.File",
@@ -1349,7 +1349,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "진화의 오브"
+        "value": "변화의 오브"
       },
       {
         "field_path": "Model.File",
@@ -1525,7 +1525,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "쥬얼러의 오브"
+        "value": "쥬얼러 오브"
       },
       {
         "field_path": "Model.File",

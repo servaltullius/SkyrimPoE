@@ -319,7 +319,7 @@ namespace SkyrimPoE::Core
         switch (orb) {
             case CurrencyKind::Transmutation:
                 if (item.rarity != ItemRarity::Normal) {
-                    return { CraftResultCode::InvalidRarity, "변화의 오브는 일반 장비에만 사용할 수 있습니다." };
+                    return { CraftResultCode::InvalidRarity, "진화의 오브는 일반 장비에만 사용할 수 있습니다." };
                 }
                 if (!hasAnyFreshCandidate()) {
                     return { CraftResultCode::NoEligibleAffix, "이 장비에 부여 가능한 어픽스가 없습니다." };
@@ -328,7 +328,7 @@ namespace SkyrimPoE::Core
 
             case CurrencyKind::Augmentation:
                 if (item.rarity != ItemRarity::Magic) {
-                    return { CraftResultCode::InvalidRarity, "증폭의 오브는 매직 장비에만 사용할 수 있습니다." };
+                    return { CraftResultCode::InvalidRarity, "확장의 오브는 매직 장비에만 사용할 수 있습니다." };
                 }
                 if (counts.prefixes >= 1 && counts.suffixes >= 1) {
                     return { CraftResultCode::AffixLimitReached, "매직 장비의 접두·접미 자리가 이미 가득 찼습니다." };
@@ -340,7 +340,7 @@ namespace SkyrimPoE::Core
 
             case CurrencyKind::Alteration:
                 if (item.rarity != ItemRarity::Magic) {
-                    return { CraftResultCode::InvalidRarity, "진화의 오브는 매직 장비에만 사용할 수 있습니다." };
+                    return { CraftResultCode::InvalidRarity, "변화의 오브는 매직 장비에만 사용할 수 있습니다." };
                 }
                 if (!hasAnyFreshCandidate()) {
                     return { CraftResultCode::NoEligibleAffix, "이 장비에 부여 가능한 어픽스가 없습니다." };
@@ -497,7 +497,7 @@ namespace SkyrimPoE::Core
     {
         if (gemKind == GemKind::Support || gemKind == GemKind::Aura ||
             gemKind == GemKind::Herald || gemKind == GemKind::Unknown) {
-            return { CraftResultCode::UnsupportedTarget, "보조·오라·전령 젬에는 쥬얼러의 오브를 사용할 수 없습니다." };
+            return { CraftResultCode::UnsupportedTarget, "보조·오라·전령 젬에는 쥬얼러 오브를 사용할 수 없습니다." };
         }
         if (gem.socketCount >= kMaxGemSockets) {
             return { CraftResultCode::AlreadyMaxSockets, "이미 최대 보조 소켓(5칸)에 도달한 젬입니다." };

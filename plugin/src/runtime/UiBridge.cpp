@@ -1062,7 +1062,7 @@ namespace SkyrimPoE::Runtime
                 charmsJ["bagCounts"] = std::move(cBag);
                 gearJ["charms"] = std::move(charmsJ);
 
-                // 쥬얼러의 오브 대상 젬 목록(장착 스킬/발동 젬 + 발동 젬 내부 주문 젬)
+                // 쥬얼러 오브 대상 젬 목록(장착 스킬/발동 젬 + 발동 젬 내부 주문 젬)
                 json jewArr = json::array();
                 for (std::size_t i = 0; i < state.slots.size(); ++i) {
                     const auto& s = state.slots[i];

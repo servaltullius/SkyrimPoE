@@ -97,7 +97,7 @@ namespace SkyrimPoE::Runtime
             Core::ItemRarity rarity,
             Core::TokenSlotGroup slotGroup);
 
-        // 5단계(결정 164): 고유 봉인 토큰 + 지혜의 두루마리로 16종 PoE1 고유 아이템 중 1종 감정(forcedUniqueId 비우면 랜덤)
+        // 5단계(결정 164): 고유 봉인 토큰 + 감정 주문서로 16종 PoE1 고유 아이템 중 1종 감정(forcedUniqueId 비우면 랜덤)
         [[nodiscard]] static CraftActionResult IdentifyUniqueToken(std::string_view forcedUniqueId = {});
 
         [[nodiscard]] static CraftActionResult ApplyOrbToItem(
@@ -106,7 +106,7 @@ namespace SkyrimPoE::Runtime
             std::uint16_t uniqueId,
             bool preferEquipped = false);
 
-        // slotIndex의 주 젬 또는 발동 젬 내부 주문 젬(triggeredSpellInstanceId != 0)에 쥬얼러의 오브 적용
+        // slotIndex의 주 젬 또는 발동 젬 내부 주문 젬(triggeredSpellInstanceId != 0)에 쥬얼러 오브 적용
         [[nodiscard]] static CraftActionResult ApplyJewellerToGem(
             std::uint8_t slotIndex,
             std::uint64_t triggeredSpellInstanceId = 0);

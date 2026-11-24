@@ -369,7 +369,7 @@
     tokenListEl.textContent = "";
     const currencies = (gear && gear.currencies) || [];
     const wisdomCount = currencies[KIND_WISDOM] ? currencies[KIND_WISDOM].count : 0;
-    wisdomCountEl.textContent = `지혜의 두루마리 ${wisdomCount}개`;
+    wisdomCountEl.textContent = `감정 주문서 ${wisdomCount}개`;
 
     const tokens = (gear && gear.tokens) || [];
     if (tokens.length === 0) {
@@ -412,7 +412,7 @@
     jewellerListEl.textContent = "";
     const currencies = (gear && gear.currencies) || [];
     const jewellerCount = currencies[KIND_JEWELLER] ? currencies[KIND_JEWELLER].count : 0;
-    jewellerCountEl.textContent = `쥬얼러의 오브 ${jewellerCount}개`;
+    jewellerCountEl.textContent = `쥬얼러 오브 ${jewellerCount}개`;
 
     const targets = (gear && gear.jewellerTargets) || [];
     if (targets.length === 0) {

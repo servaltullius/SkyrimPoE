@@ -87,7 +87,7 @@ namespace SkyrimPoE::Core
             const std::unordered_set<std::string>& itemTags,
             const ItemData& data);
 
-        // 쥬얼러의 오브: 스킬·발동 젬 및 발동 젬 내부 주문 젬의 보조 소켓을 +1 확정 확장(최대 5).
+        // 쥬얼러 오브: 스킬·발동 젬 및 발동 젬 내부 주문 젬의 보조 소켓을 +1 확정 확장(최대 5).
         // 보조 젬(Support)은 거부하고, 5소켓 도달 젬은 AlreadyMaxSockets로 거부해 낭비를 방지한다(검수 M5).
         [[nodiscard]] static CraftOutcome ApplyJewellerToGem(
             GemInstance& gem,
