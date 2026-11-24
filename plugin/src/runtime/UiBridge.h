@@ -3,6 +3,7 @@
 #include "core/CharmSystem.h"
 #include "core/CommandQueue.h"
 #include "core/DataPack.h"
+#include "core/EnemyEsHud.h"
 #include "core/EnergyShield.h"
 #include "core/ItemData.h"
 #include "core/PassiveTreeData.h"
@@ -41,6 +42,8 @@ namespace SkyrimPoE::Runtime
         static void ClosePanelOnMainThread();
 
         [[nodiscard]] static bool IsPanelOpen() noexcept;
+        // 결정 185: 적 ES 표시로 마지막에 보낸 값(주 갱신 스레드 전용, AutoTest -Only es가 읽음)
+        [[nodiscard]] static Core::EnemyEsView GetLastEnemyEsViewForTest();
         [[nodiscard]] static bool IsDomReady() noexcept;
         [[nodiscard]] static bool IsHudShown() noexcept;
         [[nodiscard]] static bool IsSearchFocused() noexcept;

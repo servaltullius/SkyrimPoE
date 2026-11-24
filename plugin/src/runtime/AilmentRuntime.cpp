@@ -288,15 +288,15 @@ namespace SkyrimPoE::Runtime
 
             if (dot.firePoeDamage > 0.0) {
                 const double skDmg = Core::ConvertOffenseHit(dot.firePoeDamage, exileLevel, *g_dataPack, *g_config);
-                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Fire, false, false);
+                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Fire, false, false, true);
             }
             if (dot.physPoeDamage > 0.0 && !actor->IsDead()) {
                 const double skDmg = Core::ConvertOffenseHit(dot.physPoeDamage, exileLevel, *g_dataPack, *g_config);
-                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Physical, false, false);
+                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Physical, false, false, true);
             }
             if (dot.chaosPoeDamage > 0.0 && !actor->IsDead()) {
                 const double skDmg = Core::ConvertOffenseHit(dot.chaosPoeDamage, exileLevel, *g_dataPack, *g_config);
-                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Chaos, false, true);
+                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Chaos, false, true, true);
             }
         }
     }

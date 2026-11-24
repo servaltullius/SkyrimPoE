@@ -5,6 +5,7 @@
 #include "core/StatEngine.h"
 #include "core/Types.h"
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -32,6 +33,17 @@ namespace SkyrimPoE::Runtime
 
         // 주 갱신 스레드 틱: 0.5s 주기 고프로세스 적대 액터 선승격 + 적 ES 재충전 + 헤드헌터 버프 타이머
         static void Tick(double deltaSec, bool gamePaused);
+
+        // 결정 185: 적 ES 표시용 마지막 교전 적(플레이어가 맞혔거나 플레이어를 맞힌 적). 아무 스레드에서나 부를 수 있다.
+        // 대상과 시각을 64비트 원자 변수 하나에 함께 담아 서로 다른 교전이 섞이지 않는다.
+        // 부르는 쪽이 실제 타격(지속 피해 틱·회피·막음 제외)이고 적(아군 아님)일 때만 부른다.
+        struct EngagedEnemy
+        {
+            RE::FormID actorId = 0;
+            double ageSec = -1.0;  // 기록이 없으면 음수
+        };
+        static void NoteEngagedEnemy(RE::FormID actorId) noexcept;
+        [[nodiscard]] static EngagedEnemy GetLastEngagedEnemy() noexcept;
 
         // 스레드 안전 조회·적용(CombatHooks 워커 스레드 포함)
         [[nodiscard]] static std::optional<Core::MonsterProfile> GetProfileCopy(RE::FormID actorId);

@@ -87,6 +87,50 @@ html, body {
   background: linear-gradient(90deg, #b88a32, #f1ca69);
 }
 
+/* ---- 적 ES 표시(결정 185): 화면 위 가운데, 나침반 아래 ---- */
+.enemy-es-root {
+  position: fixed;
+  top: 92px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 320px;
+  pointer-events: none;
+  padding: 5px 8px 6px;
+  background: rgba(10, 10, 14, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 4px;
+}
+
+.enemy-es-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 3px;
+  font-size: 12px;
+}
+
+.enemy-es-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #e8e2d4;
+  font-weight: 600;
+}
+
+.enemy-es-name.rarity-magic { color: #8ab8ff; }
+.enemy-es-name.rarity-rare { color: #f6d574; }
+
+.enemy-es-text {
+  font-size: 11px;
+  color: #9fd8f0;
+}
+
+.enemy-es-track {
+  height: 6px;
+}
+
 /* ---- 스킬 패널 ---- */
 .panel-backdrop {
   position: fixed;

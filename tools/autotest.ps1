@@ -10,8 +10,9 @@ param(
     [ValidateRange(30, 7200)]
     [int]$TimeoutSec,
     # 조사용 단축 실행. h27이면 기준 세이브를 불러온 뒤 경로 탐침(H26·H27)만 돈다.
+    # es이면 적 ES 표시 시험(ES1~ES5, 결정 185)만 돈다.
     # 기존 위치 인자 호출(다섯 번째가 TimeoutSec)이 깨지지 않게 맨 뒤에 둔다.
-    [ValidateSet("", "h27")]
+    [ValidateSet("", "h27", "es")]
     [string]$Only = ""
 )
 

@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <set>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -101,6 +102,8 @@ namespace SkyrimPoE::Runtime
             double globalTimeoutSec = kDefaultAutoTestTimeoutSec;
             // 조사용 단축 실행. "h27"이면 기준 세이브를 불러온 뒤 곧바로 경로 탐침(H26·H27)만 돌고 끝낸다(앞 시나리오 상태 없이).
             bool routeOnly = false;
+            // 결정 185 확인용 단축 실행. "es"이면 기준 세이브를 불러온 뒤 적 ES 표시 시험(ES1~ES5)만 돌고 끝낸다.
+            bool enemyEsOnly = false;
         };
 
         enum class Phase : std::uint8_t
@@ -207,6 +210,7 @@ namespace SkyrimPoE::Runtime
             ScenarioH_Contract,
             ScenarioH_UninstallPrepare,
             ScenarioH_UninstallVerifyWait,
+            EnemyEsOnly,
             QuitDelay,
             Done
         };
@@ -316,6 +320,7 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioH_Contract: return "ScenarioH_Contract";
             case Phase::ScenarioH_UninstallPrepare: return "ScenarioH_UninstallPrepare";
             case Phase::ScenarioH_UninstallVerifyWait: return "ScenarioH_UninstallVerifyWait";
+            case Phase::EnemyEsOnly: return "EnemyEsOnly";
             case Phase::QuitDelay: return "QuitDelay";
             case Phase::Done: return "Done";
             default: return "Unknown";
@@ -339,6 +344,49 @@ namespace SkyrimPoE::Runtime
         std::uint64_t g_fProjLaunchedBefore = 0;
         std::uint64_t g_fProjImpactsBefore = 0;
         RE::ActorHandle g_fTargetHandle{};
+
+        // 결정 185 적 ES 표시 단축 시험(-Only es). A(레어, ES 300)·B(매직, ES 300)·C(ES 없음)를 AI를 끈 채 세우고
+        // 플레이어 직접 피해로 "마지막 교전 적"을 바꿔 가며 UiBridge가 마지막으로 보낸 표시 값을 본다. 조준점 경로는 보지 않는다.
+        constexpr std::array<const char*, 7> kEnemyEsCheckNames{ "ES1_EngagedRareTarget", "ES2_SwitchToSameEsTarget",
+            "ES3_NoEsEngagedHides", "ES6_IncomingHitTarget", "ES7_DamageOverTimeKeepsTarget", "ES4_DeadTargetHides",
+            "ES5_EngagedHoldExpires" };
+        constexpr int kEnemyEsOnlyChecks = static_cast<int>(kEnemyEsCheckNames.size());
+        constexpr double kEnemyEsWaitSec = 2.0;
+        constexpr double kEnemyEsTestMaxEs = 300.0;
+        // 결정 185의 유지 시간. 제품 상수(Core::kEnemyEsEngagedHoldSec)가 바뀌면 시험이 잡도록 따로 둔다.
+        constexpr double kEnemyEsExpectedHoldSec = 5.0;
+        struct EnemyEsTestState
+        {
+            int step = 0;
+            double stepStarted = 0.0;
+            RE::ActorHandle a{};
+            RE::ActorHandle b{};
+            RE::ActorHandle c{};
+            Core::EnemyEsView viewAfterA{};
+            bool lastEngageOk = false;
+            bool incomingStarted = false;
+            bool shownBeforeIncoming = false;
+            int incomingTries = 0;
+            bool igniteSeen = false;
+            bool dotStoleEngagement = false;
+            bool visibleAt3s = false;
+            std::set<std::string_view> reported;
+        };
+        EnemyEsTestState g_esTest{};
+
+        // 적 ES 단축 시험의 액터를 죽이고 끈다(정상 끝·실패·시간 초과 모두. 이 시험은 저장하지 않음).
+        void CleanupEnemyEsActors()
+        {
+            for (auto* handle : { &g_esTest.a, &g_esTest.b, &g_esTest.c }) {
+                if (auto actor = handle->get()) {
+                    if (!actor->IsDead()) {
+                        actor->KillImmediate();
+                    }
+                    actor->Disable();
+                }
+                *handle = {};
+            }
+        }
         Core::InventoryItemKey g_fStarforgeKey{};
         std::uint32_t g_fSocketNodeId = 0;
         std::uint16_t g_fExpectedAuraMask = 0;
@@ -958,6 +1006,10 @@ namespace SkyrimPoE::Runtime
 
         void ReportMissingHChecks(const std::string& reason)
         {
+            // 적 ES 단축 실행(-Only es)은 H를 돌지 않으므로 H 체크를 기대하지 않는다.
+            if (g_cfg.enemyEsOnly) {
+                return;
+            }
             for (std::size_t i = 0; i < kHChecks.size(); ++i) {
                 const std::string_view name = kHChecks[i];
                 if (g_cfg.routeOnly && name != kHBossRouteCheck && name != kHExitRouteCheck) {
@@ -1001,6 +1053,9 @@ namespace SkyrimPoE::Runtime
         {
             if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
                 return;
+            }
+            if (g_cfg.enemyEsOnly) {
+                CleanupEnemyEsActors();
             }
             // 체크포인트 복원으로 돌아가기 전에 뺀다. 불러온 저장은 결투장 전 것이라 여유가 없다.
             ClearHArenaHealthBuffer(RE::PlayerCharacter::GetSingleton());
@@ -1052,12 +1107,12 @@ namespace SkyrimPoE::Runtime
             }
             // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
             // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
-            const int expectedChecks = g_cfg.routeOnly ? 2 : kExpectedAutoTestChecks;
+            const int expectedChecks = g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks : kExpectedAutoTestChecks;
             const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
             const auto summary = std::format(
                 "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={}{} ===",
                 g_passCount, expectedChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL",
-                g_cfg.routeOnly ? " (route-only investigation run)" : "");
+                g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" : "");
             SKSE::log::info("AutoTest {}", summary);
             if (g_report.is_open()) {
                 g_report << summary << '\n';
@@ -1217,8 +1272,12 @@ namespace SkyrimPoE::Runtime
                     const auto mode = ToLowerAscii(val);
                     if (mode == "h27") {
                         out.routeOnly = true;
+                        out.enemyEsOnly = false;
+                    } else if (mode == "es") {
+                        out.enemyEsOnly = true;
+                        out.routeOnly = false;
                     } else if (!mode.empty()) {
-                        SKSE::log::error("AutoTest: unknown only='{}' in the marker; supported: h27.", mode);
+                        SKSE::log::error("AutoTest: unknown only='{}' in the marker; supported: h27, es.", mode);
                         return false;
                     }
                 } else if (key == "timeout_sec") {
@@ -4554,6 +4613,13 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!domReady && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            if (g_cfg.enemyEsOnly) {
+                // 결정 185 확인용 단축 실행: 앞 시나리오 없이 적 ES 표시 시험만 돌고 끝낸다(체크포인트 없음, 저장하지 않음).
+                LogInfo("Enemy-ES investigation run: skipping scenarios A-H and running ES1-ES7 only.");
+                g_esTest = {};
+                EnterPhase(Phase::EnemyEsOnly);
                 break;
             }
             if (g_cfg.routeOnly) {
@@ -9058,6 +9124,223 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             EnterPhase(Phase::ScenarioH_UninstallVerifyWait);
+            break;
+        }
+
+        case Phase::EnemyEsOnly: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                break;
+            }
+            const double now = PhaseElapsedSec();
+            const double waited = now - g_esTest.stepStarted;
+            const auto next = [&](int step) {
+                g_esTest.step = step;
+                g_esTest.stepStarted = now;
+            };
+            // 플레이어 직접 피해(작은 값)로 "마지막 교전 적"을 그 대상으로 바꾼다(DealDirectSkillDamage가 기록).
+            const auto engage = [](RE::Actor* actor) {
+                const bool ok = actor && SkillExecution::DealDirectSkillDamage(actor, 10.0, Core::DamageType::Physical, true, false);
+                g_esTest.lastEngageOk = ok;
+                return ok;
+            };
+            const auto view = UiBridge::GetLastEnemyEsViewForTest();
+            const auto engagedId = MonsterRuntime::GetLastEngagedEnemy().actorId;
+            const auto describe = [&](std::string_view label) {
+                return std::format("{}: view visible={}, formId=0x{:08X}, rarity={}, ES {}/{} fill={}, engaged=0x{:08X}, "
+                                   "last engage ok={}, after {:.2f}s",
+                    label, view.visible, view.formId, static_cast<int>(view.rarity), view.current, view.max, view.fillPermille,
+                    engagedId, g_esTest.lastEngageOk, waited);
+            };
+            const auto failRemaining = [&](std::string_view reason) {
+                for (const auto* name : kEnemyEsCheckNames) {
+                    if (!g_esTest.reported.contains(name)) {
+                        Check(name, false, std::string(reason));
+                    }
+                }
+            };
+            const auto report = [&](const char* name, bool ok, const std::string& detail) {
+                g_esTest.reported.insert(name);
+                Check(name, ok, detail);
+            };
+            auto a = g_esTest.a.get();
+            auto bActor = g_esTest.b.get();
+            auto c = g_esTest.c.get();
+            const auto shows = [&](const RE::NiPointer<RE::Actor>& actor) {
+                return view.visible && actor && view.formId == actor->GetFormID();
+            };
+            switch (g_esTest.step) {
+            case 0:
+                // 조준점(화면 가운데)에 걸리지 않게 좌우와 뒤에 세운다.
+                g_esTest.a = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 0.0f, 260.0f, 2500.0f, false);
+                g_esTest.b = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 0.0f, -260.0f, 2500.0f, false);
+                g_esTest.c = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, -260.0f, 0.0f, 2500.0f, false);
+                next(1);
+                break;
+            case 1: {
+                const bool loaded = a && bActor && c && a->Is3DLoaded() && bActor->Is3DLoaded() && c->Is3DLoaded();
+                if (!loaded) {
+                    if (waited >= 8.0) {
+                        failRemaining("The three test actors did not load within 8 s.");
+                        FinishAndScheduleQuit("Enemy-ES run could not load its test actors.");
+                    }
+                    break;
+                }
+                // 스스로 움직이거나 공격해 "마지막 교전 적"을 바꾸지 않게 AI를 끈다(ES6은 시험이 직접 공격을 넣음).
+                for (auto* actor : { a.get(), bActor.get(), c.get() }) {
+                    actor->EnableAI(false);
+                }
+                // A와 B는 희귀도·최대 ES가 같고 같은 피해를 받아, 화면 값에서 다른 것은 대상(FormID)뿐이다(ES2).
+                const auto esMask = static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::EnergyShielded));
+                MonsterRuntime::ForcePromoteForTest(a.get(), Core::MonsterRarity::Rare, esMask, kEnemyEsTestMaxEs);
+                MonsterRuntime::ForcePromoteForTest(bActor.get(), Core::MonsterRarity::Rare, esMask, kEnemyEsTestMaxEs);
+                MonsterRuntime::ForcePromoteForTest(c.get(), Core::MonsterRarity::Normal, 0, -1.0);  // 프로필 없음(ES 0)
+                (void)engage(a.get());
+                next(2);
+                break;
+            }
+            case 2: {
+                const bool ok = shows(a) && view.rarity == Core::MonsterRarity::Rare &&
+                    view.max == static_cast<int>(kEnemyEsTestMaxEs) && view.current > 0 && view.current < view.max &&
+                    view.fillPermille > 0 && view.fillPermille < 1000;
+                if (!ok && waited < kEnemyEsWaitSec) {
+                    break;
+                }
+                g_esTest.viewAfterA = view;
+                report("ES1_EngagedRareTarget", ok, describe("rare A after a player hit"));
+                (void)engage(bActor.get());
+                next(3);
+                break;
+            }
+            case 3: {
+                // B는 A와 같은 값이라 FormID가 바뀌었는지만으로 전환을 판정한다.
+                const bool sameValues = view.rarity == g_esTest.viewAfterA.rarity && view.current == g_esTest.viewAfterA.current &&
+                    view.max == g_esTest.viewAfterA.max && view.fillPermille == g_esTest.viewAfterA.fillPermille;
+                const bool ok = shows(bActor) && sameValues;
+                if (!ok && waited < kEnemyEsWaitSec) {
+                    break;
+                }
+                report("ES2_SwitchToSameEsTarget", ok,
+                    std::format("{}; same values as A={}", describe("B with A's values after hitting B"), sameValues));
+                (void)engage(c.get());
+                next(4);
+                break;
+            }
+            case 4: {
+                const bool engagedC = c && engagedId == c->GetFormID();
+                const bool ok = !view.visible && engagedC;
+                if (!ok && waited < kEnemyEsWaitSec) {
+                    break;
+                }
+                report("ES3_NoEsEngagedHides", ok, describe("no-ES C engaged last"));
+                (void)engage(a.get());
+                g_esTest.incomingTries = 0;
+                next(5);
+                break;
+            }
+            case 5: {
+                // ES6: A를 보이게 한 뒤 B가 플레이어를 치면(회피되면 다시 침) 마지막 교전 적이 B로 바뀌어야 한다.
+                if (!g_esTest.incomingStarted) {
+                    if (!shows(a) && waited < kEnemyEsWaitSec) {
+                        break;
+                    }
+                    g_esTest.incomingStarted = true;
+                    g_esTest.shownBeforeIncoming = shows(a);
+                }
+                const bool switched = bActor && engagedId == bActor->GetFormID() && shows(bActor);
+                if (!switched && g_esTest.incomingTries < 10 && waited < 6.0) {
+                    if (bActor && waited >= 0.3 * (g_esTest.incomingTries + 1)) {
+                        ++g_esTest.incomingTries;
+                        CallDealDamage(bActor.get(), player, nullptr, false);
+                    }
+                    break;
+                }
+                report("ES6_IncomingHitTarget", g_esTest.shownBeforeIncoming && switched,
+                    std::format("{}; A shown before={}, incoming hits sent={}",
+                        describe("B after hitting the player"), g_esTest.shownBeforeIncoming, g_esTest.incomingTries));
+                // ES7 준비: A에 점화를 걸고 B를 마지막 교전 적으로 둔다.
+                if (a) {
+                    Core::DamagePacket firePkt{};
+                    firePkt.byType[static_cast<std::size_t>(Core::DamageType::Fire)] = { 120.0, 120.0 };
+                    (void)AilmentRuntime::ApplyPlayerHitAilments(
+                        a.get(), firePkt, true, AilmentRuntime::HitKind::Attack, 100.0, false, 100.0, 100.0);
+                }
+                (void)engage(bActor.get());
+                g_esTest.igniteSeen = false;
+                next(6);
+                break;
+            }
+            case 6: {
+                // ES7: A의 점화 틱(지속 피해)이 이어지는 동안에도 마지막 교전 적과 표시는 B로 남아야 한다.
+                if (a) {
+                    if (const auto ail = AilmentRuntime::GetStateCopy(a->GetFormID()); ail && ail->igniteRemaining > 0.0) {
+                        g_esTest.igniteSeen = true;
+                    }
+                }
+                if (waited < 1.5) {
+                    if (!(bActor && engagedId == bActor->GetFormID())) {
+                        g_esTest.dotStoleEngagement = true;
+                    }
+                    break;
+                }
+                const bool ok = g_esTest.igniteSeen && !g_esTest.dotStoleEngagement && shows(bActor) &&
+                    bActor && engagedId == bActor->GetFormID();
+                report("ES7_DamageOverTimeKeepsTarget", ok,
+                    std::format("{}; ignite on A seen={}, engagement moved during ticks={}",
+                        describe("B while A burns"), g_esTest.igniteSeen, g_esTest.dotStoleEngagement));
+                (void)engage(a.get());
+                next(7);
+                break;
+            }
+            case 7: {
+                const bool shownA = shows(a);
+                if (!shownA && waited < kEnemyEsWaitSec) {
+                    break;
+                }
+                if (!shownA) {
+                    report("ES4_DeadTargetHides", false, describe("A was not shown before the kill"));
+                    (void)engage(bActor.get());
+                    next(9);
+                    break;
+                }
+                a->KillImmediate();
+                next(8);
+                break;
+            }
+            case 8: {
+                const bool ok = !view.visible;
+                if (!ok && waited < kEnemyEsWaitSec) {
+                    break;
+                }
+                report("ES4_DeadTargetHides", ok, describe("after killing the shown A"));
+                (void)engage(bActor.get());
+                next(9);
+                break;
+            }
+            case 9:
+                // 마지막 교전 뒤 3초에는 아직 보여야 한다. 시각은 교전 때부터 계속 잰다(단계 시작 시각을 바꾸지 않음).
+                if (waited < 3.0) {
+                    break;
+                }
+                g_esTest.visibleAt3s = shows(bActor);
+                g_esTest.step = 10;
+                break;
+            case 10: {
+                // 결정 185의 유지 시간 5초가 지나면 숨어야 한다(제품 상수가 아니라 결정값으로 판정).
+                if (view.visible && waited < 8.0) {
+                    break;
+                }
+                const bool hiddenInWindow = !view.visible && waited >= kEnemyEsExpectedHoldSec - 0.2 &&
+                    waited <= kEnemyEsExpectedHoldSec + 1.0;
+                report("ES5_EngagedHoldExpires", g_esTest.visibleAt3s && hiddenInWindow,
+                    std::format("{}; visible at 3 s={}", describe("B after the hold"), g_esTest.visibleAt3s));
+                failRemaining("Not reached.");
+                FinishAndScheduleQuit("Enemy-ES investigation run finished.");
+                break;
+            }
+            default:
+                break;
+            }
             break;
         }
 

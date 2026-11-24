@@ -12,7 +12,9 @@
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SimpleImeBridge.h"
+#include "runtime/SkillExecution.h"
 
+#include "core/EnemyEsHud.h"
 #include "core/GemTransaction.h"
 #include "core/ItemCrafting.h"
 #include "core/ItemFormatter.h"
@@ -55,6 +57,7 @@ namespace SkyrimPoE::Runtime
         constexpr auto kEnLangPath = "Data/SKSE/Plugins/SkyrimPoE/lang/en-US.json";
         constexpr auto kJsCommandListener = "poeCommand";
         constexpr auto kJsUpdateHud = "poeUpdateHud";
+        constexpr auto kJsUpdateEnemyEs = "poeUpdateEnemyEs";
         constexpr auto kJsUpdatePanel = "poeUpdatePanel";
         constexpr auto kJsOnPanelOpen = "poeOnPanelOpen";
         constexpr auto kJsOnPanelClose = "poeOnPanelClose";
@@ -191,6 +194,90 @@ namespace SkyrimPoE::Runtime
             std::uint32_t mapAreaLevel = 0;
         };
         CachedHud g_lastHud;
+
+        // 결정 185: 직전에 보낸 적 ES 표시 값과 이름(바뀔 때만 JS로 보냄)
+        struct CachedEnemyEs
+        {
+            bool valid = false;
+            Core::EnemyEsView view{};
+            std::string name;
+        };
+        CachedEnemyEs g_lastEnemyEs;
+
+        // 표시 후보로 쓸 수 있는 액터인지 보고, 적인지와 몬스터 프로필의 최대 ES를 붙인다(주 갱신 스레드).
+        Core::EnemyEsCandidate MakeEnemyEsCandidate(RE::Actor* actor, RE::PlayerCharacter* player)
+        {
+            Core::EnemyEsCandidate candidate;
+            if (!actor || !player || actor == player || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() ||
+                !actor->Is3DLoaded()) {
+                return candidate;
+            }
+            candidate.formId = actor->GetFormID();
+            candidate.alive = true;
+            // 적: 아군(동료·소환·지배)이 아니고, 처치 보상과 같은 기준으로 적대(지도 몬스터는 교전 전에도 적, 결정 181)
+            candidate.enemy = !SkillExecution::IsAllyOfPlayer(player, actor) &&
+                SkillExecution::IsHostileForFirstHitReward(actor, player);
+            if (const auto profile = MonsterRuntime::GetProfileCopy(candidate.formId)) {
+                candidate.maxEs = profile->maxEsSkyrim;
+            }
+            return candidate;
+        }
+
+        // 결정 185: 조준점의 살아 있는 적(ES가 없으면 숨김), 없으면 마지막 교전 적(5초)의 ES를 화면 위 가운데에 보여 준다.
+        // 자체 패널이 열려 있으면 숨긴다. 값이나 이름이 바뀔 때만 보낸다.
+        void PushEnemyEsIfChanged(bool panelOpen)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            RE::NiPointer<RE::Actor> target;
+            Core::EnemyEsView view{};
+            if (!panelOpen && player) {
+                RE::NiPointer<RE::Actor> crosshairActor;
+                if (const auto* pick = RE::CrosshairPickData::GetSingleton()) {
+                    if (const auto ref = pick->GetActiveTarget().get()) {
+                        crosshairActor = RE::NiPointer<RE::Actor>(ref->As<RE::Actor>());
+                    }
+                }
+                const auto crosshairCandidate = MakeEnemyEsCandidate(crosshairActor.get(), player);
+                // 교전 기록이 아직 유효할 때만 폼을 찾는다(만료 뒤 매 프레임 조회하지 않음).
+                const auto engaged = MonsterRuntime::GetLastEngagedEnemy();
+                RE::NiPointer<RE::Actor> engagedActor;
+                Core::EnemyEsCandidate engagedCandidate;
+                if (engaged.actorId != 0 && Core::IsEnemyEsEngagementRecent(engaged.ageSec) &&
+                    !Core::IsEnemyEsTargetable(crosshairCandidate)) {
+                    engagedActor = RE::NiPointer<RE::Actor>(RE::TESForm::LookupByID<RE::Actor>(engaged.actorId));
+                    engagedCandidate = MakeEnemyEsCandidate(engagedActor.get(), player);
+                }
+                const auto chosen = Core::SelectEnemyEsTarget(crosshairCandidate, engagedCandidate, engaged.ageSec);
+                if (chosen != 0) {
+                    target = chosen == crosshairCandidate.formId ? crosshairActor : engagedActor;
+                    if (const auto profile = MonsterRuntime::GetProfileCopy(chosen)) {
+                        view = Core::MakeEnemyEsView(chosen, profile->rarity, profile->currentEsSkyrim, profile->maxEsSkyrim);
+                    }
+                }
+            }
+            std::string name;
+            if (view.visible && target) {
+                const char* displayName = target->GetDisplayFullName();
+                name = displayName ? displayName : "";
+            }
+            if (g_lastEnemyEs.valid && g_lastEnemyEs.view == view && g_lastEnemyEs.name == name) {
+                return;
+            }
+            g_lastEnemyEs.valid = true;
+            g_lastEnemyEs.view = view;
+            g_lastEnemyEs.name = name;
+
+            json payload{ { "visible", view.visible } };
+            if (view.visible) {
+                payload["name"] = name;
+                payload["rarity"] = static_cast<int>(view.rarity);
+                payload["current"] = view.current;
+                payload["max"] = view.max;
+                payload["fillPermille"] = view.fillPermille;
+            }
+            const std::string text = payload.dump(-1, ' ', false, json::error_handler_t::replace);
+            g_api->InteropCall(g_view, kJsUpdateEnemyEs, text.c_str());
+        }
         std::optional<MapTravelStatus> g_panelMapTravel;
 
         std::string_view MapTravelLabel(Core::MapTravelKind kind)
@@ -2162,11 +2249,14 @@ namespace SkyrimPoE::Runtime
             g_api->Show(g_view);
             g_hudShown.store(true, std::memory_order_release);
             g_lastHud.valid = false;
+            g_lastEnemyEs.valid = false;
         }
         if (panelOpen && g_activeTab.load(std::memory_order_acquire) == kTabMaps &&
             g_panelMapTravel != MapDeviceRuntime::GetTravelStatus(RE::PlayerCharacter::GetSingleton())) {
             PushPanelStateToJs();
         }
+
+        PushEnemyEsIfChanged(panelOpen);
 
         // HUD 값 변경 시에만 C++ -> JS 푸시(프레임 유휴 비용 0 유지)
         const auto es = g_esPool ? g_esPool->Snapshot() : Core::EnergyShieldState{};
@@ -2305,6 +2395,11 @@ namespace SkyrimPoE::Runtime
             const std::string payload = hud.dump(-1, ' ', false, json::error_handler_t::replace);
             g_api->InteropCall(g_view, kJsUpdateHud, payload.c_str());
         }
+    }
+
+    Core::EnemyEsView UiBridge::GetLastEnemyEsViewForTest()
+    {
+        return g_lastEnemyEs.valid ? g_lastEnemyEs.view : Core::EnemyEsView{};
     }
 
     bool UiBridge::IsPanelOpen() noexcept

@@ -24,6 +24,27 @@ namespace SkyrimPoE::Runtime
 
         std::mutex g_mutex;
         std::unordered_map<RE::FormID, Core::MonsterProfile> g_profiles;
+        // 결정 185: 마지막 교전 적. 위 32비트는 FormID, 아래 32비트는 EngagedClockMs() 시각(0이면 기록 없음).
+        std::atomic<std::uint64_t> g_engagedEnemy{ 0 };
+
+        // 처음 부른 때부터의 밀리초(32비트, 약 49일마다 돌아감. 나이는 부호 없는 뺄셈이라 돌아가도 맞음)
+        std::uint32_t EngagedClockMs() noexcept
+        {
+            static const auto base = std::chrono::steady_clock::now();
+            return static_cast<std::uint32_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - base).count());
+        }
+
+        // actorId가 지금 기록된 교전 적이면 지운다(사망·개별 리셋)
+        void ClearEngagedEnemyIf(RE::FormID actorId) noexcept
+        {
+            auto current = g_engagedEnemy.load(std::memory_order_acquire);
+            while ((current >> 32) == actorId && current != 0) {
+                if (g_engagedEnemy.compare_exchange_weak(current, 0, std::memory_order_acq_rel)) {
+                    break;
+                }
+            }
+        }
         std::unordered_set<RE::FormID> g_rolledActors;
         std::unordered_map<RE::FormID, float> g_appliedHasteDelta;  // N-2: Hasted SpeedMult 추적(원복 보장)
         std::vector<StolenHeadhunterBuff> g_hhBuffs;
@@ -292,6 +313,26 @@ namespace SkyrimPoE::Runtime
         }
     }
 
+    void MonsterRuntime::NoteEngagedEnemy(RE::FormID actorId) noexcept
+    {
+        if (actorId == 0) {
+            return;
+        }
+        g_engagedEnemy.store((static_cast<std::uint64_t>(actorId) << 32) | EngagedClockMs(), std::memory_order_release);
+    }
+
+    MonsterRuntime::EngagedEnemy MonsterRuntime::GetLastEngagedEnemy() noexcept
+    {
+        EngagedEnemy out;
+        const auto packed = g_engagedEnemy.load(std::memory_order_acquire);
+        out.actorId = static_cast<RE::FormID>(packed >> 32);
+        if (out.actorId != 0) {
+            const auto stampMs = static_cast<std::uint32_t>(packed & 0xFFFFFFFFu);
+            out.ageSec = static_cast<double>(static_cast<std::uint32_t>(EngagedClockMs() - stampMs)) / 1000.0;
+        }
+        return out;
+    }
+
     std::optional<Core::MonsterProfile> MonsterRuntime::GetProfileCopy(RE::FormID actorId)
     {
         std::scoped_lock lk(g_mutex);
@@ -404,6 +445,7 @@ namespace SkyrimPoE::Runtime
     Core::MonsterProfile MonsterRuntime::OnMonsterKilled(RE::FormID actorId, bool playerHasHeadhunter)
     {
         RevertHasteSpeedByFormId(actorId);
+        ClearEngagedEnemyIf(actorId);
         Core::MonsterProfile prof{};
         bool hhChanged = false;
         std::uint16_t nextHhMask = 0;
@@ -490,6 +532,7 @@ namespace SkyrimPoE::Runtime
     void MonsterRuntime::OnActorReset(RE::FormID actorId)
     {
         RevertHasteSpeedByFormId(actorId);
+        ClearEngagedEnemyIf(actorId);
         std::scoped_lock lk(g_mutex);
         g_profiles.erase(actorId);
         g_rolledActors.erase(actorId);
@@ -536,6 +579,7 @@ namespace SkyrimPoE::Runtime
             g_rolledActors.clear();
             g_appliedHasteDelta.clear();
             g_hhBuffs.clear();
+            g_engagedEnemy.store(0, std::memory_order_release);
             g_lastSyncedHhMask = 0;
             g_scanAccumSec = 0.0;
         }

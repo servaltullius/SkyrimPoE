@@ -499,6 +499,42 @@
   btnClose.onclick = () => sendCommand({ op: "close" });
 
   // ---- C++ -> JS Interop 핸들러 ----
+  // 결정 185: 적 ES 표시. visible=false면 숨긴다. rarity: 0 일반, 1 매직, 2 레어
+  const enemyEsRoot = document.getElementById("enemy-es-root");
+  const enemyEsName = document.getElementById("enemy-es-name");
+  const enemyEsText = document.getElementById("enemy-es-text");
+  const enemyEsFill = document.getElementById("enemy-es-fill");
+  window.poeUpdateEnemyEs = (jsonStr) => {
+    if (!enemyEsRoot) {
+      return;
+    }
+    try {
+      const e = JSON.parse(jsonStr);
+      const max = Number(e.max || 0);
+      if (!e.visible || !(max > 0)) {
+        enemyEsRoot.classList.add("hidden");
+        enemyEsRoot.setAttribute("aria-hidden", "true");
+        return;
+      }
+      const cur = Math.min(max, Math.max(0, Number(e.current || 0)));
+      const rarity = Number(e.rarity || 0);
+      // 막대 폭은 반올림 전 실제 비율(천분율). 없으면 표시 수치로 계산한다.
+      const permille = Number.isFinite(Number(e.fillPermille))
+        ? Math.min(1000, Math.max(0, Number(e.fillPermille)))
+        : (cur / max) * 1000;
+      enemyEsName.textContent = String(e.name || "");
+      enemyEsName.className = `enemy-es-name${rarity === 2 ? " rarity-rare" : rarity === 1 ? " rarity-magic" : ""}`;
+      enemyEsText.textContent = `ES ${cur} / ${max}`;
+      enemyEsFill.style.width = `${(permille / 10).toFixed(1)}%`;
+      enemyEsRoot.classList.remove("hidden");
+      enemyEsRoot.setAttribute("aria-hidden", "false");
+    } catch (err) {
+      enemyEsRoot.classList.add("hidden");
+      enemyEsRoot.setAttribute("aria-hidden", "true");
+      console.error("poeUpdateEnemyEs failed", err);
+    }
+  };
+
   window.poeUpdateHud = (jsonStr) => {
     try {
       const h = JSON.parse(jsonStr);

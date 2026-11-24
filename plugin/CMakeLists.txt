@@ -53,6 +53,7 @@ add_library(skyrimpoe_core STATIC
     src/core/MapSystem.cpp
     src/core/MapPack.cpp
     src/core/MapTravel.cpp
+    src/core/EnemyEsHud.cpp
 )
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
@@ -131,6 +132,7 @@ add_executable(skyrimpoe_tests
     tests/test_map_kill_rewards.cpp
     tests/test_map_travel.cpp
     tests/test_map_spawn_disable_wait.cpp
+    tests/test_enemy_es_hud.cpp
 )
 target_compile_options(skyrimpoe_tests PRIVATE /utf-8 /W4)
 target_compile_definitions(skyrimpoe_tests PRIVATE

@@ -35,6 +35,17 @@
     </div>
   </div>
 
+  <!-- 적 ES 표시(결정 185): 조준점의 적, 없으면 마지막 교전 적. 입력 비활성, 바뀔 때만 C++가 갱신 -->
+  <div id="enemy-es-root" class="enemy-es-root hidden" aria-hidden="true">
+    <div class="enemy-es-head">
+      <span id="enemy-es-name" class="enemy-es-name"></span>
+      <span id="enemy-es-text" class="enemy-es-text">0 / 0</span>
+    </div>
+    <div class="hud-track enemy-es-track">
+      <div id="enemy-es-fill" class="hud-fill hud-fill-es" style="width: 0%"></div>
+    </div>
+  </div>
+
   <!-- 단일 Prisma UI 뷰 패널 (상단 탭: 스킬 및 젬 ↔ 패시브 트리, 결정 155) -->
   <div id="panel-backdrop" class="panel-backdrop hidden">
     <div class="panel-shell">

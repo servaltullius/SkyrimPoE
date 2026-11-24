@@ -67,6 +67,7 @@ namespace SkyrimPoE::Runtime
             double rawSkyrimDamage,
             Core::DamageType dominantType,
             bool isDirectHit,
-            bool bypassesMonsterEs = false);
+            bool bypassesMonsterEs = false,
+            bool isDamageOverTime = false);  // 결정 185: 지속 피해 틱은 적 ES 표시의 교전 기록을 바꾸지 않음
     };
 }

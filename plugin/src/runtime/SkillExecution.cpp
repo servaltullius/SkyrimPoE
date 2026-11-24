@@ -249,7 +249,8 @@ namespace SkyrimPoE::Runtime
         double rawSkyrimDamage,
         Core::DamageType dominantType,
         bool isDirectHit,
-        bool bypassesMonsterEs)
+        bool bypassesMonsterEs,
+        bool isDamageOverTime)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || player->IsDead() || !CanDamageTarget(player, target, isDirectHit)) {
@@ -278,6 +279,10 @@ namespace SkyrimPoE::Runtime
             targetId, scaledDmg, dominantType, bypassesMonsterEs, target, engineDiffMult);
         if (!hitRes.hadAnyImpact) {
             return false;
+        }
+        // 결정 185: 실제 타격만 적 ES 표시의 마지막 교전 적으로 기록한다(CanDamageTarget이 아군을 이미 걸렀음).
+        if (!isDamageOverTime) {
+            MonsterRuntime::NoteEngagedEnemy(targetId);
         }
 
         // 결정 113, 134, 140 + C-15: 피격 직전 적대 선기록 → 실제 피해 실행 → 0 감소(무적 등)면 기여 확정 생략!

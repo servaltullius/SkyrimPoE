@@ -306,6 +306,9 @@ namespace SkyrimPoE::Runtime
             if (aggressor && aggressor.get() == player && !target->IsPlayerRef()) {
                 // M8: 모든 타격(사이클론·바닐라 근접·활·작업 큐 지연)에서 피해 전 첫 적대 스냅샷 선기록(결정 134, 140)
                 const bool isRealHit = !hit->flags.any(RE::HitData::Flag::kPredictDamage);
+                if (isRealHit && !SkillExecution::IsAllyOfPlayer(player, target)) {
+                    MonsterRuntime::NoteEngagedEnemy(target->GetFormID());  // 결정 185: 적 ES 표시의 마지막 교전 적
+                }
                 if (g_killTracker && isRealHit) {
                     g_killTracker->RecordFirstHitHostility(
                         target->GetFormID(), SkillExecution::IsHostileForFirstHitReward(target, player), !target->IsDead());
@@ -481,6 +484,11 @@ namespace SkyrimPoE::Runtime
                     hit->totalDamage = 0.0f;
                     PostHudNotice(generation, "막음");
                     return;
+                }
+
+                // 결정 185: 회피·막음을 지난 실제 피격만 적 ES 표시의 마지막 교전 적으로 기록한다(아군의 오발 제외).
+                if (aggressor && !aggressor->IsPlayerRef() && !SkillExecution::IsAllyOfPlayer(player, aggressor.get())) {
+                    MonsterRuntime::NoteEngagedEnemy(aggressor->GetFormID());
                 }
 
                 // 3) PoE 물리 방어 + N-2 적 추가 원소 피해 + 기대 방어 되돌림 환산 (결정 170: 유배자 레벨)
@@ -747,6 +755,9 @@ namespace SkyrimPoE::Runtime
                     // 결정 81·172: kRecover(만료 때 엔진이 원래 크기로 되돌리는 일시 체력 감소)는 피해가 아니므로
                     // 생명 배율·ES·희귀도 보정을 걸지 않는다. 걸 때만 줄이면 되돌릴 때 체력이 늘어난 채 남는다.
                     if (baseEffect && baseEffect->IsDetrimental() && !recoversOnExpiry) {
+                        if (!SkillExecution::IsAllyOfPlayer(player, actor)) {
+                            MonsterRuntime::NoteEngagedEnemy(targetId);  // 결정 185: 적 ES 표시의 마지막 교전 적
+                        }
                         const auto mapping = ClassifyMagicDamage(baseEffect);
                         double magDmg = static_cast<double>(-value);
                         const double shockMult = AilmentRuntime::ShockDamageMultiplier(targetId);
@@ -932,6 +943,12 @@ namespace SkyrimPoE::Runtime
                         preResistD *= (1.0 - std::clamp(preventPct, 0.0, 100.0) / 100.0);
                     }
                 }
+            }
+
+            // 결정 185: 주문 회피·막음을 지난 해로운 마법만 적 ES 표시의 마지막 교전 적으로 기록한다(아군의 마법 제외).
+            if (const auto hitCaster = self->GetCasterActor();
+                hitCaster && !hitCaster->IsPlayerRef() && !SkillExecution::IsAllyOfPlayer(player, hitCaster.get())) {
+                MonsterRuntime::NoteEngagedEnemy(hitCaster->GetFormID());
             }
 
             // 2.5) 5단계(결정 162) + 검수 M5/M6: 원소·카오스 피격 시 참 자동 발동 + 정화의 참(냉기) + 같은 프레임 연속 피격 보정
