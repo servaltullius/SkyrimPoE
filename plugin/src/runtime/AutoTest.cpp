@@ -397,6 +397,11 @@ namespace SkyrimPoE::Runtime
         constexpr double kHMapBossHitDamage = 50000.0;
         constexpr double kHContributionHitDamage = 1.0;
         constexpr double kHBossHitIntervalSec = 0.25;
+        // H19·H20 연타 전 준비(2026-11-24): 근접 타격 함수(AE 38627)는 공격자가 전투 중이면 전투 그룹의 대상 목록(AE 33230)에
+        // 대상이 있을 때만 피해를 적용하므로, 보스가 플레이어를 전투 대상으로 잡고(마법은 시선까지) 난 뒤 연타한다.
+        // 기다리는 동안은 무적으로 실제 공격을 막는다. 같은 날 전체 시험에서 준비가 된 상태(전투 중·대상 플레이어·거리 10)에서도
+        // H19가 같은 모양으로 실패해, 이것이 H19의 원인은 아니었다. 준비 상태 로그를 남기는 진단으로 둔다.
+        constexpr double kHBurstReadyWaitSec = 8.0;
         constexpr double kHArenaFloorFirst = 0.665;
         constexpr double kHArenaFloorSecond = 0.335;
         constexpr double kHArenaHealthRatioTolerance = 0.015;
@@ -2207,6 +2212,8 @@ namespace SkyrimPoE::Runtime
             bool deathMarkedFailed = false;
             bool movedToBoss = false;
             double attackWindowStarted = -1.0;
+            double burstReadySince = -1.0;
+            bool burstStartedCombat = false;
             unsigned damageRequests = 0;
             unsigned magicCastsSent = 0;
             std::optional<float> magicHealthBeforeBurst;
@@ -2553,6 +2560,8 @@ namespace SkyrimPoE::Runtime
             test.magicMaxHealthLoss = 0.0f;
             test.movedToBoss = false;
             test.attackWindowStarted = -1.0;
+            test.burstReadySince = -1.0;
+            test.burstStartedCombat = false;
             test.firstDamageAt = {};
             test.portalsBeforeDeath = run.portalsRemaining;
             test.nextDamageAt = 0.0;
@@ -3202,8 +3211,10 @@ namespace SkyrimPoE::Runtime
                     break;
                 }
                 if (!player || player->IsDead() ||
-                    (test.attackWindowStarted < 0.0 ? elapsed >= kMapBossLoadWaitSec :
+                    (test.attackWindowStarted < 0.0 ? elapsed >= kMapBossLoadWaitSec + kHBurstReadyWaitSec :
                         elapsed - test.attackWindowStarted >= kHDeathTriggerWaitSec)) {
+                    // 연타 준비 중에 켠 무적을 되돌린다(켜지 않았으면 아무것도 하지 않음).
+                    (void)RestoreHGodMode(player);
                     if (magic) {
                         const auto clamps = test.damageRequests == 0 ? 0 :
                             CombatHooks::GetMapDeathDamageClampCount(true) - test.deathClampsBefore;
@@ -3223,6 +3234,7 @@ namespace SkyrimPoE::Runtime
                     break;
                 }
                 if (MapDeviceRuntime::IsDeathEscapeInFlight()) {
+                    (void)RestoreHGodMode(player);
                     if (magic) {
                         Check(kHMagicBurstCheck, false, "시험 주입 실패 (death escape was in flight before the first Firebolt cast).");
                         EnterHContract(Stage::Close);
@@ -3253,6 +3265,35 @@ namespace SkyrimPoE::Runtime
                         "Another hostile actor was within the test's isolation radius; no lethal damage was applied on this tick.");
                     EnterHContract(Stage::Close);
                     break;
+                }
+                if (!failedTrial && test.damageRequests == 0) {
+                    if (test.burstReadySince < 0.0) {
+                        test.burstReadySince = elapsed;
+                        if (!g_hRouteGodModeBefore) {
+                            g_hRouteGodModeBefore = RE::PlayerCharacter::IsGodMode();
+                        }
+                        SetPlayerGodModeFlag(true);
+                    }
+                    const double waited = elapsed - test.burstReadySince;
+                    const auto combatTarget = boss->GetActorRuntimeData().currentCombatTarget.get();
+                    const bool targetsPlayer = boss->IsInCombat() && combatTarget && combatTarget.get() == player;
+                    bool sightArg = false;
+                    const bool sight = !magic || boss->HasLineOfSight(player, sightArg);
+                    if (!targetsPlayer && !test.burstStartedCombat) {
+                        boss->StartCombat(player);
+                        test.burstStartedCombat = true;
+                    }
+                    if (!(targetsPlayer && sight) && waited < kHBurstReadyWaitSec) {
+                        break;
+                    }
+                    LogInfo(std::format("{} burst readiness after {:.1f}s: boss inCombat={}, targets player={}, line of sight={}, "
+                                        "distance={:.0f}, startCombat sent={}.",
+                        magic ? "H20" : "H19", waited, boss->IsInCombat(), targetsPlayer, sight,
+                        boss->GetPosition().GetDistance(player->GetPosition()), test.burstStartedCombat));
+                    if (!RestoreHGodMode(player)) {
+                        AbortHContract("H could not restore god mode before the lethal burst.");
+                        break;
+                    }
                 }
                 if (test.attackWindowStarted < 0.0) {
                     test.attackWindowStarted = elapsed;
