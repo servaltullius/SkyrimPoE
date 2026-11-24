@@ -211,13 +211,6 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        [[nodiscard]] bool HasElementalDamage(const Core::DamagePacket& pkt) noexcept
-        {
-            return pkt.byType[static_cast<std::size_t>(Core::DamageType::Fire)].max > 0.0 ||
-                   pkt.byType[static_cast<std::size_t>(Core::DamageType::Cold)].max > 0.0 ||
-                   pkt.byType[static_cast<std::size_t>(Core::DamageType::Lightning)].max > 0.0;
-        }
-
         // 검수 M7: Arc 전용 3D 구형 탐색(hop 0 직격은 비적대 선제공격·고도차 150u 초과 허용, 연쇄 hop>=1은 적대만)
         [[nodiscard]] std::vector<RE::NiPointer<RE::Actor>> CollectArcCandidates3D(
             RE::PlayerCharacter* player,
@@ -301,25 +294,17 @@ namespace SkyrimPoE::Runtime
             RE::Actor* current = firstTarget;
             const std::uint8_t totalChains = cast.chainCount;
             const auto domType = DominantDamageTypeOf(cast.poeBaseHitDamage);
-            const bool elemEligible = HasElementalDamage(cast.poeBaseHitDamage);
 
             for (std::uint8_t hop = 0; hop <= totalChains && current; ++hop) {
                 hitIds.push_back(current->GetFormID());
                 const std::uint8_t remainingChains = static_cast<std::uint8_t>(totalChains - hop);
                 const double arcMore = 1.0 + static_cast<double>(remainingChains) * (cast.arcRemainingChainMorePct / 100.0);
 
-                bool isCrit = false;
-                const double baseSkyrimDmg = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
-                    cast, *g_dataPack, *g_config, u01(ProjRng()), u01(ProjRng()), isCrit);
-                const double finalDmg = baseSkyrimDmg * arcMore;
-
+                const auto hit = AilmentRuntime::RollSpellHit(cast, u01(ProjRng()), u01(ProjRng()), arcMore);
                 SkillExecution::SpawnHarmlessVfx(ActorAimCenter(current), FormIds::kVfxShockNova);
-                if (SkillExecution::DealDirectSkillDamage(current, finalDmg, domType, hop == 0, domType == Core::DamageType::Chaos)) {
-                    (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        current, cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, cast.igniteChancePct, cast.starforgeShock);
-                    if (isCrit && elemEligible) {
-                        CombatHooks::NotifyPlayerElementalCrit();
-                    }
+                if (AilmentRuntime::DealSpellHit(current, hit, domType, hop == 0) &&
+                    hit.isCrit && Core::HasElementalHitDamage(hit.poeDamage)) {
+                    CombatHooks::NotifyPlayerElementalCrit();
                 }
 
                 if (remainingChains == 0) break;
@@ -401,12 +386,9 @@ namespace SkyrimPoE::Runtime
             }
 
             std::uniform_real_distribution<double> u01(0.0, 1.0);
-            bool isCrit = false;
-            const double rolledSkyrimDmg = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
-                shot.cast, *g_dataPack, *g_config, u01(ProjRng()), u01(ProjRng()), isCrit);
+            const auto hit = AilmentRuntime::RollSpellHit(shot.cast, u01(ProjRng()), u01(ProjRng()));
             const auto domType = DominantDamageTypeOf(shot.cast.poeBaseHitDamage);
-
-            const bool elemEligible = HasElementalDamage(shot.cast.poeBaseHitDamage);
+            const bool elementalCrit = hit.isCrit && Core::HasElementalHitDamage(hit.poeDamage);
             bool anyElemCritHit = false;
 
             // 화염구 적중 시 지형·적 모두 소형 화염 폭발 연출 + 범위 스플래시
@@ -416,12 +398,8 @@ namespace SkyrimPoE::Runtime
                 const auto splashTargets = SkillExecution::CollectHostileTargets(player, location, splashRadius);
                 for (const auto& st : splashTargets) {
                     if (!st || (hitActor && st.get() == hitActor)) continue;
-                    if (SkillExecution::DealDirectSkillDamage(st.get(), rolledSkyrimDmg, domType, false, domType == Core::DamageType::Chaos)) {
-                        (void)AilmentRuntime::ApplyPlayerHitAilments(
-                            st.get(), shot.cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, shot.cast.igniteChancePct, shot.cast.starforgeShock);
-                        if (isCrit && elemEligible) {
-                            anyElemCritHit = true;
-                        }
+                    if (AilmentRuntime::DealSpellHit(st.get(), hit, domType, false) && elementalCrit) {
+                        anyElemCritHit = true;
                     }
                 }
             }
@@ -433,13 +411,9 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            if (SkillExecution::DealDirectSkillDamage(
-                    hitActor, rolledSkyrimDmg, domType, shot.generation == 0 && shot.isAimedPrimary, domType == Core::DamageType::Chaos)) {
-                (void)AilmentRuntime::ApplyPlayerHitAilments(
-                    hitActor, shot.cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, shot.cast.igniteChancePct, shot.cast.starforgeShock);
-                if (isCrit && elemEligible) {
-                    anyElemCritHit = true;
-                }
+            if (AilmentRuntime::DealSpellHit(hitActor, hit, domType, shot.generation == 0 && shot.isAimedPrimary) &&
+                elementalCrit) {
+                anyElemCritHit = true;
             }
             if (anyElemCritHit) {
                 CombatHooks::NotifyPlayerElementalCrit();
@@ -632,22 +606,13 @@ namespace SkyrimPoE::Runtime
         // 1) 범위 노바 주문(IceNova / ShockNova)
         if (cast.gemId == "IceNova" || cast.gemId == "ShockNova") {
             std::uniform_real_distribution<double> u01(0.0, 1.0);
-            bool isCrit = false;
-            const double rolledDmg = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
-                cast, *g_dataPack, *g_config, u01(ProjRng()), u01(ProjRng()), isCrit);
+            const auto hit = AilmentRuntime::RollSpellHit(cast, u01(ProjRng()), u01(ProjRng()));
             const RE::FormID vfxId = (cast.gemId == "ShockNova") ? FormIds::kVfxShockNova : FormIds::kVfxIceNova;
             const float radius = static_cast<float>(kBaseNovaRadius * std::clamp(cast.areaMult, 0.5, 2.5));
             const auto domType = DominantDamageTypeOf(cast.poeBaseHitDamage);
             const auto center = cast.isHandCast ? player->GetPosition() : aimOrigin;
-            const auto targets = SkillExecution::CollectHostileTargets(player, center, radius);
-            SkillExecution::SpawnHarmlessVfx(center, vfxId);
-            for (const auto& t : targets) {
-                if (SkillExecution::DealDirectSkillDamage(t.get(), rolledDmg, domType, false, domType == Core::DamageType::Chaos)) {
-                    (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        t.get(), cast.poeBaseHitDamage, isCrit, AilmentRuntime::HitKind::Spell, cast.igniteChancePct, cast.starforgeShock);
-                }
-            }
-            if (isCrit && !targets.empty() && HasElementalDamage(cast.poeBaseHitDamage)) {
+            const auto hits = AilmentRuntime::ExecuteSpellNova(center, radius, hit, vfxId, domType);
+            if (hits > 0 && hit.isCrit && Core::HasElementalHitDamage(hit.poeDamage)) {
                 CombatHooks::NotifyPlayerElementalCrit();
             }
             return true;

@@ -112,9 +112,7 @@ namespace SkyrimPoE::Core
                     baseSkyrimMaxMagicka,
                     snapshot.poeMaxMana,
                     stats.poeManaCost,
-                    snapshot.exileLevel,
-                    pack,
-                    config);
+                    snapshot.expectedPoeMana);
                 magickaCost = manaScale.skyrimSkillCost;
                 // 결정 126, 127: 매지카가 부족하면 발동 폐기, 순환 차례 유지, 쿨다운 미소모!
                 if (currentSkyrimMagicka + 1e-6 < magickaCost) {
@@ -202,9 +200,7 @@ namespace SkyrimPoE::Core
                 baseSkyrimMaxMagicka,
                 snapshot.poeMaxMana,
                 stats.poeManaCost,
-                snapshot.exileLevel,
-                pack,
-                config);
+                snapshot.expectedPoeMana);
             magickaCost = manaScale.skyrimSkillCost;
             if (currentSkyrimMagicka + 1e-6 < magickaCost) {
                 return std::nullopt;
@@ -296,9 +292,7 @@ namespace SkyrimPoE::Core
                 baseSkyrimMaxMagicka,
                 snapshot.poeMaxMana,
                 stats.poeManaCost,
-                snapshot.exileLevel,
-                pack,
-                config);
+                snapshot.expectedPoeMana);
             magickaCost = manaScale.skyrimSkillCost;
             if (currentSkyrimMagicka + 1e-6 < magickaCost) {
                 res.failReason = "매지카가 부족합니다.";
@@ -308,7 +302,7 @@ namespace SkyrimPoE::Core
 
         const double capSkyrim = std::max(1.0,
             ComputeSkyrimMaxEnergyShield(baseSkyrimMaxHealth, stats.moltenShellAbsorbCapPoe,
-                snapshot.exileLevel, pack, config));
+                snapshot.expectedPoeLife));
         // 검수 M3: 반사 화염 피해는 방어 체력 배율(baseSkyrimMaxHealth)에 종속되지 않도록 ConvertOffenseHit 선형 환산 계수로 계산
         const double reflectPct = std::max(0.0, stats.moltenShellReflectPct);
         const double fullReflectOffenseSkyrim = ConvertOffenseHit(

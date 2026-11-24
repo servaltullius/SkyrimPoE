@@ -1,9 +1,11 @@
 #include "core/Config.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 namespace SkyrimPoE::Core
@@ -80,6 +82,46 @@ namespace SkyrimPoE::Core
             out = parsed;
             return true;
         }
+
+        bool ParseSpiritMilestoneRewards(std::string_view value, std::array<std::uint32_t, 4>& rewards)
+        {
+            for (std::size_t i = 0; i < rewards.size(); ++i) {
+                const auto comma = value.find(',');
+                const bool last = i + 1 == rewards.size();
+                if (last != (comma == std::string_view::npos) ||
+                    !ParseUint(Trim(value.substr(0, comma)), rewards[i]) || rewards[i] > 500) {
+                    return false;
+                }
+                if (!last) {
+                    value.remove_prefix(comma + 1);
+                }
+            }
+            return true;
+        }
+    }
+
+    std::uint32_t Config::DefaultSpiritBase() noexcept
+    {
+        const auto* pack = GetRulesPack();
+        const auto* rules = pack ? pack->Values() : nullptr;
+        return rules ? rules->projectSpirit.base : 0u;
+    }
+
+    const std::array<std::uint32_t, 4>& SpiritMilestoneRewards(const RuleValues& rules, const Config* config) noexcept
+    {
+        return config && config->spiritMilestoneRewards ? *config->spiritMilestoneRewards : rules.projectSpirit.achievementRewards;
+    }
+
+    std::uint32_t ComputeSpirit(std::uint32_t achievementMask, const RuleValues& rules, const Config* config) noexcept
+    {
+        const auto& rewards = SpiritMilestoneRewards(rules, config);
+        std::uint64_t total = config ? config->spiritBase : rules.projectSpirit.base;
+        for (std::size_t bit = 0; bit < rewards.size(); ++bit) {
+            if ((achievementMask & (1u << bit)) != 0) {
+                total += rewards[bit];
+            }
+        }
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
     }
 
     ConfigLoadResult LoadConfigFromString(std::string_view content)
@@ -87,6 +129,7 @@ namespace SkyrimPoE::Core
         ConfigLoadResult result;
         std::string section;
         bool firstLine = true;
+        bool warnedLegacySpirit = false;
         std::size_t pos = 0;
         while (pos <= content.size()) {
             const auto nl = content.find('\n', pos);
@@ -285,8 +328,14 @@ namespace SkyrimPoE::Core
                 std::uint32_t u = 0;
                 if (key == "SpiritBase") {
                     if (ParseUint(val, u) && u <= 2000) c.spiritBase = u; else warnInvalid();
+                } else if (key == "SpiritMilestoneRewards") {
+                    std::array<std::uint32_t, 4> rewards{};
+                    if (ParseSpiritMilestoneRewards(val, rewards)) c.spiritMilestoneRewards = rewards; else warnInvalid();
                 } else if (key == "SpiritPerMilestone") {
-                    if (ParseUint(val, u) && u <= 500) c.spiritPerMilestone = u; else warnInvalid();
+                    if (!warnedLegacySpirit) {
+                        result.warnings.emplace_back("Ignored [Spirit] SpiritPerMilestone; use SpiritMilestoneRewards.");
+                        warnedLegacySpirit = true;
+                    }
                 } else {
                     warnInvalid();
                 }

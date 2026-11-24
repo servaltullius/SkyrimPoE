@@ -226,7 +226,7 @@ POE_TEST("SkillSystem (CoC): round-robin 2 spells, insufficient magicka keeps cu
     POE_CHECK(!isCrit && nonCritDmg > 0.0);
     const double critDmg = SkillSystem::RollTriggeredSpellSkyrimDamage(*cast1, pack, cfg, 0.5, 0.001, isCrit);
     POE_CHECK(isCrit);
-    POE_CHECK_NEAR(critDmg, nonCritDmg * 1.5, 1e-6);
+    POE_CHECK_NEAR(critDmg, nonCritDmg * 2.0, 1e-6);
 
     // 4. 깊이 1 가드(결정 103): 트리거 실행 중 추가 발동 차단
     sys.EnterTriggerDepth();
@@ -242,10 +242,10 @@ POE_TEST("SkillSystem (CoC): round-robin 2 spells, insufficient magicka keeps cu
     POE_CHECK_NEAR(sys.RemainingCooldown(301), 2.5, 1e-6);
 }
 
-POE_TEST("EnergyShieldPool: difficulty absorb, 2s recharge delay, chaos interrupts recharge, pause freezes tick")
+POE_TEST("EnergyShieldPool: difficulty absorb, 4s recharge delay, chaos ES loss restarts recharge, pause freezes tick")
 {
     EnergyShieldPool pool;
-    pool.Configure(2.0, 0.33);
+    pool.Configure();
     pool.ResetFull(100.0);
 
     // 전설(diff=3.0) 원시 20 -> 유효 60 흡수 -> ES 40 남음, 잔여 0
@@ -258,19 +258,19 @@ POE_TEST("EnergyShieldPool: difficulty absorb, 2s recharge delay, chaos interrup
     pool.Tick(5.0, true);
     POE_CHECK_NEAR(pool.Snapshot().current, 40.0, 1e-9);
 
-    // 1.5초 경과 -> 아직 지연(2.0s) 미만이라 미재충전
-    pool.Tick(1.5, false);
+    // 3.5초 경과 -> 아직 지연(4.0s) 미만이라 미재충전
+    pool.Tick(3.5, false);
     POE_CHECK_NEAR(pool.Snapshot().current, 40.0, 1e-9);
 
-    // 카오스 피해는 ES를 우회하지만 재충전 지연을 0으로 리셋
+    // 카오스 유효 피해 30 중 20을 ES 40으로 흡수한다. ES가 줄어 재충전 타이머가 리셋된다.
     const auto chaos = pool.AbsorbDamage(10.0, 3.0, true);
-    POE_CHECK_NEAR(chaos.remainingRawDamage, 10.0, 1e-9);
-    POE_CHECK_NEAR(pool.Snapshot().current, 40.0, 1e-9);
-    pool.Tick(1.5, false);
-    POE_CHECK_NEAR(pool.Snapshot().current, 40.0, 1e-9);
+    POE_CHECK_NEAR(chaos.remainingRawDamage, 10.0 / 3.0, 1e-9);
+    POE_CHECK_NEAR(pool.Snapshot().current, 0.0, 1e-9);
+    pool.Tick(3.5, false);
+    POE_CHECK_NEAR(pool.Snapshot().current, 0.0, 1e-9);
 
-    // 추가 0.5초(합 2.0초) + 1.0초 -> 초당 33 회복 (40 + 33 = 73)
+    // 추가 0.5초(합 4.0초) + 1.0초 -> ES 12.5 회복
     pool.Tick(0.5, false);
     pool.Tick(1.0, false);
-    POE_CHECK_NEAR(pool.Snapshot().current, 73.0, 1e-6);
+    POE_CHECK_NEAR(pool.Snapshot().current, 12.5, 1e-6);
 }

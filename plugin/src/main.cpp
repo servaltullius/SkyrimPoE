@@ -4,6 +4,7 @@
 #include "core/CommandQueue.h"
 #include "core/Config.h"
 #include "core/ContentCheck.h"
+#include "core/RulesPack.h"
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
 #include "core/EspFormCheck.h"
@@ -50,13 +51,15 @@ namespace
 
     constexpr auto kConfigPath = "Data/SKSE/Plugins/SkyrimPoE.ini";
     constexpr auto kManifestPath = "Data/SKSE/Plugins/SkyrimPoE/manifest.json";
-    constexpr std::array<std::string_view, 4> kContentPaths{
+    constexpr std::array<std::string_view, 5> kContentPaths{
         "SKSE/Plugins/SkyrimPoE/packs/core_3_30.json",
         "SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json",
         "SKSE/Plugins/SkyrimPoE/packs/items_3_30.json",
+        "SKSE/Plugins/SkyrimPoE/packs/rules.json",
         Runtime::FormIds::kPluginName
     };
 
+    std::optional<Core::RulesPack> g_activeRules;
     Core::Config g_config;
     Core::DataPack g_dataPack;
     Core::PassiveTreeData g_treeData;
@@ -153,7 +156,8 @@ namespace
     std::optional<Core::SaveGeneration> LoadAndCheckContent() try
     {
         std::vector<std::string> reasons;
-        std::array<nlohmann::json, 3> packMeta;
+        g_activeRules.reset();
+        std::array<nlohmann::json, kContentPaths.size() - 1> packMeta;
         std::array<Core::ContentFile, kContentPaths.size()> files;
         const auto load = [&](std::size_t index, auto& pack) {
             const auto path = kContentPaths[index];
@@ -181,8 +185,7 @@ namespace
             }
         };
         if (load(0, g_dataPack)) {
-            SKSE::log::info("DataPack loaded: gems={}, lifeBase={:.0f}, manaBase={:.0f}.",
-                g_dataPack.AllGems().size(), g_dataPack.Constants().lifeBase, g_dataPack.Constants().manaBase);
+            SKSE::log::info("DataPack loaded: gems={}.", g_dataPack.AllGems().size());
         }
         if (load(1, g_treeData)) {
             SKSE::log::info("PassiveTreeData loaded: classes={}, nodes={}, masteryEffects={}.",
@@ -193,6 +196,8 @@ namespace
                 g_itemData.AllAffixes().size(), g_itemData.AllCurrencies().size(), g_itemData.AllBelts().size(),
                 g_itemData.AllCharms().size(), g_itemData.AllMonsterMods().size(), g_itemData.AllUniques().size());
         }
+        Core::RulesPack rules;
+        (void)load(3, rules);
 
         files.back().path = kContentPaths.back();
         try {
@@ -218,6 +223,7 @@ namespace
             return std::nullopt;
         }
         const auto& identity = *check.identity;
+        g_activeRules.emplace(std::move(rules));
         SKSE::log::info("Content check passed: {} {}, generation {}, build {}.",
             identity.game, identity.gameVersion, identity.contentGeneration, identity.buildId);
         return Core::SaveGeneration{
@@ -329,7 +335,8 @@ namespace
 
     void OnDataLoaded() try
     {
-        // 1. INI 설정 로드
+        // 규칙 팩을 검증한 뒤 팩 기본값에 INI 설정을 적용한다.
+        auto generation = LoadAndCheckContent();
         const auto cfgRes = Core::LoadConfigFromFile(kConfigPath);
         g_config = cfgRes.config;
         SKSE::log::info("Config loaded from '{}' (fileFound={}, budgetMs={:.2f}, giveStarterGems={}).",
@@ -338,7 +345,6 @@ namespace
             SKSE::log::warn("Config warning: {}", w);
         }
 
-        auto generation = LoadAndCheckContent();
         if (generation && g_serializationInstalled) {
             if (auto reason = VerifyEspForms(); !reason.empty()) {
                 PreserveStartup(std::move(reason));
@@ -477,6 +483,16 @@ namespace
             SKSE::log::error("SKSE message {} handling unknown exception.", msg->type);
         }
     }
+}
+
+const SkyrimPoE::Core::RulesPack* SkyrimPoE::Core::GetRulesPack() noexcept
+{
+    return g_activeRules ? &*g_activeRules : nullptr;
+}
+
+SkyrimPoE::Core::EnergyShieldPool& SkyrimPoE::Core::GetPlayerEnergyShield() noexcept
+{
+    return g_energyShield;
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse)

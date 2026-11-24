@@ -9,6 +9,11 @@
 #include <cstdint>
 #include <optional>
 
+namespace SkyrimPoE::Core
+{
+    struct TriggeredSpellCast;
+}
+
 namespace SkyrimPoE::Runtime
 {
     // 5단계(결정 163): 핵심 상태이상 5종 런타임 실행기
@@ -27,14 +32,30 @@ namespace SkyrimPoE::Runtime
         // 주 갱신 스레드 틱: 0.25s 주기 DoT 적용 및 SpeedMult 동기화/원복
         static void Tick(double deltaSec, bool gamePaused);
 
-        // 재검수 R-1: 적중 종류. 출혈과 공격·주문 한정 확률을 가르는 데 쓴다.
+        // 전역 확률에 더하는 공격·주문 한정 확률을 고른다.
         enum class HitKind : std::uint8_t
         {
             Attack,  // 근접·활·사이클론 타격
             Spell,   // 손 시전·발동 주문, 투사체 주문
         };
 
-        // 플레이어 타격/주문 적중 시 대상 액터에 상태이상 적용(주 갱신 스레드 전용)
+        struct SpellHit
+        {
+            Core::DamagePacket poeDamage;
+            double skyrimDamage = 0.0;
+            double igniteChancePct = 0.0;
+            bool isCrit = false;
+            bool starforgeShock = false;
+        };
+
+        [[nodiscard]] static SpellHit RollSpellHit(const Core::TriggeredSpellCast& cast,
+            double damageRoll01, double critRoll01, double damageMultiplier = 1.0) noexcept;
+        static bool DealSpellHit(RE::Actor* target, const SpellHit& hit, Core::DamageType dominantType, bool isDirectHit);
+        static std::size_t ExecuteSpellNova(const RE::NiPoint3& origin, float radius, const SpellHit& hit,
+            RE::FormID vfxId, Core::DamageType dominantType);
+
+        // 피해가 확인된 타격은 사망 동작을 시작한 대상도 포함한다. DeathListener는
+        // 주 갱신 큐에서 이 타격의 상태를 읽은 뒤 지운다.
         static Core::AilmentApplyResult ApplyPlayerHitAilments(
             RE::Actor* target,
             const Core::DamagePacket& poeDamage,
@@ -44,7 +65,6 @@ namespace SkyrimPoE::Runtime
             bool starforgeShock = false,
             double bleedChancePct = 0.0,
             double poisonChancePct = 0.0,
-            double freezeChancePct = 0.0,
             double shockChancePct = 0.0);
 
         struct PlayerAilmentOutcome
@@ -59,12 +79,17 @@ namespace SkyrimPoE::Runtime
             Core::AilmentKind kind,
             double skyrimHitDamage = 0.0);
 
-        // 플레이어가 적의 감전에 걸려 있을 때 받는 피해 증폭 배율(1.0 또는 1.15, C-22/N-3)
+        // CombatHooks의 마법 지속 피해와 같은 매지카 예약으로 ES 잔여 피해를 분배한다.
+        [[nodiscard]] static double ApplyPlayerDotMindOverMatter(
+            double rawAfterEs, double difficultyMultiplier, RE::PlayerCharacter* player) noexcept;
+
+        // 플레이어가 적의 감전에 걸려 있을 때 받는 피해 증폭 배율
         [[nodiscard]] static double PlayerShockDamageMultiplier() noexcept;
 
-        // 스레드 안전 감전 증폭 배율 조회(1.0..1.5)
+        // 스레드 안전 감전 증폭 배율 조회
         [[nodiscard]] static double ShockDamageMultiplier(RE::FormID actorId) noexcept;
         [[nodiscard]] static bool IsFrozen(RE::FormID actorId) noexcept;
+        [[nodiscard]] static bool IsChilledOrFrozen(RE::FormID actorId) noexcept;
         [[nodiscard]] static double ChillSlowRatio(RE::FormID actorId) noexcept;
         [[nodiscard]] static std::optional<Core::ActorAilmentState> GetStateCopy(RE::FormID actorId);
 

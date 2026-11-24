@@ -1,7 +1,11 @@
 #include "core/StatEngine.h"
+#include "core/Config.h"
+#include "core/DamageConversion.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace SkyrimPoE::Core
 {
@@ -41,7 +45,8 @@ namespace SkyrimPoE::Core
 
             double attackBlockChance = 0.0;
             double spellBlockChance = 0.0;
-            double spellSuppressionChance = 0.0;
+            double attackBlockMaxBonusPct = 0.0;
+            double spellBlockMaxBonusPct = 0.0;
             double incEsRechargeRatePct = 0.0;
             double fasterEsRechargeStartPct = 0.0;
 
@@ -149,7 +154,8 @@ namespace SkyrimPoE::Core
             gear.physDamageReduction += s.physDamageReduction;
             gear.attackBlockChance += s.attackBlockChance;
             gear.spellBlockChance += s.spellBlockChance;
-            gear.spellSuppressionChance += s.spellSuppressionChance;
+            gear.attackBlockMaxBonusPct += s.attackBlockMaxBonusPct;
+            gear.spellBlockMaxBonusPct += s.spellBlockMaxBonusPct;
             gear.incEsRechargeRatePct += s.incEsRechargeRatePct;
             gear.fasterEsRechargeStartPct += s.fasterEsRechargeStartPct;
 
@@ -273,6 +279,17 @@ namespace SkyrimPoE::Core
                    snap.intel >= lv.reqInt;
         }
 
+        std::uint32_t SpiritCost(const SkillEffectDefinition& def, const GemLevelData& level) noexcept
+        {
+            return level.spiritCost.value_or(def.spiritCost);
+        }
+
+        bool CanReserveSpirit(const SkillEffectDefinition& def) noexcept
+        {
+            return def.kind == GemKind::Aura || def.kind == GemKind::Herald || def.spiritCost > 0 ||
+                std::ranges::any_of(def.levels, [](const auto& entry) { return entry.second.spiritCost.value_or(0) > 0; });
+        }
+
         ComputedSkillStats ComputeSingleSkill(
             const GemInstance& gemInst,
             const DataPack& pack,
@@ -282,7 +299,6 @@ namespace SkyrimPoE::Core
             const StatSnapshot& snap,
             const AggregatedGearStats& gear,
             const AuraAndBuffTotals& aura,
-            double strMeleePhysIncPct,
             double armourScaleMult,
             double extraManaMultPct,
             double extraMoreSpellDmgPct,
@@ -307,10 +323,11 @@ namespace SkyrimPoE::Core
                 return out;
             }
             out.requirementMet = MeetsGemRequirements(*lv, snap);
-            out.spiritCost = (lv->spiritCost > 0) ? lv->spiritCost : def->spiritCost;
+            out.spiritCost = SpiritCost(*def, *lv);
             out.auraActive = auraIsActive;
 
             const auto& p = l1.passives;
+            const double baseCritMultiplier = 100.0 + ActiveRuleValues().critical.playerBonusPercent;
             const std::uint8_t clampedFrenzy = std::min(l2.frenzyCharges, snap.maxFrenzyCharges);
             const std::uint8_t clampedPower = std::min(l2.powerCharges, snap.maxPowerCharges);
 
@@ -488,7 +505,7 @@ namespace SkyrimPoE::Core
                 // 검수 M1: PoE1 Gain-as-Extra 규칙 — 물리에서 추가 획득된 원소 피해는 물리 %inc·%more와 원소 %inc·%more를 모두 상속
                 const double physOnlyInc = p.incPhysicalDamagePct + gear.incPhysicalDamagePct +
                     aura.incPhysicalDamagePct + p.incPhysicalAttackDamagePct +
-                    p.incMeleePhysicalDamagePct + gear.incMeleePhysicalDamagePct + strMeleePhysIncPct;
+                    p.incMeleePhysicalDamagePct + gear.incMeleePhysicalDamagePct;
 
                 auto computeAtkDirectAndGained = [&](DamageType dt, double directMin, double directMax,
                                                      double gainedPctOfPhys, double elemTotalInc, double elemMore) {
@@ -545,15 +562,14 @@ namespace SkyrimPoE::Core
                 out.baseCritChancePct = snap.resoluteTechnique ? 0.0 : (baseCrit + addBaseCritPct);
                 out.critMultiplierPct = p.elementalOverload
                     ? 100.0
-                    : std::max(100.0, l1.critMultiplierPct + p.globalCritMultiplierPct +
+                    : std::max(100.0, baseCritMultiplier + p.globalCritMultiplierPct +
                                       p.meleeCritMultiplierPct + gear.meleeCritMultiplierPct +
                                       gear.globalCritMultiplierPct + aura.globalCritMultiplierPct);
                 totalCostEffPct += p.attackCostEfficiencyPct;
             } else if (def->kind == GemKind::Spell) {
-                const double ironWillBonus = p.ironWill ? strMeleePhysIncPct : 0.0;
                 const double lowLifeDmgPenalty = (!snap.chaosInoculation && l2.lowLife) ? gear.reducedDamageOnLowLifePct : 0.0;
                 const double commonSpellInc = p.incGlobalDamagePct + gear.incGenericDamagePct - lowLifeDmgPenalty +
-                    p.incSpellDamagePct + gear.incSpellDamagePct + areaIncPct + projIncPct + ironWillBonus;
+                    p.incSpellDamagePct + gear.incSpellDamagePct + areaIncPct + projIncPct;
                 const double spellScale = moreSpellDmgMult * areaDmgFactor * projDmgFactor * moreHitDmgMult * moreAllDmgMult;
 
                 const double baseSpellPhysMin = lv->GetStat("spell_minimum_base_physical_damage", 0.0);
@@ -610,7 +626,7 @@ namespace SkyrimPoE::Core
                 const bool isElemSpell = def->skillTypes.contains("Fire") || def->skillTypes.contains("Cold") || def->skillTypes.contains("Lightning");
                 out.critMultiplierPct = p.elementalOverload
                     ? 100.0
-                    : std::max(100.0, l1.critMultiplierPct + p.globalCritMultiplierPct +
+                    : std::max(100.0, baseCritMultiplier + p.globalCritMultiplierPct +
                                       p.spellCritMultiplierPct + gear.globalCritMultiplierPct +
                                       gear.spellCritMultiPct + (isElemSpell ? gear.elementalCritMultiPct : 0.0) +
                                       aura.globalCritMultiplierPct);
@@ -625,9 +641,9 @@ namespace SkyrimPoE::Core
                 out.moltenShellAbsorbCapPoe = std::clamp(armourForShell * (pctOfArmour / 100.0), 1.0, maxCap);
                 out.moltenShellDurationSec = std::max(0.5, lv->GetStat("base_skill_effect_duration", 3000.0) / 1000.0);
                 out.moltenShellReflectPct = lv->GetStat("molten_shell_%_of_absorbed_damage_dealt_as_reflected_fire", 100.0);
-                out.critMultiplierPct = l1.critMultiplierPct + gear.globalCritMultiplierPct;
+                out.critMultiplierPct = baseCritMultiplier + gear.globalCritMultiplierPct;
             } else {
-                out.critMultiplierPct = l1.critMultiplierPct + gear.globalCritMultiplierPct;
+                out.critMultiplierPct = baseCritMultiplier + gear.globalCritMultiplierPct;
             }
 
             if (noElemental) {
@@ -720,7 +736,7 @@ namespace SkyrimPoE::Core
         }
 
         const auto ver = nextVersion_++;
-        auto next = std::make_shared<const StatSnapshot>(ComputeSnapshotLocked(l1, l2, pack, config, ver));
+        auto next = std::make_shared<const StatSnapshot>(ComputeSnapshot(l1, l2, pack, config, ver));
         {
             std::scoped_lock lock(snapshotMutex_);
             snapshot_ = std::move(next);
@@ -734,14 +750,35 @@ namespace SkyrimPoE::Core
         return snapshot_;
     }
 
-    StatSnapshot StatEngine::ComputeSnapshotLocked(
+    SpiritTogglePreview StatEngine::PreviewSpiritToggle(std::size_t slotIndex, std::uint16_t proposedMask,
+        const DataPack& pack, const Config& config) const
+    {
+        Layer1Input layer;
+        {
+            std::scoped_lock lock(inputMutex_);
+            layer = layer1_;
+        }
+        if (slotIndex >= layer.slots.size() || !layer.slots[slotIndex].occupied) return {};
+        const auto& gem = layer.slots[slotIndex].gem;
+        const auto* def = pack.FindGem(gem.gemId);
+        const auto* level = def ? def->GetLevel(gem.level) : nullptr;
+        if (!level || !CanReserveSpirit(*def)) return {};
+
+        layer.activeAuraMask = proposedMask;
+        const auto preview = ComputeSnapshot(layer, Layer2Input{}, pack, config, 0);
+        return { true, preview.slotStats[slotIndex].requirementMet, preview.requestedSpirit,
+            preview.maxSpirit, preview.reservedSpirit };
+    }
+
+    StatSnapshot StatEngine::ComputeSnapshot(
         const Layer1Input& l1,
         const Layer2Input& l2,
         const DataPack& pack,
         const Config& config,
-        std::uint64_t nextVersion) const
+        std::uint64_t nextVersion)
     {
         StatSnapshot snap;
+        const auto& rules = ActiveRuleValues();
         snap.version = nextVersion;
         snap.exileLevel = std::clamp<std::uint32_t>(l1.exileLevel, 1, kMaxExileLevel);
 
@@ -917,11 +954,11 @@ namespace SkyrimPoE::Core
         snap.inActiveMap = l2.inActiveMap;
         snap.activeMapMods = l2.inActiveMap ? l2.activeMapMods : MapModSummary{};
 
-        // 5~6단계(결정 161, 166): 정신력 상한 계산(1~4차 이정표 각 +30, 기본 최대 220) + 활성 오라/전령 중복 제거
-        const std::uint32_t milestoneCount = std::min<std::uint32_t>(l1.completedMilestoneCount, 4u);
-        const std::uint32_t gearSpirit = static_cast<std::uint32_t>(std::max(0.0, std::floor(gear.flatSpirit + 1e-6)));
-        snap.baseMaxSpirit = Config::kDefaultSpiritBase + milestoneCount * Config::kDefaultSpiritPerMilestone;
-        snap.maxSpirit = config.spiritBase + milestoneCount * config.spiritPerMilestone + gearSpirit;
+        // 결정 203: 이정표별 정신력과 장비 정신력, 활성 예약 스킬 중복 제거
+        snap.baseMaxSpirit = ComputeSpirit(l1.achievementMask, rules);
+        const double spirit = ComputeSpirit(l1.achievementMask, rules, &config) +
+            std::max(0.0, std::floor(gear.flatSpirit + 1e-6));
+        snap.maxSpirit = static_cast<std::uint32_t>(std::min<double>(spirit, std::numeric_limits<std::uint32_t>::max()));
 
         struct ActiveAuraPick
         {
@@ -929,7 +966,6 @@ namespace SkyrimPoE::Core
             std::string gemId;
             std::uint8_t level = 1;
             std::uint32_t spiritCost = 0;
-            const SkillEffectDefinition* def = nullptr;
             const GemLevelData* lv = nullptr;
         };
         std::unordered_map<std::string, ActiveAuraPick> bestByGemId;
@@ -938,20 +974,20 @@ namespace SkyrimPoE::Core
             const auto& slot = l1.slots[i];
             if (!slot.occupied) continue;
             const auto* def = pack.FindGem(slot.gem.gemId);
-            if (!def || (def->kind != GemKind::Aura && def->kind != GemKind::Herald)) continue;
+            if (!def) continue;
             const auto* lv = def->GetLevel(slot.gem.level);
-            if (!lv) continue;
+            if (!lv || !CanReserveSpirit(*def)) continue;
             if (config.enforceGemRequirements && !MeetsGemRequirements(*lv, snap)) continue;
-            const std::uint32_t cost = (lv->spiritCost > 0) ? lv->spiritCost : def->spiritCost;
+            const std::uint32_t cost = SpiritCost(*def, *lv);
             auto it = bestByGemId.find(def->id);
             if (it == bestByGemId.end() || slot.gem.level > it->second.level) {
-                bestByGemId[def->id] = ActiveAuraPick{ i, def->id, slot.gem.level, cost, def, lv };
+                bestByGemId[def->id] = ActiveAuraPick{ i, def->id, slot.gem.level, cost, lv };
             }
         }
 
         std::vector<ActiveAuraPick> activeAuras;
         activeAuras.reserve(bestByGemId.size());
-        std::uint32_t totalReserved = 0;
+        std::uint64_t totalReserved = 0;
         for (const auto& [_, pick] : bestByGemId) {
             activeAuras.push_back(pick);
             totalReserved += pick.spiritCost;
@@ -959,13 +995,14 @@ namespace SkyrimPoE::Core
         std::sort(activeAuras.begin(), activeAuras.end(), [](const ActiveAuraPick& a, const ActiveAuraPick& b) {
             return a.slotIdx < b.slotIdx;
         });
+        snap.requestedSpirit = totalReserved;
         while (totalReserved > snap.maxSpirit && !activeAuras.empty()) {
             totalReserved -= activeAuras.back().spiritCost;
             activeAuras.pop_back();
         }
 
         AuraAndBuffTotals aura{};
-        snap.reservedSpirit = totalReserved;
+        snap.reservedSpirit = static_cast<std::uint32_t>(totalReserved);
         snap.effectiveActiveAuraMask = 0;
         for (const auto& a : activeAuras) {
             snap.effectiveActiveAuraMask |= static_cast<std::uint16_t>(1u << a.slotIdx);
@@ -1079,32 +1116,26 @@ namespace SkyrimPoE::Core
         snap.resoluteTechnique = p.resoluteTechnique;
         snap.unwaveringStance = p.unwaveringStance;
 
-        // 2패스: 확정된 능력치의 내재 보너스 반영 (PoB 2.68.1 Modules/CalcPerform.lua:535-543, Data/Misc.lua:84 대조)
-        // PoE1: 힘 2당 생명력 +1, 힘 5당 근접 물리 피해 +1%; 민첩 5당 회피 +1%(내림, Iron Reflexes 시 0); 지능 2당 마나 +1, 지능 10당 ES +1%(내림)
-        const double strLife = static_cast<double>(snap.str / 2);
-        const double strMeleePhysInc = static_cast<double>(snap.str / 5);
-        const double dexEvasionInc = p.ironReflexes ? 0.0 : static_cast<double>(snap.dex / 5);
-        const double intMana = static_cast<double>(snap.intel / 2);
-        const double intEsInc = static_cast<double>(snap.intel / 10);
+        // PoB CalcSetup.lua:678, CalcPerform.lua:492–517. 결정 207에 따라 명중은 판정에 사용하지 않는다.
+        snap.accuracy = rules.hit.accuracyPerLevel * (snap.exileLevel - 1) + rules.hit.accuracyPerDexterity * snap.dex;
+        snap.expectedPoeLife = ExpectedLife(snap.exileLevel, static_cast<std::uint32_t>(baseStr), config);
+        snap.expectedPoeMana = ExpectedMana(snap.exileLevel, static_cast<std::uint32_t>(baseInt), config);
 
         const auto& c = pack.Constants();
         if (snap.chaosInoculation) {
             snap.poeMaxLife = 1.0;
         } else {
-            const double baseLife = c.lifeBase + c.lifePerLevel * static_cast<double>(snap.exileLevel) +
-                strLife + l1.flatLife + p.flatLife + gear.flatLife;
+            const double flatLife = l1.flatLife + p.flatLife + gear.flatLife;
             const double totalIncLife = l1.incLifePct + p.incLifePct + gear.incLifePct;
-            const double moreLife = std::max(0.0, p.moreLifeMult);
-            snap.poeMaxLife = std::max(1.0, baseLife * std::max(0.0, 1.0 + totalIncLife / 100.0) * moreLife);
+            snap.poeMaxLife = rules.life.Total(snap.exileLevel, snap.str, flatLife, totalIncLife, p.moreLifeMult);
         }
 
         if (snap.bloodMagic) {
             snap.poeMaxMana = 0.0;
         } else {
-            const double baseMana = c.manaBase + c.manaPerLevel * static_cast<double>(snap.exileLevel) +
-                intMana + l1.flatMana + p.flatMana + gear.flatMana;
+            const double flatMana = l1.flatMana + p.flatMana + gear.flatMana;
             const double totalIncMana = l1.incManaPct + p.incManaPct + gear.incManaPct;
-            snap.poeMaxMana = std::max(0.0, baseMana * std::max(0.0, 1.0 + totalIncMana / 100.0));
+            snap.poeMaxMana = rules.mana.Total(snap.exileLevel, snap.intel, flatMana, totalIncMana, p.moreManaMult);
         }
 
         auto sanitizePenalty = [](double raw, double maxCap) noexcept -> double {
@@ -1116,7 +1147,7 @@ namespace SkyrimPoE::Core
         const double mapResPen = snap.inActiveMap ? sanitizePenalty(snap.activeMapMods.playerMaxResPenalty, 25.0) : 0.0;
 
         const double totalFlatEs = l1.flatEnergyShield + p.flatEnergyShield + gear.energyShield + gear.flatEnergyShield + aura.flatEs;
-        const double totalIncEs = l1.incEnergyShieldPct + p.incEnergyShieldPct + gear.incEnergyShieldPct + aura.incEsPct + intEsInc;
+        const double totalIncEs = l1.incEnergyShieldPct + p.incEnergyShieldPct + gear.incEnergyShieldPct + aura.incEsPct;
         snap.poeMaxEnergyShield = std::max(0.0, totalFlatEs * std::max(0.0, 1.0 + totalIncEs / 100.0));
         const double mapEsRechargeFactor = std::max(0.1, 1.0 - mapLessEsRecharge / 100.0);
         snap.esRechargeRateMult = std::max(0.1,
@@ -1124,16 +1155,15 @@ namespace SkyrimPoE::Core
         snap.esRechargeDelayMult = 1.0 / std::max(0.1, 1.0 + (p.fasterEsRechargeStartPct + gear.fasterEsRechargeStartPct) / 100.0);
 
         // 방어·회피 + Determination/Grace/MoltenShell/BastionCharm + Iron Reflexes / Unwavering Stance
-        // C-11: PoB Data/Misc.lua:84 base_evasion_rating = 15 반영
         const double mapArmourFactor = std::max(0.1, 1.0 - mapLessArmour / 100.0);
         const double mapEvasionFactor = std::max(0.1, 1.0 - mapLessEvasion / 100.0);
         const double totalFlatArmour = l1.armour + p.flatArmour + gear.armour + gear.flatArmour +
             aura.flatArmour + cb.flatArmour + l2.moltenShellBonusArmour;
-        const double totalFlatEvasion = 15.0 + l1.evasion + p.flatEvasion + gear.evasion + gear.flatEvasion + aura.flatEvasion;
+        const double totalFlatEvasion = rules.hit.baseEvasion + l1.evasion + p.flatEvasion + gear.evasion + gear.flatEvasion + aura.flatEvasion;
         const double totalArmourIncPct = p.incArmourPct + p.incArmourAndEvasionPct +
             gear.incArmourPct + gear.incArmourAndEvasionPct + aura.incArmourPct;
         const double armourScaleMult = std::max(0.0, 1.0 + totalArmourIncPct / 100.0) * aura.moreArmourMult * mapArmourFactor;
-        const double rawArmour = std::max(0.0, totalFlatArmour * std::max(0.0, 1.0 + totalArmourIncPct / 100.0));
+        const double rawArmour = totalFlatArmour * std::max(0.0, 1.0 + totalArmourIncPct / 100.0);
         const double lowLifeEvasionInc = (!snap.chaosInoculation && l2.lowLife) ? gear.incEvasionOnLowLifePct : 0.0;
         if (p.ironReflexes) {
             const double convIncPct = p.incArmourPct + p.incEvasionPct + p.incArmourAndEvasionPct +
@@ -1144,7 +1174,7 @@ namespace SkyrimPoE::Core
             snap.evasion = 0.0;
         } else {
             const double totalEvasionIncPct = p.incEvasionPct + p.incArmourAndEvasionPct +
-                gear.incEvasionPct + gear.incArmourAndEvasionPct + dexEvasionInc + lowLifeEvasionInc;
+                gear.incEvasionPct + gear.incArmourAndEvasionPct + lowLifeEvasionInc;
             const double rawEvasion = std::max(0.0, totalFlatEvasion * std::max(0.0, 1.0 + totalEvasionIncPct / 100.0));
             snap.armour = rawArmour * aura.moreArmourMult * mapArmourFactor;
             snap.evasion = p.cannotEvade ? 0.0 : (rawEvasion * aura.moreEvasionMult * mapEvasionFactor);
@@ -1176,20 +1206,13 @@ namespace SkyrimPoE::Core
 
         snap.physDamageReduction = std::clamp(
             l1.physDamageReduction + p.physDamageReduction + gear.physDamageReduction + aura.physDamageReduction + cb.physDamageReduction + endDR,
-            0.0, 90.0);
+            0.0, rules.armour.physicalReductionCapPercent);
         snap.elementalDamageReduction = std::clamp(l1.elementalDamageReduction + endDR, 0.0, 90.0);
-        snap.attackBlockChance = std::clamp(l1.attackBlockChance + p.attackBlockChance + gear.attackBlock + gear.attackBlockChance, 0.0, 75.0);
-        snap.spellBlockChance = std::clamp(l1.spellBlockChance + p.spellBlockChance + gear.spellBlockChance, 0.0, 75.0);
-
-        const double rawSupp = std::max(0.0, l1.spellSuppressionChance + p.spellSuppressionChance + gear.spellSuppressionChance);
-        if (p.acrobatics) {
-            snap.spellDodgeChance = std::clamp(rawSupp * 0.5, 0.0, 75.0);
-            snap.spellSuppressionChance = 0.0;
-        } else {
-            snap.spellDodgeChance = 0.0;
-            snap.spellSuppressionChance = std::clamp(rawSupp, 0.0, 100.0);
-        }
-        snap.spellSuppressionPrevent = std::clamp(l1.spellSuppressionPrevent + p.spellSuppressionPrevent, 0.0, 100.0);
+        snap.attackBlockChance = std::clamp(l1.attackBlockChance + p.attackBlockChance + gear.attackBlock + gear.attackBlockChance,
+            0.0, BlockChanceLimit(l1.attackBlockMaxBonusPct + p.attackBlockMaxBonusPct + gear.attackBlockMaxBonusPct));
+        snap.spellBlockChance = std::clamp(l1.spellBlockChance + p.spellBlockChance + gear.spellBlockChance,
+            0.0, BlockChanceLimit(l1.spellBlockMaxBonusPct + p.spellBlockMaxBonusPct + gear.spellBlockMaxBonusPct));
+        snap.deflectionRating = std::max(0.0, l1.deflectionRating);
 
         // Mind Over Matter: Blood Magic/마나 0 빌드에서는 비활성(검수 C4)
         snap.momRatio = (!snap.bloodMagic && snap.poeMaxMana > 0.0)
@@ -1206,6 +1229,7 @@ namespace SkyrimPoE::Core
         snap.bleedChancePct = std::clamp(p.bleedChancePct, 0.0, 100.0);
         snap.poisonChancePct = std::clamp(p.poisonChancePct, 0.0, 100.0);
         snap.attackIgniteChancePct = std::clamp(p.attackIgniteChancePct, 0.0, 100.0);
+        snap.attackBleedChancePct = std::clamp(p.attackBleedChancePct, 0.0, 100.0);
         snap.attackPoisonChancePct = std::clamp(p.attackPoisonChancePct, 0.0, 100.0);
         snap.spellPoisonChancePct = std::clamp(p.spellPoisonChancePct, 0.0, 100.0);
 
@@ -1252,6 +1276,8 @@ namespace SkyrimPoE::Core
                 snap.slotStats[i].level = slot.gem.level;
                 if (const auto* trigLv = def->GetLevel(slot.gem.level)) {
                     snap.slotStats[i].requirementMet = MeetsGemRequirements(*trigLv, snap);
+                    snap.slotStats[i].spiritCost = SpiritCost(*def, *trigLv);
+                    snap.slotStats[i].auraActive = (snap.effectiveActiveAuraMask & (1u << i)) != 0;
                 }
                 if (!triggerLinkAccepted[i]) {
                     continue;
@@ -1282,7 +1308,6 @@ namespace SkyrimPoE::Core
                         snap,
                         gear,
                         aura,
-                        strMeleePhysInc,
                         armourScaleMult,
                         spellManaMult,
                         spellMoreDmg,
@@ -1303,7 +1328,6 @@ namespace SkyrimPoE::Core
                     snap,
                     gear,
                     aura,
-                    strMeleePhysInc,
                     armourScaleMult,
                     attackExtraManaMult[i],
                     0.0,

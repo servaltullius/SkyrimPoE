@@ -24,6 +24,7 @@ namespace SkyrimPoE::Core
             };
 
             const std::string_view tpl = line.templateEn;
+            const auto unsignedTpl = tpl.starts_with('+') || tpl.starts_with('-') ? tpl.substr(1) : tpl;
             const double v0 = rangeCount >= 1 ? getVal(0) : 0.0;
             const double v1 = rangeCount >= 2 ? getVal(1) : v0;
 
@@ -158,6 +159,11 @@ namespace SkyrimPoE::Core
                     totals.attackBlockChance += v0;
                 } else if (tpl == "+{0}% Chance to Block Spell Damage" || tpl == "{0}% Chance to Block Spell Damage") {
                     totals.spellBlockChance += v0;
+                } else if (unsignedTpl == "{0}% to maximum Chance to Block Attack Damage" ||
+                           unsignedTpl == "{0}% to maximum Block chance") {
+                    totals.attackBlockMaxBonusPct += tpl.starts_with('-') ? -v0 : v0;
+                } else if (unsignedTpl == "{0}% to maximum Chance to Block Spell Damage") {
+                    totals.spellBlockMaxBonusPct += tpl.starts_with('-') ? -v0 : v0;
                 } else if (tpl == "{0}% increased Energy Shield Recharge Rate") {
                     totals.incEsRechargeRatePct += v0;
                 } else if (tpl == "{0}% faster start of Energy Shield Recharge") {

@@ -31,11 +31,12 @@ namespace SkyrimPoE::Core
         std::vector<std::string> reasons;
     };
 
-    // Pack and file order is core, tree, items, followed by the ESP in files.
+    // Pack and file order is core, tree, items, rules, followed by the ESP in files.
     // A generation-0 ESP must omit the generation GLOB.
     [[nodiscard]] ContentCheckResult CheckContent(
-        const std::array<nlohmann::json, 3>& packMeta,
+        const std::array<nlohmann::json, 4>& packMeta,
         const nlohmann::json& manifest,
-        const std::array<ContentFile, 4>& files,
+        const std::array<ContentFile, 5>& files,
         std::optional<std::uint32_t> espGeneration);
+
 }

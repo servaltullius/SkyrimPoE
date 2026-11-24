@@ -12,10 +12,10 @@ POE_TEST("StatEngine: base maximum Spirit excludes INI overrides and equipment")
     POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json"));
     Config config;
     config.spiritBase = 140;
-    config.spiritPerMilestone = 12;
+    config.spiritMilestoneRewards = std::array{ 12u, 12u, 12u, 12u };
 
     Layer1Input input;
-    input.completedMilestoneCount = 3;
+    input.achievementMask = 0x7;
     auto& shield = input.equippedGear[static_cast<std::size_t>(EquipSlot::OffHand)];
     shield.occupied = true;
     shield.isCrafted = true;
@@ -25,13 +25,13 @@ POE_TEST("StatEngine: base maximum Spirit excludes INI overrides and equipment")
     engine.SetLayer1(input);
     POE_CHECK(engine.RebuildIfDirty(pack, config));
     const auto before = engine.GetSnapshot();
-    POE_CHECK(before->baseMaxSpirit == 190);
+    POE_CHECK(before->baseMaxSpirit == 200);
     POE_CHECK(before->maxSpirit == 216);
 
-    input.completedMilestoneCount = 4;
+    input.achievementMask = 0xF;
     engine.SetLayer1(input);
     POE_CHECK(engine.RebuildIfDirty(pack, config));
     const auto after = engine.GetSnapshot();
-    POE_CHECK(after->baseMaxSpirit == 220);
+    POE_CHECK(after->baseMaxSpirit == 230);
     POE_CHECK(after->maxSpirit == 228);
 }

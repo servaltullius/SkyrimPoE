@@ -1420,18 +1420,20 @@
     const bKills = treeState.bossKillCount || 0;
     const dKills = treeState.dragonKillCount || 0;
     const atlasPts = treeState.atlasTierPoints || 0;
+    const rewards = Array.isArray(treeState.spiritMilestoneRewards) ? treeState.spiritMilestoneRewards : [];
     const tiers = [
-      { bit: 1, label: "1차 (+2전직 · +2P · +30 정신력): 드래곤 1 / 보스 5", cur: `용 ${dKills}/1 · 보스 ${bKills}/5` },
-      { bit: 2, label: "2차 (+2전직 · +2P · +30 정신력): 드래곤 3 / 보스 15", cur: `용 ${dKills}/3 · 보스 ${bKills}/15` },
-      { bit: 4, label: "3차 (+2전직 · +2P · +30 정신력): 드래곤 6 / 보스 30", cur: `용 ${dKills}/6 · 보스 ${bKills}/30` },
-      { bit: 8, label: "4차 (+2전직 · +2P · +30 정신력): 4차 결투장 정복", cur: "지도 장치 [U]" },
+      { goal: "드래곤 1 / 보스 5", cur: `용 ${dKills}/1 · 보스 ${bKills}/5` },
+      { goal: "드래곤 3 / 보스 15", cur: `용 ${dKills}/3 · 보스 ${bKills}/15` },
+      { goal: "드래곤 6 / 보스 30", cur: `용 ${dKills}/6 · 보스 ${bKills}/30` },
+      { goal: "4차 결투장 정복", cur: "지도 장치 [U]" },
     ];
-    for (const t of tiers) {
+    for (const [index, t] of tiers.entries()) {
       const row = document.createElement("div");
-      const done = (mask & t.bit) !== 0;
+      const done = (mask & (1 << index)) !== 0;
       row.className = `ms-row${done ? " done" : ""}`;
       const l = document.createElement("span");
-      l.textContent = t.label;
+      const spirit = Number.isInteger(rewards[index]) ? ` · +${rewards[index]} 정신력` : "";
+      l.textContent = `${index + 1}차 (+2전직 · +2P${spirit}): ${t.goal}`;
       const r = document.createElement("span");
       r.textContent = done ? "달성" : t.cur;
       row.appendChild(l);

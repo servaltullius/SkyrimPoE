@@ -131,8 +131,8 @@ namespace SkyrimPoE::Core
         [[nodiscard]] static std::uint32_t RewardMonsterLevel(const ActiveMapState& state) noexcept;
         [[nodiscard]] static MapMonsterMultipliers GetMapMonsterMultipliers(
             std::uint32_t mapLevel, const DataPack& pack) noexcept;
-        [[nodiscard]] static double AilmentThreshold(
-            std::uint32_t exileLevel, double lifeMultiplier, const DataPack& pack) noexcept;
+        [[nodiscard]] static double AilmentThreshold(std::uint32_t monsterLevel) noexcept;
+        [[nodiscard]] static double PoiseThreshold(std::uint32_t monsterLevel) noexcept;
         [[nodiscard]] static double EstimateVanillaHitPoe(
             double rawHitDamage, std::uint32_t exileLevel, const DataPack& pack) noexcept;
 

@@ -23,11 +23,14 @@ namespace SkyrimPoE::Core
         {
             std::string_view game;
             std::uint32_t generation;
-            std::array<PackSchema, 3> packs;
+            std::array<PackSchema, 4> packs;
         };
 
         constexpr SupportedContent kSupportedContents[] = {
-            { "poe1", 0, {{ { "skyrimpoe.core", 1 }, { "skyrimpoe.tree", 1 }, { "skyrimpoe.items", 2 } }} },
+            { "poe1", 0, {{
+                { "skyrimpoe.core", 1 }, { "skyrimpoe.tree", 1 },
+                { "skyrimpoe.items", 2 }, { "skyrimpoe.rules", 1 },
+            }} },
         };
 
         const json* FindField(const json& object, std::string_view key)
@@ -179,8 +182,8 @@ namespace SkyrimPoE::Core
         }
     }
 
-    ContentCheckResult CheckContent(const std::array<json, 3>& packMeta, const json& manifest,
-        const std::array<ContentFile, 4>& files, std::optional<std::uint32_t> espGeneration)
+    static ContentCheckResult CheckContentImpl(std::span<const json> packMeta, const json& manifest,
+        std::span<const ContentFile> files, std::optional<std::uint32_t> espGeneration)
     {
         ContentCheckResult result;
         auto& reasons = result.reasons;
@@ -226,6 +229,13 @@ namespace SkyrimPoE::Core
                 reasons.emplace_back("manifest.json: missing or unsupported manifestVersion (expected 1).");
             }
             ComparePackageFields(common, ReadPackageFields(manifest, "manifest.json", reasons), "manifest.json", reasons);
+            const auto* version = ReadText(manifest, "gameVersion");
+            if (!version) {
+                reasons.emplace_back("manifest.json: missing or invalid gameVersion.");
+            } else if (gameVersion && *gameVersion != *version) {
+                reasons.push_back(std::format("manifest.json: gameVersion mismatch (expected {}, found {}).",
+                    *gameVersion, *version));
+            }
             entries = FindField(manifest, "files");
             if (!entries || !entries->is_array()) {
                 reasons.emplace_back("manifest.json: missing or invalid files array.");
@@ -250,4 +260,11 @@ namespace SkyrimPoE::Core
         }
         return result;
     }
+
+    ContentCheckResult CheckContent(const std::array<json, 4>& packMeta, const json& manifest,
+        const std::array<ContentFile, 5>& files, std::optional<std::uint32_t> espGeneration)
+    {
+        return CheckContentImpl(packMeta, manifest, files, espGeneration);
+    }
+
 }

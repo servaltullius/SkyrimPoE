@@ -1,4 +1,5 @@
 #include "core/DamageConversion.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,11 @@ namespace SkyrimPoE::Core
         {
             return (std::isfinite(v) && v > 0.0) ? v : fallback;
         }
+
+        double RoundRulePercent(double percent) noexcept
+        {
+            return std::floor(percent + ActiveRuleValues().armour.roundingOffset);
+        }
     }
 
     double ExpectedHitDamage(
@@ -28,10 +34,15 @@ namespace SkyrimPoE::Core
         return pack.MonsterLife(lv) / n;
     }
 
+    bool CanInflictPoEAilments(VanillaHitSource source) noexcept
+    {
+        return source == VanillaHitSource::Attack;  // 결정 209 ⑨
+    }
+
     double OffenseReferenceLife(std::uint32_t exileLevel, const DataPack& pack, const Config& config) noexcept
     {
-        const double lifeL = SafePositive(pack.MonsterLife(ClampLevel(exileLevel)), 22.0);
-        const double life1 = SafePositive(pack.MonsterLife(1), 22.0);
+        const double lifeL = pack.MonsterLife(exileLevel);
+        const double life1 = pack.MonsterLife(1);
         return config.offenseK * std::pow(lifeL / life1, 1.0 - config.offenseRollback);
     }
 
@@ -45,7 +56,7 @@ namespace SkyrimPoE::Core
             return 0.0;
         }
         const auto lv = ClampLevel(exileLevel);
-        const double lifeL = SafePositive(pack.MonsterLife(lv), 22.0);
+        const double lifeL = pack.MonsterLife(lv);
         const double out = OffenseReferenceLife(lv, pack, config) * (poeHitDamage / lifeL);
         return (std::isfinite(out) && out > 0.0) ? out : 0.0;
     }
@@ -64,27 +75,156 @@ namespace SkyrimPoE::Core
         return perHit * rate;
     }
 
-    double ArmourPassRatio(double armour, double poeHit, double cap) noexcept
+    double ArmourReductionPercent(double armour, double poeHit) noexcept
     {
-        if (!std::isfinite(armour) || armour <= 0.0) {
-            return 1.0;
+        const auto& rule = ActiveRuleValues().armour;
+        if (!std::isfinite(armour) || !std::isfinite(poeHit) || poeHit < 0.0 ||
+            (armour == 0.0 && poeHit == 0.0)) {
+            return rule.zeroOverZeroPercent;
         }
-        if (!std::isfinite(poeHit) || poeHit <= 0.0) {
-            return 1.0 - std::clamp(cap, 0.0, 0.90);
-        }
-        const double reduction = std::min(cap, armour / (armour + 5.0 * poeHit));
-        return std::clamp(1.0 - reduction, 0.0, 1.0);
+        const double magnitude = std::abs(armour);
+        const double sign = armour < 0.0 ? rule.negativeArmourSign : 1.0;
+        return RoundRulePercent(sign * (magnitude / (magnitude + rule.damageCoefficient * poeHit)) * 100.0);
     }
 
-    double EvasionHitChance(double evasion, double accuracy, double minHit) noexcept
+    double ArmourPassRatio(double armour, double poeHit, double extraReductionPercent) noexcept
     {
-        if (!std::isfinite(accuracy) || accuracy <= 0.0) {
-            return minHit;
+        const double cap = ActiveRuleValues().armour.physicalReductionCapPercent;
+        // PoB CalcDefence.lua:405, 440, 2408 floors the combined reduction at zero.
+        return 1.0 - std::clamp(ArmourReductionPercent(armour, poeHit) + extraReductionPercent, 0.0, cap) / 100.0;
+    }
+
+    void ArmourBreakState::ApplyFullyBroken(double nowSeconds, bool targetIsPlayer) noexcept
+    {
+        const auto& rule = ActiveRuleValues().armour;
+        expiresAt_ = nowSeconds + (targetIsPlayer ? rule.brokenPlayerDurationSeconds : rule.brokenEnemyDurationSeconds);
+        targetIsPlayer_ = targetIsPlayer;
+    }
+
+    bool ArmourBreakState::IsFullyBroken(double nowSeconds) const noexcept
+    {
+        return expiresAt_ > nowSeconds;
+    }
+
+    double ArmourBreakState::DamageTakenMultiplier(double nowSeconds, DamageType type, bool isDamageOverTime) const noexcept
+    {
+        if (targetIsPlayer_ || type != DamageType::Physical || isDamageOverTime || !IsFullyBroken(nowSeconds)) {
+            return 1.0;
+        }
+        return 1.0 + ActiveRuleValues().armour.brokenEnemyHitDamageTakenPercent / 100.0;
+    }
+
+    bool EnemyArmourBreaks::SetGenerationLocked(std::uint64_t generation)
+    {
+        if (generation < generation_) return false;
+        if (generation != generation_) {
+            targets_.clear();
+            generation_ = generation;
+            nowSeconds_ = 0.0;
+        }
+        return true;
+    }
+
+    void EnemyArmourBreaks::ApplyFullyBroken(std::uint32_t actorHandle, std::uint64_t generation)
+    {
+        if (actorHandle == 0) return;
+        std::scoped_lock lock(mutex_);
+        if (!SetGenerationLocked(generation)) return;
+        targets_[actorHandle].ApplyFullyBroken(nowSeconds_, false);
+    }
+
+    void EnemyArmourBreaks::Advance(double elapsedSeconds, std::uint64_t generation)
+    {
+        std::scoped_lock lock(mutex_);
+        if (!SetGenerationLocked(generation)) return;
+        if (std::isfinite(elapsedSeconds) && elapsedSeconds > 0.0) {
+            nowSeconds_ += elapsedSeconds;
+        }
+        std::erase_if(targets_, [this](const auto& target) { return !target.second.IsFullyBroken(nowSeconds_); });
+    }
+
+    double EnemyArmourBreaks::DamageTakenMultiplier(std::uint32_t actorHandle, std::uint64_t generation,
+        DamageType type, bool isDamageOverTime) const
+    {
+        std::scoped_lock lock(mutex_);
+        if (generation != generation_) return 1.0;
+        const auto target = targets_.find(actorHandle);
+        return target == targets_.end() ? 1.0 : target->second.DamageTakenMultiplier(nowSeconds_, type, isDamageOverTime);
+    }
+
+    EnemyArmourBreaks& ActiveEnemyArmourBreaks() noexcept
+    {
+        static EnemyArmourBreaks breaks;
+        return breaks;
+    }
+
+    double EnemyArmourBreaks::ApplyToDamage(std::uint32_t actorHandle, std::uint64_t generation,
+        double damage, double physicalFraction, bool isDamageOverTime) const
+    {
+        if (isDamageOverTime || !std::isfinite(physicalFraction) || physicalFraction <= 0.0) {
+            return damage;
+        }
+        const double multiplier = DamageTakenMultiplier(actorHandle, generation, DamageType::Physical, false);
+        return damage + damage * std::min(physicalFraction, 1.0) * (multiplier - 1.0);
+    }
+
+    double PhysicalDamageFraction(const DamagePacket& packet) noexcept
+    {
+        const double total = packet.TotalAverage();
+        const double physical = packet.byType[static_cast<std::size_t>(DamageType::Physical)].Average();
+        if (!std::isfinite(total) || total <= 0.0 || !std::isfinite(physical)) {
+            return 0.0;
+        }
+        return std::clamp(physical / total, 0.0, 1.0);
+    }
+
+    bool PlayerHitMeetsAilmentThreshold(double postDeflectionDamage, double maxHealth) noexcept
+    {
+        return postDeflectionDamage >= std::max(50.0, maxHealth) * 0.05;
+    }
+
+    double EvasionHitChance(double evasion, double accuracy) noexcept
+    {
+        const auto& rule = ActiveRuleValues().hit;
+        if (!std::isfinite(accuracy) || accuracy < 0.0) {
+            return rule.negativeAccuracyPercent / 100.0;
         }
         const double ev = (std::isfinite(evasion) && evasion > 0.0) ? evasion : 0.0;
-        const double raw = accuracy / (accuracy + std::pow(ev / 5.0, 0.9)) * 125.0;
-        const double pct = std::floor(raw + 0.5);
-        return std::clamp(pct, minHit * 100.0, 100.0) / 100.0;
+        if (ev == 0.0) {
+            return rule.maxPercent / 100.0;
+        }
+        const double raw = (1.0 - rule.monsterEvasionMultiplier * ev /
+            (ev + rule.monsterAccuracyMultiplier * accuracy)) * 100.0;
+        return std::clamp(RoundRulePercent(raw), rule.minPercent, rule.maxPercent) / 100.0;
+    }
+
+    double DeflectionChance(double rating, double accuracy) noexcept
+    {
+        const auto& rule = ActiveRuleValues().deflect;
+        if (!std::isfinite(rating) || rating < rule.minimumRating || !std::isfinite(accuracy)) {
+            return rule.minPercent / 100.0;
+        }
+        const double acc = std::max(0.0, accuracy);
+        const double miss = acc / (acc + rating * rule.ratingCoefficient) *
+            rule.chanceScale - rule.chanceOffsetPercent;
+        return std::clamp(rule.percentScale - RoundRulePercent(miss), rule.minPercent, rule.capPercent) / 100.0;
+    }
+
+    double BlockChanceLimit(double addedMaxPercent) noexcept
+    {
+        const auto& rule = ActiveRuleValues().block;
+        return std::clamp(rule.baseMaxPercent + addedMaxPercent, 0.0, rule.capPercent);
+    }
+
+    double SpellHitBlockChance(const StatSnapshot& snapshot, bool isProjectile) noexcept
+    {
+        return isProjectile ? std::max(snapshot.attackBlockChance, snapshot.spellBlockChance) : snapshot.spellBlockChance;
+    }
+
+    AilmentKind EnergyShieldBypassAilment(AilmentKind ailment, bool shavronneChaosEs) noexcept
+    {
+        // Shavronne prevents poison's bypass. Chaos still consumes double ES.
+        return shavronneChaosEs && ailment == AilmentKind::Poison ? AilmentKind::Count : ailment;
     }
 
     double ExpectedPhysicalPass(
@@ -98,8 +238,8 @@ namespace SkyrimPoE::Core
         const double h = c.monsterDamageMult * pack.MonsterDamage(lv);
         const double acc = pack.MonsterAccuracy(lv);
         const double mult = 1.0 + std::max(0.0, config.expectedArmorIncrease);
-        const double pArmour = ArmourPassRatio(row.bestArmour * mult, h, c.armourMitigationCap);
-        const double pEvasion = EvasionHitChance(row.bestEvasion * mult, acc, c.minHitChance);
+        const double pArmour = ArmourPassRatio(row.bestArmour * mult, h);
+        const double pEvasion = EvasionHitChance(row.bestEvasion * mult, acc);
         return (pArmour + pEvasion + 1.0) / 3.0;
     }
 
@@ -129,22 +269,20 @@ namespace SkyrimPoE::Core
 
     double ExpectedLife(
         std::uint32_t exileLevel,
-        const DataPack& pack,
+        std::uint32_t startingStrength,
         const Config& config) noexcept
     {
-        const auto lv = ClampLevel(exileLevel);
-        const auto& c = pack.Constants();
-        return (c.lifeBase + c.lifePerLevel * static_cast<double>(lv)) * (1.0 + std::max(0.0, config.expectedLifeIncrease));
+        return ActiveRuleValues().life.Total(ClampLevel(exileLevel), startingStrength, 0.0,
+            std::max(0.0, config.expectedLifeIncrease) * 100.0);
     }
 
     double ExpectedMana(
         std::uint32_t exileLevel,
-        const DataPack& pack,
+        std::uint32_t startingIntelligence,
         const Config& config) noexcept
     {
-        const auto lv = ClampLevel(exileLevel);
-        const auto& c = pack.Constants();
-        return (c.manaBase + c.manaPerLevel * static_cast<double>(lv)) * (1.0 + std::max(0.0, config.expectedManaIncrease));
+        return ActiveRuleValues().mana.Total(ClampLevel(exileLevel), startingIntelligence, 0.0,
+            std::max(0.0, config.expectedManaIncrease) * 100.0);
     }
 
     double ConvertDefensePhysicalHit(
@@ -160,16 +298,18 @@ namespace SkyrimPoE::Core
         const auto lv = ClampLevel(exileLevel);
         const auto& c = pack.Constants();
         const double dref = SafePositive(config.defenseDref, 10.7);
-        const double h = skyrimPreArmorD * (c.monsterDamageMult * pack.MonsterDamage(lv) / dref);
+        const double poePerSkyrim = c.monsterDamageMult * pack.MonsterDamage(lv) / dref;
+        const double h = skyrimPreArmorD * poePerSkyrim;
 
-        const double armourRed = (snapshot.armour > 0.0) ? (snapshot.armour / (snapshot.armour + 5.0 * h)) : 0.0;
-        const double totalRed = std::clamp(armourRed + snapshot.physDamageReduction / 100.0, 0.0, c.armourMitigationCap);
-        const double pass = 1.0 - totalRed;
+        const double pass = ArmourPassRatio(snapshot.armour, h, snapshot.physDamageReduction);
 
         const double meL = SafePositive(ExpectedPhysicalPass(lv, pack, config), 1.0);
         const double me1 = SafePositive(ExpectedPhysicalPass(1, pack, config), 1.0);
         const double denom = std::pow(meL, config.defenseRollback) * std::pow(me1, 1.0 - config.defenseRollback);
-        const double out = skyrimPreArmorD * pass / SafePositive(denom, 1.0);
+        // Astramentis modifies post-armour damage in PoE units. Invert the same
+        // hit scale before applying the expected-defence normalization to both terms.
+        const double flatSkyrim = poePerSkyrim > 0.0 ? snapshot.flatPhysTakenFromAttacksDelta / poePerSkyrim : 0.0;
+        const double out = (skyrimPreArmorD * pass + flatSkyrim) / SafePositive(denom, 1.0);
         return (std::isfinite(out) && out > 0.0) ? out : 0.0;
     }
 
@@ -235,9 +375,7 @@ namespace SkyrimPoE::Core
     double ComputeSkyrimMaxHealth(
         double baseSkyrimMaxHealth,
         double poeMaxLife,
-        std::uint32_t exileLevel,
-        const DataPack& pack,
-        const Config& config,
+        double expectedPoeLife,
         bool chaosInoculation) noexcept
     {
         const double base = SafePositive(baseSkyrimMaxHealth, 100.0);
@@ -245,7 +383,7 @@ namespace SkyrimPoE::Core
             // 3단계 검수 C6: 스카이림 낙하·환경·물리 즉사 사고를 피하기 위한 CI 최소 안전 체력 하한
             return std::max(1.0, std::min(25.0, base * 0.15));
         }
-        const double expLife = SafePositive(ExpectedLife(exileLevel, pack, config), 50.0);
+        const double expLife = SafePositive(expectedPoeLife, ActiveRuleValues().life.At(1));
         const double life = SafePositive(poeMaxLife, expLife);
         return std::max(1.0, base * (life / expLife));
     }
@@ -267,15 +405,13 @@ namespace SkyrimPoE::Core
     double ComputeSkyrimMaxEnergyShield(
         double baseSkyrimMaxHealth,
         double poeMaxEnergyShield,
-        std::uint32_t exileLevel,
-        const DataPack& pack,
-        const Config& config) noexcept
+        double expectedPoeLife) noexcept
     {
         if (!std::isfinite(poeMaxEnergyShield) || poeMaxEnergyShield <= 0.0) {
             return 0.0;
         }
         const double base = SafePositive(baseSkyrimMaxHealth, 100.0);
-        const double expLife = SafePositive(ExpectedLife(exileLevel, pack, config), 50.0);
+        const double expLife = SafePositive(expectedPoeLife, ActiveRuleValues().life.At(1));
         return std::max(0.0, base * (poeMaxEnergyShield / expLife));
     }
 
@@ -283,9 +419,7 @@ namespace SkyrimPoE::Core
         double baseSkyrimMaxMagicka,
         double poeMaxMana,
         double poeSkillCost,
-        std::uint32_t exileLevel,
-        const DataPack& pack,
-        const Config& config) noexcept
+        double expectedPoeMana) noexcept
     {
         MagickaScalingResult res;
         const double base = SafePositive(baseSkyrimMaxMagicka, 100.0);
@@ -296,7 +430,7 @@ namespace SkyrimPoE::Core
             res.isZeroManaBuild = true;
             return res;
         }
-        const double expMana = SafePositive(ExpectedMana(exileLevel, pack, config), 40.0);
+        const double expMana = SafePositive(expectedPoeMana, ActiveRuleValues().mana.At(1));
         res.skyrimMaxMagicka = std::max(1.0, base * (poeMaxMana / expMana));
         const double cost = (std::isfinite(poeSkillCost) && poeSkillCost > 0.0) ? poeSkillCost : 0.0;
         res.skyrimSkillCost = cost * (res.skyrimMaxMagicka / poeMaxMana);
@@ -308,7 +442,8 @@ namespace SkyrimPoE::Core
         double rawPostDefenseDamage,
         double difficultyToPcMult,
         bool isChaos,
-        double currentEnergyShield) noexcept
+        double currentEnergyShield,
+        AilmentKind ailment) noexcept
     {
         EnergyShieldAbsorbResult res;
         const double es = (std::isfinite(currentEnergyShield) && currentEnergyShield > 0.0) ? currentEnergyShield : 0.0;
@@ -318,15 +453,19 @@ namespace SkyrimPoE::Core
             res.remainingRawDamage = 0.0;
             return res;
         }
-        if (isChaos || es <= 0.0) {
+        const auto& rule = ActiveRuleValues().energyShield;
+        if (es <= 0.0 || (ailment == AilmentKind::Bleed && rule.bleedBypasses) ||
+            (ailment == AilmentKind::Poison && rule.poisonBypasses)) {
             res.remainingRawDamage = rawPostDefenseDamage;
             return res;
         }
 
         const double diff = SafePositive(difficultyToPcMult, 1.0);
         const double effectiveDmg = rawPostDefenseDamage * diff;
-        const double absorbed = std::min(es, effectiveDmg);
-        res.newEnergyShield = es - absorbed;
+        const double consumption = isChaos ? rule.chaosConsumptionMultiplier : rule.normalConsumptionMultiplier;
+        const double shieldSpent = std::min(es, effectiveDmg * consumption);
+        const double absorbed = shieldSpent / consumption;
+        res.newEnergyShield = es - shieldSpent;
         res.absorbedEffectiveDamage = absorbed;
         res.remainingRawDamage = std::max(0.0, (effectiveDmg - absorbed) / diff);
         return res;

@@ -56,7 +56,7 @@ namespace SkyrimPoE::Core
         double damageEffectiveness = 1.0;
         double critChance = 0.0;
         double cooldown = 0.0;
-        std::uint32_t spiritCost = 0;
+        std::optional<std::uint32_t> spiritCost;  // 누락이면 젬 기본 비용 적용, 0이면 무료 예약
         std::unordered_map<std::string, double> stats;
 
         [[nodiscard]] double GetStat(const std::string& key, double fallback = 0.0) const;
@@ -135,10 +135,6 @@ namespace SkyrimPoE::Core
     private:
         bool loaded_ = false;
         PoEConstants constants_;
-        std::vector<double> monsterLife_;
-        std::vector<double> monsterDamage_;
-        std::vector<double> monsterAccuracy_;
-        std::vector<double> mapLevelLifeMult_;
         std::vector<ExpectedDefenseRow> expectedDefense_;
         std::unordered_map<std::string, ClassBase> classes_;
         std::unordered_map<std::string, SkillEffectDefinition> gems_;

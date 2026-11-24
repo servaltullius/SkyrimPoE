@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -243,10 +244,9 @@ namespace SkyrimPoE::Core
         bool lootSoundEnabled = true;
 
         // [Spirit] (5단계: 결정 161)
-        static constexpr std::uint32_t kDefaultSpiritBase = 100;
-        static constexpr std::uint32_t kDefaultSpiritPerMilestone = 30;
-        std::uint32_t spiritBase = kDefaultSpiritBase;
-        std::uint32_t spiritPerMilestone = kDefaultSpiritPerMilestone;
+        [[nodiscard]] static std::uint32_t DefaultSpiritBase() noexcept;
+        std::uint32_t spiritBase = DefaultSpiritBase();
+        std::optional<std::array<std::uint32_t, 4>> spiritMilestoneRewards;
 
         // [Charms] (5단계: 결정 162)
         bool enableCharms = true;

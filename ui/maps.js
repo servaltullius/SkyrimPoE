@@ -14,6 +14,7 @@
   const tributeBadge = document.getElementById("maps-tribute-badge");
   const arena4Status = document.getElementById("maps-arena4-status");
   const arena4Name = document.getElementById("maps-arena4-name");
+  const arena4Spirit = document.getElementById("maps-arena4-spirit");
   const btnOpenArena4 = document.getElementById("btn-map-open-arena4");
 
   const uninstallBadge = document.getElementById("maps-uninstall-badge");
@@ -158,16 +159,21 @@
     const milestones = Number((maps && maps.arena4MilestonesCompleted) || 0);
     const act = (maps && maps.active) || {};
     const armed = Boolean(maps && maps.uninstallCleanupArmed);
+    const baseSpirit = maps && maps.arena4BaseMaxSpirit;
+    const spiritText = Number.isInteger(baseSpirit) ? `기본 최대 정신력 ${baseSpirit}` : "";
 
     if (tributeBadge) {
       tributeBadge.textContent = `공물 ${trib}개`;
     }
     if (arena4Name) {
-      arena4Name.textContent = maps.arenaDungeonName || "결투장";
+      arena4Name.textContent = (maps && maps.arenaDungeonName) || "결투장";
+    }
+    if (arena4Spirit) {
+      arena4Spirit.textContent = spiritText ? `, ${spiritText}` : "";
     }
     if (arena4Status) {
       arena4Status.textContent = unlocked
-        ? "정복 완료 · 전직 8/8 · 기본 최대 정신력 220 해금"
+        ? `정복 완료 · 전직 8/8${spiritText ? ` · ${spiritText} 해금` : ""}`
         : canEnter
           ? "미정복 · T6+ 지도 보스에서 공물 획득 가능 (첫 보상 자격 충족 시 확정)"
           : `1~3차 전직 이정표 ${milestones}/3 · 모두 달성하면 입장 가능`;

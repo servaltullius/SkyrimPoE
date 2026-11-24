@@ -10,6 +10,8 @@
 #include "runtime/WorldDropTracker.h"
 
 #include "core/MapSystem.h"
+#include "core/Config.h"
+#include "core/RulesPack.h"
 
 namespace SkyrimPoE::Runtime
 {
@@ -200,8 +202,9 @@ namespace SkyrimPoE::Runtime
                             : MapDeviceRuntime::IsRunRewardable(mapKill.runId));
                     };
                     const bool allowKillEffects = runRewardableNow();
-                    const bool wasChilledOrFrozen = allowKillEffects &&
-                        (AilmentRuntime::IsFrozen(actorId) || AilmentRuntime::ChillSlowRatio(actorId) > 0.0);
+                    // Direct hits record their confirmed ailment result before the queue runs.
+                    // Read it before OnActorKilled clears the victim and propagates Ignite/Shock.
+                    const bool wasChilledOrFrozen = allowKillEffects && AilmentRuntime::IsChilledOrFrozen(actorId);
                     const auto killedProf = MonsterRuntime::OnMonsterKilled(actorId, allowKillEffects && snap && snap->headhunter);
                     AilmentRuntime::OnActorKilled(actorId, victim, allowKillEffects && snap && snap->berekProlif);
 
@@ -234,6 +237,7 @@ namespace SkyrimPoE::Runtime
                     Core::ExileLevelUpResult exileRes;
                     Core::GemLevelUpSummary gemRes;
                     std::uint32_t unlockedTier = 0;
+                    std::uint32_t spiritGained = 0;
                     std::uint32_t bossCountAfter = 0;
                     std::uint32_t dragonCountAfter = 0;
 
@@ -269,6 +273,11 @@ namespace SkyrimPoE::Runtime
                                 st.tree.ascendancyMilestonesBitmask |= 0x4u;
                                 unlockedTier = std::max(unlockedTier, 3u);
                             }
+                            if (unlockedTier > 0) {
+                                const auto& rules = Core::ActiveRuleValues();
+                                spiritGained = Core::ComputeSpirit(st.tree.ascendancyMilestonesBitmask, rules, g_config) -
+                                    Core::ComputeSpirit(prevMask, rules, g_config);
+                            }
                         });
                     }
 
@@ -298,7 +307,7 @@ namespace SkyrimPoE::Runtime
                             RE::SendHUDMessage::ShowHUDMessage("[SkyrimPoE] 4차 전직의 공물을 획득했습니다!");
                         }
                     }
-                    // 5단계(결정 161): 보스 이정표 달성 시 최대 정신력 +30 즉시 반영을 위해 StatEngine 동기화
+                    // 보스 이정표의 최대 정신력 보상을 즉시 반영한다.
                     if (exileRes.levelsGained > 0 || gemRes.gemLevelsGained > 0 || unlockedTier > 0) {
                         SaveLoad::SyncStateToStatEngine();
                     }
@@ -317,7 +326,7 @@ namespace SkyrimPoE::Runtime
                             gemRes.gemLevelsGained, reward.gemXpGained);
                     }
                     if (unlockedTier > 0) {
-                        const auto msg = std::format("[SkyrimPoE] {}차 보스 이정표 달성! 전직 포인트 +2, 패시브 +2, 최대 정신력 +30!", unlockedTier);
+                        const auto msg = std::format("[SkyrimPoE] {}차 보스 이정표 달성! 전직 포인트 +2, 패시브 +2, 최대 정신력 +{}!", unlockedTier, spiritGained);
                         RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
                         SKSE::log::info("DeathListener: Ascendancy milestone tier {} unlocked (dragons={}, bosses={}).",
                             unlockedTier, dragonCountAfter, bossCountAfter);

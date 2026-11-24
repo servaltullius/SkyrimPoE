@@ -1,9 +1,9 @@
 #include "core/DataPack.h"
+#include "core/RulesPack.h"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <cmath>
 #include <fstream>
 #include <sstream>
 
@@ -11,10 +11,6 @@ namespace SkyrimPoE::Core
 {
     namespace
     {
-        // 결정 170 U-3: PoB 3.30의 Misc.lua 지도 생명 배율표 범위.
-        constexpr std::uint32_t kMinMapLifeMultLevel = 66;
-        constexpr std::uint32_t kMaxMapLifeMultLevel = 90;
-
         GemKind ParseGemKind(const std::string& s)
         {
             if (s == "attack_channel") return GemKind::AttackChannel;
@@ -42,7 +38,9 @@ namespace SkyrimPoE::Core
             d.damageEffectiveness = j.value("damageEffectiveness", 1.0);
             d.critChance = j.value("critChance", 0.0);
             d.cooldown = j.value("cooldown", 0.0);
-            d.spiritCost = j.value("spiritCost", 0u);
+            if (const auto cost = j.find("spiritCost"); cost != j.end()) {
+                d.spiritCost = cost->get<std::uint32_t>();
+            }
             if (j.contains("stats") && j["stats"].is_object()) {
                 for (const auto& [k, v] : j["stats"].items()) {
                     if (v.is_number()) {
@@ -187,39 +185,6 @@ namespace SkyrimPoE::Core
             nextConst.minHitChance = c.value("minHitChance", 0.05);
 
             const auto& t = root.at("tables");
-            auto nextLife = t.at("monsterLife").get<std::vector<double>>();
-            auto nextDamage = t.at("monsterDamage").get<std::vector<double>>();
-            auto nextAccuracy = t.at("monsterAccuracy").get<std::vector<double>>();
-            if (nextLife.size() < 100 || nextDamage.size() < 100 || nextAccuracy.size() < 100) {
-                if (errorOut) *errorOut = "Monster tables must contain at least 100 entries.";
-                return false;
-            }
-            // 결정 170 U-3: 티어 배율은 이 표의 비율이므로 0·음수·비유한 값이 있으면 배율이 무한대나 NaN이 된다.
-            const auto allPositiveFinite = [](const std::vector<double>& values) {
-                return std::ranges::all_of(values, [](double v) { return std::isfinite(v) && v > 0.0; });
-            };
-            if (!allPositiveFinite(nextLife) || !allPositiveFinite(nextDamage) || !allPositiveFinite(nextAccuracy)) {
-                if (errorOut) *errorOut = "Monster tables must contain only positive finite values.";
-                return false;
-            }
-
-            const auto& mapLifeMult = t.at("mapLevelLifeMult");
-            if (!mapLifeMult.is_object() || mapLifeMult.size() != kMaxMapLifeMultLevel - kMinMapLifeMultLevel + 1) {
-                if (errorOut) *errorOut = "mapLevelLifeMult must contain levels 66 through 90.";
-                return false;
-            }
-            std::vector<double> nextMapLifeMult;
-            nextMapLifeMult.reserve(mapLifeMult.size());
-            for (auto level = kMinMapLifeMultLevel; level <= kMaxMapLifeMultLevel; ++level) {
-                const auto& entry = mapLifeMult.at(std::to_string(level));
-                const double multiplier = entry.is_number() ? entry.get<double>() : 0.0;
-                if (!std::isfinite(multiplier) || multiplier <= 0.0) {
-                    if (errorOut) *errorOut = "mapLevelLifeMult must be positive at level " + std::to_string(level) + ".";
-                    return false;
-                }
-                nextMapLifeMult.push_back(multiplier);
-            }
-
             std::vector<ExpectedDefenseRow> nextDef;
             for (const auto& row : t.at("expectedDefense")) {
                 ExpectedDefenseRow r;
@@ -303,10 +268,6 @@ namespace SkyrimPoE::Core
             }
 
             constants_ = nextConst;
-            monsterLife_ = std::move(nextLife);
-            monsterDamage_ = std::move(nextDamage);
-            monsterAccuracy_ = std::move(nextAccuracy);
-            mapLevelLifeMult_ = std::move(nextMapLifeMult);
             expectedDefense_ = std::move(nextDef);
             classes_ = std::move(nextClasses);
             gems_ = std::move(nextGems);
@@ -322,29 +283,26 @@ namespace SkyrimPoE::Core
 
     double DataPack::MonsterLife(std::uint32_t level) const noexcept
     {
-        if (monsterLife_.empty()) return 22.0;
-        return monsterLife_[ClampLevelIndex(level, monsterLife_.size())];
+        const auto& tables = ActiveRuleValues().levelTables;
+        return tables.At(tables.life, level);
     }
 
     double DataPack::MonsterDamage(std::uint32_t level) const noexcept
     {
-        if (monsterDamage_.empty()) return 4.99;
-        return monsterDamage_[ClampLevelIndex(level, monsterDamage_.size())];
+        const auto& tables = ActiveRuleValues().levelTables;
+        return tables.At(tables.damage, level);
     }
 
     double DataPack::MonsterAccuracy(std::uint32_t level) const noexcept
     {
-        if (monsterAccuracy_.empty()) return 14.0;
-        return monsterAccuracy_[ClampLevelIndex(level, monsterAccuracy_.size())];
+        const auto& tables = ActiveRuleValues().levelTables;
+        return tables.At(tables.accuracy, level);
     }
 
     double DataPack::MapLevelLifeMult(std::uint32_t level) const noexcept
     {
-        // 결정 170 U-3의 지도 티어는 Lv68~83이다. 원표 범위 밖이면 추가 배율을 적용하지 않는다.
-        if (mapLevelLifeMult_.empty() || level < kMinMapLifeMultLevel || level > kMaxMapLifeMultLevel) {
-            return 1.0;
-        }
-        return mapLevelLifeMult_[level - kMinMapLifeMultLevel];
+        const auto& tables = ActiveRuleValues().levelTables;
+        return tables.At(tables.mapLevelLifeMult, level);
     }
 
     const ExpectedDefenseRow& DataPack::ExpectedDefense(std::uint32_t level) const noexcept

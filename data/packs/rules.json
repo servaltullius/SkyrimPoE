@@ -1,0 +1,2336 @@
+{
+  "meta": {
+    "schema": "skyrimpoe.rules",
+    "schemaVersion": 1,
+    "pobVersion": "0.23.1",
+    "extractorVersion": "build_rules/2",
+    "sourceSha256": {
+      "manifest.xml": "850a36ad315ca510fa7a6cdc64a6b50a3d17eef0789c1e0f5c2ce3c95282f184",
+      "Modules/Data.lua": "4af7fd3eb47aa0078c5a0da6fec189b186b8207da2545e36ecb42e598691f5ff",
+      "Data/Misc.lua": "51d8a307fee31054a82b831485f22772a239c836f5fb40454055602f32a0af8f",
+      "Modules/Common.lua": "9b58f9ec04b38c81018e28302d22ea6e95d7590ff3aef8dfe52a16b9b0d399a6",
+      "Modules/CalcDefence.lua": "cc731e063badcb2417891cd9c79069f7b2bf3b57c9c5ff248f7ea3f93080f051",
+      "Modules/CalcPerform.lua": "780477027bb23e22114fe94e975698710a2824015dc3ebcbd5db92c7ba464ca8",
+      "Modules/ConfigOptions.lua": "137949c3ff29c9edb97233130dcc1e02e43ef2145651db29e925f4b30cb98a7f",
+      "Modules/CalcSetup.lua": "fc178fae4d1ffe59c7d3de9c59a55ffeae0580490a1d3bbea42e22b552b9227f",
+      "Modules/CalcOffence.lua": "e32dc995b9506b36de4865a2f5ab57a6516678d9b36934411e1dc3a1e03786f0",
+      "Modules/Build.lua": "a35212282890ff0ea876da25e0620dc960a82ee95f9f9de29342fb382049e9fd",
+      "Data/SkillStatMap.lua": "550fff508720483b15ab3c9a767ef2da0af59f3385780b6ecaf3aab733be18cb",
+      "data/balance/keywordpopups.datc64.json": "4cf18652193e2741f8c90705239ffa302e3745602d048bbebf8ee6afc401bb08",
+      "data/balance/mods.datc64.json": "15a0969798a6abc973e06585df1d595684c219b390cee0f8c20a55a50a5ef29b"
+    },
+    "pobManifestSha1": {
+      "Modules/Data.lua": "ce94cd6e618d2af7996fdbe2f060a609cfba1b2b",
+      "Data/Misc.lua": "d1eb6733e6054f8c10c46df9cac81eb8e425f388",
+      "Modules/Common.lua": "c49cebbb4219d93b0d0d95d323394926e56ff4d2",
+      "Modules/CalcDefence.lua": "824908719daa0eef420071963ef66cd4115b2aae",
+      "Modules/CalcPerform.lua": "fbda151f19ad278c3079040854911dd113d3f8f2",
+      "Modules/ConfigOptions.lua": "2ef1e7b106ec6427961605d7b6b2e0a497333977",
+      "Modules/CalcSetup.lua": "e476f1fe369e48247722986112b9a3ea450f010e",
+      "Modules/CalcOffence.lua": "6c8af362342fcd21afe801bbc650c96482f187e9",
+      "Modules/Build.lua": "4db5af9d32bcad51c88da1440fa19b911d6b4ea3",
+      "Data/SkillStatMap.lua": "21b017cd6c7f16a686b595799c33aa112aa7c652"
+    }
+  },
+  "rulesSource": {
+    "pob": "PathOfBuilding-PoE2",
+    "pobVersion": "0.23.1",
+    "gameData": "0.5"
+  },
+  "supplementalGameData": {
+    "version": "0.5.5h",
+    "igniteEnergyShield": [
+      {
+        "file": "data/balance/keywordpopups.datc64.json",
+        "line": 230,
+        "id": "Ignite"
+      },
+      {
+        "file": "data/balance/keywordpopups.datc64.json",
+        "line": 797,
+        "id": "EnergyShield"
+      },
+      {
+        "file": "data/balance/keywordpopups.datc64.json",
+        "line": 797,
+        "id": "EnergyShield"
+      }
+    ]
+  },
+  "armour": {
+    "damageCoefficient": 10,
+    "physicalReductionCapPercent": 90,
+    "roundingOffset": 0.5,
+    "zeroOverZeroPercent": 0,
+    "brokenEnemyHitDamageTakenPercent": 20,
+    "brokenEnemyDurationSeconds": 12,
+    "negativeArmourSign": -1,
+    "brokenPlayerDurationSeconds": 4
+  },
+  "energyShield": {
+    "rechargeDelaySeconds": 4,
+    "rechargePercentPerMinute": 750,
+    "chaosConsumptionMultiplier": 2,
+    "normalConsumptionMultiplier": 1,
+    "bleedBypasses": true,
+    "poisonBypasses": true
+  },
+  "hit": {
+    "playerAccuracyMultiplier": 1.25,
+    "playerEvasionMultiplier": 0.3,
+    "monsterEvasionMultiplier": 0.95,
+    "monsterAccuracyMultiplier": 4,
+    "maxPercent": 100,
+    "minPercent": 5,
+    "negativeAccuracyPercent": 5,
+    "maxEvadePercent": 95,
+    "baseEvasion": 7,
+    "accuracyPerLevel": 6,
+    "accuracyPerDexterity": 6
+  },
+  "block": {
+    "baseMaxPercent": 50,
+    "capPercent": 90
+  },
+  "deflect": {
+    "capPercent": 95,
+    "baseReductionPercent": 40,
+    "minimumRating": 1,
+    "ratingCoefficient": 0.12,
+    "chanceScale": 150,
+    "chanceOffsetPercent": 50,
+    "percentScale": 100,
+    "minPercent": 0
+  },
+  "resistance": {
+    "baseMaxPercent": 75,
+    "monsterBaseMaxPercent": 75,
+    "capPercent": 90
+  },
+  "ignite": {
+    "damagePercentPerMinute": 1200,
+    "durationSeconds": 4,
+    "chanceMultiplier": 20,
+    "flammabilityEnemyDurationSeconds": 8,
+    "flammabilityPlayerDurationSeconds": 4,
+    "nonHitFlammabilityMultiplier": 0.8,
+    "nonHitIgniteThresholdPermyriad": 5000,
+    "flammabilityIncludesCurrentHit": true,
+    "flammabilityIndependentExpiry": true,
+    "flammabilityCapPercent": 100
+  },
+  "bleed": {
+    "damagePercentPerMinute": 900,
+    "durationSeconds": 5,
+    "movingOrAggravatedMultiplier": 2.0
+  },
+  "poison": {
+    "damagePercentPerMinute": 1200,
+    "durationSeconds": 2,
+    "baseMaxStacks": 1
+  },
+  "shock": {
+    "effectPercent": 20,
+    "chanceMultiplier": 25,
+    "enemyDurationSeconds": 8,
+    "playerDurationSeconds": 4
+  },
+  "chill": {
+    "effectMultiplier": 100,
+    "maxPercent": 50,
+    "enemyDurationSeconds": 8,
+    "playerDurationSeconds": 2,
+    "defaultPercent": 30,
+    "minPercent": 30,
+    "precision": 0,
+    "discardBelowMinimum": true,
+    "magicSlowReductionPercent": 15,
+    "rareSlowReductionPercent": 30,
+    "uniqueSlowReductionPercent": 50
+  },
+  "freeze": {
+    "damageScale": 2.1,
+    "playerDamageScale": 2,
+    "enemyDurationSeconds": 4,
+    "playerDurationSeconds": 2
+  },
+  "electrocute": {
+    "damageScale": 1.7,
+    "enemyDurationMilliseconds": 5000,
+    "playerDurationMilliseconds": 2000,
+    "repeatThresholdModifierPercent": 500,
+    "repeatModifierDurationSeconds": 15
+  },
+  "heavyStun": {
+    "damageScale": 0.58,
+    "playerDamageScale": 0.65,
+    "repeatThresholdModifierPercent": 500,
+    "repeatModifierDurationSeconds": 16.5,
+    "playerRepeatThresholdModifierPercent": 100,
+    "playerRepeatModifierDurationSeconds": 10,
+    "playerDurationMilliseconds": 3000,
+    "enemyDurationMilliseconds": 2000
+  },
+  "pin": {
+    "damageScale": 4.2,
+    "enemyDurationSeconds": 3,
+    "playerDurationSeconds": 2,
+    "repeatThresholdModifierPercent": 500,
+    "repeatModifierDurationSeconds": 13
+  },
+  "poise": {
+    "playerDecayDelayMilliseconds": 2000,
+    "playerDecayPercentPerSecond": 50,
+    "uniqueThresholdMorePercent": 500,
+    "mapBossThresholdMorePercent": 213,
+    "magicThresholdMorePercent": 26,
+    "rareThresholdMorePercent": 125,
+    "enemyDecayDelayMilliseconds": 8000,
+    "enemyDecayPercentPerSecond": 5,
+    "fullBuildupPercent": 100
+  },
+  "ailmentThreshold": {
+    "playerLifeFactor": 0.5
+  },
+  "life": {
+    "perLevel": 12,
+    "base": 16,
+    "perAttribute": 2
+  },
+  "mana": {
+    "perLevel": 4,
+    "base": 30,
+    "perAttribute": 2
+  },
+  "critical": {
+    "playerBonusPercent": 100,
+    "monsterBonusPercent": 30,
+    "playerMinionAdditionalBonusPercent": 70
+  },
+  "levelTables": {
+    "life": [
+      15,
+      20,
+      24,
+      28,
+      33,
+      38,
+      45,
+      50,
+      58,
+      67,
+      78,
+      89,
+      103,
+      118,
+      134,
+      158,
+      178,
+      200,
+      224,
+      249,
+      276,
+      305,
+      335,
+      366,
+      400,
+      434,
+      472,
+      510,
+      551,
+      593,
+      637,
+      683,
+      731,
+      790,
+      853,
+      921,
+      995,
+      1074,
+      1160,
+      1253,
+      1353,
+      1462,
+      1578,
+      1705,
+      1841,
+      1967,
+      2101,
+      2244,
+      2395,
+      2556,
+      2726,
+      2909,
+      3102,
+      3307,
+      3525,
+      3756,
+      4002,
+      4264,
+      4540,
+      4834,
+      5147,
+      5478,
+      5829,
+      6203,
+      6555,
+      7079,
+      7646,
+      8257,
+      8918,
+      11148,
+      11984,
+      12882,
+      13849,
+      14887,
+      18609,
+      20005,
+      21505,
+      23118,
+      24852,
+      31065,
+      31997,
+      32956,
+      33945,
+      34963,
+      36012,
+      37093,
+      38206,
+      39352,
+      40532,
+      41748,
+      43001,
+      44291,
+      45619,
+      46988,
+      48398,
+      49850,
+      51345,
+      52885,
+      54472,
+      56106
+    ],
+    "damage": [
+      9.1599998474121,
+      10.260000228882,
+      11.390000343323,
+      12.569999694824,
+      13.779999732971,
+      15.029999732971,
+      16.319999694824,
+      17.64999961853,
+      19.020000457764,
+      20.440000534058,
+      21.89999961853,
+      23.409999847412,
+      24.969999313354,
+      26.569999694824,
+      28.229999542236,
+      29.930000305176,
+      31.690000534058,
+      33.5,
+      35.369998931885,
+      37.290000915527,
+      39.270000457764,
+      41.310001373291,
+      43.409999847412,
+      45.569999694824,
+      47.799999237061,
+      50.090000152588,
+      52.450000762939,
+      54.880001068115,
+      57.369998931885,
+      59.939998626709,
+      62.590000152588,
+      65.309997558594,
+      68.099998474121,
+      70.980003356934,
+      73.940002441406,
+      76.980003356934,
+      80.110000610352,
+      83.319999694824,
+      86.629997253418,
+      90.019996643066,
+      93.51000213623,
+      97.099998474121,
+      100.79000091553,
+      104.56999969482,
+      108.45999908447,
+      112.45999908447,
+      116.56999969482,
+      120.7799987793,
+      125.12000274658,
+      129.55999755859,
+      134.13000488281,
+      138.82000732422,
+      143.63999938965,
+      148.58000183105,
+      153.66000366211,
+      158.86999511719,
+      164.21000671387,
+      169.69999694824,
+      175.33999633789,
+      181.11999511719,
+      187.05000305176,
+      193.13999938965,
+      199.38000488281,
+      205.78999328613,
+      212.36000061035,
+      219.11000061035,
+      226.0299987793,
+      233.11999511719,
+      240.39999389648,
+      247.86000061035,
+      255.52000427246,
+      263.36999511719,
+      271.42001342773,
+      279.67999267578,
+      288.14001464844,
+      296.82000732422,
+      305.7200012207,
+      314.83999633789,
+      324.19000244141,
+      333.7799987793,
+      343.60000610352,
+      353.67001342773,
+      364,
+      374.57998657227,
+      385.42001342773,
+      396.5299987793,
+      407.92001342773,
+      419.57998657227,
+      431.54000854492,
+      443.79000854492,
+      456.33999633789,
+      469.20001220703,
+      482.38000488281,
+      495.86999511719,
+      509.70001220703,
+      523.85998535156,
+      538.36999511719,
+      553.22998046875,
+      568.46002197266,
+      584.04998779297
+    ],
+    "accuracy": [
+      32,
+      35,
+      39,
+      43,
+      48,
+      52,
+      57,
+      62,
+      67,
+      72,
+      78,
+      84,
+      90,
+      96,
+      103,
+      110,
+      117,
+      124,
+      132,
+      140,
+      149,
+      158,
+      167,
+      176,
+      186,
+      196,
+      207,
+      218,
+      230,
+      242,
+      254,
+      267,
+      281,
+      295,
+      309,
+      325,
+      340,
+      356,
+      373,
+      391,
+      409,
+      428,
+      447,
+      468,
+      489,
+      511,
+      533,
+      557,
+      581,
+      606,
+      632,
+      659,
+      688,
+      717,
+      747,
+      778,
+      810,
+      844,
+      878,
+      914,
+      951,
+      990,
+      1030,
+      1071,
+      1114,
+      1158,
+      1204,
+      1251,
+      1300,
+      1351,
+      1403,
+      1457,
+      1514,
+      1572,
+      1632,
+      1694,
+      1758,
+      1824,
+      1893,
+      1964,
+      2038,
+      2114,
+      2192,
+      2273,
+      2357,
+      2444,
+      2534,
+      2626,
+      2722,
+      2821,
+      2923,
+      3029,
+      3138,
+      3251,
+      3368,
+      3488,
+      3613,
+      3741,
+      3874,
+      4011
+    ],
+    "evasion": [
+      24,
+      30,
+      36,
+      43,
+      49,
+      56,
+      63,
+      70,
+      77,
+      84,
+      91,
+      98,
+      105,
+      113,
+      120,
+      128,
+      136,
+      144,
+      152,
+      160,
+      168,
+      176,
+      185,
+      193,
+      202,
+      211,
+      220,
+      229,
+      238,
+      247,
+      257,
+      266,
+      276,
+      286,
+      296,
+      306,
+      316,
+      326,
+      337,
+      347,
+      358,
+      369,
+      380,
+      391,
+      403,
+      414,
+      426,
+      438,
+      449,
+      462,
+      474,
+      486,
+      499,
+      511,
+      524,
+      537,
+      551,
+      564,
+      578,
+      591,
+      605,
+      619,
+      634,
+      648,
+      663,
+      677,
+      692,
+      708,
+      723,
+      738,
+      754,
+      770,
+      786,
+      803,
+      819,
+      836,
+      853,
+      870,
+      887,
+      905,
+      923,
+      941,
+      959,
+      977,
+      996,
+      1015,
+      1034,
+      1053,
+      1073,
+      1093,
+      1113,
+      1133,
+      1154,
+      1174,
+      1195,
+      1217,
+      1238,
+      1260,
+      1282,
+      1304
+    ],
+    "ailmentThreshold": [
+      15,
+      20,
+      24,
+      28,
+      34,
+      39,
+      46,
+      52,
+      60,
+      70,
+      81,
+      95,
+      110,
+      126,
+      144,
+      171,
+      193,
+      218,
+      245,
+      275,
+      306,
+      340,
+      376,
+      413,
+      455,
+      497,
+      543,
+      590,
+      641,
+      695,
+      752,
+      812,
+      874,
+      950,
+      1033,
+      1123,
+      1220,
+      1326,
+      1442,
+      1568,
+      1705,
+      1854,
+      2015,
+      2192,
+      2384,
+      2564,
+      2757,
+      2966,
+      3188,
+      3426,
+      3681,
+      3955,
+      4247,
+      4560,
+      4895,
+      5254,
+      5638,
+      6049,
+      6489,
+      6959,
+      7462,
+      8001,
+      8576,
+      9193,
+      9649,
+      10228,
+      10841,
+      11492,
+      12181,
+      18272,
+      19369,
+      20531,
+      21763,
+      23068,
+      34602,
+      36679,
+      38879,
+      41212,
+      43685,
+      65527,
+      68415,
+      71303,
+      74191,
+      77079,
+      79967,
+      82855,
+      85743,
+      88631,
+      91519,
+      94407,
+      97295,
+      100183,
+      103071,
+      105959,
+      108847,
+      111735,
+      114623,
+      117511,
+      120399,
+      123287
+    ],
+    "poiseThreshold": [
+      30,
+      40,
+      48,
+      57,
+      67,
+      79,
+      93,
+      106,
+      122,
+      142,
+      165,
+      192,
+      220,
+      254,
+      290,
+      344,
+      390,
+      437,
+      488,
+      542,
+      599,
+      659,
+      724,
+      791,
+      862,
+      937,
+      1015,
+      1097,
+      1183,
+      1273,
+      1367,
+      1464,
+      1567,
+      1660,
+      1758,
+      1864,
+      1976,
+      2093,
+      2219,
+      2352,
+      2494,
+      2644,
+      2804,
+      2971,
+      3150,
+      3369,
+      3598,
+      3846,
+      4109,
+      4387,
+      4685,
+      5002,
+      5338,
+      5697,
+      6078,
+      6485,
+      6915,
+      7377,
+      7866,
+      8386,
+      8940,
+      9528,
+      10153,
+      10819,
+      26703,
+      28651,
+      30662,
+      32890,
+      35192,
+      53405,
+      57263,
+      61392,
+      65810,
+      70537,
+      106973,
+      114630,
+      122820,
+      131580,
+      140949,
+      213635,
+      225270,
+      236905,
+      248540,
+      260175,
+      271810,
+      283445,
+      295080,
+      306715,
+      318350,
+      329985,
+      341620,
+      353255,
+      364890,
+      376525,
+      388160,
+      399795,
+      411430,
+      423065,
+      434700,
+      446335
+    ],
+    "mapLevelLifeMult": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "experienceReference": {
+    "maxPenaltyFreeAreaLevel": 70,
+    "effectiveAreaLevelPenaltyMultiplier": 0.06,
+    "safeZoneBase": 3,
+    "safeZoneLevelDivisor": 16,
+    "numeratorLevelOffset": 5,
+    "denominatorLevelOffset": 5,
+    "differenceExponent": 2.5,
+    "penaltyExponent": 1.5,
+    "highLevelPenaltyStartsAt": 95,
+    "safeDifferenceMax": 0,
+    "safeMultiplier": 1,
+    "displayMinimumMultiplierExclusive": 0.01,
+    "highLevelPenaltyPerLevel": 0.1,
+    "highLevelPenaltyOffset": 94,
+    "highLevelMultipliers": [
+      0.935,
+      0.885,
+      0.813,
+      0.7175,
+      0.6
+    ]
+  },
+  "project": {
+    "spirit": {
+      "base": 100,
+      "achievementRewards": [
+        30,
+        30,
+        40,
+        30
+      ],
+      "decision": 203
+    },
+    "experience": {
+      "higherEnemyBonusPerLevel": 0.1,
+      "higherEnemyMaxMultiplier": 2.0,
+      "decision": 198
+    }
+  },
+  "provenance": {
+    "ailmentThreshold.playerLifeFactor": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 102
+        }
+      ]
+    },
+    "armour.brokenEnemyDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/ConfigOptions.lua",
+          "line": 1669
+        }
+      ]
+    },
+    "armour.brokenEnemyHitDamageTakenPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcPerform.lua",
+          "line": 721
+        },
+        {
+          "file": "Modules/CalcPerform.lua",
+          "line": 720,
+          "endLine": 725
+        }
+      ],
+      "corroboratedBy": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 1436,
+          "id": "ArmourBreak"
+        }
+      ]
+    },
+    "armour.brokenPlayerDurationSeconds": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 1436,
+          "id": "ArmourBreak"
+        }
+      ]
+    },
+    "armour.damageCoefficient": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 255
+        }
+      ]
+    },
+    "armour.negativeArmourSign": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 59,
+          "endLine": 63
+        }
+      ]
+    },
+    "armour.physicalReductionCapPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 149
+        },
+        {
+          "file": "Modules/Data.lua",
+          "line": 240
+        }
+      ]
+    },
+    "armour.roundingOffset": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Common.lua",
+          "line": 652
+        }
+      ]
+    },
+    "armour.zeroOverZeroPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 58
+        }
+      ]
+    },
+    "bleed.damagePercentPerMinute": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 86
+        }
+      ]
+    },
+    "bleed.durationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 90
+        }
+      ]
+    },
+    "bleed.movingOrAggravatedMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcSetup.lua",
+          "line": 710
+        },
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 113,
+          "id": "Bleeding"
+        }
+      ]
+    },
+    "block.baseMaxPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 150
+        }
+      ]
+    },
+    "block.capPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 247
+        }
+      ]
+    },
+    "chill.defaultPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 410
+        }
+      ]
+    },
+    "chill.discardBelowMinimum": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 131,
+          "id": "Chill"
+        },
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 131,
+          "id": "Chill"
+        }
+      ],
+      "pobDiffers": true,
+      "pobReferences": [
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 5385,
+          "endLine": 5396
+        },
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 5507,
+          "endLine": 5510
+        },
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 5571,
+          "endLine": 5575
+        }
+      ]
+    },
+    "chill.effectMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 76
+        }
+      ]
+    },
+    "chill.enemyDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 91
+        }
+      ]
+    },
+    "chill.magicSlowReductionPercent": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 842,
+          "id": "Slow"
+        }
+      ]
+    },
+    "chill.maxPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 77
+        }
+      ]
+    },
+    "chill.minPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 410
+        }
+      ]
+    },
+    "chill.playerDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 92
+        }
+      ]
+    },
+    "chill.precision": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 410
+        }
+      ]
+    },
+    "chill.rareSlowReductionPercent": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 842,
+          "id": "Slow"
+        }
+      ]
+    },
+    "chill.uniqueSlowReductionPercent": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 842,
+          "id": "Slow"
+        },
+        {
+          "file": "Modules/ConfigOptions.lua",
+          "line": 2004
+        }
+      ]
+    },
+    "critical.monsterBonusPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 253
+        },
+        {
+          "file": "Modules/ConfigOptions.lua",
+          "line": 1968
+        }
+      ]
+    },
+    "critical.playerBonusPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 159
+        },
+        {
+          "file": "Modules/CalcSetup.lua",
+          "line": 679
+        }
+      ]
+    },
+    "critical.playerMinionAdditionalBonusPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 285
+        },
+        {
+          "file": "Modules/CalcPerform.lua",
+          "line": 1064
+        }
+      ]
+    },
+    "deflect.baseReductionPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 111
+        }
+      ]
+    },
+    "deflect.capPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 245
+        }
+      ]
+    },
+    "deflect.chanceOffsetPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 52
+        }
+      ]
+    },
+    "deflect.chanceScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 52
+        }
+      ]
+    },
+    "deflect.minPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 53
+        }
+      ]
+    },
+    "deflect.minimumRating": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 49
+        }
+      ]
+    },
+    "deflect.percentScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 53
+        }
+      ]
+    },
+    "deflect.ratingCoefficient": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 52
+        }
+      ]
+    },
+    "electrocute.damageScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 60
+        }
+      ]
+    },
+    "electrocute.enemyDurationMilliseconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 61
+        }
+      ]
+    },
+    "electrocute.playerDurationMilliseconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 62
+        }
+      ]
+    },
+    "electrocute.repeatModifierDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 64
+        }
+      ]
+    },
+    "electrocute.repeatThresholdModifierPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 63
+        }
+      ]
+    },
+    "energyShield.bleedBypasses": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 113,
+          "id": "Bleeding"
+        }
+      ],
+      "pobDiffers": true,
+      "pobReferences": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 2733,
+          "endLine": 2747
+        },
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 4075,
+          "endLine": 4094
+        },
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 4179,
+          "endLine": 4193
+        }
+      ]
+    },
+    "energyShield.chaosConsumptionMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 594
+        }
+      ]
+    },
+    "energyShield.normalConsumptionMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 594
+        }
+      ]
+    },
+    "energyShield.poisonBypasses": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 365,
+          "id": "Poison"
+        }
+      ],
+      "pobDiffers": true,
+      "pobReferences": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 2733,
+          "endLine": 2747
+        },
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 4075,
+          "endLine": 4094
+        },
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 4179,
+          "endLine": 4193
+        }
+      ]
+    },
+    "energyShield.rechargeDelaySeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 259
+        }
+      ]
+    },
+    "energyShield.rechargePercentPerMinute": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 146
+        }
+      ]
+    },
+    "experienceReference.denominatorLevelOffset": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 225
+        }
+      ]
+    },
+    "experienceReference.differenceExponent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 225
+        }
+      ]
+    },
+    "experienceReference.displayMinimumMultiplierExclusive": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 231
+        }
+      ]
+    },
+    "experienceReference.effectiveAreaLevelPenaltyMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 288
+        }
+      ]
+    },
+    "experienceReference.highLevelMultipliers": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 228
+        }
+      ]
+    },
+    "experienceReference.highLevelPenaltyOffset": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 229
+        }
+      ]
+    },
+    "experienceReference.highLevelPenaltyPerLevel": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 229
+        }
+      ]
+    },
+    "experienceReference.highLevelPenaltyStartsAt": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 227
+        }
+      ]
+    },
+    "experienceReference.maxPenaltyFreeAreaLevel": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 287
+        }
+      ]
+    },
+    "experienceReference.numeratorLevelOffset": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 225
+        }
+      ]
+    },
+    "experienceReference.penaltyExponent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 225
+        }
+      ]
+    },
+    "experienceReference.safeDifferenceMax": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 222
+        }
+      ]
+    },
+    "experienceReference.safeMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 223
+        }
+      ]
+    },
+    "experienceReference.safeZoneBase": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 218
+        }
+      ]
+    },
+    "experienceReference.safeZoneLevelDivisor": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Build.lua",
+          "line": 218
+        }
+      ]
+    },
+    "freeze.damageScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 54
+        }
+      ]
+    },
+    "freeze.enemyDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 56
+        }
+      ]
+    },
+    "freeze.playerDamageScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 55
+        }
+      ]
+    },
+    "freeze.playerDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 57
+        }
+      ]
+    },
+    "heavyStun.damageScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 48
+        }
+      ]
+    },
+    "heavyStun.enemyDurationMilliseconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 267
+        }
+      ]
+    },
+    "heavyStun.playerDamageScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 51
+        }
+      ]
+    },
+    "heavyStun.playerDurationMilliseconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 216
+        }
+      ]
+    },
+    "heavyStun.playerRepeatModifierDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 53
+        }
+      ]
+    },
+    "heavyStun.playerRepeatThresholdModifierPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 52
+        }
+      ]
+    },
+    "heavyStun.repeatModifierDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 50
+        }
+      ]
+    },
+    "heavyStun.repeatThresholdModifierPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 49
+        }
+      ]
+    },
+    "hit.accuracyPerDexterity": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 236
+        }
+      ]
+    },
+    "hit.accuracyPerLevel": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 157
+        }
+      ]
+    },
+    "hit.baseEvasion": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 154
+        }
+      ]
+    },
+    "hit.maxEvadePercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 110
+        }
+      ]
+    },
+    "hit.maxPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 45
+        }
+      ]
+    },
+    "hit.minPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 45
+        }
+      ]
+    },
+    "hit.monsterAccuracyMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 44
+        }
+      ]
+    },
+    "hit.monsterEvasionMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 44
+        }
+      ]
+    },
+    "hit.negativeAccuracyPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 42
+        }
+      ]
+    },
+    "hit.playerAccuracyMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 36
+        }
+      ]
+    },
+    "hit.playerEvasionMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcDefence.lua",
+          "line": 36
+        }
+      ]
+    },
+    "ignite.chanceMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 72
+        }
+      ],
+      "corroboratedBy": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 239,
+          "id": "Flammability"
+        }
+      ]
+    },
+    "ignite.damagePercentPerMinute": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 87
+        }
+      ]
+    },
+    "ignite.durationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 96
+        }
+      ]
+    },
+    "ignite.flammabilityCapPercent": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 239,
+          "id": "Flammability"
+        }
+      ]
+    },
+    "ignite.flammabilityEnemyDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 113
+        }
+      ],
+      "corroboratedBy": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 239,
+          "id": "Flammability"
+        }
+      ]
+    },
+    "ignite.flammabilityIncludesCurrentHit": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 230,
+          "id": "Ignite"
+        }
+      ],
+      "pobDiffers": true,
+      "pobReferences": [
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 5449,
+          "endLine": 5464
+        }
+      ]
+    },
+    "ignite.flammabilityIndependentExpiry": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 239,
+          "id": "Flammability"
+        }
+      ],
+      "pobDiffers": true,
+      "pobReferences": [
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 5449,
+          "endLine": 5464
+        }
+      ]
+    },
+    "ignite.flammabilityPlayerDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 114
+        }
+      ]
+    },
+    "ignite.nonHitFlammabilityMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 115
+        }
+      ]
+    },
+    "ignite.nonHitIgniteThresholdPermyriad": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 117
+        }
+      ]
+    },
+    "levelTables.accuracy": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 6
+        }
+      ]
+    },
+    "levelTables.ailmentThreshold": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 12
+        }
+      ]
+    },
+    "levelTables.damage": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 9
+        }
+      ]
+    },
+    "levelTables.evasion": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 5
+        }
+      ]
+    },
+    "levelTables.life": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 7
+        }
+      ]
+    },
+    "levelTables.mapLevelLifeMult": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 330
+        },
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 1826
+        }
+      ]
+    },
+    "levelTables.poiseThreshold": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 13
+        }
+      ]
+    },
+    "life.base": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcSetup.lua",
+          "line": 671
+        }
+      ]
+    },
+    "life.perAttribute": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcPerform.lua",
+          "line": 504
+        }
+      ]
+    },
+    "life.perLevel": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 155
+        }
+      ]
+    },
+    "mana.base": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcSetup.lua",
+          "line": 672
+        }
+      ]
+    },
+    "mana.perAttribute": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcPerform.lua",
+          "line": 515
+        }
+      ]
+    },
+    "mana.perLevel": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 156
+        }
+      ]
+    },
+    "pin.damageScale": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 65
+        }
+      ]
+    },
+    "pin.enemyDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 66
+        }
+      ]
+    },
+    "pin.playerDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 67
+        }
+      ]
+    },
+    "pin.repeatModifierDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 69
+        }
+      ]
+    },
+    "pin.repeatThresholdModifierPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 68
+        }
+      ]
+    },
+    "poise.enemyDecayDelayMilliseconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 269
+        }
+      ]
+    },
+    "poise.enemyDecayPercentPerSecond": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 270
+        }
+      ]
+    },
+    "poise.fullBuildupPercent": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/keywordpopups.datc64.json",
+          "line": 770,
+          "id": "Frozen"
+        }
+      ]
+    },
+    "poise.magicThresholdMorePercent": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/mods.datc64.json",
+          "line": 705740,
+          "endLine": 705771,
+          "id": "MonsterMagic2"
+        }
+      ]
+    },
+    "poise.mapBossThresholdMorePercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/ConfigOptions.lua",
+          "line": 2007
+        },
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 5403,
+          "endLine": 5417
+        }
+      ]
+    },
+    "poise.playerDecayDelayMilliseconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 206
+        }
+      ]
+    },
+    "poise.playerDecayPercentPerSecond": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 207
+        }
+      ]
+    },
+    "poise.rareThresholdMorePercent": {
+      "grade": "gameData",
+      "references": [
+        {
+          "file": "data/balance/mods.datc64.json",
+          "line": 707426,
+          "endLine": 707457,
+          "id": "MonsterRare2"
+        }
+      ]
+    },
+    "poise.uniqueThresholdMorePercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/ConfigOptions.lua",
+          "line": 2006
+        },
+        {
+          "file": "Modules/CalcOffence.lua",
+          "line": 5403,
+          "endLine": 5417
+        }
+      ]
+    },
+    "poison.baseMaxStacks": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/CalcSetup.lua",
+          "line": 55
+        }
+      ]
+    },
+    "poison.damagePercentPerMinute": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 88
+        }
+      ]
+    },
+    "poison.durationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 95
+        }
+      ]
+    },
+    "project.experience.higherEnemyBonusPerLevel": {
+      "grade": "project",
+      "decisions": [
+        198
+      ]
+    },
+    "project.experience.higherEnemyMaxMultiplier": {
+      "grade": "project",
+      "decisions": [
+        198
+      ]
+    },
+    "project.spirit.achievementRewards": {
+      "grade": "project",
+      "decisions": [
+        203
+      ]
+    },
+    "project.spirit.base": {
+      "grade": "project",
+      "decisions": [
+        203
+      ]
+    },
+    "resistance.baseMaxPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 148
+        }
+      ]
+    },
+    "resistance.capPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 243
+        }
+      ]
+    },
+    "resistance.monsterBaseMaxPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 251
+        }
+      ]
+    },
+    "shock.chanceMultiplier": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 71
+        }
+      ]
+    },
+    "shock.effectPercent": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 75
+        }
+      ]
+    },
+    "shock.enemyDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 93
+        }
+      ]
+    },
+    "shock.playerDurationSeconds": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Data/Misc.lua",
+          "line": 94
+        }
+      ]
+    }
+  }
+}

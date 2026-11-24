@@ -224,9 +224,9 @@ POE_TEST("StatEngine: immutable snapshot, CoC attack/spell rules, Brutality, and
     const auto snap1 = engine.GetSnapshot();
     POE_CHECK(snap1 != nullptr);
     POE_CHECK(snap1->exileLevel == 10);
-    // Scion: Str 20 -> +10 life, Int 20 -> +10 mana; base life = 38 + 12*10 + 10 = 168
-    POE_CHECK_NEAR(snap1->poeMaxLife, 168.0, 1e-6);
-    POE_CHECK_NEAR(snap1->poeMaxMana, 34.0 + 6.0 * 10.0 + 10.0, 1e-6);
+    // Scion: Str 20 -> +40 life, Int 20 -> +40 mana.
+    POE_CHECK_NEAR(snap1->poeMaxLife, 16.0 + 12.0 * 10.0 + 40.0, 1e-6);
+    POE_CHECK_NEAR(snap1->poeMaxMana, 30.0 + 4.0 * 10.0 + 40.0, 1e-6);
 
     // Cyclone: Brutality로 원소·카오스 0, CoC 연결로 마나 배율 +20%(×1.20) 반영
     const auto& cyc = snap1->slotStats[0];
@@ -334,11 +334,10 @@ POE_TEST("StatEngine: duplicate support dedup, socket cap, multi-CoC rejection, 
     POE_CHECK_NEAR(snap->fireResist, 40.0, 1e-9);
 
     // 중복 MeleePhys: lv10 단일 배율만 적용되고 lv1과 이중 곱연산되지 않아야 함, 소켓 4번째 ConcentratedEffect는 무시
-    // 3단계: Scion 기본 힘 20 -> PoE 규칙(힘 5당 +1% 근접 물리 피해 = +4% increased) 반영
+    // PoE2에서 힘은 기본 근접 물리 피해를 올리지 않는다.
     const auto* cycLv = pack.FindGem("Cyclone")->GetLevel(1);
     const auto* mp10 = pack.FindGem("SupportMeleePhysicalDamage")->GetLevel(10);
-    const double strMeleeIncMult = 1.0 + static_cast<double>(snap->str / 5) / 100.0;
-    const double expectedPhys = 20.0 * cycLv->baseMultiplier * strMeleeIncMult *
+    const double expectedPhys = 20.0 * cycLv->baseMultiplier *
         (1.0 + mp10->GetStat("support_melee_physical_damage_+%_final", 0.0) / 100.0);
     POE_CHECK_NEAR(snap->slotStats[0].baseHitDamage.byType[static_cast<std::size_t>(DamageType::Physical)].Average(),
         expectedPhys, 1e-6);

@@ -1,15 +1,19 @@
 #include "core/EnergyShield.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <cmath>
 
 namespace SkyrimPoE::Core
 {
-    void EnergyShieldPool::Configure(double rechargeDelay, double rechargeRate)
+    void EnergyShieldPool::Configure(double rechargeDelayMultiplier, double rechargeRateMultiplier)
     {
+        const auto& rule = ActiveRuleValues().energyShield;
         std::scoped_lock lock(mutex_);
-        state_.rechargeDelay = (std::isfinite(rechargeDelay) && rechargeDelay >= 0.0) ? rechargeDelay : 2.0;
-        state_.rechargeRate = (std::isfinite(rechargeRate) && rechargeRate >= 0.0) ? rechargeRate : 0.33;
+        state_.rechargeDelay = rule.rechargeDelaySeconds *
+            ((std::isfinite(rechargeDelayMultiplier) && rechargeDelayMultiplier >= 0.0) ? rechargeDelayMultiplier : 1.0);
+        state_.rechargeRate = (rule.rechargePercentPerMinute / (60.0 * 100.0)) *
+            ((std::isfinite(rechargeRateMultiplier) && rechargeRateMultiplier >= 0.0) ? rechargeRateMultiplier : 1.0);
     }
 
     void EnergyShieldPool::SetMax(double newMax, bool /*refillIfInitializedEmpty*/)
@@ -49,18 +53,19 @@ namespace SkyrimPoE::Core
     EnergyShieldAbsorbResult EnergyShieldPool::AbsorbDamage(
         double rawPostDefenseDamage,
         double difficultyToPcMult,
-        bool isChaos)
+        bool isChaos,
+        AilmentKind ailment)
     {
         std::scoped_lock lock(mutex_);
-        if (std::isfinite(rawPostDefenseDamage) && rawPostDefenseDamage > 0.0) {
-            // PoE 규칙: 에너지 실드를 우회하는 카오스 피해를 포함한 모든 체력/ES 피해는 재충전 지연을 초기화한다.
-            state_.timeSinceLastHit = 0.0;
-        }
         const auto res = AbsorbWithEnergyShield(
             rawPostDefenseDamage,
             difficultyToPcMult,
             isChaos,
-            state_.current);
+            state_.current,
+            ailment);
+        if (res.newEnergyShield < state_.current) {
+            state_.timeSinceLastHit = 0.0;
+        }
         state_.current = std::clamp(res.newEnergyShield, 0.0, state_.max);
         return res;
     }

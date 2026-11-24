@@ -288,7 +288,7 @@ namespace SkyrimPoE::Runtime
             }
             const double baseMaxMagicka = CombatHooks::GetBaseSkyrimMaxMagicka(player);
             const auto scaled = Core::ComputeMagickaScaling(
-                baseMaxMagicka, snap.poeMaxMana, stats.poeManaCost, snap.exileLevel, *g_dataPack, *g_config);
+                baseMaxMagicka, snap.poeMaxMana, stats.poeManaCost, snap.expectedPoeMana);
             return scaled.skyrimSkillCost;
         }
 
@@ -327,23 +327,25 @@ namespace SkyrimPoE::Runtime
             return critPct;
         }
 
-        [[nodiscard]] double RollPoePacketDamage(const Core::DamagePacket& pkt)
+        [[nodiscard]] Core::DamagePacket RollPoePacketDamage(const Core::DamagePacket& pkt, double multiplier)
         {
-            double total = 0.0;
-            for (const auto& r : pkt.byType) {
-                if (r.max <= 0.0 && r.min <= 0.0) {
+            Core::DamagePacket rolled;
+            for (std::size_t i = 0; i < pkt.byType.size(); ++i) {
+                const auto& range = pkt.byType[i];
+                if (range.max <= 0.0 && range.min <= 0.0) {
                     continue;
                 }
-                const double lo = std::max(0.0, std::min(r.min, r.max));
-                const double hi = std::max(lo, std::max(r.min, r.max));
-                if (hi - lo <= 1e-6) {
-                    total += lo;
-                } else {
-                    std::uniform_real_distribution<double> dist(lo, hi);
-                    total += dist(t_rng);
+                const double low = std::max(0.0, std::min(range.min, range.max));
+                const double high = std::max(low, std::max(range.min, range.max));
+                double damage = low;
+                if (high - low > 1e-6) {
+                    std::uniform_real_distribution<double> dist(low, high);
+                    damage = dist(t_rng);
                 }
+                damage *= multiplier;
+                rolled.byType[i] = { damage, damage };
             }
-            return total;
+            return rolled;
         }
 
         [[nodiscard]] RE::FormID VfxLocalIdForGem(std::string_view gemId) noexcept
@@ -391,16 +393,16 @@ namespace SkyrimPoE::Runtime
                     isCrit = (unitDist(t_rng) * 100.0) < totalCritPct;
                 }
 
-                double poeHit = RollPoePacketDamage(cycStats.baseHitDamage);
-                if (isCrit) {
-                    poeHit *= std::max(1.0, cycStats.critMultiplierPct / 100.0);
-                }
-                const double convertedSkyrimDmg = Core::ConvertOffenseHit(poeHit, snap.exileLevel, *g_dataPack, *g_config);
+                const double critMultiplier = isCrit ? std::max(1.0, cycStats.critMultiplierPct / 100.0) : 1.0;
+                const auto poeHit = RollPoePacketDamage(cycStats.baseHitDamage, critMultiplier);
+                const double convertedSkyrimDmg = Core::ConvertOffenseHit(
+                    poeHit.TotalAverage(), snap.exileLevel, *g_dataPack, *g_config);
 
                 const float healthBefore = targetAv->GetActorValue(RE::ActorValue::kHealth);
                 bool absorbedByMonsterEs = false;
                 {
-                    const ScopedCycloneHitContext hitCtx(convertedSkyrimDmg, isCrit, target->GetFormID(), &absorbedByMonsterEs);
+                    const ScopedCycloneHitContext hitCtx(convertedSkyrimDmg, Core::PhysicalDamageFraction(poeHit),
+                        isCrit, target->GetFormID(), &absorbedByMonsterEs);
                     CallDealDamage(player, target.get(), nullptr, false);
                 }
                 const float healthAfter = targetAv->GetActorValue(RE::ActorValue::kHealth);
@@ -409,10 +411,14 @@ namespace SkyrimPoE::Runtime
                     g_telDealDamageHits.fetch_add(1, std::memory_order_relaxed);
                     if (isCrit) {
                         g_telCritHits.fetch_add(1, std::memory_order_relaxed);
+                        if (Core::HasElementalHitDamage(poeHit)) {
+                            CombatHooks::NotifyPlayerElementalCrit();
+                        }
                     }
                     // 5단계(결정 163): 사이클론 타격 시 원소·출혈·중독 상태이상 적용
                     (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        target.get(), cycStats.baseHitDamage, isCrit, AilmentRuntime::HitKind::Attack,
+                        target.get(), poeHit,
+                        isCrit, AilmentRuntime::HitKind::Attack,
                         cycStats.igniteChancePct, snap.starforgeShock);
                 }
 
@@ -477,23 +483,16 @@ namespace SkyrimPoE::Runtime
                             });
                         } else {
                             // 발동 노바 주문(IceNova/ShockNova): 발동 시점에 피해 롤·치명타를 고정하고 대상 좌표에서 폭발+상태이상 적용
-                            bool spellCrit = false;
-                            const double spellDmg = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
-                                *cast, *g_dataPack, *g_config, unitDist(t_rng), unitDist(t_rng), spellCrit);
-                            const auto& pkt = cast->poeBaseHitDamage.byType;
-                            const bool hasElemDamage =
-                                pkt[static_cast<std::size_t>(Core::DamageType::Fire)].max > 0.0 ||
-                                pkt[static_cast<std::size_t>(Core::DamageType::Cold)].max > 0.0 ||
-                                pkt[static_cast<std::size_t>(Core::DamageType::Lightning)].max > 0.0;
-                            const bool eoEligibleCrit = spellCrit && hasElemDamage;
+                            const auto spellHit = AilmentRuntime::RollSpellHit(*cast, unitDist(t_rng), unitDist(t_rng));
 
                             const RE::NiPoint3 origin = target->GetPosition();
                             const float spellRadius = static_cast<float>(kNovaBaseRadius * std::max(0.25, cast->areaMult));
                             const RE::FormID vfxId = VfxLocalIdForGem(cast->gemId);
-                            auto castCopy = *cast;
+                            const auto domType = cast->gemId == "ShockNova"
+                                ? Core::DamageType::Lightning : Core::DamageType::Cold;
 
                             g_queue->EnqueueForGeneration(generation,
-                                [origin, spellRadius, spellDmg, vfxId, eoEligibleCrit, spellCrit, castCopy = std::move(castCopy)]() {
+                                [origin, spellRadius, spellHit, vfxId, domType]() {
                                 if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                                     return;
                                 }
@@ -501,25 +500,12 @@ namespace SkyrimPoE::Runtime
                                     g_skillSystem->EnterTriggerDepth();
                                 }
                                 try {
-                                    const auto domType = (castCopy.gemId == "ShockNova")
-                                        ? Core::DamageType::Lightning
-                                        : Core::DamageType::Cold;
-                                    const auto hits = SkillExecution::ExecuteAoESpell(origin, spellRadius, spellDmg, vfxId, domType);
-                                    if (auto* pl = RE::PlayerCharacter::GetSingleton(); pl && hits > 0) {
-                                        const auto targets = SkillExecution::CollectHostileTargets(pl, origin, spellRadius);
-                                        for (const auto& t : targets) {
-                                            if (t && !t->IsDead()) {
-                                                (void)AilmentRuntime::ApplyPlayerHitAilments(
-                                                    t.get(), castCopy.poeBaseHitDamage, spellCrit,
-                                                    AilmentRuntime::HitKind::Spell,
-                                                    castCopy.igniteChancePct, castCopy.starforgeShock);
-                                            }
-                                        }
-                                    }
+                                    const auto hits = AilmentRuntime::ExecuteSpellNova(
+                                        origin, spellRadius, spellHit, vfxId, domType);
                                     g_telCocExecutions.fetch_add(1, std::memory_order_relaxed);
                                     g_telCocTargetsHit.fetch_add(hits, std::memory_order_relaxed);
                                     // 검수 M3: Elemental Overload는 원소 피해 주문이 실제로 1명 이상 적중했을 때만 발동
-                                    if (eoEligibleCrit && hits > 0) {
+                                    if (hits > 0 && spellHit.isCrit && Core::HasElementalHitDamage(spellHit.poeDamage)) {
                                         CombatHooks::NotifyPlayerElementalCrit();
                                     }
                                 } catch (...) {

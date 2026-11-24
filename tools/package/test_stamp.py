@@ -16,7 +16,7 @@ PACKS = PLUGIN / "packs"
 UI = Path("PrismaUI/views/SkyrimPoE")
 MANIFEST = PLUGIN / "manifest.json"
 ESP = "SkyrimPoE.esp"
-PACK_NAMES = ("core_3_30.json", "tree_3_30.json", "items_3_30.json")
+PACK_NAMES = ("core_3_30.json", "tree_3_30.json", "items_3_30.json", "rules.json")
 
 
 def field(signature: bytes, payload: bytes) -> bytes:
@@ -63,16 +63,14 @@ class TestStamp(unittest.TestCase):
         oar.parent.mkdir(parents=True)
         oar.write_bytes(b"{}\n")
         for name in PACK_NAMES:
-            kind = name.split("_")[0]
+            kind = Path(name).stem.split("_")[0]
             pack = {
-                "meta": {
-                    "schema": f"skyrimpoe.{kind}",
-                    "game": "poe1",
-                    "contentGeneration": 0,
-                },
+                "meta": {"schema": f"skyrimpoe.{kind}"},
                 "label": "한글 </script>",
             }
-            options = {"indent": 2} if kind == "core" else {"separators": (",", ":")}
+            if kind != "rules":
+                pack["meta"].update(game="poe1", gameVersion="3.30", contentGeneration=0)
+            options = {"indent": 2} if kind in ("core", "rules") else {"separators": (",", ":")}
             ending = "" if kind == "tree" else "\n"
             payload = json.dumps(pack, ensure_ascii=False, **options)
             (self.package / PACKS / name).write_bytes((payload + ending).encode("utf-8"))
@@ -112,6 +110,15 @@ class TestStamp(unittest.TestCase):
         shutil.copytree(self.package, target)
         return target
 
+    def test_fifth_json_pack_is_rejected(self) -> None:
+        extra = self.package / PACKS / "old.json"
+        extra.write_text("{}", encoding="utf-8")
+        self.assert_failure(self.stamp(), "old.json", "허용되지 않은 추가 팩")
+        extra.unlink()
+        self.completed()
+        extra.write_text("{}", encoding="utf-8")
+        self.assert_failure(self.run_cli("verify"), "old.json", "허용되지 않은 추가 팩")
+
     def test_package_is_deterministic_and_manifest_covers_all_files(self) -> None:
         second = self.temp / "또 다른 패키지"
         shutil.copytree(self.package, second)
@@ -133,7 +140,11 @@ class TestStamp(unittest.TestCase):
             path = self.package / PACKS / name
             self.assertEqual(path.read_bytes(), (second / PACKS / name).read_bytes())
             self.assertEqual(read_json(path)["meta"]["buildId"], expected_id)
-        core, tree, items = (self.package / PACKS / name for name in PACK_NAMES)
+        core, tree, items, rules = (self.package / PACKS / name for name in PACK_NAMES)
+        rules_meta = read_json(rules)["meta"]
+        self.assertEqual(rules_meta["game"], "poe1")
+        self.assertEqual(rules_meta["gameVersion"], "3.30")
+        self.assertEqual(rules_meta["contentGeneration"], 0)
         self.assertTrue(core.read_bytes().startswith(b'{\n  "meta":'))
         self.assertFalse(tree.read_bytes().endswith(b"\n"))
         self.assertTrue(items.read_bytes().startswith(b'{"meta":'))
@@ -197,6 +208,21 @@ class TestStamp(unittest.TestCase):
         self.completed()
         self.change_meta("tree_3_30.json", "buildId", "0" * 16)
         self.assert_failure(self.run_cli("verify"), "tree_3_30.json: buildId 불일치")
+
+    def test_rules_pack_is_required_for_stamp_and_verify(self) -> None:
+        path = self.package / PACKS / "rules.json"
+        pristine = path.read_bytes()
+        path.unlink()
+        self.assert_failure(self.stamp(), "rules.json", "필수 팩 파일")
+        path.write_bytes(pristine)
+        self.completed()
+        path.unlink()
+        self.assert_failure(self.run_cli("verify"), "rules.json", "필수 팩 파일")
+
+    def test_rules_pack_version_is_checked_after_stamping(self) -> None:
+        self.completed()
+        self.change_meta("rules.json", "gameVersion", "0.5")
+        self.assert_failure(self.run_cli("verify"), "rules.json", "gameVersion 불일치")
 
     def test_verify_reports_pack_identity_and_file_mismatches(self) -> None:
         self.completed()

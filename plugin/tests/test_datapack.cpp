@@ -189,44 +189,22 @@ PowerAttackInput = leftHand
     POE_CHECK(res.config.powerAttackInput == "leftHand");
 }
 
-POE_TEST("DataPack: requires positive map life multipliers for levels 66 through 90")
+POE_TEST("DataPack: legacy monster tables are optional and do not affect the PoE2 tables")
 {
-    const DataPack pack = LoadStage2Pack();
-    POE_CHECK_NEAR(pack.MapLevelLifeMult(66), 1.01, 1e-6);
-    POE_CHECK_NEAR(pack.MapLevelLifeMult(90), 2.66, 1e-6);
-    POE_CHECK_NEAR(pack.MapLevelLifeMult(65), 1.0, 1e-6);
-    POE_CHECK_NEAR(pack.MapLevelLifeMult(91), 1.0, 1e-6);
-
     const auto packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json";
     std::ifstream input(packPath, std::ios::binary);
     auto json = nlohmann::json::parse(input);
     auto& tables = json.at("tables");
-    auto mapLifeMult = tables.at("mapLevelLifeMult");
-
-    DataPack invalid;
-    tables.erase("mapLevelLifeMult");
-    POE_CHECK(!invalid.LoadFromJsonString(json.dump()));
-
-    tables["mapLevelLifeMult"] = nlohmann::json::object();
-    POE_CHECK(!invalid.LoadFromJsonString(json.dump()));
-
-    mapLifeMult.erase("75");
-    tables["mapLevelLifeMult"] = mapLifeMult;
-    POE_CHECK(!invalid.LoadFromJsonString(json.dump()));
-
-    tables["mapLevelLifeMult"]["75"] = 0.0;
-    POE_CHECK(!invalid.LoadFromJsonString(json.dump()));
-    POE_CHECK(!invalid.IsLoaded());
-
-    // T1 기준 행(Lv68)이 0이면 티어 배율이 0/0·무한대가 되므로 몬스터 표의 0·음수도 거부한다.
-    tables["mapLevelLifeMult"] = mapLifeMult;
-    tables["mapLevelLifeMult"]["75"] = 1.43;
-    POE_CHECK(invalid.LoadFromJsonString(json.dump()));
-    tables["monsterLife"][67] = 0.0;
-    DataPack zeroLife;
-    POE_CHECK(!zeroLife.LoadFromJsonString(json.dump()));
-    tables["monsterLife"][67] = 6127.0;
-    tables["monsterDamage"][82] = -1.0;
-    DataPack negativeDamage;
-    POE_CHECK(!negativeDamage.LoadFromJsonString(json.dump()));
+    for (const auto* key : { "mapLevelLifeMult", "monsterLife", "monsterDamage", "monsterAccuracy" }) {
+        tables.erase(key);
+    }
+    DataPack pack;
+    POE_CHECK(pack.LoadFromJsonString(json.dump()));
+    POE_CHECK_NEAR(pack.MapLevelLifeMult(66), 1.0, 1e-6);
+    POE_CHECK_NEAR(pack.MapLevelLifeMult(90), 1.0, 1e-6);
+    POE_CHECK_NEAR(pack.MapLevelLifeMult(65), 1.0, 1e-6);
+    POE_CHECK_NEAR(pack.MapLevelLifeMult(91), 1.0, 1e-6);
+    POE_CHECK_NEAR(pack.MonsterLife(68), 8257.0, 1e-9);
+    POE_CHECK_NEAR(pack.MonsterDamage(83), 364.0, 1e-9);
+    POE_CHECK_NEAR(pack.MonsterAccuracy(1), 32.0, 1e-9);
 }

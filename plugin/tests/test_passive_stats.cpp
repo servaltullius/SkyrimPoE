@@ -202,7 +202,7 @@ POE_TEST("StatEngine: 2-pass attribute convergence, Iron Reflexes, Blood Magic, 
     l1.slots[0].gem.gemId = "Cyclone";
     l1.slots[0].gem.level = 1;
 
-    // 1패스 능력치 증가(20% inc Str, +68 flat Str -> 100 * 1.2 = 120 Str -> +60 Life, +24% melee phys)
+    // 20% 증가와 +68 힘을 합쳐 힘 120, 힘으로부터 생명력 240.
     l1.passives.flatStr = 68.0;
     l1.passives.incStrPct = 20.0;
     l1.passives.flatDex = 86.0;  // 14 + 86 = 100 Dex
@@ -210,7 +210,7 @@ POE_TEST("StatEngine: 2-pass attribute convergence, Iron Reflexes, Blood Magic, 
     l1.passives.flatEvasion = 200.0;
     l1.passives.incArmourPct = 50.0;
     l1.passives.incEvasionPct = 50.0;
-    l1.passives.ironReflexes = true;  // Dex 회피 보너스 억제 + 회피 -> 방어도 전환
+    l1.passives.ironReflexes = true;  // 회피 -> 방어도 전환
     l1.passives.fireResist = 85.0;
     l1.passives.maxFireResistBonus = 3.0;  // 상한 78%
     l1.passives.coldResist = 95.0;
@@ -223,10 +223,9 @@ POE_TEST("StatEngine: 2-pass attribute convergence, Iron Reflexes, Blood Magic, 
     POE_CHECK(snap->str == 120);
     POE_CHECK(snap->dex == 100);
     POE_CHECK_NEAR(snap->evasion, 0.0, 1e-9);
-    // Iron Reflexes: Dex evasion bonus suppressed (0%).
-    // C-11: PoB Data/Misc.lua base_evasion_rating = 15 반영 ->
-    // flatArmour(100) * (1 + 0.5) = 150, flatEvasion(15 + 200) * (1 + 0.5 + 0.5) = 430 -> total 580!
-    POE_CHECK_NEAR(snap->armour, 580.0, 1e-9);
+    POE_CHECK_NEAR(snap->accuracy, 654.0, 1e-9);  // Lv10 기본 54 + 민첩 100 × 6
+    // PoE2 기본 회피 7을 반영한다: 100 × 1.5 + (7 + 200) × 2 = 564.
+    POE_CHECK_NEAR(snap->armour, 564.0, 1e-9);
     POE_CHECK_NEAR(snap->maxFireResist, 78.0, 1e-9);
     POE_CHECK_NEAR(snap->maxColdResist, 90.0, 1e-9);
 
@@ -271,10 +270,10 @@ POE_TEST("StatEngine & DamageConversion: Chaos Inoculation, Pain Attunement, Iro
     POE_CHECK_NEAR(snapCi->poeMaxLife, 1.0, 1e-9);
     POE_CHECK(snapCi->chaosImmune);
     POE_CHECK_NEAR(ConvertDefenseResistDamage(500.0, DamageType::Chaos, 20, *snapCi, pack, cfg), 0.0, 1e-9);
-    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(200.0, 1.0, 20, pack, cfg, true), 25.0, 1e-9);
-    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(100.0, 1.0, 20, pack, cfg, true), 15.0, 1e-9);
+    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(200.0, 1.0, snapCi->expectedPoeLife, true), 25.0, 1e-9);
+    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(100.0, 1.0, snapCi->expectedPoeLife, true), 15.0, 1e-9);
     POE_CHECK_NEAR(snapCi->spellSuppressionChance, 0.0, 1e-9);
-    POE_CHECK_NEAR(snapCi->spellDodgeChance, 50.0, 1e-9);
+    POE_CHECK_NEAR(snapCi->spellDodgeChance, 0.0, 1e-9);
 
     // CI 해제 시 Low Life + Pain Attunement -> 주문 피해 1.3배
     const double iceDmgUnderCi = snapCi->slotStats[0].baseHitDamage.TotalAverage();
@@ -287,8 +286,8 @@ POE_TEST("StatEngine & DamageConversion: Chaos Inoculation, Pain Attunement, Iro
     // 2. Iron Will + Elemental Overload + Resolute Technique + Unwavering Stance
     Layer1Input l1b;
     l1b.exileLevel = 20;
-    l1b.className = "Marauder";  // 32 Str -> +6.4%
-    l1b.passives.flatStr = 68.0; // total 100 Str -> +20% melee phys (& spell with Iron Will)
+    l1b.className = "Marauder";
+    l1b.passives.flatStr = 68.0; // 힘 100
     l1b.baseWeaponPhysicalMin = 50.0;
     l1b.baseWeaponPhysicalMax = 50.0;
     l1b.slots[0].slotIndex = 0;
@@ -318,10 +317,10 @@ POE_TEST("StatEngine & DamageConversion: Chaos Inoculation, Pain Attunement, Iro
     POE_CHECK(engine.RebuildIfDirty(pack, cfg));
     const auto snapKs = engine.GetSnapshot();
 
-    // Iron Will -> IceNova 피해 +20%, 시전 속도 1.20x, 비용 효율 /1.25
+    // PoE2 힘은 Iron Will에 전달될 근접 피해 보너스가 없다.
     POE_CHECK_NEAR(
         snapKs->slotStats[1].baseHitDamage.TotalAverage(),
-        snapBase->slotStats[1].baseHitDamage.TotalAverage() * 1.20,
+        snapBase->slotStats[1].baseHitDamage.TotalAverage(),
         1e-6);
     POE_CHECK_NEAR(snapKs->slotStats[1].castSpeedMult, 1.20, 1e-9);
     POE_CHECK_NEAR(snapKs->slotStats[1].poeManaCost, snapBase->slotStats[1].poeManaCost / 1.25, 1e-6);
@@ -419,7 +418,7 @@ POE_TEST("PassiveStatParser: every ailment-chance line in real tree_3_30.json is
             POE_CHECK(parsed);
             if (low.starts_with("attacks have") && low.find("bleeding") != std::string::npos) {
                 ++bleedLines;
-                POE_CHECK(one.bleedChancePct > 0.0);
+                POE_CHECK(one.attackBleedChancePct > 0.0 && one.bleedChancePct == 0.0);
             }
             if (low.starts_with("attacks have") && low.find("ignite") != std::string::npos) {
                 ++attackIgniteLines;

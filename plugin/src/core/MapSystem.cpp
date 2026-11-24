@@ -2,6 +2,7 @@
 
 #include "core/DataPack.h"
 #include "core/ItemData.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <bit>
@@ -121,8 +122,7 @@ namespace SkyrimPoE::Core
 
     namespace
     {
-        // 결정 170 U-4: 상태이상 문턱 하한과 바닐라 타격 역산에 쓰는 스카이림 체력 기준값.
-        constexpr double kMinAilmentThresholdPoe = 20.0;
+        // 결정 170 U-4: 바닐라 타격 역산에 쓰는 스카이림 체력 기준값.
         constexpr double kVanillaHitReferenceLife = 100.0;
 
         [[nodiscard]] double FirstRollValue(const RolledAffix& affix) noexcept
@@ -161,11 +161,16 @@ namespace SkyrimPoE::Core
         };
     }
 
-    double MapSystem::AilmentThreshold(std::uint32_t exileLevel, double lifeMultiplier, const DataPack& pack) noexcept
+    double MapSystem::AilmentThreshold(std::uint32_t monsterLevel) noexcept
     {
-        // 결정 170 U-4·173: 체력 맞춤 후 실효 체력은 기준 체력 × 티어 배율이므로
-        // PoE 상태이상 문턱에는 액터 최대 체력에 따른 맞춤 계수를 곱하지 않는다.
-        return std::max(kMinAilmentThresholdPoe, pack.MonsterLife(exileLevel)) * lifeMultiplier;
+        const auto& tables = ActiveRuleValues().levelTables;
+        return tables.At(tables.ailmentThreshold, monsterLevel);
+    }
+
+    double MapSystem::PoiseThreshold(std::uint32_t monsterLevel) noexcept
+    {
+        const auto& tables = ActiveRuleValues().levelTables;
+        return tables.At(tables.poiseThreshold, monsterLevel);
     }
 
     double MapSystem::EstimateVanillaHitPoe(double rawHitDamage, std::uint32_t exileLevel, const DataPack& pack) noexcept

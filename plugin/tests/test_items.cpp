@@ -558,7 +558,7 @@ POE_TEST("Stage4 Review regressions: LocalCriticalMultiplier, Regen/MoveSpeed, W
     // M3 dual-wield bonuses
     POE_CHECK_NEAR(snap->attackBlockChance, 20.0, 1e-6);
     POE_CHECK_NEAR(snap->slotStats[0].attackSpeedMult, 3.0 * 1.10, 1e-4);
-    POE_CHECK_NEAR(snap->slotStats[0].critMultiplierPct, 162.0, 1e-4);  // 150 + 12 from LocalCriticalMultiplier1
+    POE_CHECK_NEAR(snap->slotStats[0].critMultiplierPct, 212.0, 1e-4);  // 200 + 12 from LocalCriticalMultiplier1
     // Brutality zeroes local weapon Fire damage
     POE_CHECK_NEAR(snap->slotStats[0].baseHitDamage.byType[static_cast<std::size_t>(DamageType::Fire)].Average(), 0.0, 1e-6);
     // EnforceGemRequirements=true: unmet SupportIncreasedCriticalStrikes excluded (baseCrit stays 5.0), unmet CoC link rejected (triggeredSpellStats empty!)

@@ -1,0 +1,4037 @@
+{
+  "pob": [
+    {
+      "id": "armour-equal",
+      "input": {
+        "armour": 100,
+        "damage": 100
+      },
+      "expected": {
+        "reductionPercent": 9
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-half",
+      "input": {
+        "armour": 1000,
+        "damage": 100
+      },
+      "expected": {
+        "reductionPercent": 50
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-strong",
+      "input": {
+        "armour": 4000,
+        "damage": 100
+      },
+      "expected": {
+        "reductionPercent": 80
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-zero-over-zero",
+      "input": {
+        "armour": 0,
+        "damage": 0
+      },
+      "expected": {
+        "reductionPercent": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-zero-armour",
+      "input": {
+        "armour": 0,
+        "damage": 100
+      },
+      "expected": {
+        "reductionPercent": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-zero-damage",
+      "input": {
+        "armour": 100,
+        "damage": 0
+      },
+      "expected": {
+        "reductionPercent": 100
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-negative",
+      "input": {
+        "armour": -100,
+        "damage": 100
+      },
+      "expected": {
+        "reductionPercent": -9
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-negative-tie",
+      "input": {
+        "armour": -10,
+        "damage": 39
+      },
+      "expected": {
+        "reductionPercent": -2
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 56,
+            "endLine": 68
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 255,
+            "endLine": 255
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-chaos-overflow",
+      "input": {
+        "damageType": "chaos",
+        "energyShield": 60,
+        "damage": 50
+      },
+      "expected": {
+        "esRemaining": 0.0,
+        "lifeLost": 20.0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 594,
+            "endLine": 612
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-chaos-exact",
+      "input": {
+        "damageType": "chaos",
+        "energyShield": 60,
+        "damage": 30
+      },
+      "expected": {
+        "esRemaining": 0,
+        "lifeLost": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 594,
+            "endLine": 612
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-chaos-absorbed",
+      "input": {
+        "damageType": "chaos",
+        "energyShield": 60,
+        "damage": 25
+      },
+      "expected": {
+        "esRemaining": 10,
+        "lifeLost": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 594,
+            "endLine": 612
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-normal-overflow",
+      "input": {
+        "damageType": "physical",
+        "energyShield": 60,
+        "damage": 80
+      },
+      "expected": {
+        "esRemaining": 0.0,
+        "lifeLost": 20.0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 594,
+            "endLine": 612
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-normal-absorbed",
+      "input": {
+        "damageType": "fire",
+        "energyShield": 60,
+        "damage": 50
+      },
+      "expected": {
+        "esRemaining": 10,
+        "lifeLost": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 594,
+            "endLine": 612
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-no-shield",
+      "input": {
+        "damageType": "physical",
+        "energyShield": 0,
+        "damage": 20
+      },
+      "expected": {
+        "esRemaining": 0.0,
+        "lifeLost": 20.0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 594,
+            "endLine": 612
+          }
+        ]
+      }
+    },
+    {
+      "id": "critical-player-base",
+      "input": {
+        "damage": 100
+      },
+      "expected": {
+        "damage": 200
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 159,
+            "endLine": 159
+          },
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 679,
+            "endLine": 679
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 3813,
+            "endLine": 3858
+          }
+        ]
+      }
+    },
+    {
+      "id": "block-under",
+      "input": {
+        "chancePercent": 32,
+        "addedMaxPercent": 0
+      },
+      "expected": {
+        "chancePercent": 32,
+        "maxPercent": 50
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 979,
+            "endLine": 1005
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 247,
+            "endLine": 247
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 150,
+            "endLine": 150
+          }
+        ]
+      }
+    },
+    {
+      "id": "block-base-cap",
+      "input": {
+        "chancePercent": 75,
+        "addedMaxPercent": 0
+      },
+      "expected": {
+        "chancePercent": 50,
+        "maxPercent": 50
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 979,
+            "endLine": 1005
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 247,
+            "endLine": 247
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 150,
+            "endLine": 150
+          }
+        ]
+      }
+    },
+    {
+      "id": "block-hard-cap",
+      "input": {
+        "chancePercent": 100,
+        "addedMaxPercent": 60
+      },
+      "expected": {
+        "chancePercent": 90,
+        "maxPercent": 90
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 979,
+            "endLine": 1005
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 247,
+            "endLine": 247
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 150,
+            "endLine": 150
+          }
+        ]
+      }
+    },
+    {
+      "id": "deflect-none",
+      "input": {
+        "rating": 0,
+        "accuracy": 100
+      },
+      "expected": {
+        "chancePercent": 0,
+        "reductionOnDeflectPercent": 40
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 48,
+            "endLine": 53
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 245,
+            "endLine": 250
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 111,
+            "endLine": 111
+          }
+        ]
+      }
+    },
+    {
+      "id": "deflect-mid",
+      "input": {
+        "rating": 1000,
+        "accuracy": 100
+      },
+      "expected": {
+        "chancePercent": 82,
+        "reductionOnDeflectPercent": 40
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 48,
+            "endLine": 53
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 245,
+            "endLine": 250
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 111,
+            "endLine": 111
+          }
+        ]
+      }
+    },
+    {
+      "id": "deflect-cap",
+      "input": {
+        "rating": 10000,
+        "accuracy": 100
+      },
+      "expected": {
+        "chancePercent": 95,
+        "reductionOnDeflectPercent": 40
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 48,
+            "endLine": 53
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 245,
+            "endLine": 250
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 111,
+            "endLine": 111
+          }
+        ]
+      }
+    },
+    {
+      "id": "monster-hit-lv1-ev0",
+      "input": {
+        "monsterLevel": 1,
+        "evasion": 0
+      },
+      "expected": {
+        "monsterAccuracy": 32,
+        "hitChancePercent": 100
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 40,
+            "endLine": 45
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 6,
+            "endLine": 6
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "monster-hit-lv1-ev100",
+      "input": {
+        "monsterLevel": 1,
+        "evasion": 100
+      },
+      "expected": {
+        "monsterAccuracy": 32,
+        "hitChancePercent": 58
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 40,
+            "endLine": 45
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 6,
+            "endLine": 6
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "monster-hit-lv20-ev500",
+      "input": {
+        "monsterLevel": 20,
+        "evasion": 500
+      },
+      "expected": {
+        "monsterAccuracy": 140,
+        "hitChancePercent": 55
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 40,
+            "endLine": 45
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 6,
+            "endLine": 6
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "monster-hit-lv65-ev2500",
+      "input": {
+        "monsterLevel": 65,
+        "evasion": 2500
+      },
+      "expected": {
+        "monsterAccuracy": 1114,
+        "hitChancePercent": 66
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 40,
+            "endLine": 45
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 6,
+            "endLine": 6
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "monster-hit-lv80-ev5000",
+      "input": {
+        "monsterLevel": 80,
+        "evasion": 5000
+      },
+      "expected": {
+        "monsterAccuracy": 1964,
+        "hitChancePercent": 63
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 40,
+            "endLine": 45
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 6,
+            "endLine": 6
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "monster-hit-lv100-ev20000",
+      "input": {
+        "monsterLevel": 100,
+        "evasion": 20000
+      },
+      "expected": {
+        "monsterAccuracy": 4011,
+        "hitChancePercent": 47
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 40,
+            "endLine": 45
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 6,
+            "endLine": 6
+          },
+          {
+            "file": "Modules/Common.lua",
+            "line": 648,
+            "endLine": 654
+          }
+        ]
+      }
+    },
+    {
+      "id": "ignite-chance-base",
+      "input": {
+        "damage": 400,
+        "ailmentThreshold": 1000,
+        "baseChancePercent": 0,
+        "increasedChancePercent": 0,
+        "moreChanceMultiplier": 1
+      },
+      "expected": {
+        "chancePercent": 8.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5448,
+            "endLine": 5464
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 71,
+            "endLine": 75
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 93,
+            "endLine": 94
+          }
+        ]
+      }
+    },
+    {
+      "id": "ignite-chance-modifiers",
+      "input": {
+        "damage": 400,
+        "ailmentThreshold": 1000,
+        "baseChancePercent": 3,
+        "increasedChancePercent": 50,
+        "moreChanceMultiplier": 2
+      },
+      "expected": {
+        "chancePercent": 33.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5448,
+            "endLine": 5464
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 71,
+            "endLine": 75
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 93,
+            "endLine": 94
+          }
+        ]
+      }
+    },
+    {
+      "id": "ignite-chance-cap",
+      "input": {
+        "damage": 6000,
+        "ailmentThreshold": 1000,
+        "baseChancePercent": 0,
+        "increasedChancePercent": 0,
+        "moreChanceMultiplier": 1
+      },
+      "expected": {
+        "chancePercent": 100
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5448,
+            "endLine": 5464
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 71,
+            "endLine": 75
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 93,
+            "endLine": 94
+          }
+        ]
+      }
+    },
+    {
+      "id": "shock-chance-base",
+      "input": {
+        "damage": 400,
+        "ailmentThreshold": 1000,
+        "baseChancePercent": 0,
+        "increasedChancePercent": 0,
+        "moreChanceMultiplier": 1
+      },
+      "expected": {
+        "chancePercent": 10.0,
+        "effectPercent": 20,
+        "enemyDurationSeconds": 8,
+        "playerDurationSeconds": 4
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5448,
+            "endLine": 5464
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 71,
+            "endLine": 75
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 93,
+            "endLine": 94
+          }
+        ]
+      }
+    },
+    {
+      "id": "shock-chance-modifiers",
+      "input": {
+        "damage": 400,
+        "ailmentThreshold": 1000,
+        "baseChancePercent": 3,
+        "increasedChancePercent": 50,
+        "moreChanceMultiplier": 2
+      },
+      "expected": {
+        "chancePercent": 39.0,
+        "effectPercent": 20,
+        "enemyDurationSeconds": 8,
+        "playerDurationSeconds": 4
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5448,
+            "endLine": 5464
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 71,
+            "endLine": 75
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 93,
+            "endLine": 94
+          }
+        ]
+      }
+    },
+    {
+      "id": "shock-chance-cap",
+      "input": {
+        "damage": 6000,
+        "ailmentThreshold": 1000,
+        "baseChancePercent": 0,
+        "increasedChancePercent": 0,
+        "moreChanceMultiplier": 1
+      },
+      "expected": {
+        "chancePercent": 100,
+        "effectPercent": 20,
+        "enemyDurationSeconds": 8,
+        "playerDurationSeconds": 4
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5448,
+            "endLine": 5464
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 71,
+            "endLine": 75
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 93,
+            "endLine": 94
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-breakdown-10",
+      "input": {
+        "coldDamage": 10,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "rawEffectPercent": 1.0,
+        "minPercent": 30,
+        "maxPercent": 50,
+        "chanceOnHitPercent": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5385,
+            "endLine": 5396
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5507,
+            "endLine": 5510
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5567,
+            "endLine": 5598
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 410,
+            "endLine": 410
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 76,
+            "endLine": 77
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-breakdown-290",
+      "input": {
+        "coldDamage": 290,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "rawEffectPercent": 28.999999999999996,
+        "minPercent": 30,
+        "maxPercent": 50,
+        "chanceOnHitPercent": 100
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5385,
+            "endLine": 5396
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5507,
+            "endLine": 5510
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5567,
+            "endLine": 5598
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 410,
+            "endLine": 410
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 76,
+            "endLine": 77
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-breakdown-300",
+      "input": {
+        "coldDamage": 300,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "rawEffectPercent": 30.0,
+        "minPercent": 30,
+        "maxPercent": 50,
+        "chanceOnHitPercent": 100
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5385,
+            "endLine": 5396
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5507,
+            "endLine": 5510
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5567,
+            "endLine": 5598
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 410,
+            "endLine": 410
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 76,
+            "endLine": 77
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-breakdown-500",
+      "input": {
+        "coldDamage": 500,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "rawEffectPercent": 50.0,
+        "minPercent": 30,
+        "maxPercent": 50,
+        "chanceOnHitPercent": 100
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5385,
+            "endLine": 5396
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5507,
+            "endLine": 5510
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5567,
+            "endLine": 5598
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 410,
+            "endLine": 410
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 76,
+            "endLine": 77
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-breakdown-600",
+      "input": {
+        "coldDamage": 600,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "rawEffectPercent": 60.0,
+        "minPercent": 30,
+        "maxPercent": 50,
+        "chanceOnHitPercent": 100
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5385,
+            "endLine": 5396
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5507,
+            "endLine": 5510
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5567,
+            "endLine": 5598
+          },
+          {
+            "file": "Modules/Data.lua",
+            "line": 410,
+            "endLine": 410
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 76,
+            "endLine": 77
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-lv1",
+      "input": {
+        "monsterLevel": 1,
+        "coldDamage": 10
+      },
+      "expected": {
+        "poiseThreshold": 30,
+        "buildupPercent": 70.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5403,
+            "endLine": 5417
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 13,
+            "endLine": 13
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-lv20",
+      "input": {
+        "monsterLevel": 20,
+        "coldDamage": 100
+      },
+      "expected": {
+        "poiseThreshold": 542,
+        "buildupPercent": 38.74538745387454
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5403,
+            "endLine": 5417
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 13,
+            "endLine": 13
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-lv65",
+      "input": {
+        "monsterLevel": 65,
+        "coldDamage": 4000
+      },
+      "expected": {
+        "poiseThreshold": 26703,
+        "buildupPercent": 31.457139647230655
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5403,
+            "endLine": 5417
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 13,
+            "endLine": 13
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-lv80",
+      "input": {
+        "monsterLevel": 80,
+        "coldDamage": 50000
+      },
+      "expected": {
+        "poiseThreshold": 213635,
+        "buildupPercent": 49.149249888829075
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5403,
+            "endLine": 5417
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 13,
+            "endLine": 13
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-lv100",
+      "input": {
+        "monsterLevel": 100,
+        "coldDamage": 100000
+      },
+      "expected": {
+        "poiseThreshold": 446335,
+        "buildupPercent": 47.049861651002054
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5403,
+            "endLine": 5417
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 13,
+            "endLine": 13
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "thresholds-lv1",
+      "input": {
+        "monsterLevel": 1
+      },
+      "expected": {
+        "life": 15,
+        "damage": 9.1599998474121,
+        "accuracy": 32,
+        "evasion": 24,
+        "ailmentThreshold": 15,
+        "poiseThreshold": 30
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 5,
+            "endLine": 13
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 4810,
+            "endLine": 4810
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5404,
+            "endLine": 5405
+          }
+        ]
+      }
+    },
+    {
+      "id": "thresholds-lv20",
+      "input": {
+        "monsterLevel": 20
+      },
+      "expected": {
+        "life": 249,
+        "damage": 37.290000915527,
+        "accuracy": 140,
+        "evasion": 160,
+        "ailmentThreshold": 275,
+        "poiseThreshold": 542
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 5,
+            "endLine": 13
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 4810,
+            "endLine": 4810
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5404,
+            "endLine": 5405
+          }
+        ]
+      }
+    },
+    {
+      "id": "thresholds-lv65",
+      "input": {
+        "monsterLevel": 65
+      },
+      "expected": {
+        "life": 6555,
+        "damage": 212.36000061035,
+        "accuracy": 1114,
+        "evasion": 663,
+        "ailmentThreshold": 9649,
+        "poiseThreshold": 26703
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 5,
+            "endLine": 13
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 4810,
+            "endLine": 4810
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5404,
+            "endLine": 5405
+          }
+        ]
+      }
+    },
+    {
+      "id": "thresholds-lv80",
+      "input": {
+        "monsterLevel": 80
+      },
+      "expected": {
+        "life": 31065,
+        "damage": 333.7799987793,
+        "accuracy": 1964,
+        "evasion": 905,
+        "ailmentThreshold": 65527,
+        "poiseThreshold": 213635
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 5,
+            "endLine": 13
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 4810,
+            "endLine": 4810
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5404,
+            "endLine": 5405
+          }
+        ]
+      }
+    },
+    {
+      "id": "thresholds-lv100",
+      "input": {
+        "monsterLevel": 100
+      },
+      "expected": {
+        "life": 56106,
+        "damage": 584.04998779297,
+        "accuracy": 4011,
+        "evasion": 1304,
+        "ailmentThreshold": 123287,
+        "poiseThreshold": 446335
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 5,
+            "endLine": 13
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 4810,
+            "endLine": 4810
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5404,
+            "endLine": 5405
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-boss-unique",
+      "input": {
+        "monsterLevel": 80,
+        "coldDamage": 50000,
+        "mapBoss": false
+      },
+      "expected": {
+        "buildupPercent": 8.19154164813818
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/ConfigOptions.lua",
+            "line": 2006,
+            "endLine": 2007
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5403,
+            "endLine": 5417
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 13,
+            "endLine": 13
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-boss-map",
+      "input": {
+        "monsterLevel": 80,
+        "coldDamage": 50000,
+        "mapBoss": true
+      },
+      "expected": {
+        "buildupPercent": 2.6171061535643116
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/ConfigOptions.lua",
+            "line": 2006,
+            "endLine": 2007
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5403,
+            "endLine": 5417
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 13,
+            "endLine": 13
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "dot-ignite",
+      "input": {
+        "ailment": "ignite",
+        "hitDamage": 100,
+        "moving": false,
+        "aggravated": false
+      },
+      "expected": {
+        "damagePerSecond": 20.0,
+        "durationSeconds": 4
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 87,
+            "endLine": 87
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 90,
+            "endLine": 95
+          }
+        ]
+      }
+    },
+    {
+      "id": "dot-bleed",
+      "input": {
+        "ailment": "bleed",
+        "hitDamage": 100,
+        "moving": false,
+        "aggravated": false
+      },
+      "expected": {
+        "damagePerSecond": 15.0,
+        "durationSeconds": 5
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 86,
+            "endLine": 86
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 90,
+            "endLine": 95
+          }
+        ]
+      }
+    },
+    {
+      "id": "dot-bleed-moving",
+      "input": {
+        "ailment": "bleed",
+        "hitDamage": 100,
+        "moving": true,
+        "aggravated": false
+      },
+      "expected": {
+        "damagePerSecond": 30.0,
+        "durationSeconds": 5
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 86,
+            "endLine": 86
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 90,
+            "endLine": 95
+          },
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 710,
+            "endLine": 710
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 113,
+            "id": "Bleeding"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dot-bleed-aggravated",
+      "input": {
+        "ailment": "bleed",
+        "hitDamage": 100,
+        "moving": false,
+        "aggravated": true
+      },
+      "expected": {
+        "damagePerSecond": 30.0,
+        "durationSeconds": 5
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 86,
+            "endLine": 86
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 90,
+            "endLine": 95
+          },
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 710,
+            "endLine": 710
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 113,
+            "id": "Bleeding"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dot-poison",
+      "input": {
+        "ailment": "poison",
+        "hitDamage": 150,
+        "moving": false,
+        "aggravated": false
+      },
+      "expected": {
+        "damagePerSecond": 30.0,
+        "durationSeconds": 2
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 88,
+            "endLine": 88
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 90,
+            "endLine": 95
+          }
+        ]
+      }
+    },
+    {
+      "id": "poison-base-stacks",
+      "input": {
+        "hitDamage": [
+          100,
+          50,
+          200
+        ]
+      },
+      "expected": {
+        "activeStacks": 1,
+        "damagePerSecond": 40.0,
+        "durationSeconds": 2
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 55,
+            "endLine": 55
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 88,
+            "endLine": 95
+          }
+        ]
+      }
+    },
+    {
+      "id": "life-mana-lv1",
+      "input": {
+        "level": 1,
+        "strength": 0,
+        "intelligence": 0
+      },
+      "expected": {
+        "life": 28,
+        "mana": 34
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 155,
+            "endLine": 156
+          },
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 671,
+            "endLine": 672
+          },
+          {
+            "file": "Modules/CalcPerform.lua",
+            "line": 501,
+            "endLine": 515
+          }
+        ]
+      }
+    },
+    {
+      "id": "life-mana-lv20",
+      "input": {
+        "level": 20,
+        "strength": 10,
+        "intelligence": 30
+      },
+      "expected": {
+        "life": 276,
+        "mana": 170
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 155,
+            "endLine": 156
+          },
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 671,
+            "endLine": 672
+          },
+          {
+            "file": "Modules/CalcPerform.lua",
+            "line": 501,
+            "endLine": 515
+          }
+        ]
+      }
+    },
+    {
+      "id": "life-mana-lv65",
+      "input": {
+        "level": 65,
+        "strength": 450,
+        "intelligence": 300
+      },
+      "expected": {
+        "life": 1696,
+        "mana": 890
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 155,
+            "endLine": 156
+          },
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 671,
+            "endLine": 672
+          },
+          {
+            "file": "Modules/CalcPerform.lua",
+            "line": 501,
+            "endLine": 515
+          }
+        ]
+      }
+    },
+    {
+      "id": "life-mana-lv100",
+      "input": {
+        "level": 100,
+        "strength": 200,
+        "intelligence": 600
+      },
+      "expected": {
+        "life": 1616,
+        "mana": 1630
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 155,
+            "endLine": 156
+          },
+          {
+            "file": "Modules/CalcSetup.lua",
+            "line": 671,
+            "endLine": 672
+          },
+          {
+            "file": "Modules/CalcPerform.lua",
+            "line": 501,
+            "endLine": 515
+          }
+        ]
+      }
+    },
+    {
+      "id": "life-mana-rounding",
+      "input": {
+        "level": 1,
+        "strength": 20,
+        "intelligence": 20,
+        "flatLife": 27,
+        "flatMana": 21,
+        "increasedPercent": 5,
+        "moreMultiplier": 1.1
+      },
+      "expected": {
+        "life": 110,
+        "mana": 110
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 86,
+            "endLine": 95
+          }
+        ]
+      }
+    }
+  ],
+  "project": [
+    {
+      "id": "spirit-mask-0",
+      "input": {
+        "achievementMask": 0
+      },
+      "expected": {
+        "spirit": 100
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-1",
+      "input": {
+        "achievementMask": 1
+      },
+      "expected": {
+        "spirit": 130
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-2",
+      "input": {
+        "achievementMask": 2
+      },
+      "expected": {
+        "spirit": 130
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-3",
+      "input": {
+        "achievementMask": 3
+      },
+      "expected": {
+        "spirit": 160
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-4",
+      "input": {
+        "achievementMask": 4
+      },
+      "expected": {
+        "spirit": 140
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-5",
+      "input": {
+        "achievementMask": 5
+      },
+      "expected": {
+        "spirit": 170
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-6",
+      "input": {
+        "achievementMask": 6
+      },
+      "expected": {
+        "spirit": 170
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-7",
+      "input": {
+        "achievementMask": 7
+      },
+      "expected": {
+        "spirit": 200
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-8",
+      "input": {
+        "achievementMask": 8
+      },
+      "expected": {
+        "spirit": 130
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-9",
+      "input": {
+        "achievementMask": 9
+      },
+      "expected": {
+        "spirit": 160
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-10",
+      "input": {
+        "achievementMask": 10
+      },
+      "expected": {
+        "spirit": 160
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-11",
+      "input": {
+        "achievementMask": 11
+      },
+      "expected": {
+        "spirit": 190
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-12",
+      "input": {
+        "achievementMask": 12
+      },
+      "expected": {
+        "spirit": 170
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-13",
+      "input": {
+        "achievementMask": 13
+      },
+      "expected": {
+        "spirit": 200
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-14",
+      "input": {
+        "achievementMask": 14
+      },
+      "expected": {
+        "spirit": 200
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "spirit-mask-15",
+      "input": {
+        "achievementMask": 15
+      },
+      "expected": {
+        "spirit": 230
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          197,
+          203
+        ]
+      }
+    },
+    {
+      "id": "xp-lv20-enemy20",
+      "input": {
+        "exileLevel": 20,
+        "effectiveMonsterLevel": 20
+      },
+      "expected": {
+        "multiplier": 1.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv20-enemy21",
+      "input": {
+        "exileLevel": 20,
+        "effectiveMonsterLevel": 21
+      },
+      "expected": {
+        "multiplier": 1.1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv20-enemy29",
+      "input": {
+        "exileLevel": 20,
+        "effectiveMonsterLevel": 29
+      },
+      "expected": {
+        "multiplier": 1.9
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv20-enemy30",
+      "input": {
+        "exileLevel": 20,
+        "effectiveMonsterLevel": 30
+      },
+      "expected": {
+        "multiplier": 2.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv20-enemy40",
+      "input": {
+        "exileLevel": 20,
+        "effectiveMonsterLevel": 40
+      },
+      "expected": {
+        "multiplier": 2.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv20-enemy16",
+      "input": {
+        "exileLevel": 20,
+        "effectiveMonsterLevel": 16
+      },
+      "expected": {
+        "multiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv20-enemy15",
+      "input": {
+        "exileLevel": 20,
+        "effectiveMonsterLevel": 15
+      },
+      "expected": {
+        "multiplier": 0.9428660343181925
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv60-enemy20",
+      "input": {
+        "exileLevel": 60,
+        "effectiveMonsterLevel": 20
+      },
+      "expected": {
+        "multiplier": 0.01
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv100-enemy1",
+      "input": {
+        "exileLevel": 100,
+        "effectiveMonsterLevel": 1
+      },
+      "expected": {
+        "multiplier": 0.01
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "xp-lv105-enemy105",
+      "input": {
+        "exileLevel": 105,
+        "effectiveMonsterLevel": 105
+      },
+      "expected": {
+        "multiplier": 1.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          198
+        ],
+        "references": [
+          {
+            "file": "Modules/Build.lua",
+            "line": 218,
+            "endLine": 225
+          },
+          {
+            "file": "plugin/src/core/KillTracker.cpp",
+            "line": 272,
+            "endLine": 299
+          },
+          {
+            "file": "plugin/dist/SKSE/Plugins/SkyrimPoE.ini",
+            "line": 51,
+            "endLine": 54
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-independent-rolls",
+      "input": {
+        "threshold": 100,
+        "damagePerType": 100,
+        "chance": 50,
+        "rolls": [
+          0.49,
+          0.51,
+          0.51,
+          0.49
+        ]
+      },
+      "expected": {
+        "applied": [
+          true,
+          false,
+          false,
+          true
+        ]
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "project",
+        "decisions": [
+          205,
+          209
+        ],
+        "interpretation": "Roll each eligible ailment separately."
+      }
+    }
+  ],
+  "conversion": [
+    {
+      "id": "offense-life-lv1",
+      "input": {
+        "level": 1,
+        "offenseK": 75.0,
+        "offenseRollback": 0.5
+      },
+      "expected": {
+        "referenceLife": 75.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          62,
+          205
+        ]
+      }
+    },
+    {
+      "id": "physical-profile-lv1",
+      "input": {
+        "level": 1,
+        "baseHit": 10.7,
+        "defenseRollback": 1
+      },
+      "expected": {
+        "normalizedPass": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          69,
+          74,
+          142
+        ]
+      }
+    },
+    {
+      "id": "expected-life-lv1",
+      "input": {
+        "level": 1,
+        "class": "Scion",
+        "baseSkyrimHealth": 123,
+        "poeLife": 68
+      },
+      "expected": {
+        "skyrimHealth": 123
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          70,
+          208
+        ]
+      }
+    },
+    {
+      "id": "offense-life-lv20",
+      "input": {
+        "level": 20,
+        "offenseK": 75.0,
+        "offenseRollback": 0.5
+      },
+      "expected": {
+        "referenceLife": 305.57323181195045
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          62,
+          205
+        ]
+      }
+    },
+    {
+      "id": "physical-profile-lv20",
+      "input": {
+        "level": 20,
+        "baseHit": 10.7,
+        "defenseRollback": 1
+      },
+      "expected": {
+        "normalizedPass": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          69,
+          74,
+          142
+        ]
+      }
+    },
+    {
+      "id": "expected-life-lv20",
+      "input": {
+        "level": 20,
+        "class": "Scion",
+        "baseSkyrimHealth": 123,
+        "poeLife": 296
+      },
+      "expected": {
+        "skyrimHealth": 123
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          70,
+          208
+        ]
+      }
+    },
+    {
+      "id": "offense-life-lv50",
+      "input": {
+        "level": 50,
+        "offenseK": 75.0,
+        "offenseRollback": 0.5
+      },
+      "expected": {
+        "referenceLife": 979.0301323248433
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          62,
+          205
+        ]
+      }
+    },
+    {
+      "id": "physical-profile-lv50",
+      "input": {
+        "level": 50,
+        "baseHit": 10.7,
+        "defenseRollback": 1
+      },
+      "expected": {
+        "normalizedPass": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          69,
+          74,
+          142
+        ]
+      }
+    },
+    {
+      "id": "expected-life-lv50",
+      "input": {
+        "level": 50,
+        "class": "Scion",
+        "baseSkyrimHealth": 123,
+        "poeLife": 656
+      },
+      "expected": {
+        "skyrimHealth": 123
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          70,
+          208
+        ]
+      }
+    },
+    {
+      "id": "offense-life-lv80",
+      "input": {
+        "level": 80,
+        "offenseK": 75.0,
+        "offenseRollback": 0.5
+      },
+      "expected": {
+        "referenceLife": 3413.118075894826
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          62,
+          205
+        ]
+      }
+    },
+    {
+      "id": "physical-profile-lv80",
+      "input": {
+        "level": 80,
+        "baseHit": 10.7,
+        "defenseRollback": 1
+      },
+      "expected": {
+        "normalizedPass": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          69,
+          74,
+          142
+        ]
+      }
+    },
+    {
+      "id": "expected-life-lv80",
+      "input": {
+        "level": 80,
+        "class": "Scion",
+        "baseSkyrimHealth": 123,
+        "poeLife": 1016
+      },
+      "expected": {
+        "skyrimHealth": 123
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          70,
+          208
+        ]
+      }
+    },
+    {
+      "id": "offense-life-lv100",
+      "input": {
+        "level": 100,
+        "offenseK": 75.0,
+        "offenseRollback": 0.5
+      },
+      "expected": {
+        "referenceLife": 4586.910725095922
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          62,
+          205
+        ]
+      }
+    },
+    {
+      "id": "physical-profile-lv100",
+      "input": {
+        "level": 100,
+        "baseHit": 10.7,
+        "defenseRollback": 1
+      },
+      "expected": {
+        "normalizedPass": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          69,
+          74,
+          142
+        ]
+      }
+    },
+    {
+      "id": "expected-life-lv100",
+      "input": {
+        "level": 100,
+        "class": "Scion",
+        "baseSkyrimHealth": 123,
+        "poeLife": 1256
+      },
+      "expected": {
+        "skyrimHealth": 123
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          70,
+          208
+        ]
+      }
+    },
+    {
+      "id": "starting-pools-Scion",
+      "input": {
+        "class": "Scion",
+        "startingStrength": 20,
+        "startingIntelligence": 20
+      },
+      "expected": {
+        "healthMultiplier": 1,
+        "magickaMultiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          208
+        ]
+      }
+    },
+    {
+      "id": "starting-pools-Marauder",
+      "input": {
+        "class": "Marauder",
+        "startingStrength": 32,
+        "startingIntelligence": 14
+      },
+      "expected": {
+        "healthMultiplier": 1,
+        "magickaMultiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          208
+        ]
+      }
+    },
+    {
+      "id": "starting-pools-Ranger",
+      "input": {
+        "class": "Ranger",
+        "startingStrength": 14,
+        "startingIntelligence": 14
+      },
+      "expected": {
+        "healthMultiplier": 1,
+        "magickaMultiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          208
+        ]
+      }
+    },
+    {
+      "id": "starting-pools-Witch",
+      "input": {
+        "class": "Witch",
+        "startingStrength": 14,
+        "startingIntelligence": 32
+      },
+      "expected": {
+        "healthMultiplier": 1,
+        "magickaMultiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          208
+        ]
+      }
+    },
+    {
+      "id": "starting-pools-Duelist",
+      "input": {
+        "class": "Duelist",
+        "startingStrength": 23,
+        "startingIntelligence": 14
+      },
+      "expected": {
+        "healthMultiplier": 1,
+        "magickaMultiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          208
+        ]
+      }
+    },
+    {
+      "id": "starting-pools-Templar",
+      "input": {
+        "class": "Templar",
+        "startingStrength": 23,
+        "startingIntelligence": 23
+      },
+      "expected": {
+        "healthMultiplier": 1,
+        "magickaMultiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          208
+        ]
+      }
+    },
+    {
+      "id": "starting-pools-Shadow",
+      "input": {
+        "class": "Shadow",
+        "startingStrength": 14,
+        "startingIntelligence": 23
+      },
+      "expected": {
+        "healthMultiplier": 1,
+        "magickaMultiplier": 1
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          208
+        ]
+      }
+    },
+    {
+      "id": "es-difficulty-full",
+      "input": {
+        "energyShield": 100,
+        "rawDamage": 20,
+        "difficulty": 3
+      },
+      "expected": {
+        "esRemaining": 40,
+        "absorbedEffectiveDamage": 60,
+        "remainingRawDamage": 0.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          67,
+          70
+        ]
+      }
+    },
+    {
+      "id": "es-difficulty-partial",
+      "input": {
+        "energyShield": 45,
+        "rawDamage": 20,
+        "difficulty": 3
+      },
+      "expected": {
+        "esRemaining": 0.0,
+        "absorbedEffectiveDamage": 45.0,
+        "remainingRawDamage": 5.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          67,
+          70
+        ]
+      }
+    },
+    {
+      "id": "es-difficulty-easy",
+      "input": {
+        "energyShield": 10,
+        "rawDamage": 20,
+        "difficulty": 0.5
+      },
+      "expected": {
+        "esRemaining": 0.0,
+        "absorbedEffectiveDamage": 10.0,
+        "remainingRawDamage": 0.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "conversion",
+        "decisions": [
+          67,
+          70
+        ]
+      }
+    }
+  ],
+  "gameRule": [
+    {
+      "id": "es-bleed-bypass",
+      "input": {
+        "ailment": "bleed",
+        "damageType": "physical",
+        "damageOverTime": true,
+        "energyShield": 60,
+        "damage": 50
+      },
+      "expected": {
+        "esRemaining": 60,
+        "lifeLost": 50
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 113,
+            "id": "Bleeding"
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-poison-bypass",
+      "input": {
+        "ailment": "poison",
+        "damageType": "chaos",
+        "damageOverTime": true,
+        "energyShield": 60,
+        "damage": 50
+      },
+      "expected": {
+        "esRemaining": 60,
+        "lifeLost": 50
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 365,
+            "id": "Poison"
+          }
+        ]
+      }
+    },
+    {
+      "id": "es-ignite-absorbed",
+      "input": {
+        "ailment": "ignite",
+        "damageType": "fire",
+        "damageOverTime": true,
+        "energyShield": 60,
+        "damage": 50
+      },
+      "expected": {
+        "esRemaining": 10,
+        "lifeLost": 0,
+        "secondsSinceEsLoss": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 230,
+            "id": "Ignite"
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 797,
+            "id": "EnergyShield"
+          }
+        ],
+        "interpretation": "Ignite has no ES bypass clause. Energy Shield specifies Bleeding and Poison, and recharge waits after ES loss."
+      }
+    },
+    {
+      "id": "es-ignite-overflow",
+      "input": {
+        "ailment": "ignite",
+        "damageType": "fire",
+        "damageOverTime": true,
+        "energyShield": 60,
+        "damage": 80
+      },
+      "expected": {
+        "esRemaining": 0.0,
+        "lifeLost": 20.0,
+        "secondsSinceEsLoss": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 230,
+            "id": "Ignite"
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 797,
+            "id": "EnergyShield"
+          }
+        ],
+        "interpretation": "Ignite has no ES bypass clause. Energy Shield specifies Bleeding and Poison, and recharge waits after ES loss."
+      }
+    },
+    {
+      "id": "ignite-flammability-enemy",
+      "input": {
+        "target": "enemy",
+        "ailmentThreshold": 1000,
+        "hits": [
+          {
+            "timeSeconds": 0,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 1,
+            "fireDamage": 3000
+          },
+          {
+            "timeSeconds": 2,
+            "fireDamage": 4000
+          },
+          {
+            "timeSeconds": 8,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 9,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 10,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 17,
+            "fireDamage": 1000
+          }
+        ]
+      },
+      "expected": {
+        "chancePercentByHit": [
+          20.0,
+          80.0,
+          100,
+          100,
+          100,
+          60.0,
+          40.0
+        ]
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 230,
+            "id": "Ignite"
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 239,
+            "id": "Flammability"
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 239,
+            "id": "Flammability"
+          }
+        ],
+        "pobConstants": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 72,
+            "endLine": 72
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 113,
+            "endLine": 113
+          }
+        ]
+      }
+    },
+    {
+      "id": "ignite-flammability-player",
+      "input": {
+        "target": "player",
+        "ailmentThreshold": 1000,
+        "hits": [
+          {
+            "timeSeconds": 0,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 1,
+            "fireDamage": 3000
+          },
+          {
+            "timeSeconds": 2,
+            "fireDamage": 4000
+          },
+          {
+            "timeSeconds": 4,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 5,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 6,
+            "fireDamage": 1000
+          },
+          {
+            "timeSeconds": 9,
+            "fireDamage": 1000
+          }
+        ]
+      },
+      "expected": {
+        "chancePercentByHit": [
+          20.0,
+          80.0,
+          100,
+          100,
+          100,
+          60.0,
+          40.0
+        ]
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 230,
+            "id": "Ignite"
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 239,
+            "id": "Flammability"
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 239,
+            "id": "Flammability"
+          }
+        ],
+        "pobConstants": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 72,
+            "endLine": 72
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 114,
+            "endLine": 114
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-game-10",
+      "input": {
+        "coldDamage": 10,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "effectPercent": 0,
+        "applies": false
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 131,
+            "id": "Chill"
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-game-290",
+      "input": {
+        "coldDamage": 290,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "effectPercent": 0,
+        "applies": false
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 131,
+            "id": "Chill"
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-game-300",
+      "input": {
+        "coldDamage": 300,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "effectPercent": 30.0,
+        "applies": true
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 131,
+            "id": "Chill"
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-game-450",
+      "input": {
+        "coldDamage": 450,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "effectPercent": 45.0,
+        "applies": true
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 131,
+            "id": "Chill"
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-game-500",
+      "input": {
+        "coldDamage": 500,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "effectPercent": 50.0,
+        "applies": true
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 131,
+            "id": "Chill"
+          }
+        ]
+      }
+    },
+    {
+      "id": "chill-game-600",
+      "input": {
+        "coldDamage": 600,
+        "ailmentThreshold": 1000
+      },
+      "expected": {
+        "effectPercent": 50,
+        "applies": true
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 131,
+            "id": "Chill"
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-game-buildup",
+      "input": {
+        "poiseThreshold": 1000,
+        "steps": [
+          {
+            "timeSeconds": 0,
+            "coldDamage": 300
+          },
+          {
+            "timeSeconds": 7,
+            "coldDamage": 0
+          },
+          {
+            "timeSeconds": 9,
+            "coldDamage": 0
+          },
+          {
+            "timeSeconds": 9,
+            "coldDamage": 210
+          },
+          {
+            "timeSeconds": 11,
+            "coldDamage": 1000
+          },
+          {
+            "timeSeconds": 13,
+            "coldDamage": 1000
+          },
+          {
+            "timeSeconds": 23,
+            "coldDamage": 400
+          }
+        ]
+      },
+      "expected": {
+        "steps": [
+          {
+            "buildupPercent": 63.0,
+            "frozen": false
+          },
+          {
+            "buildupPercent": 63.0,
+            "frozen": false
+          },
+          {
+            "buildupPercent": 57.99999999999999,
+            "frozen": false
+          },
+          {
+            "buildupPercent": 0,
+            "frozen": true
+          },
+          {
+            "buildupPercent": 0,
+            "frozen": true
+          },
+          {
+            "buildupPercent": 0,
+            "frozen": true
+          },
+          {
+            "buildupPercent": 84.0,
+            "frozen": false
+          }
+        ]
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 770,
+            "id": "Frozen"
+          }
+        ],
+        "pobConstants": [
+          {
+            "file": "Data/Misc.lua",
+            "line": 269,
+            "endLine": 269
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 270,
+            "endLine": 270
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 54,
+            "endLine": 54
+          },
+          {
+            "file": "Data/Misc.lua",
+            "line": 56,
+            "endLine": 56
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-handoff-ignite",
+      "input": {
+        "strongHit": 200,
+        "weakHit": 100,
+        "weakAt": 2.0,
+        "crossingTick": 3.0
+      },
+      "expected": {
+        "damageThroughCrossing": 100.0,
+        "remainingDamage": 20.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 1499,
+            "endLine": 1499
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 2126,
+            "endLine": 2135
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-handoff-bleed",
+      "input": {
+        "strongHit": 200,
+        "weakHit": 100,
+        "weakAt": 2.5,
+        "crossingTick": 3.75
+      },
+      "expected": {
+        "damageThroughCrossing": 93.75,
+        "remainingDamage": 18.75
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 1499,
+            "endLine": 1499
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 2126,
+            "endLine": 2135
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-handoff-poison",
+      "input": {
+        "strongHit": 200,
+        "weakHit": 100,
+        "weakAt": 1.0,
+        "crossingTick": 1.5
+      },
+      "expected": {
+        "damageThroughCrossing": 50.0,
+        "remainingDamage": 10.0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 1499,
+            "endLine": 1499
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 2126,
+            "endLine": 2135
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-handoff-chill",
+      "input": {
+        "strongPercent": 50,
+        "weakPercent": 40.0,
+        "weakAt": 4.0,
+        "strongExpires": 8
+      },
+      "expected": {
+        "effects": [
+          50,
+          40.0,
+          0
+        ]
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 1499,
+            "endLine": 1499
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 2126,
+            "endLine": 2135
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-handoff-shock",
+      "input": {
+        "strongPercent": 20,
+        "weakPercent": 10.0,
+        "weakAt": 4.0,
+        "strongExpires": 8
+      },
+      "expected": {
+        "effects": [
+          20,
+          10.0,
+          0
+        ]
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 1499,
+            "endLine": 1499
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 2126,
+            "endLine": 2135
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-rarity-magic",
+      "input": {
+        "rarity": "magic",
+        "unique": false,
+        "mapBoss": false,
+        "coldDamage": 250,
+        "poiseThreshold": 1000
+      },
+      "expected": {
+        "chillPercent": 42.5,
+        "buildupPercent": 41.666666666666664
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/mods.datc64.json",
+            "line": 705740,
+            "endLine": 705745
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 842,
+            "id": "Slow"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-rarity-rare",
+      "input": {
+        "rarity": "rare",
+        "unique": false,
+        "mapBoss": false,
+        "coldDamage": 250,
+        "poiseThreshold": 1000
+      },
+      "expected": {
+        "chillPercent": 35.0,
+        "buildupPercent": 23.333333333333332
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/mods.datc64.json",
+            "line": 707426,
+            "endLine": 707431
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 842,
+            "id": "Slow"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-rarity-unique",
+      "input": {
+        "rarity": "unique",
+        "unique": true,
+        "mapBoss": false,
+        "coldDamage": 250,
+        "poiseThreshold": 1000
+      },
+      "expected": {
+        "chillPercent": 25.0,
+        "buildupPercent": 8.75
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "Modules/ConfigOptions.lua",
+            "line": 2006,
+            "endLine": 2006
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 842,
+            "id": "Slow"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-rarity-map-boss",
+      "input": {
+        "rarity": "map-boss",
+        "unique": true,
+        "mapBoss": true,
+        "coldDamage": 250,
+        "poiseThreshold": 1000
+      },
+      "expected": {
+        "chillPercent": 25.0,
+        "buildupPercent": 2.7955271565495208
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "Modules/ConfigOptions.lua",
+            "line": 2006,
+            "endLine": 2006
+          },
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 842,
+            "id": "Slow"
+          },
+          {
+            "file": "Modules/ConfigOptions.lua",
+            "line": 2007,
+            "endLine": 2007
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-freeze-resistance",
+      "input": {
+        "coldDamage": 400,
+        "coldResistancePercent": 40,
+        "poiseThreshold": 1000
+      },
+      "expected": {
+        "buildupPercent": 50.4
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 32,
+            "endLine": 32
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 4914,
+            "endLine": 4920
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5405,
+            "endLine": 5413
+          }
+        ]
+      }
+    },
+    {
+      "id": "ailment-flammability-chance-bonus",
+      "input": {
+        "fireDamage": 100,
+        "threshold": 1000,
+        "firstBonus": 40,
+        "secondRoll": 0.43
+      },
+      "expected": {
+        "magnitudeByHit": [
+          42.0,
+          44.0
+        ],
+        "secondIgnites": true
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 239,
+            "endLine": 239
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5449,
+            "endLine": 5464
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-break-player",
+      "input": {
+        "target": "player",
+        "fullyBroken": true
+      },
+      "expected": {
+        "durationSeconds": 4,
+        "physicalHitBonusPercent": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 1436,
+            "id": "ArmourBreak"
+          }
+        ]
+      }
+    },
+    {
+      "id": "armour-break-enemy",
+      "input": {
+        "target": "enemy",
+        "damage": 100,
+        "elapsedSeconds": 12
+      },
+      "expected": {
+        "physicalHit": 120.0,
+        "physicalDot": 100,
+        "elementalHit": 100,
+        "physicalHitAfterExpiry": 100
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "gameData",
+        "references": [
+          {
+            "file": "data/balance/keywordpopups.datc64.json",
+            "line": 1436,
+            "id": "ArmourBreak"
+          }
+        ]
+      }
+    }
+  ]
+}

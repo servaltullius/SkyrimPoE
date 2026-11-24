@@ -10,6 +10,7 @@
 #include "core/Types.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace SkyrimPoE::Runtime
 {
@@ -18,6 +19,7 @@ namespace SkyrimPoE::Runtime
     {
         bool active = false;
         double convertedSkyrimDamage = 0.0;
+        double physicalDamageFraction = 0.0;
         bool isCrit = false;
         RE::FormID expectedTargetId = 0;
         bool* outAbsorbedByMonsterEs = nullptr;  // 검수 M3: 적 ES 100% 흡수 시에도 CoC/상태이상 발동 보장
@@ -28,6 +30,7 @@ namespace SkyrimPoE::Runtime
     public:
         ScopedCycloneHitContext(
             double convertedSkyrimDamage,
+            double physicalDamageFraction,
             bool isCrit,
             RE::FormID targetId,
             bool* outAbsorbedByMonsterEs = nullptr) noexcept;
@@ -62,6 +65,9 @@ namespace SkyrimPoE::Runtime
 
         // 주 갱신 스레드 프레임 콜백에서 호출: 최대 체력·매지카·ES 동기화, MoM 매지카 차감, Low Life/EO 감시 및 ES 재충전.
         static void TickPlayerPools(double deltaSec, bool gamePaused);
+
+        [[nodiscard]] static double DamageWithEnemyArmourBreak(RE::Actor* target, double damage,
+            double physicalFraction, bool isDamageOverTime, std::optional<std::uint64_t> generation = std::nullopt);
 
         // 3단계 Elemental Overload: 원소/스킬 치명타 발생 시 8초 원소 피해 증폭 타이머 갱신
         static void NotifyPlayerElementalCrit() noexcept;

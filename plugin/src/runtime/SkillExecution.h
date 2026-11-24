@@ -5,6 +5,7 @@
 #include "core/Types.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace SkyrimPoE::Runtime
@@ -68,6 +69,7 @@ namespace SkyrimPoE::Runtime
             Core::DamageType dominantType,
             bool isDirectHit,
             bool bypassesMonsterEs = false,
-            bool isDamageOverTime = false);  // 결정 185: 지속 피해 틱은 적 ES 표시의 교전 기록을 바꾸지 않음
+            bool isDamageOverTime = false,
+            std::optional<double> physicalHitFraction = std::nullopt);  // 혼합 타격은 실제 물리 비중을 전달한다.
     };
 }

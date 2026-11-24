@@ -212,7 +212,7 @@ namespace SkyrimPoE::Runtime
                             const double curMag = static_cast<double>(av->GetActorValue(RE::ActorValue::kMagicka));
                             const double baseMaxMag = CombatHooks::GetBaseSkyrimMaxMagicka(player);
                             const auto ms = Core::ComputeMagickaScaling(
-                                baseMaxMag, snap->poeMaxMana, slotStat.poeManaCost, snap->exileLevel, *g_dataPack, *g_config);
+                                baseMaxMag, snap->poeMaxMana, slotStat.poeManaCost, snap->expectedPoeMana);
                             if (curMag + 1e-6 < ms.skyrimSkillCost) {
                                 if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
                                 MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 매지카가 부족합니다.");
@@ -409,8 +409,7 @@ namespace SkyrimPoE::Runtime
                     std::int32_t skyrimCost = 0;
                     if (!snap->bloodMagic && sstat.poeManaCost > 0.0) {
                         const auto ms = Core::ComputeMagickaScaling(
-                            baseSkyrimMaxMagicka, snap->poeMaxMana, sstat.poeManaCost,
-                            snap->exileLevel, *g_dataPack, *g_config);
+                            baseSkyrimMaxMagicka, snap->poeMaxMana, sstat.poeManaCost, snap->expectedPoeMana);
                         skyrimCost = static_cast<std::int32_t>(std::max<long long>(0LL, std::llround(ms.skyrimSkillCost)));
                     }
                     sp->data.costOverride = skyrimCost;

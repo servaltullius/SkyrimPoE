@@ -166,6 +166,8 @@ namespace SkyrimPoE::Core
 
         double attackBlockChance = 0.0;
         double spellBlockChance = 0.0;
+        double attackBlockMaxBonusPct = 0.0;
+        double spellBlockMaxBonusPct = 0.0;
         double spellSuppressionChance = 0.0;
         double incEsRechargeRatePct = 0.0;
         double fasterEsRechargeStartPct = 0.0;

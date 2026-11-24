@@ -1,10 +1,14 @@
 #include "PCH.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/MonsterRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
 
 #include "core/DamageConversion.h"
+#include "core/EnergyShield.h"
+#include "core/RulesPack.h"
+#include "core/SkillSystem.h"
 
 #include <algorithm>
 #include <chrono>
@@ -12,6 +16,7 @@
 #include <mutex>
 #include <random>
 #include <unordered_map>
+#include <utility>
 
 namespace SkyrimPoE::Runtime
 {
@@ -43,18 +48,38 @@ namespace SkyrimPoE::Runtime
         std::unordered_map<RE::FormID, double> g_deadGraceElapsed;  // Q-3: 사망 직후 상태이상 유예 타이머
         PlayerActiveAilments g_playerAilments{};                    // C-22, N-3: 적->플레이어 상태이상
         double g_tickAccumSec = 0.0;
+        double g_ailmentTimeSec = 0.0;
+        double g_playerAdvancedThroughSec = 0.0;
+        double g_pendingPlayerIgnite = 0.0;
+        double g_pendingPlayerBleed = 0.0;
+        double g_pendingPlayerStaminaDrain = 0.0;
+
+        bool IsMoving(RE::Actor* actor)
+        {
+            const auto* state = actor ? actor->AsActorState() : nullptr;
+            return state && (state->IsSprinting() || state->IsRunning() || state->IsWalking());
+        }
+
+        void AdvancePlayerAilments(bool moving)
+        {
+            const double elapsed = g_ailmentTimeSec - g_playerAdvancedThroughSec;
+            g_playerAdvancedThroughSec = g_ailmentTimeSec;
+            auto& ailments = g_playerAilments;
+            const double bleedMultiplier = moving ? Core::ActiveRuleValues().bleed.movingOrAggravatedMultiplier : 1.0;
+            g_pendingPlayerIgnite += ailments.igniteDpsSkyrim * std::min(elapsed, ailments.igniteRemainingSec);
+            g_pendingPlayerBleed += ailments.bleedDpsSkyrim * bleedMultiplier * std::min(elapsed, ailments.bleedRemainingSec);
+            g_pendingPlayerStaminaDrain += 6.0 * std::min(elapsed, ailments.chillRemainingSec);
+            ailments.igniteRemainingSec = std::max(0.0, ailments.igniteRemainingSec - elapsed);
+            ailments.bleedRemainingSec = std::max(0.0, ailments.bleedRemainingSec - elapsed);
+            ailments.chillRemainingSec = std::max(0.0, ailments.chillRemainingSec - elapsed);
+            ailments.shockRemainingSec = std::max(0.0, ailments.shockRemainingSec - elapsed);
+        }
 
         std::mt19937_64& AilmentRng()
         {
-            static std::mt19937_64 rng(static_cast<std::uint64_t>(
+            static thread_local std::mt19937_64 rng(static_cast<std::uint64_t>(
                 std::chrono::steady_clock::now().time_since_epoch().count()) ^ 0xA113E47ULL);
             return rng;
-        }
-
-        bool IsBossOrDragon(const RE::Actor* actor) noexcept
-        {
-            // U3 확정(2026-11-20): 전 모듈 단일 보스 판정(드래곤 또는 LocTypeBoss)
-            return SkillExecution::IsBossOrDragon(actor);
         }
 
         void ApplyTrackedSpeedDelta(RE::Actor* actor, float desiredDelta)
@@ -112,26 +137,17 @@ namespace SkyrimPoE::Runtime
                 SaveLoad::DeferSpeedRevert(fid, prevDelta);
                 return;
             }
-            {
-                if (!actor->IsPlayerRef() && !actor->IsDeleted()) {
-                    if (auto* av = actor->AsActorValueOwner()) {
-                        // Q-1 + M-2: 엔진 리셋(OnActorReset)으로 이미 0이면 생략하되,
-                        // Hasted(+20) 등 다른 SpeedMult와 공존해 부호가 섞여 있어도 -prevDelta를 정확히 원복한다.
-                        const float curTemp = actor->GetActorValueModifier(
-                            RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);
-                        if (std::abs(curTemp) < 0.01f) {
-                            return;
-                        }
-                        const float restoreDelta = -prevDelta;
-                        if (std::abs(restoreDelta) < 0.01f) {
-                            return;
-                        }
-                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult, restoreDelta);
-                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, 0.01f);
-                        av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, -0.01f);
-                    }
-                }
+            if (actor->IsPlayerRef() || actor->IsDeleted()) {
+                return;
             }
+            auto* av = actor->AsActorValueOwner();
+            if (!av) {
+                SaveLoad::DeferSpeedRevert(fid, prevDelta);
+                return;
+            }
+            av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult, -prevDelta);
+            av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, 0.01f);
+            av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, -0.01f);
         }
 
         void SyncActorSpeedFromAilment(RE::Actor* actor)
@@ -171,59 +187,49 @@ namespace SkyrimPoE::Runtime
         if (gamePaused || !std::isfinite(deltaSec) || deltaSec <= 0.0 || !g_dataPack || !g_config || !g_statEngine) {
             return;
         }
-        g_tickAccumSec += deltaSec;
-        if (g_tickAccumSec < kDoTTickIntervalSec) {
-            return;
+        double step;
+        double now;
+        {
+            std::scoped_lock lk(g_mutex);
+            g_ailmentTimeSec += deltaSec;
+            g_tickAccumSec += deltaSec;
+            if (g_tickAccumSec < kDoTTickIntervalSec) {
+                return;
+            }
+            now = g_ailmentTimeSec;
+            step = g_tickAccumSec;
+            g_tickAccumSec = 0.0;
         }
-        const double step = g_tickAccumSec;
-        g_tickAccumSec = 0.0;
 
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || player->IsDead()) {
             return;
         }
 
-        // C-22, N-3: 플레이어에 걸린 적 상태이상(점화·출혈 DoT, 감전·냉각 타이머) 진행
-        // 검수 Minor 9: g_mutex 바깥에서 플레이어 이동 상태 조회 및 출혈 이동 배율 3.0 통일(C-10)
-        const auto* pst = player->AsActorState();
-        const bool pMoving = pst && (pst->IsSprinting() || pst->IsRunning() || pst->IsWalking());
-        double playerDotSkyrim = 0.0;
-        double playerStaminaDrain = 0.0;
+        const bool playerMoving = IsMoving(player);
+        double playerIgniteSkyrim;
+        double playerBleedSkyrim;
+        double playerStaminaDrain;
         {
             std::scoped_lock lk(g_mutex);
-            if (g_playerAilments.igniteRemainingSec > 0.0) {
-                const double dur = std::min(step, g_playerAilments.igniteRemainingSec);
-                playerDotSkyrim += g_playerAilments.igniteDpsSkyrim * dur;
-                g_playerAilments.igniteRemainingSec = std::max(0.0, g_playerAilments.igniteRemainingSec - step);
-                if (g_playerAilments.igniteRemainingSec <= 0.0) {
-                    g_playerAilments.igniteDpsSkyrim = 0.0;
-                }
-            }
-            if (g_playerAilments.bleedRemainingSec > 0.0) {
-                const double dur = std::min(step, g_playerAilments.bleedRemainingSec);
-                playerDotSkyrim += g_playerAilments.bleedDpsSkyrim * (pMoving ? 3.0 : 1.0) * dur;
-                g_playerAilments.bleedRemainingSec = std::max(0.0, g_playerAilments.bleedRemainingSec - step);
-                if (g_playerAilments.bleedRemainingSec <= 0.0) {
-                    g_playerAilments.bleedDpsSkyrim = 0.0;
-                }
-            }
-            if (g_playerAilments.shockRemainingSec > 0.0) {
-                g_playerAilments.shockRemainingSec = std::max(0.0, g_playerAilments.shockRemainingSec - step);
-                if (g_playerAilments.shockRemainingSec <= 0.0) {
-                    g_playerAilments.shockMult = 1.0;
-                }
-            }
-            if (g_playerAilments.chillRemainingSec > 0.0) {
-                const double dur = std::min(step, g_playerAilments.chillRemainingSec);
-                playerStaminaDrain += 6.0 * dur;  // 플레이어 SpeedMult 무변경 원칙 유지, 스태미나 냉각 부담 부여
-                g_playerAilments.chillRemainingSec = std::max(0.0, g_playerAilments.chillRemainingSec - step);
-            }
+            AdvancePlayerAilments(playerMoving);
+            playerIgniteSkyrim = std::exchange(g_pendingPlayerIgnite, 0.0);
+            playerBleedSkyrim = std::exchange(g_pendingPlayerBleed, 0.0);
+            playerStaminaDrain = std::exchange(g_pendingPlayerStaminaDrain, 0.0);
         }
-        if ((playerDotSkyrim > 0.0 || playerStaminaDrain > 0.0) && !player->IsInKillMove()) {
+        if ((playerIgniteSkyrim > 0.0 || playerBleedSkyrim > 0.0 || playerStaminaDrain > 0.0) && !player->IsInKillMove()) {
             if (auto* pav = player->AsActorValueOwner()) {
-                if (playerDotSkyrim > 0.0) {
+                // DPS는 피격 방어·편향 후, 난이도 적용 전의 타격 피해에서 계산한다.
+                // 마법 지속 피해와 같이 ES와 MoM에 난이도를 넘기고 남은 생명 피해에 한 번 적용한다.
+                const double difficulty = SkillExecution::GetDifficultyMultiplier(true);
+                auto& es = Core::GetPlayerEnergyShield();
+                const auto ignite = es.AbsorbDamage(playerIgniteSkyrim, difficulty, false, Core::AilmentKind::Ignite);
+                const auto bleed = es.AbsorbDamage(playerBleedSkyrim, difficulty, false, Core::AilmentKind::Bleed);
+                const double rawAfterEs = ignite.remainingRawDamage + bleed.remainingRawDamage;
+                const double rawAfterMom = ApplyPlayerDotMindOverMatter(rawAfterEs, difficulty, player);
+                if (rawAfterMom > 0.0) {
                     const double curHp = static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth));
-                    const double safeDmg = std::min(playerDotSkyrim, std::max(0.0, curHp - 1.0));
+                    const double safeDmg = std::min(rawAfterMom * difficulty, std::max(0.0, curHp - 1.0));
                     if (safeDmg > 0.0) {
                         pav->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth,
                             -static_cast<float>(safeDmg));
@@ -275,13 +281,12 @@ namespace SkyrimPoE::Runtime
                 continue;
             }
 
-            const auto* st = actor->AsActorState();
-            const bool isMoving = st && (st->IsSprinting() || st->IsRunning() || st->IsWalking());
+            const bool isMoving = IsMoving(actor);
 
             Core::AilmentTickDamage dot{};
             {
                 std::scoped_lock lk(g_mutex);
-                dot = g_ailments.TickActor(fid, step, isMoving);
+                dot = g_ailments.TickActorAt(fid, now, isMoving);
             }
 
             SyncActorSpeedFromAilment(actor);
@@ -301,6 +306,23 @@ namespace SkyrimPoE::Runtime
         }
     }
 
+    AilmentRuntime::SpellHit AilmentRuntime::RollSpellHit(const Core::TriggeredSpellCast& cast,
+        double damageRoll01, double critRoll01, double damageMultiplier) noexcept
+    {
+        SpellHit hit;
+        if (!g_dataPack || !g_config) {
+            return hit;
+        }
+        // The skill's damage and the packet use the same damage and critical rolls.
+        hit.skyrimDamage = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
+            cast, *g_dataPack, *g_config, damageRoll01, critRoll01, hit.isCrit) * damageMultiplier;
+        const double critMultiplier = hit.isCrit ? std::max(1.0, cast.critMultiplierPct / 100.0) : 1.0;
+        hit.poeDamage = Core::RollSpellDamagePacket(cast.poeBaseHitDamage, damageRoll01, critMultiplier * damageMultiplier);
+        hit.igniteChancePct = cast.igniteChancePct;
+        hit.starforgeShock = cast.starforgeShock;
+        return hit;
+    }
+
     Core::AilmentApplyResult AilmentRuntime::ApplyPlayerHitAilments(
         RE::Actor* target,
         const Core::DamagePacket& poeDamage,
@@ -310,18 +332,20 @@ namespace SkyrimPoE::Runtime
         bool starforgeShock,
         double bleedChancePct,
         double poisonChancePct,
-        double freezeChancePct,
         double shockChancePct)
     {
         Core::AilmentApplyResult res{};
         if (MapDeviceRuntime::IsUninstallCleanupActive() ||
-            !target || target->IsDead() || target->IsPlayerRef() || !g_dataPack || !g_statEngine) {
+            !target || target->IsDeleted() || target->IsPlayerRef() || !g_dataPack || !g_statEngine) {
             return res;
         }
         const auto snap = g_statEngine->GetSnapshot();
         const std::uint32_t exileLevel = snap ? snap->exileLevel : 1u;
         const auto targetId = target->GetFormID();
-        const auto scaling = MapDeviceRuntime::GetMapActorScaling(targetId);
+        const auto mapActor = MapDeviceRuntime::GetMapKillContext(targetId, 0);
+        const auto monsterLevel = mapActor.rewardMonsterLevel != 0 ? mapActor.rewardMonsterLevel : exileLevel;
+        const auto profile = MonsterRuntime::GetProfileCopy(targetId);
+        const bool moving = IsMoving(target);
 
         std::uniform_real_distribution<double> u01(0.0, 1.0);
         Core::HitAilmentInput in{};
@@ -330,21 +354,39 @@ namespace SkyrimPoE::Runtime
         in.coldHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Cold)].Average();
         in.lightningHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Lightning)].Average();
         in.chaosHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Chaos)].Average();
-        in.targetAilmentThresholdPoe = Core::MapSystem::AilmentThreshold(exileLevel, scaling.lifeMultiplier, *g_dataPack);
+        in.targetAilmentThresholdPoe = Core::MapSystem::AilmentThreshold(monsterLevel);
+        in.targetPoiseThresholdPoe = Core::MapSystem::PoiseThreshold(monsterLevel);
         in.isCrit = isCrit;
-        in.isBossOrDragon = IsBossOrDragon(target);
+        in.isMapBoss = mapActor.isBoss;
+        in.isBossOrDragon = SkillExecution::IsDragonActor(target) || SkillExecution::HasLocationBossRefType(target);
+        if (profile) {
+            in.targetRarity = profile->rarity;
+            auto resistances = *profile;
+            // Reuse the cold-resistance adjustment without the general rarity damage reduction.
+            resistances.rarity = Core::MonsterRarity::Normal;
+            in.coldDamageAfterResistanceMultiplier =
+                Core::MonsterModSystem::IncomingDamageMultiplier(resistances, Core::DamageType::Cold);
+        }
+        if (in.coldHitPoe > 0.0 && mapActor.runId != 0) {
+            Core::MapModSummary mapMods;
+            if (MapDeviceRuntime::GetMapActorScaling(targetId, &mapMods).runId == mapActor.runId) {
+                in.coldDamageAfterResistanceMultiplier *= std::max(0.25, 1.0 - mapMods.monsterElemResPct / 100.0);
+            }
+        }
         in.starforgeShock = starforgeShock || (snap && snap->starforgeShock);
         // N-1: 패시브/전역 상태이상 확률을 스킬·타격 개별 확률에 자동 합산
-        // 재검수 R-1: 출혈은 PoE에서 공격으로만 걸리고, 공격·주문 한정 확률은 해당 적중에만 더한다.
+        // 공격·주문 한정 확률은 해당 적중에만 더한다.
         const bool isAttack = (hitKind == HitKind::Attack);
         in.igniteChancePct = igniteChancePct +
             (snap ? snap->igniteChancePct + (isAttack ? snap->attackIgniteChancePct : 0.0) : 0.0);
-        in.freezeChancePct = freezeChancePct + (snap ? snap->freezeChancePct : 0.0);
         in.shockChancePct = shockChancePct + (snap ? snap->shockChancePct : 0.0);
-        in.bleedChancePct = isAttack ? bleedChancePct + (snap ? snap->bleedChancePct : 0.0) : 0.0;
+        in.bleedChancePct = bleedChancePct + (snap ? snap->BleedChanceForHitPct(isAttack) : 0.0);
         in.poisonChancePct = poisonChancePct +
             (snap ? snap->poisonChancePct + (isAttack ? snap->attackPoisonChancePct : snap->spellPoisonChancePct) : 0.0);
-        in.roll01 = u01(AilmentRng());
+        in.igniteRoll01 = u01(AilmentRng());
+        in.shockRoll01 = u01(AilmentRng());
+        in.bleedRoll01 = u01(AilmentRng());
+        in.poisonRoll01 = u01(AilmentRng());
 
         bool wasFrozenBefore = false;
         {
@@ -352,13 +394,14 @@ namespace SkyrimPoE::Runtime
             if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                 return res;
             }
+            g_ailments.AdvanceActorTo(targetId, g_ailmentTimeSec, moving);
             wasFrozenBefore = g_ailments.IsFrozen(targetId);
-            res = g_ailments.ApplyHitAilments(targetId, in);
+            res = g_ailments.ApplyHitAilmentsAt(targetId, in, g_ailmentTimeSec, moving);
         }
-        if (res.appliedChill || res.appliedFreeze) {
+        if (!target->IsDead() && (res.appliedChill || res.appliedFreeze)) {
             SyncActorSpeedFromAilment(target);
         }
-        // N-4: 비보스 적에게 빙결이 새로 발동될 때 경직 1회 유발(완전 행동 정지 대신 경직 + SpeedMult -95)
+        // 빙결이 시작될 때 경직 1회 유발(SpeedMult -95와 함께 적용).
         if (res.appliedFreeze && !wasFrozenBefore && target->Is3DLoaded() && !target->IsDead()) {
             target->SetGraphVariableFloat("staggerMagnitude", 0.5f);
             (void)target->NotifyAnimationGraph("staggerStart");
@@ -394,11 +437,14 @@ namespace SkyrimPoE::Runtime
         }
         // C-22, N-3: 면역/참에 막히지 않았으면 실제 플레이어 측 상태이상 부여
         const double safeHit = (std::isfinite(skyrimHitDamage) && skyrimHitDamage > 0.0) ? skyrimHitDamage : 10.0;
+        const auto& rules = Core::ActiveRuleValues();
+        const bool moving = IsMoving(RE::PlayerCharacter::GetSingleton());
         {
             std::scoped_lock lk(g_mutex);
             if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                 return out;
             }
+            AdvancePlayerAilments(moving);
             if (g_charmSystem && g_config && g_charmSystem->TryTriggerOnAilment(kind, g_config->enableCharms)) {
                 out.purifyingCharmTriggered = true;
                 // 정화의 참 발동 시 남아 있던 동결과 출혈도 즉시 정화한다(C-22).
@@ -412,7 +458,7 @@ namespace SkyrimPoE::Runtime
                     const double dps = std::clamp(safeHit * 0.25, 1.0, 25.0);
                     if (dps >= g_playerAilments.igniteDpsSkyrim || g_playerAilments.igniteRemainingSec <= 0.0) {
                         g_playerAilments.igniteDpsSkyrim = dps;
-                        g_playerAilments.igniteRemainingSec = 3.0;
+                        g_playerAilments.igniteRemainingSec = rules.ignite.durationSeconds;
                     }
                     break;
                 }
@@ -420,17 +466,19 @@ namespace SkyrimPoE::Runtime
                     const double dps = std::clamp(safeHit * 0.20, 1.0, 20.0);
                     if (dps >= g_playerAilments.bleedDpsSkyrim || g_playerAilments.bleedRemainingSec <= 0.0) {
                         g_playerAilments.bleedDpsSkyrim = dps;
-                        g_playerAilments.bleedRemainingSec = 4.0;
+                        g_playerAilments.bleedRemainingSec = rules.bleed.durationSeconds;
                     }
                     break;
                 }
                 case Core::AilmentKind::Shock:
-                    g_playerAilments.shockMult = 1.15;
-                    g_playerAilments.shockRemainingSec = 2.0;
+                    g_playerAilments.shockMult = 1.0 + rules.shock.effectPercent / 100.0;
+                    g_playerAilments.shockRemainingSec = rules.shock.playerDurationSeconds;
                     break;
                 case Core::AilmentKind::Chill:
+                    g_playerAilments.chillRemainingSec = rules.chill.playerDurationSeconds;
+                    break;
                 case Core::AilmentKind::Freeze:
-                    g_playerAilments.chillRemainingSec = 2.5;
+                    g_playerAilments.chillRemainingSec = rules.freeze.playerDurationSeconds;
                     break;
                 default:
                     break;
@@ -443,7 +491,7 @@ namespace SkyrimPoE::Runtime
     double AilmentRuntime::PlayerShockDamageMultiplier() noexcept
     {
         std::scoped_lock lk(g_mutex);
-        return (g_playerAilments.shockRemainingSec > 0.0) ? g_playerAilments.shockMult : 1.0;
+        return (g_playerAilments.shockRemainingSec > g_ailmentTimeSec - g_playerAdvancedThroughSec) ? g_playerAilments.shockMult : 1.0;
     }
 
     double AilmentRuntime::ShockDamageMultiplier(RE::FormID actorId) noexcept
@@ -456,6 +504,12 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lk(g_mutex);
         return g_ailments.IsFrozen(actorId);
+    }
+
+    bool AilmentRuntime::IsChilledOrFrozen(RE::FormID actorId) noexcept
+    {
+        std::scoped_lock lk(g_mutex);
+        return g_ailments.IsChilledOrFrozen(actorId);
     }
 
     double AilmentRuntime::ChillSlowRatio(RE::FormID actorId) noexcept
@@ -498,16 +552,17 @@ namespace SkyrimPoE::Runtime
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (player) {
                 const auto nearby = SkillExecution::CollectHostileTargets(player, victim->GetPosition(), kBerekProlifRadius);
-                std::scoped_lock lk(g_mutex);
                 for (const auto& other : nearby) {
                     if (!other || other->GetFormID() == fid) continue;
+                    const bool moving = IsMoving(other.get());
+                    std::scoped_lock lk(g_mutex);
                     g_ailments.ProliferateIgniteAndShock(
                         other->GetFormID(),
                         prevState->igniteDps,
                         prevState->igniteRemaining,
                         prevState->shockRatio,
                         prevState->shockRemaining,
-                        false);
+                        false, g_ailmentTimeSec, moving);
                 }
             }
         }
@@ -525,6 +580,10 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lk(g_mutex);
         g_playerAilments = PlayerActiveAilments{};
+        g_playerAdvancedThroughSec = g_ailmentTimeSec;
+        g_pendingPlayerIgnite = 0.0;
+        g_pendingPlayerBleed = 0.0;
+        g_pendingPlayerStaminaDrain = 0.0;
     }
 
     void AilmentRuntime::RevertAllTrackedSpeedsNow()
@@ -565,7 +624,13 @@ namespace SkyrimPoE::Runtime
         g_appliedSpeedDelta.clear();
         g_deadGraceElapsed.clear();
         g_playerAilments = PlayerActiveAilments{};
+        g_playerAdvancedThroughSec = g_ailmentTimeSec;
+        g_pendingPlayerIgnite = 0.0;
+        g_pendingPlayerBleed = 0.0;
+        g_pendingPlayerStaminaDrain = 0.0;
         g_ailments.ClearAll();
         g_tickAccumSec = 0.0;
+        g_ailmentTimeSec = 0.0;
+        g_playerAdvancedThroughSec = 0.0;
     }
 }

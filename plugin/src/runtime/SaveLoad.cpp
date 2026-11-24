@@ -21,7 +21,6 @@
 
 #include <REX/W32/KERNEL32.h>
 
-#include <bit>
 #include <cstring>
 #include <numeric>
 #include <unordered_set>
@@ -95,8 +94,7 @@ namespace SkyrimPoE::Runtime
                 return std::nullopt;
             }
             constexpr auto temporary = RE::ACTOR_VALUE_MODIFIER::kTemporary;
-            if (std::abs(actor->GetActorValueModifier(temporary, RE::ActorValue::kSpeedMult)) < 0.01f ||
-                std::abs(delta) < 0.01f) {
+            if (std::abs(delta) < 0.01f) {
                 return AlreadyZero;
             }
             av->ModActorValue(temporary, RE::ActorValue::kSpeedMult, -delta);
@@ -318,10 +316,9 @@ namespace SkyrimPoE::Runtime
             // 검수 C5: 단일 Layer1 조합 지점 — 장비 스냅샷을 항상 병합해 레벨업/패시브/젬 변경 시 덮어쓰기를 방지
             l1.equippedGear = EquipmentSync::GetCurrentGearSnapshot();
 
-            // 5~6단계(결정 161, 164, 166): 정신력 오라 토글, 보스·4차 결투장 이정표 달성 수(0xFu), 패시브 주얼 소켓 선합산
+            // 오라 토글, 정신력 보상 이정표 비트(결정 203), 패시브 주얼 소켓 선합산
             l1.activeAuraMask = state.activeAuraMask;
-            l1.completedMilestoneCount = static_cast<std::uint8_t>(
-                std::popcount(static_cast<std::uint32_t>(state.tree.ascendancyMilestonesBitmask & 0xFu)));
+            l1.achievementMask = state.tree.ascendancyMilestonesBitmask;
             if (g_itemData && g_itemData->IsLoaded() && !state.socketedJewels.empty()) {
                 l1.socketedJewelStats.reserve(state.socketedJewels.size());
                 for (const auto& [nodeId, rec] : state.socketedJewels) {

@@ -22,6 +22,8 @@
 #include "core/MapSystem.h"
 #include "core/Migration.h"
 #include "core/PassiveTree.h"
+#include "core/Config.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <atomic>
@@ -3504,9 +3506,12 @@ namespace SkyrimPoE::Runtime
         if (isArena4) {
             if (denial == Core::Arena4EntryDenial::None) {
                 SaveLoad::SyncStateToStatEngine();
-                RE::SendHUDMessage::ShowHUDMessage(
-                    "[SkyrimPoE] 4차 전직 결투장 정복! 전직 8/8, 패시브 +2, 기본 최대 정신력 220 해금!");
-                SKSE::log::info("MapDeviceRuntime: 4th Ascendancy Arena cleared -> bitmask |= 0x8 (8/8 asc, Spirit 220).");
+                const auto baseSpirit = Core::ComputeSpirit(SaveLoad::GetStateCopy().tree.ascendancyMilestonesBitmask,
+                    Core::ActiveRuleValues());
+                const auto message = std::format(
+                    "[SkyrimPoE] 4차 전직 결투장 정복! 전직 8/8, 패시브 +2, 기본 최대 정신력 {} 해금!", baseSpirit);
+                RE::SendHUDMessage::ShowHUDMessage(message.c_str());
+                SKSE::log::info("MapDeviceRuntime: 4th Ascendancy Arena cleared -> bitmask |= 0x8 (8/8 asc, Spirit {}).", baseSpirit);
             } else if (denial == Core::Arena4EntryDenial::MissingMilestones) {
                 RE::SendHUDMessage::ShowHUDMessage("[결투장] 1~3차 전직 이정표가 부족해 4차 전직을 얻지 못했습니다.");
             } else {

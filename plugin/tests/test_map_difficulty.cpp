@@ -23,12 +23,12 @@ namespace
 POE_TEST("Stage6 map difficulty: PoB T1-T16 life and damage multipliers, Arena4 uses T8")
 {
     const auto pack = LoadPack();
-    // 결정 170 U-3: PoB 3.30 원표에서 계산한 생명·피해 기대값.
+    // PoB 0.23.1 생명·피해의 Lv68 대비 비율. 지도 생명 배율 표의 값은 모두 1이다.
     constexpr std::array<MapMonsterMultipliers, kMaxMapTier> expected{{
-        { 1.000000, 1.000000 }, { 1.104681, 1.051559 }, { 1.218465, 1.105635 }, { 1.365105, 1.162308 },
-        { 1.513053, 1.221711 }, { 1.686897, 1.283951 }, { 1.876372, 1.349217 }, { 2.097427, 1.417588 },
-        { 2.323004, 1.489225 }, { 2.568335, 1.564315 }, { 2.834927, 1.642966 }, { 3.143072, 1.725338 },
-        { 3.518072, 1.811672 }, { 3.947918, 1.902075 }, { 4.439600, 1.996761 }, { 4.976678, 2.095944 }
+        { 1.000000, 1.000000 }, { 1.080053, 1.031229 }, { 1.350127, 1.063229 }, { 1.451375, 1.096088 },
+        { 1.560131, 1.129761 }, { 1.677244, 1.164293 }, { 1.802955, 1.199725 }, { 2.253724, 1.236016 },
+        { 2.422793, 1.273250 }, { 2.604457, 1.311428 }, { 2.799806, 1.350549 }, { 3.009810, 1.390657 },
+        { 3.762262, 1.431795 }, { 3.875136, 1.473919 }, { 3.991280, 1.517116 }, { 4.111057, 1.561428 }
     }};
     for (std::uint8_t tier = kMinMapTier; tier <= kMaxMapTier; ++tier) {
         const auto actual = MapSystem::GetMapMonsterMultipliers(MapSystem::MonsterLevelForTier(tier), pack);
@@ -162,8 +162,8 @@ POE_TEST("Stage6 map actor registry: registration, neutral outside, and idempote
             const auto found = actors.Find(actorId);
             POE_CHECK(found.has_value());
             POE_CHECK(found->runId == saved.runId);
-            POE_CHECK_NEAR(found->lifeMultiplier, 4.976678, 1e-4);
-            POE_CHECK_NEAR(found->damageMultiplier, 2.095944, 1e-4);
+            POE_CHECK_NEAR(found->lifeMultiplier, 4.111057, 1e-4);
+            POE_CHECK_NEAR(found->damageMultiplier, 1.561428, 1e-4);
         }
     }
 
@@ -180,21 +180,24 @@ POE_TEST("Stage6 map actor registry: registration, neutral outside, and idempote
     POE_CHECK(!actors.Find(nextActor).has_value());
 }
 
-POE_TEST("Stage6 map difficulty: life scales the ailment threshold and incoming damage while vanilla hit uses exile life")
+POE_TEST("Stage6 map difficulty: ailment and poise thresholds use the target level, vanilla hit uses exile life")
 {
     const auto pack = LoadPack();
     constexpr std::uint32_t exileLevel = 50;
     constexpr double rawHit = 63.0;
-    const auto t1 = MapSystem::GetMapMonsterMultipliers(MapSystem::MonsterLevelForTier(kMinMapTier), pack);
-    const auto t16 = MapSystem::GetMapMonsterMultipliers(MapSystem::MonsterLevelForTier(kMaxMapTier), pack);
-    const double firstThreshold = MapSystem::AilmentThreshold(exileLevel, t1.lifeMultiplier, pack);
-    const double lastThreshold = MapSystem::AilmentThreshold(exileLevel, t16.lifeMultiplier, pack);
-    POE_CHECK_NEAR(firstThreshold, pack.MonsterLife(exileLevel), 1e-9);
-    POE_CHECK_NEAR(lastThreshold / firstThreshold, 4.976678, 1e-4);
+    const auto firstLevel = MapSystem::MonsterLevelForTier(kMinMapTier);
+    const auto lastLevel = MapSystem::MonsterLevelForTier(kMaxMapTier);
+    const auto t16 = MapSystem::GetMapMonsterMultipliers(lastLevel, pack);
+    POE_CHECK_NEAR(MapSystem::AilmentThreshold(exileLevel), 3426.0, 1e-9);
+    POE_CHECK_NEAR(MapSystem::PoiseThreshold(exileLevel), 4387.0, 1e-9);
+    POE_CHECK_NEAR(MapSystem::AilmentThreshold(firstLevel), 11492.0, 1e-9);
+    POE_CHECK_NEAR(MapSystem::PoiseThreshold(firstLevel), 32890.0, 1e-9);
+    POE_CHECK_NEAR(MapSystem::AilmentThreshold(lastLevel), 74191.0, 1e-9);
+    POE_CHECK_NEAR(MapSystem::PoiseThreshold(lastLevel), 248540.0, 1e-9);
     POE_CHECK_NEAR(MapSystem::EstimateVanillaHitPoe(rawHit, exileLevel, pack),
         rawHit * pack.MonsterLife(exileLevel) / 100.0, 1e-9);
 
     const MapActorScaling target{ 1, t16.lifeMultiplier, t16.damageMultiplier };
-    POE_CHECK_NEAR(target.ScaleIncomingDamage(rawHit), rawHit / 4.976678, 1e-4);
+    POE_CHECK_NEAR(target.ScaleIncomingDamage(rawHit), rawHit / 4.111057, 1e-4);
     POE_CHECK_NEAR(MapActorScaling{}.ScaleIncomingDamage(rawHit), rawHit, 1e-9);
 }

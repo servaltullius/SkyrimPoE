@@ -5,9 +5,14 @@
 #include "core/Types.h"
 
 #include <cstdint>
+#include <mutex>
+#include <unordered_map>
 
 namespace SkyrimPoE::Core
 {
+    enum class VanillaHitSource { Attack, MagicEffect };
+    [[nodiscard]] bool CanInflictPoEAilments(VanillaHitSource source) noexcept;
+
     struct MagickaScalingResult
     {
         double skyrimMaxMagicka = 100.0;
@@ -27,6 +32,39 @@ namespace SkyrimPoE::Core
         double absorbedMagicka = 0.0;     // 주 갱신 스레드에서 kMagicka에서 차감할 양
         double remainingRawDamage = 0.0;  // 엔진(난이도 배율 적용 전)에 넘길 잔여 피해
     };
+
+    struct ArmourBreakState
+    {
+        void ApplyFullyBroken(double nowSeconds, bool targetIsPlayer) noexcept;
+        [[nodiscard]] bool IsFullyBroken(double nowSeconds) const noexcept;
+        [[nodiscard]] double DamageTakenMultiplier(double nowSeconds, DamageType type, bool isDamageOverTime) const noexcept;
+
+    private:
+        double expiresAt_ = 0.0;
+        bool targetIsPlayer_ = false;
+    };
+
+    class EnemyArmourBreaks
+    {
+    public:
+        void ApplyFullyBroken(std::uint32_t actorHandle, std::uint64_t generation);
+        void Advance(double elapsedSeconds, std::uint64_t generation);
+        [[nodiscard]] double DamageTakenMultiplier(std::uint32_t actorHandle, std::uint64_t generation,
+            DamageType type, bool isDamageOverTime) const;
+        [[nodiscard]] double ApplyToDamage(std::uint32_t actorHandle, std::uint64_t generation,
+            double damage, double physicalFraction, bool isDamageOverTime) const;
+
+    private:
+        bool SetGenerationLocked(std::uint64_t generation);
+        mutable std::mutex mutex_;
+        std::uint64_t generation_ = 0;
+        double nowSeconds_ = 0.0;
+        std::unordered_map<std::uint32_t, ArmourBreakState> targets_;
+    };
+
+    [[nodiscard]] EnemyArmourBreaks& ActiveEnemyArmourBreaks() noexcept;
+    [[nodiscard]] double PhysicalDamageFraction(const DamagePacket& packet) noexcept;
+    [[nodiscard]] bool PlayerHitMeetsAilmentThreshold(double postDeflectionDamage, double maxHealth) noexcept;
 
     // 결정 62, 64, 92, 93, 142, 143: 주는 피해(타격당) 환산
     [[nodiscard]] double ExpectedHitDamage(
@@ -51,8 +89,13 @@ namespace SkyrimPoE::Core
         const Config& config) noexcept;
 
     // 기대 방어·저항·생명력·마나(결정 69, 70, 74, 84, 144)
-    [[nodiscard]] double ArmourPassRatio(double armour, double poeHit, double cap = 0.90) noexcept;
-    [[nodiscard]] double EvasionHitChance(double evasion, double accuracy, double minHit = 0.05) noexcept;
+    [[nodiscard]] double ArmourReductionPercent(double armour, double poeHit) noexcept;
+    [[nodiscard]] double ArmourPassRatio(double armour, double poeHit, double extraReductionPercent = 0.0) noexcept;
+    [[nodiscard]] double EvasionHitChance(double evasion, double accuracy) noexcept;
+    [[nodiscard]] double DeflectionChance(double rating, double accuracy) noexcept;
+    [[nodiscard]] double BlockChanceLimit(double addedMaxPercent) noexcept;
+    [[nodiscard]] double SpellHitBlockChance(const StatSnapshot& snapshot, bool isProjectile) noexcept;
+    [[nodiscard]] AilmentKind EnergyShieldBypassAilment(AilmentKind ailment, bool shavronneChaosEs) noexcept;
 
     [[nodiscard]] double ExpectedPhysicalPass(
         std::uint32_t exileLevel,
@@ -71,12 +114,12 @@ namespace SkyrimPoE::Core
 
     [[nodiscard]] double ExpectedLife(
         std::uint32_t exileLevel,
-        const DataPack& pack,
+        std::uint32_t startingStrength,
         const Config& config) noexcept;
 
     [[nodiscard]] double ExpectedMana(
         std::uint32_t exileLevel,
-        const DataPack& pack,
+        std::uint32_t startingIntelligence,
         const Config& config) noexcept;
 
     // 결정 68, 71, 94, 142: 받는 피해 환산 (난이도 배율 적용 전 스카이림 단위 반환)
@@ -99,9 +142,7 @@ namespace SkyrimPoE::Core
     [[nodiscard]] double ComputeSkyrimMaxHealth(
         double baseSkyrimMaxHealth,
         double poeMaxLife,
-        std::uint32_t exileLevel,
-        const DataPack& pack,
-        const Config& config,
+        double expectedPoeLife,
         bool chaosInoculation = false) noexcept;
 
     [[nodiscard]] double ComputeBloodMagicLifeCost(
@@ -112,17 +153,13 @@ namespace SkyrimPoE::Core
     [[nodiscard]] double ComputeSkyrimMaxEnergyShield(
         double baseSkyrimMaxHealth,
         double poeMaxEnergyShield,
-        std::uint32_t exileLevel,
-        const DataPack& pack,
-        const Config& config) noexcept;
+        double expectedPoeLife) noexcept;
 
     [[nodiscard]] MagickaScalingResult ComputeMagickaScaling(
         double baseSkyrimMaxMagicka,
         double poeMaxMana,
         double poeSkillCost,
-        std::uint32_t exileLevel,
-        const DataPack& pack,
-        const Config& config) noexcept;
+        double expectedPoeMana) noexcept;
 
     // 검수 C2 해법: 난이도 배율(fDiffMultHPToPC*)을 보정해 ES 풀(체력 단위)에서 선차감하고,
     // 잔여분은 난이도 배율 적용 전 값으로 역산해 엔진에 넘긴다.
@@ -130,7 +167,8 @@ namespace SkyrimPoE::Core
         double rawPostDefenseDamage,
         double difficultyToPcMult,
         bool isChaos,
-        double currentEnergyShield) noexcept;
+        double currentEnergyShield,
+        AilmentKind ailment = AilmentKind::Count) noexcept;
 
     // 3단계 Mind Over Matter: ES 이후 잔여 피해에 대해 난이도 배율을 보정해 매지카에서 선차감한다.
     [[nodiscard]] MindOverMatterAbsorbResult AbsorbWithMindOverMatter(

@@ -191,7 +191,7 @@ namespace SkyrimPoE::Core
             std::string_view aRest;
             if (ParseLeadingNumber(std::string_view(low).substr(13), aVal, aPct, aRest) && aPct) {
                 if (aRest == "chance to cause bleeding") {
-                    out.bleedChancePct += aVal;
+                    out.attackBleedChancePct += aVal;
                     return true;
                 }
                 if (aRest == "chance to ignite") {
@@ -219,6 +219,10 @@ namespace SkyrimPoE::Core
         // Blood Magic 10% more maximum Life
         if (pct && rest == "more maximum life") {
             out.moreLifeMult *= std::max(0.0, 1.0 + val / 100.0);
+            return true;
+        }
+        if (pct && rest == "more maximum mana") {
+            out.moreManaMult *= std::max(0.0, 1.0 + val / 100.0);
             return true;
         }
 
@@ -263,6 +267,7 @@ namespace SkyrimPoE::Core
         if (rest == "increased maximum life") { out.incLifePct += val; return true; }
         if (rest == "reduced maximum life") { out.incLifePct -= val; return true; }
         if (rest == "increased maximum mana") { out.incManaPct += val; return true; }
+        if (rest == "reduced maximum mana") { out.incManaPct -= val; return true; }
         if (rest == "increased maximum energy shield") { out.incEnergyShieldPct += val; return true; }
         if (rest == "increased energy shield recharge rate") { out.incEsRechargeRatePct += val; return true; }
         if (rest == "faster start of energy shield recharge") { out.fasterEsRechargeStartPct += val; return true; }
@@ -307,6 +312,8 @@ namespace SkyrimPoE::Core
         // 막기·주문 억제
         if (rest == "chance to block attack damage") { out.attackBlockChance += val; return true; }
         if (rest == "chance to block spell damage") { out.spellBlockChance += val; return true; }
+        if (rest == "to maximum chance to block attack damage") { out.attackBlockMaxBonusPct += val; return true; }
+        if (rest == "to maximum chance to block spell damage") { out.spellBlockMaxBonusPct += val; return true; }
         if (rest == "chance to suppress spell damage") { out.spellSuppressionChance += val; return true; }
         if (rest == "to amount of suppressed spell damage prevented") { out.spellSuppressionPrevent += val; return true; }
 
@@ -379,8 +386,10 @@ namespace SkyrimPoE::Core
             out.igniteChancePct += val;
             return true;
         }
-        if (rest == "chance to cause bleeding" || rest == "chance to bleed" ||
-            rest == "chance to cause bleeding with attacks") {
+        if (rest == "chance to cause bleeding with attacks") {
+            out.attackBleedChancePct += val; return true;
+        }
+        if (rest == "chance to cause bleeding" || rest == "chance to bleed") {
             out.bleedChancePct += val; return true;
         }
         if (rest == "chance to poison on hit" || rest == "chance to poison") {

@@ -8,6 +8,8 @@
 
 namespace SkyrimPoE::Core
 {
+    struct RuleValues;
+
     struct MapTravelSettings
     {
         double timeoutSec = 20.0;
@@ -26,4 +28,8 @@ namespace SkyrimPoE::Core
 
     [[nodiscard]] ConfigLoadResult LoadConfigFromFile(const std::filesystem::path& path);
     [[nodiscard]] ConfigLoadResult LoadConfigFromString(std::string_view content);
+    [[nodiscard]] const std::array<std::uint32_t, 4>& SpiritMilestoneRewards(
+        const RuleValues& rules, const Config* config = nullptr) noexcept;
+    [[nodiscard]] std::uint32_t ComputeSpirit(
+        std::uint32_t achievementMask, const RuleValues& rules, const Config* config = nullptr) noexcept;
 }

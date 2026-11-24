@@ -21,7 +21,7 @@ namespace SkyrimPoE::Core
         std::uint32_t exileLevel = 1;
         DamagePacket poeBaseHitDamage;
         double effectiveCritChancePct = 0.0;
-        double critMultiplierPct = 150.0;
+        double critMultiplierPct = 100.0;
         double skyrimMagickaCost = 0.0;
         double skyrimHealthCost = 0.0;  // Blood Magic 시 생명력 비용(1 HP 자살 방지 가드 통과 완료)
         bool usesHealthCost = false;

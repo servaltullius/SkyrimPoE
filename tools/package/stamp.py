@@ -22,6 +22,9 @@ PLUGIN_DIR = "SKSE/Plugins/SkyrimPoE"
 UI_DIR = "PrismaUI/views/SkyrimPoE"
 PACK_DIR = f"{PLUGIN_DIR}/packs"
 TREE_PACK = f"{PACK_DIR}/tree_3_30.json"
+RULES_PACK = f"{PACK_DIR}/rules.json"
+PACK_PATHS = (f"{PACK_DIR}/core_3_30.json", TREE_PACK, f"{PACK_DIR}/items_3_30.json", RULES_PACK)
+PACK_IDENTITY_KEYS = ("game", "gameVersion", "contentGeneration")
 MANIFEST = f"{PLUGIN_DIR}/manifest.json"
 
 
@@ -61,7 +64,7 @@ def file_entry(relative: str, path: Path) -> dict:
 
 
 def pack_bytes(relative: str, data: dict) -> bytes:
-    if relative == f"{PACK_DIR}/core_3_30.json":
+    if relative in (f"{PACK_DIR}/core_3_30.json", RULES_PACK):
         text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     else:
         text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -72,12 +75,15 @@ def pack_bytes(relative: str, data: dict) -> bytes:
 
 def identity(meta: dict, stamped: bool) -> dict:
     game = meta.get("game")
+    version = meta.get("gameVersion")
     generation = meta.get("contentGeneration")
     if not isinstance(game, str) or not game.strip():
         raise ValueError("game은 비어 있지 않은 문자열이어야 합니다")
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError("gameVersion은 비어 있지 않은 문자열이어야 합니다")
     if type(generation) is not int or generation < 0:
         raise ValueError("contentGeneration은 0 이상의 정수여야 합니다")
-    result = {"game": game, "contentGeneration": generation}
+    result = {"game": game, "gameVersion": version, "contentGeneration": generation}
     if stamped:
         build_id = meta.get("buildId")
         if not isinstance(build_id, str) or not re.fullmatch(r"[0-9a-f]{16}", build_id):
@@ -90,16 +96,23 @@ def read_packs(
     files: dict[str, Path], problems: list[str], *, stamped: bool, expected: dict | None = None,
 ) -> tuple[dict, dict]:
     packs = {}
-    for relative, path in files.items():
-        if path.suffix.lower() != ".json" or PurePosixPath(relative).parent.as_posix() != PACK_DIR:
-            continue
+    for relative in sorted(files.keys() - set(PACK_PATHS)):
+        path = PurePosixPath(relative)
+        if path.parent.as_posix().casefold() == PACK_DIR.casefold() and path.suffix.lower() == ".json":
+            problems.append(f"{relative}: 허용되지 않은 추가 팩입니다")
+    for relative in PACK_PATHS:
         try:
-            raw = path.read_bytes()
+            if relative not in files:
+                raise ValueError("필수 팩 파일이 없습니다")
+            raw = files[relative].read_bytes()
             data = json.loads(raw)
             if not isinstance(data, dict) or not isinstance(data.get("meta"), dict):
                 raise ValueError("meta 객체가 없습니다")
             packs[relative] = (raw, data)
-            actual = identity(data["meta"], stamped)
+            meta = data["meta"]
+            if relative == RULES_PACK and not stamped:
+                continue
+            actual = identity(meta, stamped)
         except (OSError, ValueError) as error:
             problems.append(f"{relative}: {error}")
             continue
@@ -108,8 +121,6 @@ def read_packs(
         for key, value in expected.items():
             if actual[key] != value:
                 problems.append(f"{relative}: {key} 불일치 (실제 {actual[key]!r}, 기대 {value!r})")
-    if not packs:
-        problems.append(f"읽을 수 있는 팩이 없습니다: {PACK_DIR}/*.json")
     return packs, expected or {}
 
 
@@ -149,7 +160,12 @@ def stamp(package: Path, esp_name: str) -> list[str]:
     for relative, path in files.items():
         if relative in packs:
             raw, data = packs[relative]
-            if "buildId" in data["meta"]:
+            if relative == RULES_PACK:
+                # The rules source is independent of the content generation.
+                for key in (*PACK_IDENTITY_KEYS, "buildId"):
+                    data["meta"].pop(key, None)
+                raw = pack_bytes(relative, data)
+            elif "buildId" in data["meta"]:
                 del data["meta"]["buildId"]
                 raw = pack_bytes(relative, data)
             digest = hashlib.sha256(raw).hexdigest()
@@ -159,6 +175,8 @@ def stamp(package: Path, esp_name: str) -> list[str]:
 
     build_id = build_digest.hexdigest()[:16]
     for relative, (_, data) in packs.items():
+        if relative == RULES_PACK:
+            data["meta"].update({key: common[key] for key in PACK_IDENTITY_KEYS})
         data["meta"]["buildId"] = build_id
         if files[relative].is_symlink():
             raise ValueError(f"팩은 일반 파일이어야 합니다: {relative}")
@@ -221,6 +239,9 @@ def read_manifest(path: Path) -> tuple[dict, dict[str, dict], bytes]:
         if type(size) is not int or size < 0:
             raise ValueError(f"{relative}: manifest size가 잘못되었습니다")
         entries[relative] = entry
+    for relative in PACK_PATHS:
+        if relative not in entries:
+            raise ValueError(f"{relative}: manifest에 필수 팩이 없습니다")
     return common, entries, raw
 
 
@@ -268,7 +289,7 @@ def deploy_clean(package: Path, target: Path) -> list[str]:
     files = list_files(target)
     expected = {os.path.normcase(relative) for relative in entries}
     managed = tuple(os.path.normcase(f"{directory}/") for directory in (PLUGIN_DIR, UI_DIR))
-    problems = []
+    problems: list[str] = []
     for relative, path in files.items():
         key = os.path.normcase(relative)
         if key in expected:

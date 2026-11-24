@@ -30,6 +30,7 @@ add_library(skyrimpoe_core STATIC
     src/core/Config.cpp
     src/core/DataPack.cpp
     src/core/ContentCheck.cpp
+    src/core/RulesPack.cpp
     src/core/EspFormCheck.cpp
     src/core/SaveGeneration.cpp
     src/core/Migration.cpp
@@ -121,6 +122,7 @@ add_executable(skyrimpoe_tests
     tests/test_main.cpp
     tests/test_datapack.cpp
     tests/test_content_check.cpp
+    tests/test_rules_pack.cpp
     tests/test_esp_form_check.cpp
     tests/test_save_generation.cpp
     tests/test_migration.cpp
@@ -273,6 +275,9 @@ add_custom_target(package_mod
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${POE_DATA_DIR}/packs/items_3_30.json"
         "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/items_3_30.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_DATA_DIR}/packs/rules.json"
+        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/rules.json"
     COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
         stamp --package "${POE_PACKAGE_DIR}" --esp-name SkyrimPoE.esp
     COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"

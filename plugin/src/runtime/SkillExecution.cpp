@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "runtime/SkillExecution.h"
 #include "runtime/AilmentRuntime.h"
+#include "runtime/CombatHooks.h"
 #include "runtime/FormIds.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
@@ -250,7 +251,8 @@ namespace SkyrimPoE::Runtime
         Core::DamageType dominantType,
         bool isDirectHit,
         bool bypassesMonsterEs,
-        bool isDamageOverTime)
+        bool isDamageOverTime,
+        std::optional<double> physicalHitFraction)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || player->IsDead() || !CanDamageTarget(player, target, isDirectHit)) {
@@ -261,7 +263,9 @@ namespace SkyrimPoE::Runtime
         }
 
         const auto targetId = target->GetFormID();
-        double scaledDmg = rawSkyrimDamage * AilmentRuntime::ShockDamageMultiplier(targetId);
+        const double physicalFraction = physicalHitFraction.value_or(dominantType == Core::DamageType::Physical ? 1.0 : 0.0);
+        double scaledDmg = CombatHooks::DamageWithEnemyArmourBreak(target,
+            rawSkyrimDamage * AilmentRuntime::ShockDamageMultiplier(targetId), physicalFraction, isDamageOverTime);
         // 검수 m2: 헤드헌터 등 레어 대상 추가 피해를 주문/투사체/노바/전령 폭발에도 동일 적용
         if (g_statEngine) {
             if (const auto snap = g_statEngine->GetSnapshot(); snap && snap->incDamageVsRarePct > 0.0) {
@@ -318,6 +322,57 @@ namespace SkyrimPoE::Runtime
         return confirmedLoss > 0.0;
     }
 
+    bool AilmentRuntime::DealSpellHit(
+        RE::Actor* target, const SpellHit& hit, Core::DamageType dominantType, bool isDirectHit)
+    {
+        if (!SkillExecution::DealDirectSkillDamage(
+                target, hit.skyrimDamage, dominantType, isDirectHit, dominantType == Core::DamageType::Chaos,
+                false, Core::PhysicalDamageFraction(hit.poeDamage))) {
+            return false;
+        }
+        // DoDamage can emit TESDeathEvent synchronously. The listener reads the
+        // result in its queued work, after this confirmed hit has been recorded.
+        (void)ApplyPlayerHitAilments(target, hit.poeDamage, hit.isCrit, HitKind::Spell,
+            hit.igniteChancePct, hit.starforgeShock);
+        return true;
+    }
+
+    namespace
+    {
+        std::size_t ExecuteAreaDamage(
+            const RE::NiPoint3& origin,
+            float radius,
+            double skyrimDamage,
+            RE::FormID vfxExplosionLocalId,
+            Core::DamageType dominantType,
+            const AilmentRuntime::SpellHit* spellHit)
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !player->Is3DLoaded() || player->IsDead()) {
+                return 0;
+            }
+
+            // 무해 시각·음향 EXPL 연출은 피해가 0이어도 제공한다.
+            SpawnHarmlessExplosionAt(player, origin, vfxExplosionLocalId);
+            if (!std::isfinite(skyrimDamage) || skyrimDamage <= 0.0 || radius <= 0.0f) {
+                return 0;
+            }
+
+            const auto targets = SkillExecution::CollectHostileTargets(player, origin, radius);
+            std::size_t hitCount = 0;
+            for (const auto& victim : targets) {
+                const bool landed = spellHit
+                    ? AilmentRuntime::DealSpellHit(victim.get(), *spellHit, dominantType, false)
+                    : SkillExecution::DealDirectSkillDamage(
+                        victim.get(), skyrimDamage, dominantType, false, dominantType == Core::DamageType::Chaos);
+                if (landed) {
+                    ++hitCount;
+                }
+            }
+            return hitCount;
+        }
+    }
+
     std::size_t SkillExecution::ExecuteAoESpell(
         const RE::NiPoint3& origin,
         float radius,
@@ -325,29 +380,13 @@ namespace SkyrimPoE::Runtime
         RE::FormID vfxExplosionLocalId,
         Core::DamageType dominantType)
     {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player || !player->Is3DLoaded() || player->IsDead()) {
-            return 0;
-        }
+        return ExecuteAreaDamage(origin, radius, skyrimDamage, vfxExplosionLocalId, dominantType, nullptr);
+    }
 
-        // 무해 시각·음향 EXPL 연출은 피해가 0이어도(예: Brutality) 시각 피드백으로 띄운다.
-        SpawnHarmlessExplosionAt(player, origin, vfxExplosionLocalId);
-
-        if (!std::isfinite(skyrimDamage) || skyrimDamage <= 0.0 || radius <= 0.0f) {
-            return 0;
-        }
-
-        const auto targets = CollectHostileTargets(player, origin, radius);
-        if (targets.empty()) {
-            return 0;
-        }
-
-        std::size_t hitCount = 0;
-        for (const auto& victim : targets) {
-            if (DealDirectSkillDamage(victim.get(), skyrimDamage, dominantType, false, dominantType == Core::DamageType::Chaos)) {
-                ++hitCount;
-            }
-        }
-        return hitCount;
+    std::size_t AilmentRuntime::ExecuteSpellNova(
+        const RE::NiPoint3& origin, float radius, const SpellHit& hit,
+        RE::FormID vfxId, Core::DamageType dominantType)
+    {
+        return ExecuteAreaDamage(origin, radius, hit.skyrimDamage, vfxId, dominantType, &hit);
     }
 }

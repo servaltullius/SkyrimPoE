@@ -132,8 +132,8 @@ POE_TEST("DamageConversion: PoE 3.30 Endurance Charge elem DR, armour+physDR 90%
     POE_CHECK_NEAR(ExpectedChaosPass(cfg.act10Level, pack, cfg), 1.6, 1e-9);
 
     // 4. 회피 적중 확률 경계 (회피 0 -> 1.0, 초대형 회피 -> 하한 0.05)
-    POE_CHECK_NEAR(EvasionHitChance(0.0, 500.0, 0.05), 1.0, 1e-9);
-    POE_CHECK_NEAR(EvasionHitChance(1e12, 100.0, 0.05), 0.05, 1e-9);
+    POE_CHECK_NEAR(EvasionHitChance(0.0, 500.0), 1.0, 1e-9);
+    POE_CHECK_NEAR(EvasionHitChance(1e12, 100.0), 0.05, 1e-9);
 }
 
 POE_TEST("DamageConversion: Life, ES, and Magicka (including Blood Magic 0/0 guard)")
@@ -141,21 +141,24 @@ POE_TEST("DamageConversion: Life, ES, and Magicka (including Blood Magic 0/0 gua
     const DataPack pack = LoadStage2Pack();
     Config cfg;
 
-    // L=1 기대 생명력 = 38 + 12*1 = 50 -> 동일하면 스카이림 체력 100 유지
-    POE_CHECK_NEAR(ExpectedLife(1, pack, cfg), 50.0, 1e-9);
-    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(100.0, 50.0, 1, pack, cfg), 100.0, 1e-9);
-    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(100.0, 75.0, 1, pack, cfg), 150.0, 1e-9);
-    POE_CHECK_NEAR(ComputeSkyrimMaxEnergyShield(100.0, 25.0, 1, pack, cfg), 50.0, 1e-9);
+    const auto* scion = pack.FindClass("Scion");
+    POE_CHECK(scion);
+    const double life = ExpectedLife(1, scion->baseStr, cfg);
+    // Lv1 Scion: 16 + 12 + 20 × 2 = 68.
+    POE_CHECK_NEAR(life, 68.0, 1e-9);
+    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(100.0, 68.0, life), 100.0, 1e-9);
+    POE_CHECK_NEAR(ComputeSkyrimMaxHealth(100.0, 102.0, life), 150.0, 1e-9);
+    POE_CHECK_NEAR(ComputeSkyrimMaxEnergyShield(100.0, 34.0, life), 50.0, 1e-9);
 
-    // L=1 기대 마나 = 34 + 6*1 = 40 (결정 144)
-    POE_CHECK_NEAR(ExpectedMana(1, pack, cfg), 40.0, 1e-9);
-    const auto normalMana = ComputeMagickaScaling(100.0, 40.0, 10.0, 1, pack, cfg);
+    const double mana = ExpectedMana(1, scion->baseInt, cfg);
+    POE_CHECK_NEAR(mana, 74.0, 1e-9);
+    const auto normalMana = ComputeMagickaScaling(100.0, 74.0, 10.0, mana);
     POE_CHECK(!normalMana.isZeroManaBuild);
     POE_CHECK_NEAR(normalMana.skyrimMaxMagicka, 100.0, 1e-9);
-    POE_CHECK_NEAR(normalMana.skyrimSkillCost, 25.0, 1e-9);
+    POE_CHECK_NEAR(normalMana.skyrimSkillCost, 1000.0 / 74.0, 1e-9);
 
     // 피의 마법(poeMaxMana == 0): 0/0 없이 기본 매지카 유지, 비용 0, NaN/Inf 금지(결정 144)
-    const auto bloodMagic = ComputeMagickaScaling(120.0, 0.0, 10.0, 1, pack, cfg);
+    const auto bloodMagic = ComputeMagickaScaling(120.0, 0.0, 10.0, mana);
     POE_CHECK(bloodMagic.isZeroManaBuild);
     POE_CHECK(std::isfinite(bloodMagic.skyrimMaxMagicka));
     POE_CHECK(std::isfinite(bloodMagic.skyrimSkillCost));
@@ -178,9 +181,9 @@ POE_TEST("DamageConversion: difficulty-adjusted Energy Shield absorb (C2 fix)")
     POE_CHECK_NEAR(full.absorbedEffectiveDamage, 60.0, 1e-9);
     POE_CHECK_NEAR(full.remainingRawDamage, 0.0, 1e-9);
 
-    // 카오스 피해는 ES 우회
+    // 카오스 유효 피해 60 중 50을 ES 100으로 흡수하고 10이 생명에 남는다.
     const auto chaos = AbsorbWithEnergyShield(20.0, 3.0, true, 100.0);
-    POE_CHECK_NEAR(chaos.newEnergyShield, 100.0, 1e-9);
-    POE_CHECK_NEAR(chaos.absorbedEffectiveDamage, 0.0, 1e-9);
-    POE_CHECK_NEAR(chaos.remainingRawDamage, 20.0, 1e-9);
+    POE_CHECK_NEAR(chaos.newEnergyShield, 0.0, 1e-9);
+    POE_CHECK_NEAR(chaos.absorbedEffectiveDamage, 50.0, 1e-9);
+    POE_CHECK_NEAR(chaos.remainingRawDamage, 10.0 / 3.0, 1e-9);
 }

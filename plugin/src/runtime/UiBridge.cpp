@@ -23,6 +23,8 @@
 #include "core/KillTracker.h"
 #include "core/MapSystem.h"
 #include "core/PassiveTree.h"
+#include "core/Config.h"
+#include "core/RulesPack.h"
 #include "core/UiBuildCheck.h"
 
 #include <bitset>
@@ -741,6 +743,11 @@ namespace SkyrimPoE::Runtime
             treeJ["bossKillCount"] = state.tree.bossKillCount;
             treeJ["dragonKillCount"] = state.tree.dragonKillCount;
             treeJ["ascendancyMilestonesBitmask"] = state.tree.ascendancyMilestonesBitmask;
+            const auto* rulesPack = Core::GetRulesPack();
+            const auto* rules = rulesPack ? rulesPack->Values() : nullptr;
+            if (rules) {
+                treeJ["spiritMilestoneRewards"] = Core::SpiritMilestoneRewards(*rules, g_config);
+            }
             treeJ["atlasTierPoints"] = Core::MapSystem::CountAtlasTierPoints(state.atlas.completedTierMask);
             treeJ["milestonePassivePoints"] = Core::MapSystem::CountMilestonePassivePoints(state.tree.ascendancyMilestonesBitmask);
             treeJ["regretOrbCount"] = currencyCounts[static_cast<std::size_t>(Core::CurrencyKind::Regret)];
@@ -1198,6 +1205,10 @@ namespace SkyrimPoE::Runtime
                 mapsJ["arena4CanEnter"] = arenaEntry.CanEnter();
                 mapsJ["arena4MilestonesCompleted"] = arenaEntry.milestonesCompleted;
                 mapsJ["ascendancy4Unlocked"] = arenaEntry.denial == Core::Arena4EntryDenial::AlreadyCleared;
+                if (rules) {
+                    mapsJ["arena4BaseMaxSpirit"] = Core::ComputeSpirit(
+                        Core::kArena4PrerequisiteMask | Core::kArena4MilestoneBit, *rules);
+                }
                 mapsJ["uninstallCleanupArmed"] = MapDeviceRuntime::IsUninstallCleanupArmed();
                 if (const auto remaining = MapDeviceRuntime::GetUninstallCleanupRemaining(state)) {
                     mapsJ["uninstallCleanupRemaining"] = {

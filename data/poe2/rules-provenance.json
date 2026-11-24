@@ -1,0 +1,117 @@
+{
+  "gameDataVersion": "0.5.5h",
+  "sourceSha256": {
+    "data/balance/keywordpopups.datc64.json": "4cf18652193e2741f8c90705239ffa302e3745602d048bbebf8ee6afc401bb08",
+    "data/balance/mods.datc64.json": "15a0969798a6abc973e06585df1d595684c219b390cee0f8c20a55a50a5ef29b"
+  },
+  "excerpts": [
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 1436,
+      "id": "ArmourBreak",
+      "excerpt": "If this brings the target's [Armour|Armour] value to 0, their [Armour|Armour] is Fully Broken for 12 seconds, or 4 seconds for players."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 1436,
+      "id": "ArmourBreak",
+      "excerpt": "On top of not benefitting from [Armour], non-player targets with Fully Broken [Armour] take 20% increased [Physical] damage from [Hit|Hits]."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 113,
+      "id": "Bleeding",
+      "excerpt": "Bleeding deals an extra 100% damage while the target is moving, or if the Bleeding is [Aggravate|Aggravated]."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 113,
+      "id": "Bleeding",
+      "excerpt": "Damage from Bleeding bypasses [EnergyShield|Energy Shield]"
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 131,
+      "id": "Chill",
+      "excerpt": "Chill [BuffMagnitude|Magnitude] depends on the Chilling damage dealt relative to the target's [AilmentThreshold|Elemental Ailment Threshold], with a minimum of 30% and a default maximum of 50%."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 131,
+      "id": "Chill",
+      "excerpt": "However, Chills smaller than 30% will be ignored, so small [Hit|Hits] can fail to Chill."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 797,
+      "id": "EnergyShield",
+      "excerpt": "Damage from [Bleeding] and [Poison] bypasses Energy Shield to remove Life directly."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 797,
+      "id": "EnergyShield",
+      "excerpt": "Rapidly [ESRecharge|Recharges] if you don't lose Energy Shield for a short time."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 239,
+      "id": "Flammability",
+      "excerpt": "Each instance of Flammability has its own independent duration, lasting 8 seconds by default."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 239,
+      "id": "Flammability",
+      "excerpt": "Multiple instances of Flammability stack, raising the chance for [Hit|Hits] to [Ignite] the target up to 100%."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 239,
+      "id": "Flammability",
+      "excerpt": "The base [BuffMagnitude|Magnitude] of Flammability is 1% chance to Ignite the target for every 5% of the target's [AilmentThreshold|Ailment Threshold] dealt as [Fire] damage."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 770,
+      "id": "Frozen",
+      "excerpt": "Targets become Frozen when they reach 100% [Freeze] buildup."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 230,
+      "id": "Ignite",
+      "excerpt": "Ignite is an [Ailments|Ailment] that deals [Fire] damage over time, and lasts for 4 seconds by default."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 230,
+      "id": "Ignite",
+      "excerpt": "The chance for a [Hit] to Ignite a target is determined by the total [BuffMagnitude|Magnitude] of [Flammability] on the target, including the amount added by that [Hit]."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 365,
+      "id": "Poison",
+      "excerpt": "Damage from Poison bypasses [EnergyShield|Energy Shield]."
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 842,
+      "id": "Slow",
+      "excerpt": "15% less Slow effect on Magic monsters"
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 842,
+      "id": "Slow",
+      "excerpt": "30% less Slow effect on Rare monsters"
+    },
+    {
+      "file": "data/balance/keywordpopups.datc64.json",
+      "line": 842,
+      "id": "Slow",
+      "excerpt": "50% less Slow effect on Unique monsters"
+    }
+  ]
+}

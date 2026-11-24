@@ -15,12 +15,13 @@ namespace
 
     struct ContentFixture
     {
-        std::array<json, 3> meta;
+        std::array<json, 4> meta;
         json manifest;
-        std::array<ContentFile, 4> files{{
+        std::array<ContentFile, 5> files{{
             { "SKSE/Plugins/SkyrimPoE/packs/core_3_30.json", std::string(64, 'a') },
             { "SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json", std::string(64, 'b') },
             { "SKSE/Plugins/SkyrimPoE/packs/items_3_30.json", std::string(64, 'c') },
+            { "SKSE/Plugins/SkyrimPoE/packs/rules.json", std::string(64, 'e') },
             { "SkyrimPoE.esp", std::string(64, 'd') },
         }};
 
@@ -35,10 +36,11 @@ namespace
             meta[0].update({ { "schema", "skyrimpoe.core" }, { "schemaVersion", 1 } });
             meta[1].update({ { "schema", "skyrimpoe.tree" }, { "schemaVersion", 1 } });
             meta[2].update({ { "schema", "skyrimpoe.items" }, { "schemaVersion", 2 } });
+            meta[3].update({ { "schema", "skyrimpoe.rules" }, { "schemaVersion", 1 }, { "pobVersion", "0.23.1" } });
 
             manifest = {
                 { "manifestVersion", 1 }, { "game", "poe1" }, { "contentGeneration", 0 },
-                { "buildId", buildId }, { "files", json::array() },
+                { "buildId", buildId }, { "gameVersion", "3.30" }, { "files", json::array() },
             };
             for (const auto& file : files) {
                 manifest["files"].push_back({
@@ -108,18 +110,20 @@ POE_TEST("ContentCheck: rejects a manifest with a mismatched package identity")
     fixture.manifest["game"] = "poe2";
     fixture.manifest["contentGeneration"] = 1;
     fixture.manifest["buildId"] = "fedcba0987654321";
+    fixture.manifest["gameVersion"] = "0.5";
     const auto result = fixture.Check();
     POE_CHECK(!result.identity);
     POE_CHECK(HasReason(result, "manifest.json", "game mismatch"));
     POE_CHECK(HasReason(result, "manifest.json", "contentGeneration mismatch"));
     POE_CHECK(HasReason(result, "manifest.json", "buildId mismatch"));
+    POE_CHECK(HasReason(result, "manifest.json", "gameVersion mismatch"));
 }
 
 POE_TEST("ContentCheck: compares the measured SHA-256 of each pack and ESP with the manifest")
 {
-    for (std::size_t file = 0; file < 4; ++file) {
+    for (std::size_t file = 0; file < ContentFixture{}.files.size(); ++file) {
         ContentFixture fixture;
-        fixture.manifest["files"][file]["sha256"] = std::string(64, 'e');
+        fixture.manifest["files"][file]["sha256"] = std::string(64, 'f');
         const auto result = fixture.Check();
         POE_CHECK(!result.identity);
         POE_CHECK(HasReason(result, fixture.files[file].path, "sha256 mismatch"));

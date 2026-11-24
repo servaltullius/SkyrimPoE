@@ -24,6 +24,7 @@
 
 #include "core/AilmentSystem.h"
 #include "core/DamageConversion.h"
+#include "core/RulesPack.h"
 #include "core/ItemAffixParser.h"
 #include "core/ItemCrafting.h"
 #include "core/ItemFormatter.h"
@@ -510,12 +511,12 @@ namespace SkyrimPoE::Runtime
         constexpr std::uint8_t kHArenaSecondPhase = 2;
         constexpr std::size_t kHArenaInitialReinforcements = 2;
         constexpr std::int32_t kHArenaExpectedAscendancyPoints = 8;
-        constexpr std::uint32_t kHArenaExpectedBaseSpirit = 220;
+        constexpr std::uint32_t kHArenaExpectedBaseSpirit = 230;
         constexpr std::uint32_t kHAtlasPointBaselineLevel = 1;
         constexpr auto kHOutdoorReturnCheck = "H4_MapDeathInterceptAndPortalReturn";
         constexpr auto kHAffixCheck = "H2_MapAffixesAfterEntry";
         constexpr auto kHDungeonCheck = "H3_MapEntryTeleportAndAsyncSpawn";
-        constexpr auto kHArenaCheck = "H6_Arena4ThreePhaseBossAndSpirit220";
+        constexpr auto kHArenaCheck = "H6_Arena4ThreePhaseBossAndSpirit230";
         constexpr auto kHArenaCosaveCheck = "H7_ArenaPhase2CosaveRoundTrip";
         constexpr auto kHCompanionCheck = "H13_Arena4CompanionKillNoReward";
         constexpr auto kHBypassCheck = "H13_Arena4EarlyKillNoReward";
@@ -5839,13 +5840,17 @@ namespace SkyrimPoE::Runtime
             if (snap.timeSinceLastHit < 1.0 && PhaseElapsedSec() < 5.0) {
                 break;
             }
+            const auto stats = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const double expectedDelay = Core::ActiveRuleValues().energyShield.rechargeDelaySeconds *
+                (stats ? stats->esRechargeDelayMult : 1.0);
             const bool holdOk = (g_esMaxForC > 0.0) &&
                 (snap.timeSinceLastHit >= 1.0) &&
                 (snap.timeSinceLastHit < snap.rechargeDelay) &&
+                (std::abs(snap.rechargeDelay - expectedDelay) < 1e-6) &&
                 (std::abs(snap.current - g_esAfterHit) < 0.05);
             Check("C2_EsRechargeDelayHoldAt1s", holdOk,
-                std::format("t={:.2f}s (< {:.2f}s), es={:.2f} (expected {:.2f}), cRestarts={}",
-                    snap.timeSinceLastHit, snap.rechargeDelay, snap.current, g_esAfterHit, g_cEsRestarts));
+                std::format("t={:.2f}s, delay={:.2f}s (expected {:.2f}s), es={:.2f} (expected {:.2f}), cRestarts={}",
+                    snap.timeSinceLastHit, snap.rechargeDelay, expectedDelay, snap.current, g_esAfterHit, g_cEsRestarts));
             EnterPhase(Phase::ScenarioC_EsRecharge3s);
             break;
         }
@@ -5859,8 +5864,14 @@ namespace SkyrimPoE::Runtime
             if (snap.timeSinceLastHit < (snap.rechargeDelay + 0.8) && PhaseElapsedSec() < 8.0) {
                 break;
             }
-            Check("C3_EsRechargeActiveAfter2s", snap.current > g_esAfterHit + 0.5,
-                std::format("t={:.2f}s, es={:.2f} (afterHit={:.2f})", snap.timeSinceLastHit, snap.current, g_esAfterHit));
+            const auto stats = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+            const auto& esRule = Core::ActiveRuleValues().energyShield;
+            const double expectedRate = esRule.rechargePercentPerMinute / (60.0 * 100.0) *
+                (stats ? stats->esRechargeRateMult : 1.0);
+            Check("C3_EsRechargeActiveAfter2s", snap.timeSinceLastHit > snap.rechargeDelay &&
+                snap.current > g_esAfterHit + 0.5 && std::abs(snap.rechargeRate - expectedRate) < 1e-6,
+                std::format("t={:.2f}s, delay={:.2f}s, rate={:.4f}/s (expected {:.4f}/s), es={:.2f} (afterHit={:.2f})",
+                    snap.timeSinceLastHit, snap.rechargeDelay, snap.rechargeRate, expectedRate, snap.current, g_esAfterHit));
 
             BeginScenarioC_Stagger();
             break;
@@ -7241,7 +7252,7 @@ namespace SkyrimPoE::Runtime
                 // 125/130 상태에서 Hatred(50)는 초과 거절돼야 함
                 const auto overHatred = CraftingRuntime::ToggleAuraSlot(8);
 
-                // 2·3차 보스 이정표 해제 -> 최대 정신력 190
+                // 2·3차 보스 이정표 달성 -> 장비를 제외한 최대 정신력 200
                 SaveLoad::UpdateState([](PersistentState& st) {
                     st.tree.ascendancyMilestonesBitmask |= 0x7u;
                 });
@@ -7256,7 +7267,7 @@ namespace SkyrimPoE::Runtime
                 const bool f3Ok = uiAuraEquipOk && onDet.ok && onGra.ok && onHoi.ok &&
                     !overHatred.ok &&
                     snapMid && snapMid->reservedSpirit == 125 && snapMid->armour > armourBeforeAura &&
-                    snapCapUp && snapCapUp->maxSpirit >= maxBefore + 60 &&
+                    snapCapUp && snapCapUp->maxSpirit >= maxBefore + 70 &&
                     onHatredAfter.ok &&
                     snapFinal && snapFinal->reservedSpirit == 175 && snapFinal->heraldOfIceActive;
                 Check("F3_SpiritAurasAndMilestoneCap", f3Ok,
@@ -7387,42 +7398,73 @@ namespace SkyrimPoE::Runtime
                         static_cast<std::uint16_t>(1u << static_cast<std::uint8_t>(Core::MonsterModKind::ExtraFire));
                     MonsterRuntime::ForcePromoteForTest(target, Core::MonsterRarity::Rare, rareMask, 80.0);
 
-                    // 30 피해는 적 ES 80에 100% 흡수되며, 동시에 5종 상태이상(점화·냉각/빙결·감전·출혈·중독) 적용
+                    // 30 피해는 적 ES 80에 흡수된다. 이어서 PoE2 임계값과 확률을 검사한다.
                     const bool directHitOk = SkillExecution::DealDirectSkillDamage(
                         target, 30.0, Core::DamageType::Cold, true, false);
                     const auto profAfter = MonsterRuntime::GetProfileCopy(tid);
                     f6EsOk = directHitOk && profAfter.has_value() && profAfter->currentEsSkyrim < 79.0;
 
+                    const auto snap = g_statEngine->GetSnapshot();
+                    const auto level = snap ? snap->exileLevel : 1u;
+                    const auto& rules = Core::ActiveRuleValues();
+                    const double ailmentThreshold = Core::MapSystem::AilmentThreshold(level);
+                    const double poiseThreshold = Core::MapSystem::PoiseThreshold(level);
+                    const double cold = std::max(ailmentThreshold, poiseThreshold *
+                        rules.poise.ThresholdMultiplier(Core::MonsterRarity::Rare, false, false) / rules.freeze.damageScale) * 2.0;
+
                     Core::DamagePacket ailPkt{};
-                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Fire)] = { 120.0, 120.0 };
-                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Cold)] = { 120.0, 120.0 };
-                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Lightning)] = { 120.0, 120.0 };
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Fire)] = { ailmentThreshold, ailmentThreshold };
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Cold)] = { cold, cold };
+                    ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Lightning)] = { ailmentThreshold, ailmentThreshold };
                     ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { 100.0, 100.0 };
                     ailPkt.byType[static_cast<std::size_t>(Core::DamageType::Chaos)] = { 100.0, 100.0 };
                     (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        target, ailPkt, true, AilmentRuntime::HitKind::Attack, 100.0, false, 100.0, 100.0);
+                        target, ailPkt, true, AilmentRuntime::HitKind::Attack, 100.0, false, 100.0, 100.0, 100.0);
 
                     const double shockMult = AilmentRuntime::ShockDamageMultiplier(tid);
                     const auto stAil = AilmentRuntime::GetStateCopy(tid);
                     const bool hasIgnite = stAil && stAil->igniteRemaining > 0.0;
-                    const bool hasChillOrFreeze = stAil && (stAil->chillRemaining > 0.0 || stAil->freezeRemaining > 0.0);
-                    const bool hasShock = stAil && (stAil->shockRemaining > 0.0) && (shockMult > 1.0);
+                    const bool hasChill = stAil && stAil->chillRemaining > 0.0;
+                    const bool hasFreeze = AilmentRuntime::IsFrozen(tid);
+                    const bool shockOk = stAil && stAil->shockRemaining > 0.0 &&
+                        std::abs(shockMult - (1.0 + rules.shock.effectPercent / 100.0)) < 1e-6;
                     const bool hasBleed = stAil && stAil->bleedRemaining > 0.0;
-                    const bool hasPoison = stAil && !stAil->poisonStacks.empty();
-                    f6AilOk = hasIgnite && hasChillOrFreeze && hasShock && hasBleed && hasPoison;
-                    f6AilDetail = std::format("ig={},cf={},sh={},bl={},po={}",
-                        hasIgnite, hasChillOrFreeze, hasShock, hasBleed, hasPoison);
+                    const bool hasPoison = stAil && stAil->activePoisonCount == 1;
 
-                    // 보스 빙결→30% 냉각 상한 코어 검증
+                    Core::AilmentSystem poisonAil;
+                    Core::HitAilmentInput poisonIn{};
+                    poisonIn.poisonChancePct = 100.0;
+                    poisonIn.chaosHitPoe = 200.0;
+                    (void)poisonAil.ApplyHitAilments(1u, poisonIn);
+                    const double poisonDuration = rules.poison.durationSeconds;
+                    const double halfDuration = poisonDuration * 0.5;
+                    (void)poisonAil.TickActor(1u, halfDuration, false);
+                    poisonIn.chaosHitPoe = 100.0;
+                    (void)poisonAil.ApplyHitAilments(1u, poisonIn);
+                    const double strong = poisonAil.TickActor(1u, halfDuration, false).chaosPoeDamage;
+                    const double fallback = poisonAil.TickActor(1u, halfDuration, false).chaosPoeDamage;
+                    const double weakDps = 100.0 * rules.poison.damagePercentPerMinute / 6000.0;
+                    const bool poisonHandoff = std::abs(strong - 2.0 * weakDps * halfDuration) < 1e-6 &&
+                        std::abs(fallback - weakDps * halfDuration) < 1e-6;
+                    f6AilOk = hasIgnite && hasChill && hasFreeze && shockOk && hasBleed && hasPoison && poisonHandoff;
+                    f6AilDetail = std::format("ig={},ch={},fr={},sh={}({}),bl={},po={},handoff={}",
+                        hasIgnite, hasChill, hasFreeze, shockMult, shockOk, hasBleed, hasPoison, poisonHandoff);
+
+                    // Each hit gives 80% of ordinary poise and 13⅓% of unique poise.
                     Core::AilmentSystem bossAil;
                     Core::HitAilmentInput bossIn{};
-                    bossIn.coldHitPoe = 5000.0;
-                    bossIn.targetAilmentThresholdPoe = 1000.0;
-                    bossIn.isCrit = true;
+                    bossIn.targetPoiseThresholdPoe = 1000.0;
+                    bossIn.coldHitPoe = 800.0 / rules.freeze.damageScale;
+                    const bool ordinaryInitial = bossAil.ApplyHitAilments(1u, bossIn).appliedFreeze;
+                    const bool ordinarySecond = bossAil.ApplyHitAilments(1u, bossIn).appliedFreeze;
                     bossIn.isBossOrDragon = true;
-                    (void)bossAil.ApplyHitAilments(999999u, bossIn);
-                    f6BossCapOk = !bossAil.IsFrozen(999999u) && bossAil.ChillSlowRatio(999999u) <= 0.3001 &&
-                        bossAil.ChillSlowRatio(999999u) > 0.0;
+                    bool bossEarly = false;
+                    for (int i = 0; i < 7; ++i) {
+                        bossEarly |= bossAil.ApplyHitAilments(2u, bossIn).appliedFreeze;
+                    }
+                    const bool bossEighth = bossAil.ApplyHitAilments(2u, bossIn).appliedFreeze;
+                    f6BossCapOk = !ordinaryInitial && ordinarySecond && !bossEarly && bossEighth &&
+                        std::abs(bossAil.ChillSlowRatio(2u) - 0.25) < 1e-6;
 
                     // 헤드헌터 훔치기 + 상태이상 원복 및 테스트 스키버 정리
                     // 검수 Critical #2: KillTracker 기여를 제거해 지연 TESDeathEvent가 참 충전을 변경하지 않도록 차단
@@ -7439,7 +7481,7 @@ namespace SkyrimPoE::Runtime
             }
             Check("F6_AilmentsMonsterPromotionAndHeadhunter",
                 f6EsOk && f6AilOk && f6BossCapOk && f6HhOk,
-                std::format("enemyEs={}, ailments={}({}), bossChillCap={}, hhSteal={}(stacks={})",
+                std::format("enemyEs={}, ailments={}({}), bossFreezeAndChillCap={}, hhSteal={}(stacks={})",
                     f6EsOk, f6AilOk, f6AilDetail, f6BossCapOk, f6HhOk, MonsterRuntime::ActiveHeadhunterStackCount()));
 
             // ---- F7: 고유 토큰 감정 + [고유] 배지 + Divine 전용 가드 + 특수 효과 파싱 ----
@@ -7583,7 +7625,7 @@ namespace SkyrimPoE::Runtime
             const auto sfRestored = g_fStarforgeKey.IsValid() ? ItemTracker::FindByKey(g_fStarforgeKey) : std::nullopt;
 
             const bool sprtOk = (st.activeAuraMask == g_fExpectedAuraMask) && (st.activeAuraMask != 0) &&
-                snap && (snap->maxSpirit >= 190) && (snap->reservedSpirit == 175);
+                snap && (snap->maxSpirit >= 200) && (snap->reservedSpirit == 175);
             const bool gearOk = (st.virtualRing2BaseFormId != 0) && (st.virtualBeltBaseFormId != 0) &&
                 st.charmSlots[0].occupied && (st.charmSlots[0].kind == Core::CharmKind::Ruby) &&
                 (g_fExpectedCharmCharges >= 27.5) &&
@@ -7596,7 +7638,7 @@ namespace SkyrimPoE::Runtime
             bool uiPayloadOk = false;
             try {
                 const auto pj = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread());
-                const bool statsOk = pj.contains("stats") && pj["stats"].value("spiritMax", 0) >= 190 &&
+                const bool statsOk = pj.contains("stats") && pj["stats"].value("spiritMax", 0) >= 200 &&
                     pj["stats"].value("spiritReserved", 0) == 175;
                 const bool tenSlots = pj.contains("gear") && pj["gear"].contains("equippedSlots") &&
                     pj["gear"]["equippedSlots"].size() == Core::kEquipSlotCount;
@@ -8309,8 +8351,13 @@ namespace SkyrimPoE::Runtime
                 const auto expectedPack = Core::MapSystem::MapPackActorCount(g_config->mapBasePackCount, 0.0);
                 bool scalingOk = g_dataPack && g_dataPack->IsLoaded();
                 const auto rewardLevel = Core::MapSystem::MonsterLevelForTier(g_hDungeonTier);
-                const auto expectedScaling = scalingOk
-                    ? Core::MapSystem::GetMapMonsterMultipliers(rewardLevel, *g_dataPack) : Core::MapMonsterMultipliers{};
+                const auto& tables = Core::ActiveRuleValues().levelTables;
+                const auto baseLevel = Core::kMapBaseMonsterLevel;
+                const Core::MapMonsterMultipliers expectedScaling{
+                    tables.At(tables.life, rewardLevel) * tables.At(tables.mapLevelLifeMult, rewardLevel) /
+                        (tables.At(tables.life, baseLevel) * tables.At(tables.mapLevelLifeMult, baseLevel)),
+                    tables.At(tables.damage, rewardLevel) / tables.At(tables.damage, baseLevel)
+                };
                 for (const auto id : layout.ids) {
                     const auto scaling = MapDeviceRuntime::GetMapActorScaling(id);
                     scalingOk = scalingOk && scaling.runId == run.runId &&
@@ -8889,7 +8936,7 @@ namespace SkyrimPoE::Runtime
             }
             if (!player || !outsideClosedRun || travel.kind) {
                 Check("H11_ClosedMapCellResetDispatch", false, "The run did not close after returning.");
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false,
+                Check("H6_Arena4ThreePhaseBossAndSpirit230", false,
                     "The map run did not close outside the pack after the post-boss return (decision 175) before Arena4.");
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
@@ -8912,7 +8959,7 @@ namespace SkyrimPoE::Runtime
                     g_hResetCompletedBeforeMap, reset.completed, g_hExpectMapReset));
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player) {
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "Player unavailable after the map closed.");
+                Check("H6_Arena4ThreePhaseBossAndSpirit230", false, "Player unavailable after the map closed.");
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }
@@ -9008,7 +9055,7 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (!closed || travel.kind) {
-                Check("H6_Arena4ThreePhaseBossAndSpirit220", false, "The no-contribution map did not close.");
+                Check("H6_Arena4ThreePhaseBossAndSpirit230", false, "The no-contribution map did not close.");
                 EnterPhase(Phase::ScenarioH_PostArenaReturnWait);
                 break;
             }

@@ -6,12 +6,13 @@
 #include "runtime/SaveLoad.h"
 #include "runtime/UniqueIdUtil.h"
 
+#include "core/Config.h"
 #include "core/ItemCrafting.h"
 #include "core/MapSystem.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <mutex>
 #include <random>
 #include <unordered_set>
@@ -1653,7 +1654,7 @@ namespace SkyrimPoE::Runtime
     CraftActionResult CraftingRuntime::ToggleAuraSlot(std::uint8_t slotIndex)
     {
         CraftActionResult res;
-        if (slotIndex >= Core::kSkillSlotCount || !g_dataPack || !g_dataPack->IsLoaded()) {
+        if (slotIndex >= Core::kSkillSlotCount || !g_dataPack || !g_dataPack->IsLoaded() || !g_config || !g_statEngine) {
             res.message = "잘못된 스킬 슬롯입니다.";
             return res;
         }
@@ -1666,64 +1667,37 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             const auto* def = g_dataPack->FindGem(slot.gem.gemId);
-            if (!def || (def->kind != Core::GemKind::Aura && def->kind != Core::GemKind::Herald)) {
-                res.message = "정신력 토글은 오라 또는 전령 젬에만 사용할 수 있습니다.";
+            if (!def) {
+                res.message = "정신력 예약 스킬을 찾지 못했습니다.";
                 return;
             }
 
-            // 검수 M8: StatEngine과 동일하게 레벨별 spiritCost 우선 및 enforceGemRequirements 요구치 일치 검증
-            auto spiritCostOf = [&](const Core::SkillEffectDefinition& d, std::uint8_t lvNum) -> std::uint32_t {
-                if (const auto* lv = d.GetLevel(lvNum); lv && lv->spiritCost > 0) {
-                    return lv->spiritCost;
-                }
-                return d.spiritCost;
-            };
-
-            const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
             const std::uint16_t bit = static_cast<std::uint16_t>(1u << slotIndex);
             const bool turningOn = (working.activeAuraMask & bit) == 0;
+            const auto proposedMask = static_cast<std::uint16_t>(working.activeAuraMask ^ bit);
             if (turningOn) {
-                if (g_config && g_config->enforceGemRequirements && snap && !snap->slotStats[slotIndex].requirementMet) {
+                // 저장 상태와 현재 장비를 합친 뒤 스냅숏과 같은 입력으로 미리 계산한다.
+                SaveLoad::SyncStateToStatEngine();
+                const auto preview = g_statEngine->PreviewSpiritToggle(slotIndex, proposedMask, *g_dataPack, *g_config);
+                if (!preview.canReserve) {
+                    res.message = "정신력 예약이 가능한 스킬에만 사용할 수 있습니다.";
+                    return;
+                }
+                if (g_config->enforceGemRequirements && !preview.meetsRequirements) {
                     res.message = def->name + " 요구치(레벨/능력치)를 충족하지 못했습니다.";
                     return;
                 }
-
-                const std::uint32_t maxSpirit = snap
-                    ? snap->maxSpirit
-                    : static_cast<std::uint32_t>((g_config ? g_config->spiritBase : 100u) +
-                        std::popcount(static_cast<std::uint32_t>(working.tree.ascendancyMilestonesBitmask & 0xFu)) *
-                            (g_config ? g_config->spiritPerMilestone : 30u));
-
-                // 동일 gemId 중복 발동은 이미 예약된 것으로 취급, 요구치 미달 비활성 오라는 제외
-                std::unordered_set<std::string> alreadyActiveIds;
-                std::uint32_t currentReserved = 0;
-                for (std::size_t i = 0; i < Core::kSkillSlotCount; ++i) {
-                    if ((working.activeAuraMask & (1u << i)) == 0 || !working.slots[i].occupied) continue;
-                    if (g_config && g_config->enforceGemRequirements && snap && !snap->slotStats[i].requirementMet) continue;
-                    const auto* otherDef = g_dataPack->FindGem(working.slots[i].gem.gemId);
-                    if (!otherDef || (otherDef->kind != Core::GemKind::Aura && otherDef->kind != Core::GemKind::Herald)) continue;
-                    if (alreadyActiveIds.insert(otherDef->id).second) {
-                        currentReserved += spiritCostOf(*otherDef, working.slots[i].gem.level);
-                    }
-                }
-                const std::uint32_t addedCost = alreadyActiveIds.contains(def->id)
-                    ? 0u
-                    : spiritCostOf(*def, slot.gem.level);
-                if (currentReserved + addedCost > maxSpirit) {
-                    const std::uint32_t remain = (maxSpirit > currentReserved) ? (maxSpirit - currentReserved) : 0u;
-                    res.message = "정신력이 부족합니다 (필요 " + std::to_string(addedCost) +
-                        " / 잔여 " + std::to_string(remain) + ").";
+                if (preview.requestedSpirit > preview.maxSpirit) {
+                    res.message = std::format("정신력이 부족합니다 (예약 필요 {} / 최대 {}).", preview.requestedSpirit, preview.maxSpirit);
                     return;
                 }
-                working.activeAuraMask |= bit;
-                res.message = def->name + " 활성화 (정신력 -" + std::to_string(addedCost) + ").";
+                res.message = std::format("{} 활성화 (정신력 예약 {}/{}).", def->name, preview.reservedSpirit, preview.maxSpirit);
             } else {
-                working.activeAuraMask &= static_cast<std::uint16_t>(~bit);
                 res.message = def->name + " 비활성화.";
             }
 
             SaveLoad::UpdateState([&](PersistentState& st) {
-                st.activeAuraMask = working.activeAuraMask;
+                st.activeAuraMask = proposedMask;
             });
             res.ok = true;
         });

@@ -182,7 +182,7 @@ POE_TEST("Stage5 StatEngine: Spirit reservation, auto-disable, 10-slot Ring2/Bel
     Layer1Input l1;
     l1.exileLevel = 60;
     l1.className = "Scion";  // 20/20/20
-    l1.completedMilestoneCount = 2;  // 100 + 60 = 160 Spirit
+    l1.achievementMask = 0x3;  // 100 + 60 = 160 Spirit
 
     // Passive Jewel gives +40 Str BEFORE gear fixed-point loop -> satisfies Body reqStr=55!
     ItemStatTotals jewel;
@@ -298,6 +298,37 @@ POE_TEST("Stage5 StatEngine: Spirit reservation, auto-disable, 10-slot Ring2/Bel
     POE_CHECK(itemData.IsLoaded());
 }
 
+POE_TEST("P2b physical spell hits use global bleed chance and exclude attack-only chance")
+{
+    using namespace SkyrimPoE::Core;
+
+    Layer1Input input;
+    POE_CHECK(PassiveStatParser::ParseLine("40% chance to cause Bleeding", input.passives));
+    POE_CHECK(PassiveStatParser::ParseLine("Attacks have 35% chance to cause Bleeding", input.passives));
+    POE_CHECK(PassiveStatParser::ParseLine("25% chance to cause Bleeding with Attacks", input.passives));
+
+    StatEngine engine;
+    engine.SetLayer1(input);
+    POE_CHECK(engine.RebuildIfDirty(Stage5CorePack(), Config{}));
+    const auto snapshot = engine.GetSnapshot();
+    POE_CHECK(snapshot != nullptr);
+    POE_CHECK_NEAR(snapshot->bleedChancePct, 40.0, 1e-9);
+    POE_CHECK_NEAR(snapshot->attackBleedChancePct, 60.0, 1e-9);
+
+    AilmentSystem ailments;
+    HitAilmentInput hit;
+    hit.physHitPoe = 100.0;
+    hit.bleedChancePct = snapshot->BleedChanceForHitPct(false);
+    hit.bleedRoll01 = 0.25;
+    POE_CHECK(ailments.ApplyHitAilments(1, hit).appliedBleed);
+    POE_CHECK_NEAR(ailments.TickActor(1, 1.0, false).physPoeDamage, 15.0, 1e-9);
+
+    hit.bleedRoll01 = 0.75;
+    POE_CHECK(!ailments.ApplyHitAilments(2, hit).appliedBleed);
+    hit.bleedChancePct = snapshot->BleedChanceForHitPct(true);
+    POE_CHECK(ailments.ApplyHitAilments(3, hit).appliedBleed);
+}
+
 POE_TEST("Stage5 CharmSystem, AilmentSystem, MonsterModSystem, and MoltenShell Guard lifecycle")
 {
     const auto& core = Stage5CorePack();
@@ -331,7 +362,7 @@ POE_TEST("Stage5 CharmSystem, AilmentSystem, MonsterModSystem, and MoltenShell G
     POE_CHECK(charms.Tick(4.5, false));  // Expired
     POE_CHECK_NEAR(charms.ComputeActiveBonuses().fireResist, 0.0, 1e-6);
 
-    // 2. AilmentSystem: 5 ailments + Boss Freeze safety cap + Moving Bleed x2 + Starforge Phys Shock
+    // 2. AilmentSystem: PoE2 boss buildup, moving bleed x2, Starforge physical shock
     AilmentSystem ailments;
     HitAilmentInput hit{};
     hit.physHitPoe = 100.0;
@@ -344,25 +375,28 @@ POE_TEST("Stage5 CharmSystem, AilmentSystem, MonsterModSystem, and MoltenShell G
     hit.starforgeShock = true;
     hit.bleedChancePct = 100.0;
     hit.poisonChancePct = 100.0;
-    hit.roll01 = 0.1;
+    hit.igniteRoll01 = 0.09;
+    hit.shockRoll01 = 0.09;
 
     // Normal mob freezes
     const auto rMob = ailments.ApplyHitAilments(1001, hit);
     POE_CHECK(rMob.appliedIgnite && rMob.appliedChill && rMob.appliedFreeze && rMob.appliedShock && rMob.appliedBleed && rMob.appliedPoison);
     POE_CHECK(ailments.IsFrozen(1001));
-    POE_CHECK(ailments.ShockDamageMultiplier(1001) > 1.05);
+    POE_CHECK_NEAR(ailments.ShockDamageMultiplier(1001), 1.20, 1e-6);
 
-    // Boss NEVER freezes -> capped at 30% Chill!
+    // The unique threshold takes three hits to fill. The unique slow reduction halves 50% chill.
     hit.isBossOrDragon = true;
     const auto rBoss = ailments.ApplyHitAilments(2002, hit);
     POE_CHECK(!rBoss.appliedFreeze);
     POE_CHECK(!ailments.IsFrozen(2002));
-    POE_CHECK_NEAR(ailments.ChillSlowRatio(2002), 0.30, 1e-6);
+    POE_CHECK_NEAR(ailments.ChillSlowRatio(2002), 0.25, 1e-6);
+    POE_CHECK(!ailments.ApplyHitAilments(2002, hit).appliedFreeze);
+    POE_CHECK(ailments.ApplyHitAilments(2002, hit).appliedFreeze);
 
-    // C-10: PoB CalcSetup.lua:651 — Moving Bleed deals 3x standing Bleed (+200% more)
+    // PoB-PoE2 CalcSetup.lua:710: moving or aggravated bleed deals double damage.
     const auto tickStand = ailments.TickActor(1001, 0.5, false);
     const auto tickMove = ailments.TickActor(2002, 0.5, true);
-    POE_CHECK_NEAR(tickMove.physPoeDamage, tickStand.physPoeDamage * 3.0, 1e-4);
+    POE_CHECK_NEAR(tickMove.physPoeDamage, tickStand.physPoeDamage * 2.0, 1e-4);
     POE_CHECK(tickStand.firePoeDamage > 0.0 && tickStand.chaosPoeDamage > 0.0);
 
     // 3. MonsterModSystem: promotion, enemy ES absorption (Chaos bypasses), KillTracker impact flag
@@ -507,9 +541,9 @@ POE_TEST("Stage5 Review #1 regressions: M1-M7 & m1-m6")
     const auto* grcLv = core.FindGem("Grace")->GetLevel(10);
     const double detMore = 1.0 + detLv->GetStat("determination_aura_armour_+%_final", 0.0) / 100.0;
     const double grcMore = 1.0 + grcLv->GetStat("grace_aura_evasion_rating_+%_final", 0.0) / 100.0;
-    // C-11: base_evasion_rating = 15 포함
+    // PoE2 기본 회피 7 포함
     const double expectedIrArmour = (detLv->GetStat("base_physical_damage_reduction_rating", 0.0) +
-        (15.0 + 1000.0 + grcLv->GetStat("base_evasion_rating", 0.0)) * grcMore) * detMore;
+        (7.0 + 1000.0 + grcLv->GetStat("base_evasion_rating", 0.0)) * grcMore) * detMore;
     POE_CHECK_NEAR(irSnap->armour, expectedIrArmour, 1e-2);
     POE_CHECK_NEAR(irSnap->evasion, 0.0, 1e-6);
 
@@ -574,7 +608,7 @@ POE_TEST("Stage5 Review #1 regressions: M1-M7 & m1-m6")
     MonsterModSystem::TickMonsterEs(mProf, 1.25);  // 0.25s clears CD, 1.0s recharges 15 ES
     POE_CHECK_NEAR(mProf.currentEsSkyrim, 15.0, 1e-6);
 
-    // M7, m3, m4: AilmentSystem Inf/NaN guard, roll01==1.0 with 100% chance, boss micro cold crit, weaker rejection
+    // M7, m3, m4: AilmentSystem Inf/NaN guard, 100% chance succeeds at a roll of 1.0, boss micro cold crit, weaker bleed queues
     AilmentSystem ail;
     HitAilmentInput infHit;
     infHit.fireHitPoe = std::numeric_limits<double>::infinity();
@@ -589,14 +623,14 @@ POE_TEST("Stage5 Review #1 regressions: M1-M7 & m1-m6")
     microBoss.isBossOrDragon = true;
     microBoss.bleedChancePct = 100.0;
     microBoss.physHitPoe = 50.0;
-    microBoss.roll01 = 1.0;  // 100% chance must still hit at roll01==1.0!
+    microBoss.bleedRoll01 = 1.0;  // 100% chance must still hit at roll01==1.0!
     const auto mbRes = ail.ApplyHitAilments(5002, microBoss);
     POE_CHECK(mbRes.appliedBleed);
-    POE_CHECK(ail.ChillSlowRatio(5002) < 0.10);  // Micro cold crit does NOT cap boss to 30% chill!
+    POE_CHECK(!mbRes.appliedFreeze && ail.ChillSlowRatio(5002) == 0.0);
 
-    // Weaker bleed must return appliedBleed = false
+    // A weaker bleed is inflicted and waits for the stronger one to expire.
     microBoss.physHitPoe = 10.0;
-    POE_CHECK(!ail.ApplyHitAilments(5002, microBoss).appliedBleed);
+    POE_CHECK(ail.ApplyHitAilments(5002, microBoss).appliedBleed);
 
     // m1: Ventor's Gamble negative roll renders "-20%" instead of "+-20%"
     const std::string negRendered = ItemFormatter::RenderLineTemplate(
@@ -604,15 +638,15 @@ POE_TEST("Stage5 Review #1 regressions: M1-M7 & m1-m6")
     POE_CHECK(negRendered == "화염 저항 -20%");
 
     // Review fixes C-9, C-18, N-1 regressions:
-    // 1) C-9: PoB CalcPerform.lua:543 Int ES% = floor(Int / 10)
+    // 1) 결정 209 ⑧: PoE2 지능은 최대 마나를 올린다.
     Layer1Input intL1;
     intL1.exileLevel = 10;
     intL1.className = "Witch";
     intL1.flatEnergyShield = 100.0;
-    intL1.passives.flatInt = 68.0;  // Witch 32 + 68 = 100 Int -> +10% ES (not +20%)
+    intL1.passives.flatInt = 68.0;  // Witch 32 + 68 = 100 Int
     engine.SetLayer1(intL1);
     POE_CHECK(engine.RebuildIfDirty(core, cfg));
-    POE_CHECK_NEAR(engine.GetSnapshot()->poeMaxEnergyShield, 110.0, 1e-6);
+    POE_CHECK_NEAR(engine.GetSnapshot()->poeMaxEnergyShield, 100.0, 1e-6);
 
     // 2) C-18: Normal/Magic monsters NEVER drop Unique tokens (Decision 164)
     Config uniqCfg = cfg;

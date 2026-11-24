@@ -117,7 +117,7 @@ POE_TEST("Stage6 Atlas & PassiveTree: 123 normal points (99 + 16 atlas + 8 miles
     POE_CHECK(mapReward.xpMultiplier > 1.5);  // Lv60 유배자가 Lv77 지도 적 처치 시 보너스 배율 적용
 }
 
-POE_TEST("Stage6 StatEngine: exile level, map penalties, and 4th milestone Spirit 220")
+POE_TEST("Stage6 StatEngine: exile level, map penalties, and 4th milestone Spirit 230")
 {
     DataPack pack;
     std::string err;
@@ -132,12 +132,12 @@ POE_TEST("Stage6 StatEngine: exile level, map penalties, and 4th milestone Spiri
     l1.evasion = 1000.0;
     l1.flatEnergyShield = 200.0;
     l1.fireResist = 120.0;
-    l1.completedMilestoneCount = 4;  // 1~4차 모두 완료 -> 기본 100 + 4*30 = 220 정신력
+    l1.achievementMask = 0xF;  // 1~4차 모두 완료 -> 정신력 230
     engine.SetLayer1(l1);
     POE_CHECK(engine.RebuildIfDirty(pack, cfg));
     const auto openSnap = engine.GetSnapshot();
     POE_CHECK(openSnap != nullptr);
-    POE_CHECK(openSnap->maxSpirit == 220);
+    POE_CHECK(openSnap->maxSpirit == 230);
     POE_CHECK(!openSnap->inActiveMap);
     POE_CHECK(openSnap->exileLevel == 50);
     POE_CHECK_NEAR(openSnap->maxFireResist, 75.0, 1e-6);

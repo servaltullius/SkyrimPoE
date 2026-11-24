@@ -215,7 +215,7 @@ POE_TEST("MAPS v2 identity round-trips and rejects truncation and oversized keys
     POE_CHECK(!ReadMapSaveIdentity(read, loaded));
 }
 
-POE_TEST("Map health matching uses exile-level reference health and the unchanged tier multiplier")
+POE_TEST("Map health matching uses exile-level reference health and the PoE2 tier multiplier")
 {
     DataPack pack;
     std::string error;
@@ -226,13 +226,13 @@ POE_TEST("Map health matching uses exile-level reference health and the unchange
             std::pow(pack.MonsterLife(level) / pack.MonsterLife(1), 1.0 - config.offenseRollback);
         POE_CHECK_NEAR(OffenseReferenceLife(level, pack, config), expected, 1e-6);
     }
-    POE_CHECK_NEAR(OffenseReferenceLife(50, pack, config), 702.0, 0.5);
-    POE_CHECK_NEAR(OffenseReferenceLife(68, pack, config), 1252.0, 0.5);
-    POE_CHECK_NEAR(OffenseReferenceLife(83, pack, config), 1979.0, 0.5);
+    POE_CHECK_NEAR(OffenseReferenceLife(50, pack, config), 979.030132, 1e-6);
+    POE_CHECK_NEAR(OffenseReferenceLife(68, pack, config), 1759.651954, 1e-6);
+    POE_CHECK_NEAR(OffenseReferenceLife(83, pack, config), 3567.824968, 1e-6);
     const auto scale = MapSystem::GetMapMonsterMultipliers(MapSystem::MonsterLevelForTier(16), pack);
     const MapActorScaling actor{ 1, scale.lifeMultiplier, scale.damageMultiplier };
     const auto reference = OffenseReferenceLife(68, pack, config);
-    const auto expectedDivisor = 4.976678 * reference / 300.0;
+    const auto expectedDivisor = 4.11105728 * reference / 300.0;
     POE_CHECK_NEAR(300.0 / actor.ScaleIncomingDamage(300.0, reference, 300.0), expectedDivisor, 3e-6);
     POE_CHECK_NEAR(actor.ScaleIncomingDamage(300.0, reference, 0.5), 300.0 / scale.lifeMultiplier, 1e-6);
     POE_CHECK_NEAR(actor.ScaleIncomingDamage(300.0, reference, std::numeric_limits<double>::quiet_NaN()),

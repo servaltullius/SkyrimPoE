@@ -43,14 +43,14 @@ namespace SkyrimPoE::Core
         double elementalDamageReduction = 0.0;  // PoE 3.30 인내 충전: 원소 피해 감소(+4%/충전, 저항 상한과 별도 곱연산)
         double attackBlockChance = 0.0;
         double spellBlockChance = 0.0;
-        double spellSuppressionChance = 0.0;
-        double spellSuppressionPrevent = 50.0;
+        double attackBlockMaxBonusPct = 0.0;
+        double spellBlockMaxBonusPct = 0.0;
+        double deflectionRating = 0.0;
         double baseWeaponPhysicalMin = 10.0;
         double baseWeaponPhysicalMax = 18.0;
         double baseWeaponCritChancePct = 5.0;
         double incAttackSpeedPct = 0.0;
         double incCritChancePct = 0.0;
-        double critMultiplierPct = 150.0;
         bool bloodMagic = false;
 
         // 3단계: 패시브 트리 전체에서 집계된 정적 스탯·키스톤 합산치
@@ -62,7 +62,7 @@ namespace SkyrimPoE::Core
         // 5단계(결정 161, 164): 패시브 주얼 소켓(고정점 루프 진입 전 선합산), 오라 토글, 보스 이정표 달성 수
         std::vector<ItemStatTotals> socketedJewelStats;
         std::uint16_t activeAuraMask = 0;         // bit i = 스킬 칸 i의 오라/전령 ON 요청
-        std::uint8_t completedMilestoneCount = 0; // 0..4 (1~4차 보스/결투장 이정표 각 +30 정신력, 기본 최대 220)
+        std::uint32_t achievementMask = 0;
     };
 
     // 층 ②: 충전·버프·이동·생명력 비율·참·헤드헌터·가드·활성 지도 상태 입력(결정 117, 166)
@@ -99,7 +99,7 @@ namespace SkyrimPoE::Core
         double castSpeedMult = 1.0;          // 주문 시전 속도 배율(패시브 시전 속도 + 격분 충전 + 주문 메아리)
         double baseCritChancePct = 5.0;      // 무기 또는 주문 기본 치명타 + 추가 기본 치명타
         double critChanceIncPct = 0.0;       // 치명타 확률 증가 합
-        double critMultiplierPct = 150.0;    // 치명타 피해 배율(%)
+        double critMultiplierPct = 100.0;    // 치명타 피해 배율(%)
         double areaMult = 1.0;               // 반경 배율: sqrt((1 + area_inc/100) * more)
         double poeManaCost = 0.0;            // PoE 단위 스킬 비용
         double cooldownSec = 0.0;            // 쿨다운(초)
@@ -140,11 +140,14 @@ namespace SkyrimPoE::Core
         std::uint32_t dex = 20;
         std::uint32_t intel = 20;
 
-        double poeMaxLife = 50.0;
-        double poeMaxMana = 40.0;
+        double poeMaxLife = 0.0;
+        double poeMaxMana = 0.0;
+        double expectedPoeLife = 0.0;
+        double expectedPoeMana = 0.0;
         double poeMaxEnergyShield = 0.0;
         double armour = 0.0;
         double evasion = 0.0;
+        double accuracy = 0.0;
         double fireResist = 0.0;
         double coldResist = 0.0;
         double lightningResist = 0.0;
@@ -157,8 +160,8 @@ namespace SkyrimPoE::Core
         double elementalDamageReduction = 0.0;  // PoE 3.30 인내 충전: 원소 피해 감소(+4%/충전, 저항 상한과 별도 곱연산)
         double attackBlockChance = 0.0;
         double spellBlockChance = 0.0;
+        double deflectionRating = 0.0;
         double spellSuppressionChance = 0.0;
-        double spellSuppressionPrevent = 50.0;
         double spellDodgeChance = 0.0;
         double esRechargeRateMult = 1.0;
         double esRechargeDelayMult = 1.0;
@@ -178,9 +181,10 @@ namespace SkyrimPoE::Core
         std::uint8_t maxPowerCharges = 3;
 
         // 5단계(결정 161~164): 정신력·오라·전령·고유 특수 효과·참 면역
-        std::uint32_t baseMaxSpirit = Config::kDefaultSpiritBase;  // 기본 이정표 진행분, INI와 장비 제외
-        std::uint32_t maxSpirit = Config::kDefaultSpiritBase;
+        std::uint32_t baseMaxSpirit = 0;  // 기본 이정표 진행분, INI와 장비 제외
+        std::uint32_t maxSpirit = 0;
         std::uint32_t reservedSpirit = 0;
+        std::uint64_t requestedSpirit = 0;
         std::uint16_t effectiveActiveAuraMask = 0;
         bool heraldOfIceActive = false;
         double heraldOfIceExplosionMin = 0.0;
@@ -204,7 +208,7 @@ namespace SkyrimPoE::Core
         double itemRarityPct = 0.0;
         double flatPhysTakenFromAttacksDelta = 0.0;  // U5: Astramentis 등 공격 물리 피해 고정 증감(PoE 단위)
 
-        // 5단계(N-1): 전역 상태이상 유발 확률(%). 출혈은 공격에만 적용한다.
+        // 5단계(N-1): 전역 상태이상 유발 확률(%)
         double igniteChancePct = 0.0;
         double freezeChancePct = 0.0;
         double shockChancePct = 0.0;
@@ -212,8 +216,14 @@ namespace SkyrimPoE::Core
         double poisonChancePct = 0.0;
         // 재검수 R-1: 공격·주문 한정 확률(%)
         double attackIgniteChancePct = 0.0;
+        double attackBleedChancePct = 0.0;
         double attackPoisonChancePct = 0.0;
         double spellPoisonChancePct = 0.0;
+
+        [[nodiscard]] double BleedChanceForHitPct(bool isAttack) const noexcept
+        {
+            return bleedChancePct + (isAttack ? attackBleedChancePct : 0.0);
+        }
 
         // 결정 169: 플레이어 쪽 지도 불이익은 활성 회차 셀 안에서만 적용한다.
         bool inActiveMap = false;
@@ -226,6 +236,15 @@ namespace SkyrimPoE::Core
         // 9칸 슬롯별 스탯 및 발동 젬 안 주문 젬(instanceId -> ComputedSkillStats)
         std::array<ComputedSkillStats, kSkillSlotCount> slotStats{};
         std::unordered_map<std::uint64_t, ComputedSkillStats> triggeredSpellStats;
+    };
+
+    struct SpiritTogglePreview
+    {
+        bool canReserve = false;
+        bool meetsRequirements = false;
+        std::uint64_t requestedSpirit = 0;
+        std::uint32_t maxSpirit = 0;
+        std::uint32_t reservedSpirit = 0;
     };
 
     // 결정 117, 118, 137(다):
@@ -246,15 +265,17 @@ namespace SkyrimPoE::Core
 
         // 임의 스레드에서 안전하게 최신 불변 사본을 얻는다.
         [[nodiscard]] std::shared_ptr<const StatSnapshot> GetSnapshot() const;
+        [[nodiscard]] SpiritTogglePreview PreviewSpiritToggle(std::size_t slotIndex, std::uint16_t proposedMask,
+            const DataPack& pack, const Config& config) const;
         [[nodiscard]] bool IsDirty() const noexcept { return dirty_.load(std::memory_order_acquire); }
 
     private:
-        [[nodiscard]] StatSnapshot ComputeSnapshotLocked(
+        [[nodiscard]] static StatSnapshot ComputeSnapshot(
             const Layer1Input& l1,
             const Layer2Input& l2,
             const DataPack& pack,
             const Config& config,
-            std::uint64_t nextVersion) const;
+            std::uint64_t nextVersion);
 
         mutable std::mutex inputMutex_;
         Layer1Input layer1_;
