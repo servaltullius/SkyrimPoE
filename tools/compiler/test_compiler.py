@@ -57,6 +57,29 @@ class TestStage2Compiler(unittest.TestCase):
         marauder = next(c for c in self.pack["classes"] if c["name"] == "Marauder")
         self.assertEqual((marauder["baseStr"], marauder["baseDex"], marauder["baseInt"]), (32, 14, 14))
 
+    def test_map_level_life_multipliers(self) -> None:
+        pack_path = self.out_dir / "packs" / "core_3_30.json"
+        table = json.loads(pack_path.read_text(encoding="utf-8"))["tables"]["mapLevelLifeMult"]
+        self.assertEqual(len(table), 25)
+        self.assertEqual(table["66"], 1.01)
+        self.assertEqual(table["90"], 2.66)
+
+    def test_map_level_life_multipliers_rejects_dll_invalid_tables(self) -> None:
+        full = {lv: 1.0 + (lv - 66) * 0.05 for lv in range(66, 91)}
+        self.assertEqual(compiler.validate_map_level_life_mult(dict(full)), full)
+        missing = dict(full)
+        del missing[75]
+        with self.assertRaises(ValueError):
+            compiler.validate_map_level_life_mult(missing)
+        zero = dict(full)
+        zero[75] = 0.0
+        with self.assertRaises(ValueError):
+            compiler.validate_map_level_life_mult(zero)
+        extra = dict(full)
+        extra[91] = 2.7
+        with self.assertRaises(ValueError):
+            compiler.validate_map_level_life_mult(extra)
+
     def test_stage2_gems_and_interpolation(self) -> None:
         expected_ids = {
             "Cyclone",

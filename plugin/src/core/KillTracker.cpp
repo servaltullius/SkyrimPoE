@@ -37,6 +37,38 @@ namespace SkyrimPoE::Core
         }
     }
 
+    KillTracker::DirectHitScope::DirectHitScope(KillTracker* tracker, std::uint32_t actorFormId)
+        : tracker_(tracker), actorFormId_(actorFormId)
+    {
+        if (!tracker_) {
+            return;
+        }
+        std::scoped_lock lock(tracker_->mutex_);
+        const auto it = tracker_->records_.find(actorFormId_);
+        if (it == tracker_->records_.end() || it->second.deathStarted || it->second.rewardClaimed) {
+            return;
+        }
+        auto& rec = it->second;
+        if (rec.directHitDepth++ == 0) {
+            rec.directHitScopeId = ++tracker_->seqCounter_;
+        }
+        scopeId_ = rec.directHitScopeId;
+    }
+
+    KillTracker::DirectHitScope::~DirectHitScope()
+    {
+        if (scopeId_ == 0) {
+            return;
+        }
+        std::scoped_lock lock(tracker_->mutex_);
+        const auto it = tracker_->records_.find(actorFormId_);
+        // 리셋이나 FormID 재사용 뒤에 시작한 별도 피해의 표시는 건드리지 않는다.
+        if (it != tracker_->records_.end() && it->second.directHitScopeId == scopeId_ &&
+            --it->second.directHitDepth == 0) {
+            it->second.directHitScopeId = 0;
+        }
+    }
+
     void KillTracker::RecordFirstHitHostility(std::uint32_t actorFormId, bool wasHostileToPlayer, bool actorAliveForNewLife)
     {
         if (actorFormId == 0) {
@@ -108,7 +140,8 @@ namespace SkyrimPoE::Core
         bool isDragon,
         std::uint32_t currentExileLevel,
         const Config& config,
-        bool fallbackExcluded)
+        bool fallbackExcluded,
+        std::uint32_t overrideEffectiveMonsterLevel)
     {
         KillRewardResult res;
         if (actorFormId == 0) {
@@ -124,12 +157,14 @@ namespace SkyrimPoE::Core
             }
             auto& rec = it->second;
             const bool excluded = rec.deathStarted ? rec.deathExcluded : fallbackExcluded;
+            res.playerContributed = rec.playerContributed || rec.directHitDepth != 0;
             if (!rec.rewardClaimed &&
-                rec.playerContributed &&
+                res.playerContributed &&
                 rec.firstHostilityRecorded &&
                 rec.wasHostileOnFirstHit &&
                 !excluded) {
                 eligible = true;
+                rec.playerContributed = true;
             }
             // 중복 사망 확정 이벤트 방지를 위해 지급 여부와 무관하게 청구 완료 표시
             rec.rewardClaimed = true;
@@ -144,8 +179,10 @@ namespace SkyrimPoE::Core
         }
 
         const std::uint32_t lv = std::clamp<std::uint32_t>(currentExileLevel, 1, kMaxExileLevel);
-        res.effectiveMonsterLevel = ComputeEffectiveMonsterLevel(
-            lv, enemySkyrimLevel, playerSkyrimLevel, isBoss, isDragon, config);
+        res.effectiveMonsterLevel = (overrideEffectiveMonsterLevel > 0u)
+            ? std::clamp<std::uint32_t>(overrideEffectiveMonsterLevel, 1, kMaxExileLevel)
+            : ComputeEffectiveMonsterLevel(
+                  lv, enemySkyrimLevel, playerSkyrimLevel, isBoss, isDragon, config);
         res.xpMultiplier = ComputeLevelDiffXpMultiplier(lv, res.effectiveMonsterLevel, config);
 
         const double rawXp = std::max(0.0, config.baseKillXp) * res.xpMultiplier;
@@ -199,7 +236,9 @@ namespace SkyrimPoE::Core
         snap.wasHostileOnFirstHit = it->second.wasHostileOnFirstHit;
         snap.playerContributed = it->second.playerContributed;
         snap.deathStarted = it->second.deathStarted;
+        snap.deathExcluded = it->second.deathExcluded;
         snap.rewardClaimed = it->second.rewardClaimed;
+        snap.directHitActive = it->second.directHitDepth != 0;
         snap.lifeGeneration = it->second.lifeGeneration;
         return snap;
     }

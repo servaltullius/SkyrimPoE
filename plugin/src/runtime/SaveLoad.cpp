@@ -6,32 +6,37 @@
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/UniqueIdUtil.h"
 #include "runtime/WorldDropTracker.h"
 
 #include "core/ItemAffixParser.h"
+#include "core/MapSave.h"
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
 #include "core/SaveCapPolicy.h"
 
 #include <bit>
+#include <unordered_set>
 
 namespace SkyrimPoE::Runtime
 {
     namespace
     {
-        constexpr std::uint32_t kMaxStringLen = 256;
         constexpr std::uint32_t kMaxListLen = 1024;
         constexpr std::uint32_t kMaxTreeNodes = 4096;
         constexpr std::uint32_t kMaxItemRecords = 8192;
         constexpr std::uint32_t kMaxWorldDropRecords = 64;
-        constexpr std::uint32_t kMaxAffixesPerItem = 16;
-        constexpr std::uint32_t kMaxValuesPerAffix = 16;
         constexpr std::uint32_t kMaxGemDepth = 4;
         constexpr std::uint32_t kMaxSocketedJewels = 64;
         constexpr std::uint32_t kPlayerRefFormId = 0x00000014;
+        // 결정 166의 MAPS v1을 불러올 때 귀환 여부를 판정하는 바닐라 셀 전용 표다.
+        constexpr std::array<RE::FormID, 5> kLegacyMapsV1Cells{
+            0x000B6BE6, 0x00043FAB, 0x00015224, 0x000152B1, 0x0001521C
+        };
+        constexpr RE::FormID kLegacyMapsV1ArenaCell = 0x00015211;
 
         // 재검수 R-3: 상한을 넘으면 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다(Core::SelectEntriesWithinSaveCap).
         template <class Entry>
@@ -58,6 +63,7 @@ namespace SkyrimPoE::Runtime
         std::mutex g_txMutex;
         std::mutex g_stateMutex;
         PersistentState g_state;
+        SaveLoad::LoadedMapRecordVersions g_loadedMapRecordVersions;
         std::mutex g_revertCbMutex;
         std::vector<std::function<void()>> g_revertCallbacks;
         // Q-1: 세이브 시점에 잔존하던 NPC kTemporary SpeedMult 델타(로드 후 주 갱신에서 안전 원복)
@@ -155,28 +161,14 @@ namespace SkyrimPoE::Runtime
 
         bool WriteString(SKSE::SerializationInterface* intfc, const std::string& str)
         {
-            const auto len = static_cast<std::uint32_t>(std::min<std::size_t>(str.size(), kMaxStringLen));
-            if (!intfc->WriteRecordData(&len, sizeof(len))) {
-                return false;
-            }
-            if (len > 0 && !intfc->WriteRecordData(str.data(), len)) {
-                return false;
-            }
-            return true;
+            return Core::WriteSaveString(
+                [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, str);
         }
 
         bool ReadString(SKSE::SerializationInterface* intfc, std::string& out)
         {
-            std::uint32_t len = 0;
-            if (!ReadExactPod(intfc, len) || len > kMaxStringLen) {
-                return false;
-            }
-            out.resize(len);
-            if (len > 0 && !ReadExact(intfc, out.data(), len)) {
-                out.clear();
-                return false;
-            }
-            return true;
+            return Core::ReadSaveString(
+                [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, out);
         }
 
         bool WriteGemInstance(SKSE::SerializationInterface* intfc, const Core::GemInstance& gem, std::uint32_t depth = 0)
@@ -247,43 +239,14 @@ namespace SkyrimPoE::Runtime
 
         bool WriteAffixList(SKSE::SerializationInterface* intfc, const std::vector<Core::RolledAffix>& list)
         {
-            const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(list.size(), kMaxAffixesPerItem));
-            if (!intfc->WriteRecordData(&count, sizeof(count))) return false;
-            for (std::uint32_t a = 0; a < count; ++a) {
-                if (!WriteString(intfc, list[a].affixId)) return false;
-                const auto valCount = static_cast<std::uint32_t>(
-                    std::min<std::size_t>(list[a].values.size(), kMaxValuesPerAffix));
-                if (!intfc->WriteRecordData(&valCount, sizeof(valCount))) return false;
-                for (std::uint32_t v = 0; v < valCount; ++v) {
-                    if (!intfc->WriteRecordData(&list[a].values[v], sizeof(double))) return false;
-                }
-            }
-            return true;
+            return Core::WriteSaveAffixList(
+                [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, list);
         }
 
         bool ReadAffixList(SKSE::SerializationInterface* intfc, std::vector<Core::RolledAffix>& out)
         {
-            std::uint32_t count = 0;
-            if (!ReadExactPod(intfc, count) || count > kMaxAffixesPerItem) {
-                return false;
-            }
-            out.clear();
-            out.reserve(count);
-            for (std::uint32_t a = 0; a < count; ++a) {
-                Core::RolledAffix af;
-                std::uint32_t valCount = 0;
-                if (!ReadString(intfc, af.affixId)) return false;
-                if (!ReadExactPod(intfc, valCount) || valCount > kMaxValuesPerAffix) return false;
-                af.values.resize(valCount);
-                for (std::uint32_t v = 0; v < valCount; ++v) {
-                    if (!ReadExactPod(intfc, af.values[v])) return false;
-                    if (!std::isfinite(af.values[v])) {
-                        af.values[v] = 0.0;
-                    }
-                }
-                out.push_back(std::move(af));
-            }
-            return true;
+            return Core::ReadSaveAffixList(
+                [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, out);
         }
 
         bool WritePoEItemRecordV2(SKSE::SerializationInterface* intfc, const Core::PoEItemRecord& rec)
@@ -391,10 +354,10 @@ namespace SkyrimPoE::Runtime
             // 검수 C5: 단일 Layer1 조합 지점 — 장비 스냅샷을 항상 병합해 레벨업/패시브/젬 변경 시 덮어쓰기를 방지
             l1.equippedGear = EquipmentSync::GetCurrentGearSnapshot();
 
-            // 5단계(결정 161, 164): 정신력 오라 토글, 보스 이정표 달성 수, 패시브 주얼 소켓 선합산
+            // 5~6단계(결정 161, 164, 166): 정신력 오라 토글, 보스·4차 결투장 이정표 달성 수(0xFu), 패시브 주얼 소켓 선합산
             l1.activeAuraMask = state.activeAuraMask;
             l1.completedMilestoneCount = static_cast<std::uint8_t>(
-                std::popcount(static_cast<std::uint32_t>(state.tree.ascendancyMilestonesBitmask & 0x7u)));
+                std::popcount(static_cast<std::uint32_t>(state.tree.ascendancyMilestonesBitmask & 0xFu)));
             if (g_itemData && g_itemData->IsLoaded() && !state.socketedJewels.empty()) {
                 l1.socketedJewelStats.reserve(state.socketedJewels.size());
                 for (const auto& [nodeId, rec] : state.socketedJewels) {
@@ -414,11 +377,13 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lock(g_stateMutex);
                 g_state = PersistentState{};
+                g_loadedMapRecordVersions = {};
             }
             GemInventory::Clear();
             ItemTracker::Clear();
             EquipmentSync::Clear();
             WorldDropTracker::Clear();
+            MapDeviceRuntime::ResetOnRevert();
             if (g_charmSystem) {
                 g_charmSystem->ResetOnRevert();
             }
@@ -466,6 +431,7 @@ namespace SkyrimPoE::Runtime
             std::vector<TrackedGemEntry> tracked;
             std::vector<TrackedItemEntry> trackedItems;
             std::vector<SavedWorldDropEntry> savedWorldDrops;
+            Core::ActiveMapState savedMapState;
             {
                 std::scoped_lock txLock(g_txMutex);
                 state = SaveLoad::GetStateCopy();
@@ -475,6 +441,7 @@ namespace SkyrimPoE::Runtime
                 tracked = GemInventory::TakeSnapshotForSave();
                 trackedItems = ItemTracker::TakeSnapshotForSave();
                 savedWorldDrops = WorldDropTracker::TakeSnapshotForSave();
+                savedMapState = MapDeviceRuntime::TakeSnapshotForSave();
             }
             // Q-1 + M-2: 세이브 시점에 적용 중인 NPC kTemporary SpeedMult 델타 + 아직 미원복 잔여(미로드 NPC) 합산 스냅샷
             std::unordered_map<RE::FormID, float> mergedSpeedMods;
@@ -500,12 +467,12 @@ namespace SkyrimPoE::Runtime
             std::sort(savedSpeedMods.begin(), savedSpeedMods.end(),
                 [](const auto& a, const auto& b) { return a.first < b.first; });
 
-            if (!intfc->OpenRecord(SaveLoad::kRecordCore, SaveLoad::kCoreVersion)) {
+            const bool coreOpened = intfc->OpenRecord(SaveLoad::kRecordCore, SaveLoad::kCoreVersion);
+            if (!coreOpened) {
                 SKSE::log::error("SaveLoad: failed to open CORE record for writing.");
-                return;
             }
 
-            bool ok = true;
+            bool ok = coreOpened;
             ok = ok && intfc->WriteRecordData(&state.exileLevel, sizeof(state.exileLevel));
             ok = ok && intfc->WriteRecordData(&state.exileXp, sizeof(state.exileXp));
             ok = ok && intfc->WriteRecordData(&state.unallocatedPassivePoints, sizeof(state.unallocatedPassivePoints));
@@ -533,7 +500,7 @@ namespace SkyrimPoE::Runtime
             std::uint32_t wdrpCount = 0;
             std::uint32_t jewelCount = 0;
 
-            if (!ok) {
+            if (coreOpened && !ok) {
                 SKSE::log::error("SaveLoad: error while writing CORE record.");
             }
 
@@ -717,10 +684,27 @@ namespace SkyrimPoE::Runtime
                 }
             }
 
+            // 결정 180: 두 레코드를 독립적으로 기록한다. 비활성 회차는 active=0 한 바이트다.
+            const auto write = [intfc](const void* data, std::uint32_t size) {
+                return intfc->WriteRecordData(data, size);
+            };
+            const bool atlasWritten = intfc->OpenRecord(SaveLoad::kRecordAtlas, SaveLoad::kAtlasVersion) &&
+                Core::WriteAtlasSave(write, state.atlas);
+            if (!atlasWritten) {
+                SKSE::log::error("SaveLoad: failed to write ATLS v{}.", SaveLoad::kAtlasVersion);
+            }
+            const bool mapsWritten = intfc->OpenRecord(SaveLoad::kRecordMaps, SaveLoad::kMapsVersion) &&
+                Core::WriteMapRunSave(write, savedMapState);
+            if (!mapsWritten) {
+                SKSE::log::error("SaveLoad: failed to write MAPS v{}.", SaveLoad::kMapsVersion);
+            }
+
             SKSE::log::info(
-                "SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}), SPRT(0x{:X}), GEAR(jewels={}), SPDM({}).",
+                "SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}), SPRT(0x{:X}), GEAR(jewels={}), SPDM({}), ATLS(v={}, ok={}, mask=0x{:04X}), MAPS(v={}, ok={}, active={}, spawns={}).",
                 state.exileLevel, trackedCount, nodeCount, itemCount, wdrpCount,
-                state.activeAuraMask, jewelCount, spdmCount);
+                state.activeAuraMask, jewelCount, spdmCount,
+                SaveLoad::kAtlasVersion, atlasWritten, state.atlas.completedTierMask,
+                SaveLoad::kMapsVersion, mapsWritten, savedMapState.active, savedMapState.spawnedRefFormIds.size());
         }
 
         // SKSE 코세이브 콜백: 불러오기(순수 메모리 복원만 수행, 엔진 조작은 주 갱신으로 이연)
@@ -755,6 +739,10 @@ namespace SkyrimPoE::Runtime
             std::vector<TrackedItemEntry> loadedItems;
             std::vector<SavedWorldDropEntry> loadedWorldDrops;
             std::vector<std::pair<RE::FormID, float>> loadedSpeedMods;
+            bool sawAtlasRecord = false;
+            std::optional<Core::AtlasState> atlasRecord;
+            std::optional<Core::MapSaveRecord> mapsRecord;
+            SaveLoad::LoadedMapRecordVersions mapVersions;
 
             std::uint32_t type = 0;
             std::uint32_t version = 0;
@@ -900,7 +888,7 @@ namespace SkyrimPoE::Runtime
                     ok = ok && ReadExactPod(intfc, tmpTree.ascendancyMilestonesBitmask);
                     if (ok) {
                         tmpTree.classSelected = (clsSelByte != 0);
-                        tmpTree.ascendancyMilestonesBitmask &= 0x7u;
+                        tmpTree.ascendancyMilestonesBitmask &= 0xFu;
                         loadedTree = std::move(tmpTree);
                         hasTree = true;
                     } else {
@@ -1143,11 +1131,49 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse SPDM record.");
                     }
+                } else if (type == SaveLoad::kRecordAtlas) {
+                    sawAtlasRecord = true;
+                    const auto candidate = Core::ReadAtlasSave(version, length,
+                        [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); });
+                    if (candidate) {
+                        atlasRecord = candidate;
+                        mapVersions.atlas = version;
+                    } else {
+                        SKSE::log::error("SaveLoad: failed to parse ATLS v{} ({} bytes).", version, length);
+                    }
+                } else if (type == SaveLoad::kRecordMaps) {
+                    auto candidate = Core::ReadMapSave(version, length,
+                        [intfc](void* data, std::size_t size) { return ReadExact(intfc, data, static_cast<std::uint32_t>(size)); },
+                        [intfc](std::uint32_t raw, std::uint32_t& resolved) {
+                            return intfc->ResolveFormID(raw, resolved);
+                        });
+                    if (version == Core::kMapSaveVersion && candidate.run && candidate.run->active) {
+                        if (!g_itemData || !g_itemData->IsLoaded()) {
+                            SKSE::log::warn("SaveLoad: item data unavailable; skipped validation of saved map affix rolls.");
+                        } else if (!Core::MapSystem::AreSavedMapRollsValid(*g_itemData, candidate.run->mods)) {
+                            SKSE::log::error("SaveLoad: MAPS run {} has invalid saved affix rolls.", candidate.run->runId);
+                            candidate.run.reset();
+                        }
+                    }
+                    if (candidate.run) {
+                        mapVersions.maps = version;
+                    } else {
+                        SKSE::log::error("SaveLoad: failed to parse MAPS v{} run ({} bytes).", version, length);
+                    }
+                    Core::KeepLatestMapSave(mapsRecord, std::move(candidate));
                 } else {
                     SKSE::log::warn("SaveLoad: ignoring unknown record type 0x{:08X}.", type);
                 }
             }
 
+            const auto [loadedAtlas, atlasDamaged, runDamaged] = Core::GetMapSaveStatus(sawAtlasRecord, atlasRecord, mapsRecord);
+            loadedState.atlas = loadedAtlas;
+            if (atlasDamaged) {
+                SKSE::log::error("SaveLoad: atlas record missing from map save or unreadable; suppressing duplicate first tribute.");
+            }
+            if (sawAtlasRecord && !mapsRecord) {
+                SKSE::log::error("SaveLoad: MAPS run record missing from map save.");
+            }
             if (hasTree) {
                 if (g_treeData && g_treeData->IsLoaded()) {
                     Core::PassiveTree::SanitizeLoadedState(*g_treeData, loadedTree);
@@ -1160,7 +1186,8 @@ namespace SkyrimPoE::Runtime
                 }
                 if (g_treeData && g_treeData->IsLoaded() && g_config) {
                     const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                        *g_treeData, loadedState.tree, loadedState.exileLevel, *g_config);
+                        *g_treeData, loadedState.tree, loadedState.exileLevel, *g_config,
+                        loadedState.atlas.completedTierMask);
                     loadedState.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
                 }
             }
@@ -1203,7 +1230,8 @@ namespace SkyrimPoE::Runtime
                 loadedState.charmSlots = loadedCharms;
                 loadedState.socketedJewels = std::move(loadedJewels);
             }
-            if (hasCore || hasTree || hasItems || hasSpirit || hasGear || sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
+            if (hasCore || hasTree || hasItems || hasSpirit || hasGear || sawAtlasRecord || mapsRecord ||
+                sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
                 // C-3: CORE만 손상되고 다른 SPOE 레코드가 살아 있는 세이브에서 시작 젬·화폐 중복 지급을 막는다.
                 if (!hasCore) {
                     loadedState.starterGemsGiven = true;
@@ -1228,6 +1256,21 @@ namespace SkyrimPoE::Runtime
             GemInventory::RestoreFromSave(std::move(loadedGems));
             ItemTracker::RestoreFromSave(std::move(loadedItems));
             WorldDropTracker::RestoreFromSave(std::move(loadedWorldDrops));
+            if (sawAtlasRecord || mapsRecord) {
+                auto loadedRun = mapsRecord && mapsRecord->run ? std::move(*mapsRecord->run) : Core::ActiveMapState{};
+                RE::FormID legacyCell = 0;
+                if (mapVersions.maps == Core::kLegacyIndexMapSaveVersion && loadedRun.active) {
+                    legacyCell = loadedRun.isArena4 ? kLegacyMapsV1ArenaCell :
+                        kLegacyMapsV1Cells[mapsRecord->legacyDungeonIndex % kLegacyMapsV1Cells.size()];
+                }
+                MapDeviceRuntime::RestoreFromSave(std::move(loadedRun), legacyCell, atlasDamaged, runDamaged);
+            } else {
+                MapDeviceRuntime::ResetOnRevert();
+            }
+            {
+                std::scoped_lock lock(g_stateMutex);
+                g_loadedMapRecordVersions = mapVersions;
+            }
             {
                 std::scoped_lock lock(g_speedModMutex);
                 g_pendingSpeedModReverts = std::move(loadedSpeedMods);
@@ -1235,10 +1278,11 @@ namespace SkyrimPoE::Runtime
             SaveLoad::SyncStateToStatEngine();
 
             SKSE::log::info(
-                "SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}), SPRT({}), GEAR(jewels={}).",
+                "SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}), SPRT({}), GEAR(jewels={}), atlas(0x{:04X}), ATLS(v={}), MAPS(v={}).",
                 hasCore, loadedState.tree.allocatedNodes.size(),
                 GemInventory::CountTracked(), ItemTracker::CountTracked(), WorldDropTracker::ActiveCount(),
-                hasSpirit, loadedState.socketedJewels.size());
+                hasSpirit, loadedState.socketedJewels.size(), loadedState.atlas.completedTierMask,
+                mapVersions.atlas, mapVersions.maps);
         }
     }
 
@@ -1279,6 +1323,7 @@ namespace SkyrimPoE::Runtime
 
     void SaveLoad::SchedulePostLoadOrNewGameInit(bool isNewGame)
     {
+        MapDeviceRuntime::DisarmUninstallCleanup();
         if (isNewGame) {
             ResetMemoryState();
         }
@@ -1415,9 +1460,10 @@ namespace SkyrimPoE::Runtime
                 });
             }
 
-            // 검수 M3 & C4: 로드 직후 착용 장비(논리 10칸 + 벨트 참 슬롯) 즉시 스캔 및 미추적 고아 빛기둥 스윕
+            // 검수 M3 & C4 & 6단계 C-3: 로드 직후 착용 장비 스캔, 고아 빛기둥 스윕, 활성 지도/결투장 보스 재바인딩
             EquipmentSync::RefreshFromPlayerNow();
             (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
+            MapDeviceRuntime::OnPostLoadRebind();
 
             SaveLoad::SyncStateToStatEngine();
             if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
@@ -1443,6 +1489,12 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lock(g_stateMutex);
         return g_state;
+    }
+
+    SaveLoad::LoadedMapRecordVersions SaveLoad::GetLoadedMapRecordVersions()
+    {
+        std::scoped_lock lock(g_stateMutex);
+        return g_loadedMapRecordVersions;
     }
 
     void SaveLoad::SetState(const PersistentState& state)
@@ -1541,5 +1593,29 @@ namespace SkyrimPoE::Runtime
         const auto slots = g_charmSystem->Slots();
         std::scoped_lock lock(g_stateMutex);
         g_state.charmSlots = slots;
+    }
+
+    // 6단계 안전 제거: 맡겨 둔 SpeedMult 원복을 지금 시도한다.
+    // 재검수 R-9의 ApplyPendingSpeedRevertsNow와 같은 규칙을 쓴다. 지금 찾지 못한 액터의 항목은 버리지 않고 남겨,
+    // 주 갱신의 재시도와 세이브(SPDM)에 그대로 둔다(6단계 재작업 계획 D-10: 실패분은 보존).
+    std::size_t SaveLoad::RevertAllPendingSpeedModsNow()
+    {
+        const auto reverted = ApplyPendingSpeedRevertsNow().first;
+        std::size_t remaining = 0;
+        {
+            std::scoped_lock lock(g_speedModMutex);
+            std::unordered_set<RE::FormID> actors;
+            for (const auto& entry : g_pendingSpeedModReverts) {
+                actors.insert(entry.first);
+            }
+            remaining = actors.size();
+        }
+        if (remaining > 0) {
+            SKSE::log::warn("SaveLoad: uninstall cleanup reverted {} SpeedMult entr(ies); {} actor(s) not found now and kept for retry.",
+                reverted, remaining);
+        } else {
+            SKSE::log::info("SaveLoad: uninstall cleanup reverted {} SpeedMult entr(ies).", reverted);
+        }
+        return remaining;
     }
 }

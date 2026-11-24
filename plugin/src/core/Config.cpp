@@ -309,6 +309,26 @@ namespace SkyrimPoE::Core
                 } else {
                     warnInvalid();
                 }
+            } else if (section == "Maps") {
+                std::uint32_t u = 0;
+                double d = 0.0;
+                if (key == "MapPanelKey") {
+                    if (ParseUint(val, u) && u <= 0xFF) c.mapPanelKey = u; else warnInvalid();
+                } else if (key == "MapDeathInterceptEnabled") {
+                    if (!ParseBool(val, c.mapDeathInterceptEnabled)) warnInvalid();
+                } else if (key == "MapBasePackCount") {
+                    if (ParseUint(val, u) && u >= 1 && u <= 6) c.mapBasePackCount = u; else warnInvalid();
+                } else if (key == "MapTravelTimeoutSec") {
+                    if (ParseDouble(val, d) && d >= 5.0 && d <= 120.0) result.mapTravel.timeoutSec = d; else warnInvalid();
+                } else if (key == "MapTravelArrivalRadius") {
+                    if (ParseDouble(val, d) && d >= 64.0 && d <= 4096.0) result.mapTravel.arrivalRadius = d; else warnInvalid();
+                } else if (key == "MapTravelMaxAttempts") {
+                    if (ParseUint(val, u) && u >= 1 && u <= 5) result.mapTravel.maxAttempts = u; else warnInvalid();
+                } else if (key == "MapFallMargin") {
+                    if (ParseDouble(val, d) && d >= 128.0 && d <= 8192.0) result.mapTravel.fallMargin = d; else warnInvalid();
+                } else {
+                    warnInvalid();
+                }
             } else {
                 // C-11: 알 수 없는 INI 섹션(오타 등)은 조용히 무시하지 않고 경고를 남긴다.
                 result.warnings.emplace_back("Unknown INI section [" + section + "] for key " + std::string(key));

@@ -2,6 +2,7 @@
 // - 두 판의 번호 보존(6단계 재작업 계획 R1 2번): 원본에서 참조를 빼고 더해도 남은 참조·앵커의 번호가 그대로인지
 // - 원본 대조 검증이 만드는 코드의 결함을 잡는지: 위치 변경, 연결 필드 바뀜, 뺐어야 할 참조가 남음
 using Mutagen.Bethesda;
+using System.Text.Json;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
@@ -21,11 +22,16 @@ public class BuilderTests
     private const uint Coc = 0x000210, RockA = 0x000211, RockB = 0x000212, Chest = 0x000213, DoorA = 0x000214, RockC = 0x000216;
     private const uint NpcBoss = 0x000220, NpcP1 = 0x000221, NpcP2 = 0x000222, NpcNear = 0x000223, Nav = 0x000230, DoorB = 0x000310;
     private const uint RockNew = 0x000240;
+    private const uint AutoDoorBase = 0x000105, AutoExitA = 0x000250, AutoExitB = 0x000311, AutoDoorSetting = 0x051542;
 
     // removeRockB: 2판에서 RockB를 빼고 RockNew를 더한다.
-    private static SkyrimMod MakeSource(bool secondVersion)
+    // autoExitAt: 주면 그 자리에 CellB로 가는 자동 문(출구)을 CellA에 둔다. autoDoorDistance: null이면 GMST를 넣지 않는다.
+    private static SkyrimMod MakeSource(bool secondVersion, (float X, float Y)? autoExitAt = null, float? autoDoorDistance = 350f)
     {
         var mod = new SkyrimMod(Esm, Rel);
+        if (autoDoorDistance is { } distance)
+            mod.GameSettings.Add(new GameSettingFloat(K(AutoDoorSetting), Rel) { EditorID = "fAutoDoorActivateDistance", Data = distance });
+        mod.Doors.Add(new Door(K(AutoDoorBase), Rel) { EditorID = "AutoDoorBase", Flags = Door.Flag.Automatic });
         mod.LocationReferenceTypes.Add(new LocationReferenceType(K(0x0130F7), Rel) { EditorID = "Boss" });
         mod.Statics.Add(new Static(K(0x000032), Rel) { EditorID = "COCMarkerHeading" });
         mod.Statics.Add(new Static(K(0x000034), Rel) { EditorID = "XMarkerHeading" });
@@ -90,6 +96,15 @@ public class BuilderTests
         var doorB = Obj(DoorB, 0x000102, 0, 0);
         doorB.TeleportDestination = new TeleportDestination { Door = new FormLink<IPlacedObjectGetter>(K(DoorA)) };
         cellB.Temporary.Add(doorB);
+        if (autoExitAt is { } at)
+        {
+            var exit = Obj(AutoExitA, AutoDoorBase, at.X, at.Y);
+            var back = Obj(AutoExitB, AutoDoorBase, 100, 0);
+            exit.TeleportDestination = new TeleportDestination { Door = new FormLink<IPlacedObjectGetter>(K(AutoExitB)) };
+            back.TeleportDestination = new TeleportDestination { Door = new FormLink<IPlacedObjectGetter>(K(AutoExitA)) };
+            cellA.Temporary.Add(exit);
+            cellB.Temporary.Add(back);
+        }
 
         mod.Cells.Records.Add(new CellBlock
         {
@@ -108,8 +123,198 @@ public class BuilderTests
         AnchorMinDistanceFromEntry = 600,
         AnchorMaxSnapDistance = 256,
         AnchorMinSeparation = 128,
-        Dungeons = { new DungeonSpec { Key = "test", Type = "cave", Role = "map", Name = "시험", SourceCell = sourceCell, MinPackAnchors = 2 } },
+        ExitZoneClearance = 256,
+        Dungeons = { new DungeonSpec
+        {
+            Key = "test", Type = "cave", Role = "map", Name = "시험", SourceCell = sourceCell, MinPackAnchors = 2,
+            BossNpc = "000103", PackNpcs = ["000103"],
+        } },
     };
+
+    [Theory]
+    [InlineData("map", "", "000103", null)]
+    [InlineData("map", "000103", null, null)]
+    [InlineData("arena", "000103", null, null)]
+    [InlineData("map", "000100", "000103", null)]
+    [InlineData("map", "000103", "000220", null)]
+    [InlineData("arena", "000103", null, "FFFFFF")]
+    public void MissingOrInvalidSpawnTemplatesFail(string role, string boss, string? packNpc, string? addNpc)
+    {
+        var pack = Pack();
+        var dungeon = pack.Dungeons[0];
+        dungeon.Role = role;
+        dungeon.BossNpc = boss;
+        dungeon.PackNpcs = packNpc is null ? null : [packNpc];
+        dungeon.AddNpcs = addNpc is null ? null : [addNpc];
+        var source = SourceIndex.Create(MakeSource(false));
+        Assert.Throws<InvalidDataException>(() => Builder.Build(pack, source, new Ledger(), allowLedgerChanges: true));
+    }
+
+    [Theory]
+    [InlineData("map", "packNpcs", "addNpcs")]
+    [InlineData("arena", "addNpcs", "packNpcs")]
+    public void FormatFourWritesRoleSpecificSpawnTemplatesNavmeshHeightAndExitRadius(string role, string presentList, string absentList)
+    {
+        var pack = Pack();
+        var dungeon = pack.Dungeons[0];
+        dungeon.Role = role;
+        if (role == "arena")
+        {
+            dungeon.AddNpcs = dungeon.PackNpcs;
+            dungeon.PackNpcs = null;
+        }
+        var source = SourceIndex.Create(MakeSource(false));
+        var result = Builder.Build(pack, source, new Ledger(), allowLedgerChanges: true);
+        using var output = JsonDocument.Parse(JsonSerializer.Serialize(result.Manifest, Json.Options));
+        Assert.Equal(4, output.RootElement.GetProperty("manifestFormat").GetInt32());
+        Assert.Equal(350f, output.RootElement.GetProperty("exitZoneRadius").GetSingle());
+        var entry = output.RootElement.GetProperty("dungeons")[0];
+        Assert.Equal(0f, entry.GetProperty("navmeshMinZ").GetSingle());
+        Assert.Equal("000103", entry.GetProperty("bossNpc").GetString());
+        Assert.Equal("000103", entry.GetProperty(presentList)[0].GetString());
+        Assert.False(entry.TryGetProperty(absentList, out _));
+    }
+
+    [Fact]
+    public void NavmeshHeightUsesOnlyWalkableTriangleVerticesAcrossMeshes()
+    {
+        var mod = MakeSource(false);
+        var cell = mod.Cells.Records.Single().SubBlocks.Single().Cells.First();
+        var nav = cell.NavigationMeshes.Single().Data!;
+        nav.Vertices.Add(new P3Float(1400, 200, -500));
+        nav.Vertices.Add(new P3Float(1400, 300, -600));
+        nav.Vertices.Add(new P3Float(1400, 400, -700)); // 삼각형에서 참조하지 않는 꼭짓점
+        nav.Triangles.Add(new NavmeshTriangle { Vertices = new P3Int16(0, 1, 4), Flags = NavmeshTriangle.Flag.Deleted });
+        nav.Triangles.Add(new NavmeshTriangle { Vertices = new P3Int16(0, 1, 5), Flags = NavmeshTriangle.Flag.Water });
+        cell.NavigationMeshes.Add(new NavigationMesh(K(Nav + 1), Rel)
+        {
+            Data = new NavigationMeshData
+            {
+                Parent = new CellNavmeshParent { Parent = new FormLink<ICellGetter>(K(CellA)) },
+                Vertices = new ExtendedList<P3Float> { new(100, 100, -10), new(200, 100, -17.5f), new(100, 200, -12) },
+                Triangles = new ExtendedList<NavmeshTriangle> { new() { Vertices = new P3Int16(0, 1, 2) } },
+            },
+        });
+
+        var result = Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true);
+        Assert.Equal(-17.5f, result.Manifest.Dungeons.Single().NavmeshMinZ);
+    }
+
+    // 결정 177 ③ 재보완: 자동 출구 문은 처음부터 꺼 두고, 출구 구역 반경은 원본 GMST를 옮긴다.
+    [Fact]
+    public void AutoExitIsInitiallyDisabledAndRadiusComesFromSourceSetting()
+    {
+        var result = Builder.Build(Pack(), SourceIndex.Create(MakeSource(false, autoExitAt: (-900, 0), autoDoorDistance: 300f)), new Ledger(), allowLedgerChanges: true);
+        Assert.Equal(300f, result.Manifest.ExitZoneRadius);
+        var exit = Assert.Single(result.Manifest.Dungeons.Single().AutoExits);
+        Assert.Equal("interior", exit.Leads);
+        var placed = result.Mod.Cells.Records.SelectMany(b => b.SubBlocks).SelectMany(sb => sb.Cells)
+            .SelectMany(c => c.Temporary.Concat(c.Persistent)).OfType<IPlacedObjectGetter>()
+            .Single(o => Ledger.Format(o.FormKey.ID) == exit.Id);
+        Assert.NotEqual(0, placed.MajorRecordFlagsRaw & Policy.InitiallyDisabledFlag);
+        Assert.Null(placed.TeleportDestination);
+        // 원본에서 꺼져 있지 않던 다른 문은 그대로 켜져 있다.
+        var sealedDoor = result.Mod.Cells.Records.SelectMany(b => b.SubBlocks).SelectMany(sb => sb.Cells)
+            .SelectMany(c => c.Temporary.Concat(c.Persistent)).OfType<IPlacedObjectGetter>()
+            .Single(o => Ledger.Format(o.FormKey.ID) == result.Manifest.Dungeons.Single().SealedDoors.Single());
+        Assert.Equal(0, sealedDoor.MajorRecordFlagsRaw & Policy.InitiallyDisabledFlag);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0f)]
+    [InlineData(-1f)]
+    [InlineData(float.NaN)]
+    [InlineData(10001f)]
+    public void MissingOrInvalidAutoDoorDistanceFailsTheBuild(float? distance)
+    {
+        var mod = MakeSource(false, autoDoorDistance: distance);
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("fAutoDoorActivateDistance", error.Message);
+    }
+
+    [Fact]
+    public void AutoExitWithEnableParentFailsTheBuild()
+    {
+        var mod = MakeSource(false, autoExitAt: (-900, 0));
+        var exit = mod.Cells.Records.Single().SubBlocks.Single().Cells.First().Temporary.OfType<PlacedObject>().Single(o => o.FormKey == K(AutoExitA));
+        exit.EnableParent = new EnableParent { Reference = new FormLink<IPlacedGetter>(K(RockA)) };
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("활성화 부모", error.Message);
+    }
+
+    [Fact]
+    public void ReferenceUsingAutoExitAsEnableParentFailsTheBuild()
+    {
+        // 출구를 끄면 그 출구를 활성화 부모로 쓰는 참조까지 꺼진다(Codex 검토 2026-11-24).
+        var mod = MakeSource(false, autoExitAt: (-900, 0));
+        var rock = mod.Cells.Records.Single().SubBlocks.Single().Cells.First().Temporary.OfType<PlacedObject>().Single(o => o.FormKey == K(RockC));
+        rock.EnableParent = new EnableParent { Reference = new FormLink<IPlacedGetter>(K(AutoExitA)) };
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("활성화 부모로 씁니다", error.Message);
+    }
+
+    [Fact]
+    public void AutoDoorWithoutDestinationLeftEnabledFailsTheBuild()
+    {
+        // 원본부터 목적지가 없는 자동 문은 출구 목록에 들지 않고 켜진 채 남는다. 엔진이 목적지 없이 화면을 어둡게 하므로 막는다.
+        var mod = MakeSource(false);
+        var cell = mod.Cells.Records.Single().SubBlocks.Single().Cells.First();
+        cell.Temporary.Add(new PlacedObject(K(0x000218), Rel)
+        {
+            Base = new FormLinkNullable<IPlaceableObjectGetter>(K(AutoDoorBase)),
+            Placement = new Placement { Position = new P3Float(-900, 0, 0), Rotation = new P3Float(0, 0, 0) },
+        });
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("목적지 없는 자동 문", error.Message);
+    }
+
+    [Fact]
+    public void EntryInsideExitZoneFailsTheBuild()
+    {
+        // 입구(0,0)에서 500유닛: 반경 350 + 여유 256 = 606 안
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(MakeSource(false, autoExitAt: (-500, 0))), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("입구 마커", error.Message);
+    }
+
+    [Fact]
+    public void BossInsideExitZoneFailsTheBuild()
+    {
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(MakeSource(false, autoExitAt: (2500, 400))), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("보스 앵커", error.Message);
+    }
+
+    [Fact]
+    public void PackAnchorInsideExitZoneIsSkipped()
+    {
+        var pack = Pack();
+        pack.Dungeons[0].MinPackAnchors = 1;
+        // NpcP1(1500, 600)에서 400유닛, 입구·보스·NpcP2와는 606보다 멂
+        var result = Builder.Build(pack, SourceIndex.Create(MakeSource(false, autoExitAt: (1500, 1000))), new Ledger(), allowLedgerChanges: true);
+        var report = result.Reports.Single();
+        Assert.Single(report.SkippedAnchorsNearExit);
+        Assert.Contains("000221", report.SkippedAnchorsNearExit[0]);
+        Assert.Single(result.Manifest.Dungeons.Single().PackAnchors);
+    }
+
+    [Fact]
+    public void NoWalkableTrianglesFailTheBuild()
+    {
+        var mod = MakeSource(false);
+        var nav = mod.Cells.Records.Single().SubBlocks.Single().Cells.First().NavigationMeshes.Single().Data!;
+        nav.Triangles[0].Flags = NavmeshTriangle.Flag.Deleted;
+        nav.Triangles[1].Flags = NavmeshTriangle.Flag.Water;
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            Builder.Build(Pack(), SourceIndex.Create(mod), new Ledger(), allowLedgerChanges: true));
+        Assert.Contains("걸을 수 있는 내비메쉬 삼각형", error.Message);
+    }
 
     private static Dictionary<string, uint> IdsByKey(Ledger l) => l.Slots[0].Ids.ToDictionary(kv => kv.Key, kv => Ledger.ParseId(kv.Value));
 
@@ -156,9 +361,10 @@ public class BuilderTests
         Assert.Contains(r.Reports[0].SkippedAnchorsNearEntry, s => s.StartsWith($"{NpcNear:X6}"));
     }
 
-    private static (List<string> Fails, SkyrimMod Mod, PackManifest Manifest, Ledger Ledger, SourceIndex Src) BuildAndCheck(Action<SkyrimMod, Ledger>? mutate = null)
+    private static (List<string> Fails, SkyrimMod Mod, PackManifest Manifest, Ledger Ledger, SourceIndex Src) BuildAndCheck(
+        Action<SkyrimMod, Ledger>? mutate = null, (float X, float Y)? autoExitAt = null)
     {
-        var src = SourceIndex.Create(MakeSource(false));
+        var src = SourceIndex.Create(MakeSource(false, autoExitAt));
         var ledger = new Ledger();
         var r = Builder.Build(Pack(), src, ledger, true);
         mutate?.Invoke(r.Mod, ledger);
@@ -179,6 +385,28 @@ public class BuilderTests
     {
         var (fails, _, _, _, _) = BuildAndCheck();
         Assert.Empty(fails);
+    }
+
+    [Fact]
+    public void SourceCheckPassesWithDisabledAutoExit()
+    {
+        var (fails, _, _, _, _) = BuildAndCheck(autoExitAt: (-900, 0));
+        Assert.Empty(fails);
+    }
+
+    [Fact]
+    public void SourceCheckCatchesEnabledAutoExit()
+    {
+        var (fails, _, _, _, _) = BuildAndCheck((mod, l) => OutRef(mod, l, AutoExitA).MajorRecordFlagsRaw &= ~Policy.InitiallyDisabledFlag,
+            autoExitAt: (-900, 0));
+        Assert.Contains(fails, f => f.Contains("자동 출구 문이 처음부터 꺼져 있지 않습니다"));
+    }
+
+    [Fact]
+    public void SourceCheckCatchesDisabledOrdinaryReference()
+    {
+        var (fails, _, _, _, _) = BuildAndCheck((mod, l) => OutRef(mod, l, RockA).MajorRecordFlagsRaw |= Policy.InitiallyDisabledFlag);
+        Assert.Contains(fails, f => f.Contains("처음부터 꺼짐 플래그가 원본과 다릅니다"));
     }
 
     [Fact]
@@ -241,6 +469,57 @@ public class BuilderTests
         var ledger = new Ledger();
         Builder.Build(Pack(), SourceIndex.Create(MakeSource(false)), ledger, true);
         Assert.Throws<InvalidDataException>(() => Builder.Build(Pack("TestCellB"), SourceIndex.Create(MakeSource(false)), ledger, true));
+    }
+
+    // 생성기가 받은 목록은 런타임 목록 파서(plugin/src/core/MapPack.cpp)도 받아야 한다:
+    // 플러그인 이름 고정, 지도 하나 이상, 결투장 정확히 하나.
+    [Theory]
+    [InlineData("SkyrimPoE_Maps.esp", true, true, true)]
+    [InlineData("SkyrimPoE_Maps.esp", true, false, false)]
+    [InlineData("SkyrimPoE_Maps.esp", false, true, false)]
+    [InlineData("Other.esp", true, true, false)]
+    [InlineData("skyrimpoe_maps.esp", true, true, false)]
+    public void PackSpecRolesAndPluginMatchRuntime(string plugin, bool withMap, bool withArena, bool valid)
+    {
+        static object Dungeon(string key, string role, string cell) => new
+        {
+            key, type = "cave", role, name = key, sourceCell = cell, minPackAnchors = 1, bossNpc = "000103",
+            packNpcs = role == "map" ? new[] { "000103" } : null,
+            addNpcs = role == "arena" ? new[] { "000103" } : null,
+        };
+        var dungeons = new List<object>();
+        if (withMap) dungeons.Add(Dungeon("map_a", "map", "CellA"));
+        if (withArena) dungeons.Add(Dungeon("arena_a", "arena", "CellB"));
+        var spec = new
+        {
+            plugin, packVersion = 1, editorIdPrefix = "SPOE_Map_", anchorMinDistanceFromEntry = 600,
+            anchorMaxSnapDistance = 256, anchorMinSeparation = 128, exitZoneClearance = 256, dungeons,
+        };
+        var path = Path.Combine(Path.GetTempPath(), $"dungeonclone-spec-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(spec, new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        }));
+        try
+        {
+            if (valid) Assert.Equal(plugin, PackSpec.Load(path).Plugin);
+            else Assert.Throws<InvalidDataException>(() => PackSpec.Load(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // 빌드 산출물은 저장소 밖에 있으므로 이 소스 파일의 위치에서 tools/dungeon-clone/dungeons.json을 찾는다.
+    private static string ShippedDungeonList([System.Runtime.CompilerServices.CallerFilePath] string thisFile = "") =>
+        Path.GetFullPath(Path.Combine(Path.GetDirectoryName(thisFile)!, "..", "dungeons.json"));
+
+    [Fact]
+    public void ShippedDungeonListLoads()
+    {
+        var spec = PackSpec.Load(ShippedDungeonList());
+        Assert.Single(spec.Dungeons, d => d.Role == "arena");
     }
 
     [Fact]

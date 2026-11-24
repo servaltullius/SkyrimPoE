@@ -116,7 +116,7 @@ POE_TEST("PassiveTree: class selection, start neighbors, cross-class start block
     cfg.bonusPassivePoints = 5;
     POE_CHECK(PassiveTree::AllocatePath(tree, state, { 50904 }, 1, cfg).ok);  // 31628 + 50904 = 2 spent
     POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, state, 1, cfg) == 3);
-    state.ascendancyMilestonesBitmask = 0x1u;  // 2 asc pts
+    cfg.bonusAscendancyPoints = 2;  // 결정 166: 이정표 비트는 일반 패시브 +2점도 주므로 순수 전직 포인트만 부여해 음수 잔액 검증
     POE_CHECK(PassiveTree::SelectAscendancy(tree, state, "Juggernaut", cfg).ok);
     cfg.bonusPassivePoints = 0;
     POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, state, 1, cfg) == -2);
@@ -199,8 +199,7 @@ POE_TEST("PassiveTree: Scion Ascendant Path of the Marauder (24755) grants start
     const auto& tree = LoadRealTree();
     Config cfg;
     PassiveTreeState state;
-    state.ascendancyMilestonesBitmask = 0x7u;
-    cfg.bonusAscendancyPoints = 2;  // 8 asc pts
+    cfg.bonusAscendancyPoints = 8;  // 8 asc pts (이정표 일반 패시브 보너스와 분리해 부여 4pt 가드만 검증)
 
     POE_CHECK(PassiveTree::SelectClass(tree, state, 0).ok);  // Scion
     POE_CHECK(PassiveTree::SelectAscendancy(tree, state, "Ascendant", cfg).ok);

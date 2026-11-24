@@ -34,6 +34,10 @@ namespace SkyrimPoE::Core
         const DataPack& pack,
         const Config& config) noexcept;
 
+    // 결정 173: 주는 피해 환산과 지도 액터 체력 맞춤이 공유하는 기준 체력 H(L).
+    [[nodiscard]] double OffenseReferenceLife(
+        std::uint32_t exileLevel, const DataPack& pack, const Config& config) noexcept;
+
     [[nodiscard]] double ConvertOffenseHit(
         double poeHitDamage,
         std::uint32_t exileLevel,

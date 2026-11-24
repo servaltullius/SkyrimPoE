@@ -39,6 +39,7 @@ namespace SkyrimPoE::Core
         double extraLightningRatio = 0.0;
         bool isDeadly = false;
         bool isHasted = false;
+        double critChanceIncPct = 0.0;  // 결정 170: 공격자 소속 회차의 치명타 확률 증가
     };
 
     // 5단계(결정 164): 매직·레어 몬스터 승격, 12종 속성, 적 ES 흡수/재충전, 헤드헌터 훔치기 순수 엔진

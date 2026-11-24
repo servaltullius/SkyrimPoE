@@ -22,6 +22,8 @@
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/MainUpdateHook.h"
+#include "runtime/MapDeviceRuntime.h"
+#include "runtime/MapPackRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -151,6 +153,15 @@ namespace
         check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamUnique),
             "SPOE_LootBeam_Unique", Runtime::FormIds::kLootBeamUnique);
 
+        // 6단계 폼(지도 T1..T16 16종 + 4차 전직 공물 1종 + 지도 빛기둥 1종 = 18종, 누적 192폼 ESL)
+        for (const auto fid : Runtime::FormIds::kMapItemForms) {
+            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Map", fid);
+        }
+        check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(Runtime::FormIds::kAscendancy4Tribute),
+            "SPOE_Tribute_Ascendancy4", Runtime::FormIds::kAscendancy4Tribute);
+        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamMap),
+            "SPOE_LootBeam_Map", Runtime::FormIds::kLootBeamMap);
+
         SKSE::log::info("SkyrimPoE.esp form verification: {} found, {} missing.", found, missing);
     }
 
@@ -200,6 +211,7 @@ namespace
 
         // 3. ESP 폼 검증
         VerifyEspForms();
+        Runtime::MapPackRuntime::Initialize();
 
         // 4. 주 갱신 훅을 먼저 설치해 CommandQueue 드레인을 보장한 뒤 전투·스킬·처치·아이템 훅을 건다.
         if (!Runtime::MainUpdateHook::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_config)) {
@@ -211,7 +223,10 @@ namespace
         Runtime::EquipmentSync::Initialize(&g_itemData, &g_charmSystem);
         Runtime::CraftingRuntime::Initialize(&g_itemData, &g_dataPack, &g_treeData, &g_config, &g_charmSystem, &g_statEngine);
         Runtime::WorldDropTracker::Initialize(&g_itemData, &g_config);
-        Runtime::MonsterRuntime::Initialize(&g_statEngine, &g_itemData, &g_config);
+        Runtime::MapDeviceRuntime::Initialize(
+            &g_commandQueue, &g_statEngine, &g_itemData, &g_treeData, &g_config, &g_energyShield, &g_charmSystem, cfgRes.mapTravel);
+        Runtime::MapDeviceRuntime::InstallReturnDoorSink();
+        Runtime::MonsterRuntime::Initialize(&g_statEngine, &g_itemData, &g_dataPack, &g_config);
         Runtime::AilmentRuntime::Initialize(&g_statEngine, &g_charmSystem, &g_dataPack, &g_config);
         (void)Runtime::GemInventory::Install(&g_commandQueue);
         (void)Runtime::ItemTracker::Install(&g_commandQueue, []() {
@@ -240,25 +255,29 @@ namespace
             Runtime::ProxySpellRuntime::ResetOnRevert();
         });
 
-        // 주 갱신 스레드 프레임 콜백 등록: 장비 동기화 + 바닥 드랍/빛기둥 + 몬스터/상태이상/투사체/대리주문 + 풀/ES/참 + 사이클론·CoC + HUD/UI + 자동 시험
+        // 주 갱신 스레드 프레임 콜백 등록: 지도 장치 + 장비 동기화 + 바닥 드랍/빛기둥 + 몬스터/상태이상/투사체/대리주문 + 풀/ES/참 + 사이클론·CoC + HUD/UI + 자동 시험
         Runtime::MainUpdateHook::AddFrameCallback([](RE::Main* main, double dt) {
             auto* ui = RE::UI::GetSingleton();
             const bool paused = ui && ui->GameIsPaused();
-            Runtime::EquipmentSync::FlushIfDirty();
-            Runtime::WorldDropTracker::Tick(dt, paused);
-            Runtime::MonsterRuntime::Tick(dt, paused);
-            Runtime::AilmentRuntime::Tick(dt, paused);
+            // 재검수 R-9: 맡겨 둔 SpeedMult 원복은 안전 제거 뒤에도 계속 다시 시도한다(우리가 건 수정치만 되돌리므로 재오염이 아님).
             Runtime::SaveLoad::RetryPendingSpeedReverts(dt, paused);
-            Runtime::ProjectileRuntime::Tick(dt, paused);
-            Runtime::ProxySpellRuntime::Tick(dt, paused);
-            Runtime::CombatHooks::TickPlayerPools(dt, paused);
-            Runtime::CycloneRuntime::Tick(dt, paused);
+            if (!Runtime::MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                Runtime::MapDeviceRuntime::Tick(dt, paused);
+                Runtime::EquipmentSync::FlushIfDirty();
+                Runtime::WorldDropTracker::Tick(dt, paused);
+                Runtime::MonsterRuntime::Tick(dt, paused);
+                Runtime::AilmentRuntime::Tick(dt, paused);
+                Runtime::ProjectileRuntime::Tick(dt, paused);
+                Runtime::ProxySpellRuntime::Tick(dt, paused);
+                Runtime::CombatHooks::TickPlayerPools(dt, paused);
+                Runtime::CycloneRuntime::Tick(dt, paused);
+            }
             Runtime::UiBridge::Tick(main);
             Runtime::AutoTest::Tick(main, dt);
         });
 
         Runtime::SaveLoad::SyncStateToStatEngine();
-        SKSE::log::info("SkyrimPoE Stage 5 runtime initialization complete.");
+        SKSE::log::info("SkyrimPoE Stage 6 runtime initialization complete.");
     }
 
     void OnSkseMessage(SKSE::MessagingInterface::Message* msg)
@@ -272,9 +291,10 @@ namespace
                 OnDataLoaded();
                 break;
             case SKSE::MessagingInterface::kPreLoadGame:
+                Runtime::MapDeviceRuntime::DisarmUninstallCleanup();
                 Runtime::UiBridge::ClosePanelOnMainThread();
                 (void)g_commandQueue.BumpGenerationAndClear();
-                Runtime::AutoTest::OnPreLoadGame();
+                Runtime::AutoTest::OnPreLoadGame(*msg);
                 break;
             case SKSE::MessagingInterface::kNewGame:
                 Runtime::SaveLoad::SchedulePostLoadOrNewGameInit(true);

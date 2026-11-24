@@ -13,6 +13,7 @@
       <span id="hud-spirit-chip" class="hud-chip hud-chip-spirit">정신력 0 / 100</span>
       <span id="hud-guard-chip" class="hud-chip hud-chip-guard hidden">용암 방패 0</span>
       <span id="hud-hh-chip" class="hud-chip hud-chip-hh hidden">헤드헌터 ×0</span>
+      <span id="hud-map-chip" class="hud-chip hud-chip-map hidden">지도 T1</span>
     </div>
     <div id="hud-charms-row" class="hud-charms-row hidden"></div>
     <div id="hud-es-row" class="hud-bar-row hidden">
@@ -26,7 +27,7 @@
         <span class="hud-lv-badge">유배자 Lv.<span id="hud-level">1</span></span>
         <span id="hud-xp-text">0 / 1000</span>
         <span id="hud-pts-badge" class="hud-pts-badge hidden">+0P</span>
-        <span class="hud-hint">[K] 스킬 · [L] 패시브 · [O] 장비</span>
+        <span class="hud-hint">[K] 스킬 · [L] 패시브 · [O] 장비 · [U] 지도</span>
       </div>
       <div class="hud-track">
         <div id="hud-xp-fill" class="hud-fill hud-fill-xp" style="width: 0%"></div>
@@ -44,6 +45,7 @@
             <button id="tab-btn-skills" class="tab-btn active" type="button">스킬 및 젬 [K]</button>
             <button id="tab-btn-tree" class="tab-btn" type="button">패시브 트리 [L]</button>
             <button id="tab-btn-gear" class="tab-btn" type="button">장비·제작 [O]</button>
+            <button id="tab-btn-maps" class="tab-btn" type="button">지도 장치 [U]</button>
           </nav>
           <span id="panel-header-meta" class="panel-meta">유배자 Lv.1 · 미선택</span>
         </div>
@@ -202,7 +204,7 @@
           </div>
           <div class="side-block gear-block-bag">
             <div class="section-head">
-              <h2>가방 장비 (무기·방어구·벨트·주얼)</h2>
+              <h2>가방 장비 (무기·방어구·벨트·주얼·지도)</h2>
               <span id="gear-bag-count" class="section-sub">0개</span>
             </div>
             <div id="gear-bag-list" class="gear-list"></div>
@@ -251,6 +253,72 @@
           </div>
         </section>
       </div>
+
+      <!-- 탭 4: 지도 장치 · 아틀라스 · 4차 전직 · 안전 제거 (6단계, 결정 166) -->
+      <div id="tab-panel-maps" class="maps-layout hidden">
+        <!-- 좌측 열: 활성 지도 장치 · 4차 전직 결투장 · 안전 제거 정리 -->
+        <section class="maps-col">
+          <div class="side-block maps-block-active">
+            <div class="section-head">
+              <h2>활성 지도 장치</h2>
+              <span id="maps-active-badge" class="badge">대기 중</span>
+            </div>
+            <p id="maps-pack-status" class="maps-desc" role="status" hidden></p>
+            <p id="maps-travel-status" class="maps-desc" role="status" hidden></p>
+            <div id="maps-active-body" class="maps-active-body"></div>
+            <div id="maps-active-actions" class="maps-actions-row">
+              <button id="btn-map-reenter" class="btn hidden" type="button">포털 재입장</button>
+              <button id="btn-map-return" class="btn hidden" type="button">포털 귀환 (0소모)</button>
+              <button id="btn-map-abandon" class="btn btn-danger hidden" type="button">회차 포기</button>
+              <button id="btn-map-safe-escape" class="btn btn-primary hidden" type="button">안전 탈출</button>
+            </div>
+          </div>
+
+          <div class="side-block maps-block-arena4">
+            <div class="section-head">
+              <h2>4차 전직 결투장</h2>
+              <span id="maps-tribute-badge" class="badge badge-aura">공물 0개</span>
+            </div>
+            <p class="maps-desc"><span id="maps-arena4-name">결투장</span> (Lv.75 · 1포털 단판 · 3페이즈 보스전). 정복 시 전직 8/8, 패시브 +2, 기본 최대 정신력 220이 해금됩니다.</p>
+            <div id="maps-arena4-status" class="maps-arena4-status">1~3차 전직 이정표를 모두 달성하면 입장 가능</div>
+            <button id="btn-map-open-arena4" class="btn btn-primary" type="button" disabled>4차 전직 결투장 입장 (공물 1소모)</button>
+          </div>
+
+          <div class="side-block maps-block-uninstall">
+            <div class="section-head">
+              <h2>모드 안전 제거 정리</h2>
+              <span id="maps-uninstall-badge" class="badge">정상 운용</span>
+            </div>
+            <p class="maps-desc">모드를 제거하기 전 장착 젬·주얼·참을 가방으로 반환하고 대리 주문 18종·체력/매지카 보정·NPC 속도를 일괄 원복합니다. 완료 후 즉시 저장하고 게임을 종료하세요.</p>
+            <button id="btn-map-safe-uninstall" class="btn btn-danger" type="button">안전 제거 정리 실행</button>
+          </div>
+        </section>
+
+        <!-- 중앙 열: 아틀라스 T1~T16 16티어 진행도 + 보너스 -->
+        <section class="maps-col maps-col-atlas">
+          <div class="side-block maps-block-atlas">
+            <div class="section-head">
+              <h2>아틀라스 진행도 (T1 ~ T16)</h2>
+              <span id="maps-atlas-pts" class="badge badge-aura">보너스 패시브 0 / 24</span>
+            </div>
+            <div id="maps-atlas-summary" class="maps-atlas-summary"></div>
+            <div id="maps-atlas-grid" class="atlas-grid"></div>
+          </div>
+        </section>
+
+        <!-- 우측 열: 보유 지도 목록 (클릭해 즉시 개방) -->
+        <section class="maps-col">
+          <div class="side-block maps-block-bag">
+            <div class="section-head">
+              <h2>보유 지도 목록</h2>
+              <span id="maps-bag-count" class="section-sub">0장</span>
+            </div>
+            <p class="maps-desc">지도에 화폐 오브를 바르려면 [O] 장비·제작 탭의 가방 목록에서 지도를 선택해 제작하세요.</p>
+            <p id="maps-open-reason" class="maps-desc" hidden></p>
+            <div id="maps-bag-list" class="maps-bag-list"></div>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 
@@ -258,5 +326,6 @@
   <script src="app.js"></script>
   <script src="tree.js"></script>
   <script src="gear.js"></script>
+  <script src="maps.js"></script>
 </body>
 </html>

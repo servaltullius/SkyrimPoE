@@ -1,4 +1,5 @@
 #include "core/ItemFormatter.h"
+#include "core/MapSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -77,9 +78,13 @@ namespace SkyrimPoE::Core
         }
         card.rarityBadge = std::string("[") + RarityKoreanLabel(card.rarity) + "]";
         card.itemLevel = record ? record->itemLevel : computedSlot.itemLevel;
-        card.slotLabel = (record && record->slotGroup == TokenSlotGroup::Jewel)
-            ? std::string("주얼")
-            : std::string(EquipSlotKoreanName(slot));
+        if (record && record->slotGroup == TokenSlotGroup::Jewel) {
+            card.slotLabel = "주얼";
+        } else if (record && record->slotGroup == TokenSlotGroup::Map) {
+            card.slotLabel = "지도";
+        } else {
+            card.slotLabel = std::string(EquipSlotKoreanName(slot));
+        }
         card.requirementMet = requirementMet;
 
         // 요구치 문자열 조합
@@ -185,7 +190,11 @@ namespace SkyrimPoE::Core
                     fl.tier = def->tier;
                     fl.tierBadge = std::string(def->type == AffixType::Prefix ? "[접두 T" : "[접미 T") +
                         std::to_string(def->tier) + "]";
-                    fl.textKo = RenderLineTemplate(ln.templateKo, rolled.values, valOffset, ln.ranges);
+                    if (record->slotGroup == TokenSlotGroup::Map) {
+                        fl.textKo = MapSystem::FormatMapModKoreanLine(rolled);
+                    } else {
+                        fl.textKo = RenderLineTemplate(ln.templateKo, rolled.values, valOffset, ln.ranges);
+                    }
                     card.affixLines.push_back(std::move(fl));
                     valOffset += ln.ranges.size();
                 }

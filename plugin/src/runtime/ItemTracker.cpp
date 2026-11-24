@@ -356,6 +356,7 @@ namespace SkyrimPoE::Runtime
                 const RE::TESUniqueIDChangeEvent* event,
                 RE::BSTEventSource<RE::TESUniqueIDChangeEvent>*) override
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                 if (!event || event->oldBaseID == 0 || event->oldUniqueID == 0) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
@@ -374,6 +375,9 @@ namespace SkyrimPoE::Runtime
 
                 {
                     std::scoped_lock lock(g_mutex);
+                    if (g_queue && generation != g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking)) {
+                        return RE::BSEventNotifyControl::kContinue;
+                    }
                     // AddObjectWithTrackedUniqueId 호출 도중 엔진이 시드 UID를 최종 인벤토리 UID로 재할당한 경우 포착
                     if (g_pendingAdd.active &&
                         event->oldBaseID == g_pendingAdd.ownerFormId &&
@@ -419,14 +423,14 @@ namespace SkyrimPoE::Runtime
                 // 결정 123: 버릴 때 바닥 스탬프는 이벤트 안에서 즉시 기록, 미조회 시 주 갱신 1회 보완
                 if (droppedRefId != 0 && stampUid != 0) {
                     if (!TryStampDroppedWorldRef(droppedRefId, droppedBaseId, stampUid, priorKey) && g_queue) {
-                        g_queue->Enqueue([droppedRefId, droppedBaseId, stampUid, priorKey]() {
+                        g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, [droppedRefId, droppedBaseId, stampUid, priorKey]() {
                             (void)TryStampDroppedWorldRef(droppedRefId, droppedBaseId, stampUid, priorKey);
                         });
                     }
                 }
 
                 if (touchedPlayer && g_onEquipChanged && g_queue) {
-                    g_queue->Enqueue([]() {
+                    g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, []() {
                         if (g_onEquipChanged) {
                             g_onEquipChanged();
                         }
@@ -453,6 +457,7 @@ namespace SkyrimPoE::Runtime
                 const RE::TESContainerChangedEvent* event,
                 RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                 if (!event || !g_queue) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
@@ -476,7 +481,7 @@ namespace SkyrimPoE::Runtime
                         const auto newOwner = event->newContainer;
                         const auto baseObj = event->baseObj;
                         const auto stamp = event->uniqueID;
-                        g_queue->Enqueue([newOwner, baseObj, stamp]() {
+                        g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, [newOwner, baseObj, stamp]() {
                             RebindPickedUpItemOnMainUpdate(newOwner, baseObj, stamp);
                         });
                     }
@@ -501,11 +506,12 @@ namespace SkyrimPoE::Runtime
                 const RE::TESEquipEvent* event,
                 RE::BSTEventSource<RE::TESEquipEvent>*) override
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                 if (!event || !event->actor || !g_queue || !g_onEquipChanged) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 if (event->actor->IsPlayerRef()) {
-                    g_queue->Enqueue([]() {
+                    g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, []() {
                         if (g_onEquipChanged) {
                             g_onEquipChanged();
                         }

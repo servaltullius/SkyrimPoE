@@ -186,3 +186,44 @@ POE_TEST("GemTransaction: duplicate request on last gem, rollback on failure, an
     POE_CHECK(slots[3].occupied && slots[3].gem.gemId == "MoltenShell" && slots[3].gem.socketCount == 3);
     POE_CHECK(GemTransaction::UnequipSkillGem(slots, 3, inv).ok);
 }
+
+POE_TEST("Uninstall clears links and retries only gems that could not be returned")
+{
+    const auto gem = [](std::string id) {
+        GemInstance instance;
+        instance.gemId = std::move(id);
+        return instance;
+    };
+    std::array<SkillSlot, kSkillSlotCount> slots{};
+    slots[0].occupied = true;
+    slots[0].gem = gem("attack");
+    slots[1].occupied = true;
+    slots[1].linkedAttackSlot = 0;
+    slots[1].gem = gem("trigger");
+    auto spell = gem("spell");
+    spell.socketedGems = { gem("available support"), gem("retry support") };
+    slots[1].gem.socketedGems = { std::move(spell), gem("missing form") };
+
+    std::vector<std::string> attempted;
+    GemTransaction::ReturnSlottedGemsForUninstall(slots, [&](const GemInstance& instance) {
+        attempted.push_back(instance.gemId);
+        // A missing form is removed, but an inventory failure keeps that gem for the next attempt.
+        return instance.gemId != "retry support";
+    });
+    const std::vector<std::string> firstAttempt{ "attack", "available support", "retry support", "missing form" };
+    POE_CHECK(attempted == firstAttempt);
+    POE_CHECK(!slots[0].occupied);
+    POE_CHECK(slots[1].occupied && slots[1].linkedAttackSlot == -1);
+    POE_CHECK(slots[1].gem.socketedGems.size() == 1);
+    POE_CHECK(slots[1].gem.socketedGems.front().socketedGems.size() == 1);
+    POE_CHECK(slots[1].gem.socketedGems.front().socketedGems.front().gemId == "retry support");
+
+    attempted.clear();
+    GemTransaction::ReturnSlottedGemsForUninstall(slots, [&](const GemInstance& instance) {
+        attempted.push_back(instance.gemId);
+        return true;
+    });
+    const std::vector<std::string> secondAttempt{ "retry support", "spell", "trigger" };
+    POE_CHECK(attempted == secondAttempt);
+    POE_CHECK(!slots[1].occupied && slots[1].gem.gemId.empty());
+}

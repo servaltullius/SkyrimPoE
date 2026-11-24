@@ -53,7 +53,7 @@ namespace SkyrimPoE::Core
 
     inline constexpr std::size_t kCurrencyKindCount = static_cast<std::size_t>(CurrencyKind::Count);
 
-    // 결정 157, 162, 164: 5티어 무상태 봉인 토큰 부위군(0..7 4단계 + 8 벨트 + 9 주얼)
+    // 결정 157, 162, 164, 166: 5티어 무상태 봉인 토큰 부위군(0..7 4단계 + 8 벨트 + 9 주얼 + 10 지도)
     enum class TokenSlotGroup : std::uint8_t
     {
         OneHandWeapon = 0,
@@ -66,7 +66,8 @@ namespace SkyrimPoE::Core
         Jewelry = 7,
         Belt = 8,
         Jewel = 9,
-        Count = 10
+        Map = 10,
+        Count = 11
     };
 
     inline constexpr std::size_t kStandardTokenSlotGroupCount = 8;  // 기존 80폼 0x82B..0x87A 공식 불변 유지

@@ -2,6 +2,7 @@
 #include "runtime/EquipmentSync.h"
 #include "runtime/FormIds.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/SaveLoad.h"
 
 #include "core/ItemAffixParser.h"
@@ -426,8 +427,9 @@ namespace SkyrimPoE::Runtime
             });
         }
 
+        const bool applyGearEffects = !MapDeviceRuntime::IsUninstallCleanupActive();
         // 5단계(결정 162): 장착 벨트에 따라 개방 참 슬롯 수(0~3)를 CharmSystem에 동기화
-        if (g_charmSystem) {
+        if (applyGearEffects && g_charmSystem) {
             const auto& beltMeta = nextMeta[static_cast<std::size_t>(Core::EquipSlot::Belt)];
             const Core::PoEItemRecord* beltRecPtr = beltMeta.hasPoERecord ? &beltMeta.record : nullptr;
             const std::uint8_t unlocked = Core::ItemCrafting::ComputeBeltCharmSlots(
@@ -442,7 +444,9 @@ namespace SkyrimPoE::Runtime
         }
 
         // 검수 C5: 단일 조합 지점(SaveLoad::SyncStateToStatEngine)으로 전달
-        SaveLoad::SyncStateToStatEngine();
+        if (applyGearEffects) {
+            SaveLoad::SyncStateToStatEngine();
+        }
     }
 
     std::array<Core::EquippedSlotInput, Core::kEquipSlotCount> EquipmentSync::GetCurrentGearSnapshot()

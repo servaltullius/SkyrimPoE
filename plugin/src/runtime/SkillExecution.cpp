@@ -2,6 +2,7 @@
 #include "runtime/SkillExecution.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 
 namespace SkyrimPoE::Runtime
@@ -133,7 +134,22 @@ namespace SkyrimPoE::Runtime
 
     bool SkillExecution::IsBossOrDragon(const RE::Actor* actor) noexcept
     {
-        return IsDragonActor(actor) || HasLocationBossRefType(actor);
+        return IsDragonActor(actor) ||
+               HasLocationBossRefType(actor) ||
+               (actor && MapDeviceRuntime::IsActiveMapOrArenaBoss(actor->GetFormID()));
+    }
+
+    bool SkillExecution::IsHostileForFirstHitReward(RE::Actor* target, RE::Actor* player)
+    {
+        if (!target || !player) {
+            return false;
+        }
+        // 결정 181: 지도 몬스터는 늘 적으로 만든 것이라 교전 전 첫 일격도 보상한다(결정 134의 "원래 적대인 대상").
+        // 소환·되살림·지배는 사망 시작의 제외 판정이 따로 거른다(결정 114, 115).
+        // 등록부는 FormID만 보므로, 번호가 재사용된 다른 액터를 거르게 회차 셀 안에 있는지도 본다.
+        const auto* cell = target->GetParentCell();
+        const bool inRunCell = cell && MapDeviceRuntime::IsActiveMapCell(cell->GetFormID());
+        return (inRunCell && MapDeviceRuntime::IsActiveRunMapActor(target->GetFormID())) || target->IsHostileToActor(player);
     }
 
     bool SkillExecution::CanDamageTarget(RE::PlayerCharacter* player, RE::Actor* target, bool isDirectHit)
@@ -207,7 +223,16 @@ namespace SkyrimPoE::Runtime
             return 1.0;
         }
         const double val = static_cast<double>(setting->GetFloat());
-        return (std::isfinite(val) && val > 0.0) ? val : 1.0;
+        const double result = (std::isfinite(val) && val > 0.0) ? val : 1.0;
+        // 난이도 배율이 바뀔 때만 한 번 남긴다(결정 53 대조용).
+        static std::atomic<std::int64_t> lastLoggedByPc{ -1 };
+        static std::atomic<std::int64_t> lastLoggedToPc{ -1 };
+        auto& lastLogged = toPlayer ? lastLoggedToPc : lastLoggedByPc;
+        const auto key = static_cast<std::int64_t>(diff) * 1'000'000 + std::llround(result * 10'000.0);
+        if (lastLogged.exchange(key, std::memory_order_relaxed) != key) {
+            SKSE::log::info("SkillExecution: difficulty {} {} = {:.4f}.", diff, name, result);
+        }
+        return result;
     }
 
     void SkillExecution::SpawnHarmlessVfx(const RE::NiPoint3& origin, RE::FormID vfxExplosionLocalId)
@@ -245,25 +270,34 @@ namespace SkyrimPoE::Runtime
                 }
             }
         }
+        // 결정 53: 우리 스킬 피해도 스카이림 난이도 배율을 그대로 받는다. Actor::DoDamage(37335)는 셋째 인자가 참이어도
+        // 배율이 1보다 작으면 곱하고 1 이상일 때만 건너뛰므로(2026-11-23 디컴파일), 거짓으로 불러 늘 곱하게 하고
+        // 엔진이 곱할 배율을 결투장 하한 같은 우리 계산에 그대로 넘긴다.
+        const double engineDiffMult = GetDifficultyMultiplier(false);
         const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(
-            targetId, scaledDmg, dominantType, bypassesMonsterEs);
+            targetId, scaledDmg, dominantType, bypassesMonsterEs, target, engineDiffMult);
         if (!hitRes.hadAnyImpact) {
             return false;
         }
 
         // 결정 113, 134, 140 + C-15: 피격 직전 적대 선기록 → 실제 피해 실행 → 0 감소(무적 등)면 기여 확정 생략!
-        const bool targetAlive = !target->IsDead();
+        const bool wasHostile = g_killTracker && IsHostileForFirstHitReward(target, player);
+        auto* av = target->AsActorValueOwner();
+        const double hpBefore = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
+        const bool targetAlive = !target->IsDead() && (!av || hpBefore > 0.0);
+        if (!targetAlive) {
+            return false;
+        }
         if (g_killTracker) {
-            g_killTracker->RecordFirstHitHostility(targetId, target->IsHostileToActor(player), targetAlive);
+            g_killTracker->RecordFirstHitHostility(targetId, wasHostile, targetAlive);
         }
 
         double actualHpLoss = 0.0;
         if (hitRes.remainingHealthDamage > 0.0) {
-            auto* av = target->AsActorValueOwner();
-            const double hpBefore = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
             {
                 const DirectDamageScope scope;
-                (void)target->DoDamage(static_cast<float>(hitRes.remainingHealthDamage), player, true);
+                const Core::KillTracker::DirectHitScope contribution(g_killTracker, targetId);
+                (void)target->DoDamage(static_cast<float>(hitRes.remainingHealthDamage), player, false);
             }
             const double hpAfter = av ? static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth)) : 0.0;
             actualHpLoss = std::max(0.0, hpBefore - hpAfter);

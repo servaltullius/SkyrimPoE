@@ -64,6 +64,27 @@ namespace SkyrimPoE::Core
                 }
             }
         }
+
+        void ClearSkillSlot(std::array<SkillSlot, kSkillSlotCount>& slots, std::uint8_t slotIndex)
+        {
+            UnlinkTriggersPointingTo(slots, slotIndex);
+            auto& slot = slots[slotIndex];
+            slot.occupied = false;
+            slot.gem = GemInstance{};
+            slot.linkedAttackSlot = -1;
+        }
+
+        bool ReturnGemTree(GemInstance& gem, const std::function<bool(const GemInstance&)>& returnOrDiscard)
+        {
+            for (auto it = gem.socketedGems.begin(); it != gem.socketedGems.end();) {
+                if (ReturnGemTree(*it, returnOrDiscard)) {
+                    it = gem.socketedGems.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            return gem.socketedGems.empty() && returnOrDiscard(gem);
+        }
     }
 
     GemTransactionResult GemTransaction::EquipSkillGem(
@@ -147,11 +168,19 @@ namespace SkyrimPoE::Core
             return { false, "인벤토리로 젬을 반환하지 못했습니다.", std::nullopt };
         }
 
-        UnlinkTriggersPointingTo(slots, slotIndex);
-        slot.occupied = false;
-        slot.gem = GemInstance{};
-        slot.linkedAttackSlot = -1;
+        ClearSkillSlot(slots, slotIndex);
         return { true, "스킬 젬을 해제해 인벤토리에 보관했습니다.", key };
+    }
+
+    void GemTransaction::ReturnSlottedGemsForUninstall(
+        std::array<SkillSlot, kSkillSlotCount>& slots, const std::function<bool(const GemInstance&)>& returnOrDiscard)
+    {
+        for (std::uint8_t index = 0; index < slots.size(); ++index) {
+            auto& slot = slots[index];
+            if (slot.occupied && ReturnGemTree(slot.gem, returnOrDiscard)) {
+                ClearSkillSlot(slots, index);
+            }
+        }
     }
 
     GemTransactionResult GemTransaction::SocketSubGem(

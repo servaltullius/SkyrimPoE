@@ -57,6 +57,9 @@ namespace SkyrimPoE::Runtime
             Core::SkillSystem* skillSystem = nullptr,
             Core::CharmSystem* charmSystem = nullptr);
 
+        // 치명 피해를 주는 자동 시험의 사전 조건. 부분 설치 상태에서는 false.
+        [[nodiscard]] static bool AreAllHooksInstalled() noexcept;
+
         // 주 갱신 스레드 프레임 콜백에서 호출: 최대 체력·매지카·ES 동기화, MoM 매지카 차감, Low Life/EO 감시 및 ES 재충전.
         static void TickPlayerPools(double deltaSec, bool gamePaused);
 
@@ -68,5 +71,9 @@ namespace SkyrimPoE::Runtime
 
         // 진단·자동 시험용: 플레이어가 아군(동료)에게 실제 체력 피해를 준 누적 횟수
         [[nodiscard]] static std::uint64_t GetPlayerToTeammateHitCount() noexcept;
+        // Positive incoming health damage clamped by the map-death path.
+        [[nodiscard]] static std::uint64_t GetMapDeathDamageClampCount(bool magic) noexcept;
+        // Positive damage suppressed because the death escape was already in flight.
+        [[nodiscard]] static std::uint64_t GetMapDeathRepeatClampCount(bool magic) noexcept;
     };
 }

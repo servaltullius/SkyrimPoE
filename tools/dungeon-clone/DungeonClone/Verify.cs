@@ -43,6 +43,8 @@ internal static class Verify
         {
             fails.Add($"목록 파일을 읽지 못했습니다(필수 필드·모르는 필드·형식): {ex.Message}");
         }
+        if (diskManifest is null && fails.Count == 0)
+            fails.Add("목록 파일이 비어 있습니다(JSON null).");
         if (diskManifest is not null && diskManifest.ManifestFormat != PackManifest.CurrentFormat)
             fails.Add($"목록 파일 형식 {diskManifest.ManifestFormat}이 도구의 {PackManifest.CurrentFormat}과 다릅니다.");
         if (diskManifest is not null && diskManifest.EspSha256 != Sha256(espPath))
@@ -76,6 +78,7 @@ internal static class Verify
         {
             Esp = Path.GetFileName(espPath),
             Records = disk.EnumerateMajorRecords().Count(),
+            ExitZoneRadius = diskManifest?.ExitZoneRadius,
             Dungeons = diskManifest?.Dungeons.Select(d => new { d.Key, d.Cell, d.EntryMarker, d.BossAnchor, PackAnchors = d.PackAnchors.Count, d.ReturnDoors, AutoExits = d.AutoExits.Select(x => $"{x.Id}({x.Leads})"), d.SealedDoors }),
             Notes = notes,
             Failures = fails,
@@ -310,7 +313,8 @@ internal static class Verify
         if (!(s.Placement?.Equals(o.Placement) ?? o.Placement is null)) fails.Add($"{id} 위치·회전이 원본과 다릅니다.");
         if (s.Scale != o.Scale) fails.Add($"{id} 크기가 원본과 다릅니다.");
         var isEntry = s.Base.FormKey == Policy.CocMarkerHeading;
-        if (((s.MajorRecordFlagsRaw ^ o.MajorRecordFlagsRaw) & ~Policy.PersistentFlag) != 0) fails.Add($"{id} 레코드 플래그가 원본과 다릅니다.");
+        // 처음부터 꺼짐은 아래 문 규칙에서 따로 본다(자동 출구만 켜고, 그 밖은 원본 그대로).
+        if (((s.MajorRecordFlagsRaw ^ o.MajorRecordFlagsRaw) & ~(Policy.PersistentFlag | Policy.InitiallyDisabledFlag)) != 0) fails.Add($"{id} 레코드 플래그가 원본과 다릅니다.");
         if (!isEntry && ((s.MajorRecordFlagsRaw ^ o.MajorRecordFlagsRaw) & Policy.PersistentFlag) != 0) fails.Add($"{id} 영구 플래그가 원본과 다릅니다.");
 
         // 연결 필드는 필드별로(필드끼리 바뀐 연결을 잡기 위해)
@@ -344,6 +348,12 @@ internal static class Verify
             }
         }
         else if (o.TeleportDestination is not null) fails.Add($"{id} 원본에 없던 순간이동이 생겼습니다.");
+
+        // 처음부터 꺼짐: 자동 출구 문은 이 플래그가 켜져 있어야(문은 꺼져 있어야) 하고(결정 177 ③ 재보완), 그 밖은 원본 그대로여야 한다.
+        var autoExit = cutDoorsExpected.TryGetValue(o.FormKey, out var cutKind) && cutKind.StartsWith("auto-", StringComparison.Ordinal);
+        var disabledNow = (o.MajorRecordFlagsRaw & Policy.InitiallyDisabledFlag) != 0;
+        if (autoExit && !disabledNow) fails.Add($"{id} 자동 출구 문이 처음부터 꺼져 있지 않습니다.");
+        if (!autoExit && disabledNow != ((s.MajorRecordFlagsRaw & Policy.InitiallyDisabledFlag) != 0)) fails.Add($"{id} 처음부터 꺼짐 플래그가 원본과 다릅니다.");
 
         // 잠금: 안쪽 문은 풀고, 그 밖은 원본 그대로
         if (isDoor && !cut) { if (o.Lock is not null) fails.Add($"{id} 안쪽 문이 잠겨 있습니다."); }
@@ -430,6 +440,18 @@ internal static class Verify
         if (Math.Abs(disk.ModHeader.Stats.Version - ExpectedHeaderVersion) > 0.001f) fails.Add($"헤더 판(HEDR)이 {disk.ModHeader.Stats.Version}입니다({ExpectedHeaderVersion}이어야 함).");
         if (manifest.Plugin != pack.Plugin || manifest.PackVersion != pack.PackVersion || manifest.SourceMaster != Policy.SourceMaster.FileName.String)
             fails.Add("목록 파일의 plugin·packVersion·sourceMaster가 던전 목록과 다릅니다.");
+        float? sourceRadius = null;
+        try
+        {
+            sourceRadius = Builder.ExitZoneRadius(src);
+        }
+        catch (InvalidDataException ex)
+        {
+            fails.Add(ex.Message);
+        }
+        if (sourceRadius is { } settingRadius && manifest.ExitZoneRadius != settingRadius)
+            fails.Add($"목록 파일의 exitZoneRadius {manifest.ExitZoneRadius}가 원본 GMST {Policy.AutoDoorActivateDistanceSetting} {settingRadius}와 다릅니다.");
+        var exitKeepOut = manifest.ExitZoneRadius + pack.ExitZoneClearance;
 
         var cells = AllCells(disk).ToList();
         var all = new List<IMajorRecordGetter>();
@@ -508,6 +530,8 @@ internal static class Verify
             }
             bool InPersistent(IPlacedObjectGetter o) => (o.MajorRecordFlagsRaw & Policy.PersistentFlag) != 0 && cell.Persistent.Any(p => p.FormKey == o.FormKey);
 
+            // 좌표가 세 개가 아닌 자동 출구는 아래 형식 검사가 실패로 남긴다. 거리 계산에서는 빼야 예외로 보고서 없이 끝나지 않는다(Codex 검토 2026-11-24).
+            var wellFormedExits = dm.AutoExits.Where(x => x.Position is { Length: 3 }).ToList();
             var entry = Get(dm.EntryMarker, "입구 마커");
             P3Float? entryPos = null;
             if (entry is not null)
@@ -516,6 +540,8 @@ internal static class Verify
                 if (!InPersistent(entry)) fails.Add($"{dm.Key}: 입구 마커가 영구 참조가 아닙니다.");
                 if (entry.Placement is null) fails.Add($"{dm.Key}: 입구 마커에 위치가 없습니다.");
                 entryPos = entry.Placement?.Position;
+                if (entryPos is { } ep0 && Builder.NearestExitDistance(ep0, wellFormedExits) is var entryToExit && entryToExit < exitKeepOut)
+                    fails.Add($"{dm.Key}: 입구 마커가 자동 출구에서 {entryToExit:F0}유닛으로 출구 구역 반경과 여유({exitKeepOut:F0}) 안입니다.");
             }
             var cocCount = placed.Values.Count(o => o.Base.FormKey == Policy.CocMarkerHeading);
             if (cocCount != 1) fails.Add($"{dm.Key}: 입구 마커가 {cocCount}개입니다.");
@@ -542,6 +568,8 @@ internal static class Verify
                     fails.Add($"{dm.Key}: {what} {o.FormKey}가 입구에서 {Builder.Distance(ap.Position, ep):F0}유닛입니다.");
                 if (!Builder.IsOnNavmesh(ap.Position, cell.NavigationMeshes))
                     fails.Add($"{dm.Key}: {what} {o.FormKey}가 걸을 수 있는 내비메쉬 위에 있지 않습니다.");
+                if (Builder.NearestExitDistance(ap.Position, wellFormedExits) is var anchorToExit && anchorToExit < exitKeepOut)
+                    fails.Add($"{dm.Key}: {what} {o.FormKey}가 자동 출구에서 {anchorToExit:F0}유닛으로 출구 구역 반경과 여유({exitKeepOut:F0}) 안입니다.");
             }
             for (var i = 0; i < anchorObjs.Count; i++)
                 for (var j = i + 1; j < anchorObjs.Count; j++)
@@ -558,8 +586,16 @@ internal static class Verify
                 if (!src.Cache.TryResolve(d.Base.FormKey, out var db) || db is not IDoorGetter) fails.Add($"{dm.Key}: {id}의 기본 객체가 문이 아닙니다.");
                 if (d.TeleportDestination is not null) fails.Add($"{dm.Key}: {id}에 순간이동이 남았습니다.");
             }
-            foreach (var x in dm.AutoExits.Where(x => x.Leads is not ("interior" or "exterior") || x.Position.Length != 3 || x.Rotation.Length != 3))
+            foreach (var x in dm.AutoExits.Where(x => x.Leads is not ("interior" or "exterior") || x.Position is not { Length: 3 } || x.Rotation is not { Length: 3 }))
                 fails.Add($"{dm.Key}: 자동 출구 {x.Id}의 leads·위치·회전 형식이 틀렸습니다.");
+            foreach (var x in dm.AutoExits)
+            {
+                if (Get(x.Id, "자동 출구") is not { } door) continue;
+                if ((door.MajorRecordFlagsRaw & Policy.InitiallyDisabledFlag) == 0)
+                    fails.Add($"{dm.Key}: 자동 출구 {x.Id}가 처음부터 꺼져 있지 않습니다(결정 177 ③ 재보완).");
+                if (x.Position is { Length: 3 } && door.Placement is { } dp && (dp.Position.X != x.Position[0] || dp.Position.Y != x.Position[1] || dp.Position.Z != x.Position[2]))
+                    fails.Add($"{dm.Key}: 자동 출구 {x.Id}의 목록 위치가 ESP 참조 위치와 다릅니다.");
+            }
             foreach (var o in placed.Values.Where(o => o.TeleportDestination is not null))
             {
                 var target = o.TeleportDestination!.Door.FormKey;

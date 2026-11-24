@@ -4,6 +4,7 @@
 #include "core/Types.h"
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace SkyrimPoE::Runtime
@@ -26,13 +27,20 @@ namespace SkyrimPoE::Runtime
     public:
         static void Initialize(const Core::ItemData* itemData, const Core::Config* config);
 
-        // DeathListener 주 갱신 콜백에서 호출: 처치 드랍 판정 및 시체/바닥 배출
-        static void OnKillAwarded(
+        // DeathListener 주 갱신 콜백에서 호출: 처치 드랍 판정 및 시체/바닥 배출 (6단계 지도 티어·IIQ·IIR 연동)
+        // 공물이 실제로 생겼으면 true. 첫 공물 보장 시 일반 드랍이 꺼졌거나 시체가 없으면 가방에 넣는다.
+        // deliverToPlayer: 플레이어가 시체에 닿을 수 없는 처치(결정 179 ⑦, 치명타 뒤 사망 귀환)는 드랍을 모두 가방에 넣는다.
+        [[nodiscard]] static bool OnKillAwarded(
             RE::ActorHandle corpseHandle,
             std::uint32_t effectiveMonsterLevel,
             bool isBoss,
             bool isDragon,
-            Core::MonsterRarity monsterRarity = Core::MonsterRarity::Normal);
+            Core::MonsterRarity monsterRarity = Core::MonsterRarity::Normal,
+            std::uint8_t activeMapTier = 0,
+            double bonusIiqPct = 0.0,
+            double bonusIirPct = 0.0,
+            bool guaranteeFirstTribute = false,
+            bool deliverToPlayer = false);
 
         // 명시적 바닥 드랍 + 빛기둥 생성 헬퍼(AutoTest E7 및 내부 공용)
         static bool SpawnPhysicalDropFromContainer(
@@ -40,7 +48,8 @@ namespace SkyrimPoE::Runtime
             RE::TESBoundObject* itemObj,
             std::uint8_t worldDropTier,
             bool isCurrencyDrop,
-            bool isUniqueDrop = false);
+            bool isUniqueDrop = false,
+            bool isMapDrop = false);
 
         // 주 갱신 스레드 틱: 줍기 감지·빛기둥 위치 동기화·시간 초과/셀 이탈 시체 회수·고아 스윕
         static void Tick(double dt, bool paused);
@@ -50,6 +59,10 @@ namespace SkyrimPoE::Runtime
 
         // 모든 활성 드랍을 즉시 시체로 회수/정리(AutoTest E7 검증용)
         static void ReturnAllToCorpsesNow();
+
+        // 회차 스폰의 시체에서 나왔거나 회차 셀에 있는 추적 바닥 전리품과 빛기둥을 정리한다(주 갱신 스레드).
+        // 삭제는 회차 셀 안의 참조에만 한다(FormID 재사용으로 다른 곳의 물건을 지우지 않게).
+        static void DiscardDropsFromCorpses(std::span<const RE::FormID> corpseIds, RE::FormID runCellId);
 
         // 코세이브 'WDRP' v1 스냅샷/복원/초기화(순수 메모리)
         [[nodiscard]] static std::vector<SavedWorldDropEntry> TakeSnapshotForSave();

@@ -327,7 +327,7 @@ namespace SkyrimPoE::Core
         const PassiveTreeState& state,
         const Config& config) noexcept
     {
-        const auto milestoneBits = state.ascendancyMilestonesBitmask & 0x7u;  // 1~3차 이정표 (bit 0..2)
+        const auto milestoneBits = state.ascendancyMilestonesBitmask & 0xFu;  // 1~4차 이정표 (bit 0..3, 결정 166)
         const std::int32_t fromMilestones = static_cast<std::int32_t>(std::popcount(milestoneBits)) * 2;
         const std::int32_t bonus = std::max<std::int32_t>(0, config.bonusAscendancyPoints);
         return std::min<std::int32_t>(static_cast<std::int32_t>(kMaxAscendancyPoints), fromMilestones + bonus);
@@ -376,14 +376,19 @@ namespace SkyrimPoE::Core
         const PassiveTreeData& data,
         const PassiveTreeState& state,
         std::uint32_t exileLevel,
-        const Config& config) noexcept
+        const Config& config,
+        std::uint16_t atlasCompletedTierMask) noexcept
     {
         const auto lv = std::clamp<std::uint32_t>(exileLevel, 1, kMaxExileLevel);
         const std::int32_t fromLevel = static_cast<std::int32_t>(lv - 1);
+        // 결정 17, 166: 아틀라스 T1~T16 첫 클리어(최대 +16점) + 1~4차 보스/결투장 이정표(최대 +8점) = +24점 (총 123점)
+        const std::int32_t fromAtlas = static_cast<std::int32_t>(std::popcount(atlasCompletedTierMask));
+        const std::int32_t fromMilestones = static_cast<std::int32_t>(
+            std::popcount(static_cast<std::uint8_t>(state.ascendancyMilestonesBitmask & 0xFu))) * 2;
         const std::int32_t bonus = std::max<std::int32_t>(0, config.bonusPassivePoints);
         const std::int32_t granted = ComputeGrantedPassivePoints(data, state);
         const std::int32_t spent = ComputeSpentNormalPoints(data, state);
-        return fromLevel + bonus + granted - spent;
+        return fromLevel + fromAtlas + fromMilestones + bonus + granted - spent;
     }
 
     std::int32_t PassiveTree::ComputeAvailableAscendancyPoints(
@@ -648,7 +653,8 @@ namespace SkyrimPoE::Core
         PassiveTreeState& state,
         const std::vector<std::uint32_t>& nodeIds,
         std::uint32_t exileLevel,
-        const Config& config)
+        const Config& config,
+        std::uint16_t atlasCompletedTierMask)
     {
         if (!state.classSelected) {
             return { false, "먼저 시작 클래스를 선택해야 합니다.", 0 };
@@ -684,7 +690,7 @@ namespace SkyrimPoE::Core
                     return { false, "전직 포인트가 부족합니다.", 0 };
                 }
             } else {
-                if (ComputeAvailableNormalPoints(data, working, exileLevel, config) < 1) {
+                if (ComputeAvailableNormalPoints(data, working, exileLevel, config, atlasCompletedTierMask) < 1) {
                     return { false, "패시브 포인트가 부족합니다.", 0 };
                 }
             }
@@ -695,7 +701,7 @@ namespace SkyrimPoE::Core
         if (working.allocatedNodes.size() == state.allocatedNodes.size()) {
             return { false, "새로 할당할 노드가 없습니다.", 0 };
         }
-        if (ComputeAvailableNormalPoints(data, working, exileLevel, config) < 0 ||
+        if (ComputeAvailableNormalPoints(data, working, exileLevel, config, atlasCompletedTierMask) < 0 ||
             ComputeAvailableAscendancyPoints(data, working, config) < 0) {
             return { false, "가용 포인트가 부족합니다.", 0 };
         }
@@ -788,7 +794,8 @@ namespace SkyrimPoE::Core
         std::uint32_t effectId,
         std::uint32_t exileLevel,
         const Config& config,
-        std::uint32_t availableRegretOrbs)
+        std::uint32_t availableRegretOrbs,
+        std::uint16_t atlasCompletedTierMask)
     {
         if (!state.classSelected) {
             return { false, "먼저 시작 클래스를 선택해야 합니다.", 0, 0 };
@@ -816,7 +823,7 @@ namespace SkyrimPoE::Core
         const bool alreadyAllocated = state.masterySelections.contains(masteryNodeId);
         std::uint32_t orbCost = 0;
         if (!alreadyAllocated) {
-            if (ComputeAvailableNormalPoints(data, state, exileLevel, config) < 1) {
+            if (ComputeAvailableNormalPoints(data, state, exileLevel, config, atlasCompletedTierMask) < 1) {
                 return { false, "패시브 포인트가 부족합니다.", 0, 0 };
             }
         } else {
@@ -836,7 +843,8 @@ namespace SkyrimPoE::Core
         std::uint32_t nodeId,
         std::uint32_t exileLevel,
         const Config& config,
-        std::uint32_t availableRegretOrbs)
+        std::uint32_t availableRegretOrbs,
+        std::uint16_t atlasCompletedTierMask)
     {
         if (!state.classSelected) {
             return { false, "선택된 클래스가 없습니다.", 0, 0 };
@@ -872,8 +880,8 @@ namespace SkyrimPoE::Core
         WriteSortedAllocated(working, alloc);
 
         // Ascendant grantedPassivePoints 노드를 빼서 일반 포인트 잔액이 기존보다 줄어들며 음수가 되는 경우만 거절
-        const std::int32_t availBefore = ComputeAvailableNormalPoints(data, state, exileLevel, config);
-        const std::int32_t availAfter = ComputeAvailableNormalPoints(data, working, exileLevel, config);
+        const std::int32_t availBefore = ComputeAvailableNormalPoints(data, state, exileLevel, config, atlasCompletedTierMask);
+        const std::int32_t availAfter = ComputeAvailableNormalPoints(data, working, exileLevel, config, atlasCompletedTierMask);
         if (availAfter < availBefore && availAfter < 0) {
             return { false, "이 노드가 부여한 패시브 포인트를 먼저 회수해야 합니다.", 0, 0 };
         }
@@ -905,7 +913,8 @@ namespace SkyrimPoE::Core
         bool ascendancyOnly,
         std::uint32_t exileLevel,
         const Config& config,
-        std::uint32_t availableRegretOrbs)
+        std::uint32_t availableRegretOrbs,
+        std::uint16_t atlasCompletedTierMask)
     {
         if (!state.classSelected) {
             return { false, "선택된 클래스가 없습니다.", 0, 0 };
@@ -936,8 +945,8 @@ namespace SkyrimPoE::Core
             return { false, "전직 시작점에 연결된 일반 노드를 먼저 회수하거나 전체 회수를 사용해 주세요.", 0, 0 };
         }
         WriteSortedAllocated(working, remaining);
-        const std::int32_t availBefore = ComputeAvailableNormalPoints(data, state, exileLevel, config);
-        const std::int32_t availAfter = ComputeAvailableNormalPoints(data, working, exileLevel, config);
+        const std::int32_t availBefore = ComputeAvailableNormalPoints(data, state, exileLevel, config, atlasCompletedTierMask);
+        const std::int32_t availAfter = ComputeAvailableNormalPoints(data, working, exileLevel, config, atlasCompletedTierMask);
         if (availAfter < availBefore && availAfter < 0) {
             return { false, "전직이 부여한 패시브 포인트를 먼저 회수하거나 전체 회수를 사용해 주세요.", 0, 0 };
         }

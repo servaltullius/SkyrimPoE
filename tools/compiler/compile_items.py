@@ -1087,12 +1087,55 @@ def build_stage5_implicits_and_uniques(
     return extra_affixes, belt_defs, uniques_out
 
 
+def build_stage6_map_affixes(existing_ids: set[str]) -> list[dict[str, Any]]:
+    """6단계(결정 166): 지도 아이템(TokenSlotGroup::Map) 전용 접두 8종·접미 8종 어픽스."""
+    specs: list[tuple[str, str, str, str, str]] = [
+        # (id, type, affixName, group, stat_line)
+        ("MapMod_MonsterDamage",    "Prefix", "야만적인", "MapMonsterDamage",    "Monsters deal (15-30)% increased Damage"),
+        ("MapMod_ExtraFire",        "Prefix", "작열하는", "MapExtraFire",        "Monsters deal (30-60)% extra Physical Damage as Fire"),
+        ("MapMod_ExtraCold",        "Prefix", "동결의",   "MapExtraCold",        "Monsters deal (30-60)% extra Physical Damage as Cold"),
+        ("MapMod_ExtraLightning",   "Prefix", "충격의",   "MapExtraLightning",   "Monsters deal (30-60)% extra Physical Damage as Lightning"),
+        ("MapMod_MonsterHaste",     "Prefix", "기민한",   "MapMonsterHaste",     "Monsters have (15-25)% increased Movement and Attack Speed"),
+        ("MapMod_MonsterCrit",      "Prefix", "치명적인", "MapMonsterCrit",      "Monsters have (25-50)% increased Critical Strike Chance"),
+        ("MapMod_MonsterLife",      "Prefix", "거대한",   "MapMonsterLife",      "Monsters take (15-30)% reduced Damage"),
+        ("MapMod_MoreMagicRare",    "Prefix", "군단의",   "MapMoreMagicRare",    "(30-60)% increased Magic and Rare Monsters"),
+        ("MapMod_MinusMaxRes",      "Suffix", "저항 약화의", "MapMinusMaxRes",   "Players have -(5-12)% to all maximum Resistances"),
+        ("MapMod_LessArmour",       "Suffix", "파쇄의",   "MapLessArmour",       "Players have (25-40)% less Armour"),
+        ("MapMod_LessEvasion",      "Suffix", "속박의",   "MapLessEvasion",      "Players have (25-40)% less Evasion Rating"),
+        ("MapMod_LessRecovery",     "Suffix", "고갈의",   "MapLessRecovery",     "Players have (30-50)% less Energy Shield Recharge Rate"),
+        ("MapMod_MonsterElemRes",   "Suffix", "원소 방벽의", "MapMonsterElemRes", "+(25-40)% Monster Elemental Resistances"),
+        ("MapMod_MonsterChaosRes",  "Suffix", "혼돈 방벽의", "MapMonsterChaosRes", "+(20-35)% Monster Chaos Resistance"),
+        ("MapMod_Vulnerability",    "Suffix", "취약의",   "MapVulnerability",    "Players take (15-25)% increased Physical Damage"),
+        ("MapMod_PackSize",         "Suffix", "밀집의",   "MapPackSize",         "+(15-30)% increased Monster Pack Size"),
+    ]
+    out: list[dict[str, Any]] = []
+    for aid, mtype, name, group, line in specs:
+        if aid in existing_ids:
+            continue
+        existing_ids.add(aid)
+        out.append({
+            "id": aid,
+            "type": mtype,
+            "affixName": name,
+            "group": group,
+            "level": 68,
+            "tier": 1,
+            "isLocal": False,
+            "rollable": True,
+            "lines": [parse_stat_line(line)],
+            "weights": [["map", 1000]],
+            "tags": ["map"],
+        })
+    return out
+
+
 def compile_items(pob: Path, out_dir: Path) -> dict[str, Any]:
     affixes = parse_mod_explicit(pob)
     existing_ids = {a["id"] for a in affixes}
     jewel_affixes = parse_mod_jewel(pob, existing_ids)
     extra_affixes, belt_defs, uniques = build_stage5_implicits_and_uniques(pob, existing_ids)
-    all_affixes = affixes + jewel_affixes + extra_affixes
+    map_affixes = build_stage6_map_affixes(existing_ids)
+    all_affixes = affixes + jewel_affixes + extra_affixes + map_affixes
 
     armor_curves = parse_armor_curves(pob)
     weapon_curves = parse_weapon_curves(pob)
@@ -1125,7 +1168,7 @@ def compile_items(pob: Path, out_dir: Path) -> dict[str, Any]:
     packs_dir = out_dir / "packs"
     packs_dir.mkdir(parents=True, exist_ok=True)
     out_path = packs_dir / "items_3_30.json"
-    out_path.write_text(json.dumps(pack, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    out_path.write_text(json.dumps(pack, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
     return pack
 
 

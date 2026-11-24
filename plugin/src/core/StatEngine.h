@@ -3,6 +3,7 @@
 #include "core/CharmSystem.h"
 #include "core/DataPack.h"
 #include "core/ItemTypes.h"
+#include "core/MapTypes.h"
 #include "core/PassiveStatParser.h"
 #include "core/Types.h"
 
@@ -61,10 +62,10 @@ namespace SkyrimPoE::Core
         // 5단계(결정 161, 164): 패시브 주얼 소켓(고정점 루프 진입 전 선합산), 오라 토글, 보스 이정표 달성 수
         std::vector<ItemStatTotals> socketedJewelStats;
         std::uint16_t activeAuraMask = 0;         // bit i = 스킬 칸 i의 오라/전령 ON 요청
-        std::uint8_t completedMilestoneCount = 0; // 0..3 (보스 이정표 1~3차 각 +30 정신력)
+        std::uint8_t completedMilestoneCount = 0; // 0..4 (1~4차 보스/결투장 이정표 각 +30 정신력, 기본 최대 220)
     };
 
-    // 층 ②: 충전·버프·이동·생명력 비율·참·헤드헌터·가드 등 동적 상태 입력(결정 117)
+    // 층 ②: 충전·버프·이동·생명력 비율·참·헤드헌터·가드·활성 지도 상태 입력(결정 117, 166)
     struct Layer2Input
     {
         bool moving = false;
@@ -78,6 +79,10 @@ namespace SkyrimPoE::Core
         CharmActiveBonuses charmBonuses{};
         std::uint16_t headhunterModMask = 0;   // 레어 몬스터로부터 훔친 속성 비트마스크(최대 60초)
         double moltenShellBonusArmour = 0.0;   // 용암 방패 활성 중 고정 방어도 보너스
+
+        // 결정 169: 플레이어의 활성 회차 셀 소속과 플레이어 쪽 지도 불이익을 위한 어픽스 요약
+        bool inActiveMap = false;
+        MapModSummary activeMapMods{};
     };
 
     // 사전 계산된 스킬 1건의 집계 스탯(불변 사본 내부)
@@ -173,7 +178,8 @@ namespace SkyrimPoE::Core
         std::uint8_t maxPowerCharges = 3;
 
         // 5단계(결정 161~164): 정신력·오라·전령·고유 특수 효과·참 면역
-        std::uint32_t maxSpirit = 100;
+        std::uint32_t baseMaxSpirit = Config::kDefaultSpiritBase;  // 기본 이정표 진행분, INI와 장비 제외
+        std::uint32_t maxSpirit = Config::kDefaultSpiritBase;
         std::uint32_t reservedSpirit = 0;
         std::uint16_t effectiveActiveAuraMask = 0;
         bool heraldOfIceActive = false;
@@ -208,6 +214,10 @@ namespace SkyrimPoE::Core
         double attackIgniteChancePct = 0.0;
         double attackPoisonChancePct = 0.0;
         double spellPoisonChancePct = 0.0;
+
+        // 결정 169: 플레이어 쪽 지도 불이익은 활성 회차 셀 안에서만 적용한다.
+        bool inActiveMap = false;
+        MapModSummary activeMapMods{};
 
         // 4~5단계(결정 156, 162): 고정점 수렴 후 10칸 장비 활성 및 요구치 미달 상태
         std::array<bool, kEquipSlotCount> gearSlotActive{};

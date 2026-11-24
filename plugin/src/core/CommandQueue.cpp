@@ -2,31 +2,39 @@
 
 namespace SkyrimPoE::Core
 {
+    std::uint64_t CommandQueue::InvalidatePending()
+    {
+        std::scoped_lock lock(mutex_);
+        const auto next = stateGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        std::erase_if(queue_, [](const Entry& entry) { return entry.kind == Kind::StateReapply; });
+        return next;
+    }
+
     std::uint64_t CommandQueue::BumpGenerationAndClear()
     {
-        const auto next = generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
         std::scoped_lock lock(mutex_);
+        trackingGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        const auto next = stateGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
         queue_.clear();
         return next;
     }
 
-    void CommandQueue::Enqueue(TaskFn fn)
+    void CommandQueue::Enqueue(TaskFn fn, Kind kind)
     {
         if (!fn) {
             return;
         }
-        const auto gen = generation_.load(std::memory_order_acquire);
         std::scoped_lock lock(mutex_);
-        queue_.push_back(Entry{ gen, std::move(fn) });
+        queue_.push_back(Entry{ CurrentGeneration(kind), kind, std::move(fn) });
     }
 
-    void CommandQueue::EnqueueForGeneration(std::uint64_t generation, TaskFn fn)
+    void CommandQueue::EnqueueForGeneration(std::uint64_t generation, Kind kind, TaskFn fn)
     {
         if (!fn) {
             return;
         }
         std::scoped_lock lock(mutex_);
-        queue_.push_back(Entry{ generation, std::move(fn) });
+        queue_.push_back(Entry{ generation, kind, std::move(fn) });
     }
 
     CommandQueue::Stats CommandQueue::DrainFrame(double budgetMs)
@@ -46,8 +54,7 @@ namespace SkyrimPoE::Core
 
         for (; index < batch.size(); ++index) {
             auto& entry = batch[index];
-            const auto currentGen = generation_.load(std::memory_order_acquire);
-            if (entry.generation != currentGen) {
+            if (entry.generation != CurrentGeneration(entry.kind)) {
                 ++stats.droppedStale;
                 continue;
             }
@@ -71,12 +78,11 @@ namespace SkyrimPoE::Core
         }
 
         if (index < batch.size()) {
-            const auto currentGen = generation_.load(std::memory_order_acquire);
             std::scoped_lock lock(mutex_);
             // 시간 예산 초과로 남은 현재 세대 예약은 FIFO 순서를 지키기 위해 새 예약 앞에 되돌린다.
             for (std::size_t rev = batch.size(); rev > index; --rev) {
                 auto& leftover = batch[rev - 1];
-                if (leftover.generation == currentGen) {
+                if (leftover.generation == CurrentGeneration(leftover.kind)) {
                     queue_.push_front(std::move(leftover));
                     ++stats.deferredByBudget;
                 } else {

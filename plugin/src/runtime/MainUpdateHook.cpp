@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "runtime/MainUpdateHook.h"
 #include "runtime/Addresses.h"
+#include "runtime/MapDeviceRuntime.h"
 
 #include <REL/Offset2ID.h>
 
@@ -102,6 +103,7 @@ namespace SkyrimPoE::Runtime
         g_statEngine = statEngine;
         g_dataPack = dataPack;
         g_config = config;
+        MapDeviceRuntime::BindDataPack(dataPack);
 
         const auto ver = REL::Module::get().version();
         if (!Addresses::IsVerifiedRuntime(ver)) {

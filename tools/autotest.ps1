@@ -1,4 +1,5 @@
-﻿param(
+﻿[CmdletBinding(SupportsShouldProcess)]
+param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("arm", "disarm", "status", "report")]
     [string]$Action,
@@ -6,8 +7,12 @@
     [string]$Save = "",
     [string]$TempSave = "SkyrimPoE_autotest",
     [bool]$Quit = $true,
-    [ValidateRange(30, 1800)]
-    [int]$TimeoutSec = 180
+    [ValidateRange(30, 7200)]
+    [int]$TimeoutSec,
+    # 조사용 단축 실행. h27이면 기준 세이브를 불러온 뒤 경로 탐침(H26·H27)만 돈다.
+    # 기존 위치 인자 호출(다섯 번째가 TimeoutSec)이 깨지지 않게 맨 뒤에 둔다.
+    [ValidateSet("", "h27")]
+    [string]$Only = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,12 +45,11 @@ switch ($Action) {
         if ([string]::IsNullOrWhiteSpace($cleanTemp)) {
             throw "Parameter -TempSave cannot be empty."
         }
-        # T-5: 기준 세이브와 임시 세이브가 같으면 사용자 세이브 덮어쓰기 차단
-        if ($cleanTemp.Equals($cleanSave, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Refusing to arm AutoTest: -TempSave ('$cleanTemp') must differ from -Save ('$cleanSave')."
-        }
-        if (-not (Test-Path $skseDir)) {
-            New-Item -ItemType Directory -Path $skseDir -Force | Out-Null
+        # T-5: 직접 쓰는 임시 세이브와 H 체크포인트 이름이 기준 세이브와 겹치는지 확인한다.
+        $checkpointPattern = '^' + [regex]::Escape($cleanTemp) + '_h_restore(?:_[0-9]+_[0-9]+)?$'
+        if ($cleanTemp.Equals($cleanSave, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $cleanSave -match $checkpointPattern) {
+            throw "Refusing to arm AutoTest: -TempSave and its derived checkpoint names must differ from -Save."
         }
         $lines = @(
             "# SkyrimPoE Stage 2 AutoTest marker (consumed on startup)"
@@ -53,17 +57,35 @@ switch ($Action) {
             "temp_save=$cleanTemp"
             ("quit=" + ($Quit.ToString().ToLowerInvariant()))
             "consume_marker=true"
-            "timeout_sec=$TimeoutSec"
         )
-        [System.IO.File]::WriteAllLines($markerPath, $lines, [System.Text.UTF8Encoding]::new($false))
-        Write-Host "Armed AutoTest marker: $markerPath"
-        Write-Host "Target save: $cleanSave (temp_save=$cleanTemp, quit=$Quit, timeout=${TimeoutSec}s)"
-        Write-Host "Note: Skyrim is NOT launched by this script. Launch SKSE via MO2 when ready."
+        if ($Only) {
+            $lines += "only=$Only"
+        }
+        $timeoutDisplay = "DLL default"
+        if ($PSBoundParameters.ContainsKey("TimeoutSec")) {
+            $lines += "timeout_sec=$TimeoutSec"
+            $timeoutDisplay = "$($TimeoutSec)s"
+        }
+        if ($WhatIfPreference) {
+            $lines | Write-Output
+        }
+        if ($PSCmdlet.ShouldProcess($markerPath, "Write AutoTest marker")) {
+            if (-not (Test-Path $skseDir)) {
+                New-Item -ItemType Directory -Path $skseDir -Force | Out-Null
+            }
+            [System.IO.File]::WriteAllLines($markerPath, $lines, [System.Text.UTF8Encoding]::new($false))
+            Write-Host "Armed AutoTest marker: $markerPath"
+            $onlyDisplay = if ($Only) { $Only } else { "all" }
+            Write-Host "Target save: $cleanSave (temp_save=$cleanTemp, quit=$Quit, timeout=$timeoutDisplay, only=$onlyDisplay)"
+            Write-Host "Note: Skyrim is NOT launched by this script. Launch SKSE via MO2 when ready."
+        }
     }
     "disarm" {
         if (Test-Path $markerPath) {
-            Remove-Item -Path $markerPath -Force
-            Write-Host "Removed AutoTest marker: $markerPath"
+            if ($PSCmdlet.ShouldProcess($markerPath, "Remove AutoTest marker")) {
+                Remove-Item -Path $markerPath -Force -Confirm:$false
+                Write-Host "Removed AutoTest marker: $markerPath"
+            }
         } else {
             Write-Host "AutoTest marker is not present."
         }

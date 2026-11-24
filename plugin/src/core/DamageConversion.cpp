@@ -28,6 +28,13 @@ namespace SkyrimPoE::Core
         return pack.MonsterLife(lv) / n;
     }
 
+    double OffenseReferenceLife(std::uint32_t exileLevel, const DataPack& pack, const Config& config) noexcept
+    {
+        const double lifeL = SafePositive(pack.MonsterLife(ClampLevel(exileLevel)), 22.0);
+        const double life1 = SafePositive(pack.MonsterLife(1), 22.0);
+        return config.offenseK * std::pow(lifeL / life1, 1.0 - config.offenseRollback);
+    }
+
     double ConvertOffenseHit(
         double poeHitDamage,
         std::uint32_t exileLevel,
@@ -39,10 +46,7 @@ namespace SkyrimPoE::Core
         }
         const auto lv = ClampLevel(exileLevel);
         const double lifeL = SafePositive(pack.MonsterLife(lv), 22.0);
-        const double life1 = SafePositive(pack.MonsterLife(1), 22.0);
-        const double g = lifeL / life1;
-        const double scale = std::pow(g, 1.0 - config.offenseRollback);
-        const double out = config.offenseK * (poeHitDamage / lifeL) * scale;
+        const double out = OffenseReferenceLife(lv, pack, config) * (poeHitDamage / lifeL);
         return (std::isfinite(out) && out > 0.0) ? out : 0.0;
     }
 

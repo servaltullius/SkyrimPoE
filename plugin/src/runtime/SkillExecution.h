@@ -29,6 +29,10 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static bool HasLocationBossRefType(const RE::Actor* actor) noexcept;
         [[nodiscard]] static bool IsBossOrDragon(const RE::Actor* actor) noexcept;
 
+        // 결정 134, 148, 181: 처치 보상용 첫 타격 적대 판정. 활성 회차가 스폰한 지도 몬스터는 늘 적대로 보고,
+        // 그 밖의 대상은 엔진의 IsHostileToActor(player)를 따른다(엔진은 교전 전의 지도 몬스터를 비적대로 볼 수 있음).
+        [[nodiscard]] static bool IsHostileForFirstHitReward(RE::Actor* target, RE::Actor* player);
+
         // 결정 109, 133, 139, 148: 번지는 피해(isDirectHit=false)는 현재 적대(IsHostileToActor) 필수,
         // 직격(isDirectHit=true)은 비적대 대상도 허용(아군은 항상 제외).
         [[nodiscard]] static bool CanDamageTarget(

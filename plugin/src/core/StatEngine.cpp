@@ -913,9 +913,14 @@ namespace SkyrimPoE::Core
             gear.weaponLocalSpeedMult = w.speedMult;
         }
 
-        // 5단계(결정 161): 정신력 상한 계산 + 활성 오라/전령 중복 제거 + 상한 초과 시 뒷슬롯 자동 비활성화
-        const std::uint32_t milestoneCount = std::min<std::uint32_t>(l1.completedMilestoneCount, 3u);
+        // 결정 169: 플레이어 쪽 지도 불이익에 셀 소속과 어픽스를 반영한다. 전투 환산은 유배자 레벨을 쓴다.
+        snap.inActiveMap = l2.inActiveMap;
+        snap.activeMapMods = l2.inActiveMap ? l2.activeMapMods : MapModSummary{};
+
+        // 5~6단계(결정 161, 166): 정신력 상한 계산(1~4차 이정표 각 +30, 기본 최대 220) + 활성 오라/전령 중복 제거
+        const std::uint32_t milestoneCount = std::min<std::uint32_t>(l1.completedMilestoneCount, 4u);
         const std::uint32_t gearSpirit = static_cast<std::uint32_t>(std::max(0.0, std::floor(gear.flatSpirit + 1e-6)));
+        snap.baseMaxSpirit = Config::kDefaultSpiritBase + milestoneCount * Config::kDefaultSpiritPerMilestone;
         snap.maxSpirit = config.spiritBase + milestoneCount * config.spiritPerMilestone + gearSpirit;
 
         struct ActiveAuraPick
@@ -1102,42 +1107,56 @@ namespace SkyrimPoE::Core
             snap.poeMaxMana = std::max(0.0, baseMana * std::max(0.0, 1.0 + totalIncMana / 100.0));
         }
 
+        auto sanitizePenalty = [](double raw, double maxCap) noexcept -> double {
+            return std::isfinite(raw) ? std::clamp(raw, 0.0, maxCap) : 0.0;
+        };
+        const double mapLessEsRecharge = snap.inActiveMap ? sanitizePenalty(snap.activeMapMods.playerLessEsRechargePct, 75.0) : 0.0;
+        const double mapLessArmour = snap.inActiveMap ? sanitizePenalty(snap.activeMapMods.playerLessArmourPct, 75.0) : 0.0;
+        const double mapLessEvasion = snap.inActiveMap ? sanitizePenalty(snap.activeMapMods.playerLessEvasionPct, 75.0) : 0.0;
+        const double mapResPen = snap.inActiveMap ? sanitizePenalty(snap.activeMapMods.playerMaxResPenalty, 25.0) : 0.0;
+
         const double totalFlatEs = l1.flatEnergyShield + p.flatEnergyShield + gear.energyShield + gear.flatEnergyShield + aura.flatEs;
         const double totalIncEs = l1.incEnergyShieldPct + p.incEnergyShieldPct + gear.incEnergyShieldPct + aura.incEsPct + intEsInc;
         snap.poeMaxEnergyShield = std::max(0.0, totalFlatEs * std::max(0.0, 1.0 + totalIncEs / 100.0));
-        snap.esRechargeRateMult = std::max(0.1, 1.0 + (p.incEsRechargeRatePct + gear.incEsRechargeRatePct + aura.incEsRechargeRatePct) / 100.0);
+        const double mapEsRechargeFactor = std::max(0.1, 1.0 - mapLessEsRecharge / 100.0);
+        snap.esRechargeRateMult = std::max(0.1,
+            (1.0 + (p.incEsRechargeRatePct + gear.incEsRechargeRatePct + aura.incEsRechargeRatePct) / 100.0) * mapEsRechargeFactor);
         snap.esRechargeDelayMult = 1.0 / std::max(0.1, 1.0 + (p.fasterEsRechargeStartPct + gear.fasterEsRechargeStartPct) / 100.0);
 
         // 방어·회피 + Determination/Grace/MoltenShell/BastionCharm + Iron Reflexes / Unwavering Stance
         // C-11: PoB Data/Misc.lua:84 base_evasion_rating = 15 반영
+        const double mapArmourFactor = std::max(0.1, 1.0 - mapLessArmour / 100.0);
+        const double mapEvasionFactor = std::max(0.1, 1.0 - mapLessEvasion / 100.0);
         const double totalFlatArmour = l1.armour + p.flatArmour + gear.armour + gear.flatArmour +
             aura.flatArmour + cb.flatArmour + l2.moltenShellBonusArmour;
         const double totalFlatEvasion = 15.0 + l1.evasion + p.flatEvasion + gear.evasion + gear.flatEvasion + aura.flatEvasion;
         const double totalArmourIncPct = p.incArmourPct + p.incArmourAndEvasionPct +
             gear.incArmourPct + gear.incArmourAndEvasionPct + aura.incArmourPct;
-        const double armourScaleMult = std::max(0.0, 1.0 + totalArmourIncPct / 100.0) * aura.moreArmourMult;
+        const double armourScaleMult = std::max(0.0, 1.0 + totalArmourIncPct / 100.0) * aura.moreArmourMult * mapArmourFactor;
         const double rawArmour = std::max(0.0, totalFlatArmour * std::max(0.0, 1.0 + totalArmourIncPct / 100.0));
         const double lowLifeEvasionInc = (!snap.chaosInoculation && l2.lowLife) ? gear.incEvasionOnLowLifePct : 0.0;
         if (p.ironReflexes) {
             const double convIncPct = p.incArmourPct + p.incEvasionPct + p.incArmourAndEvasionPct +
                 gear.incArmourPct + gear.incEvasionPct + gear.incArmourAndEvasionPct + aura.incArmourPct + lowLifeEvasionInc;
             const double convertedEvasion = std::max(0.0, totalFlatEvasion * std::max(0.0, 1.0 + convIncPct / 100.0));
-            // 검수 M2: PoB 2.68.1 Iron Reflexes — 전환 회피에도 Grace moreEvasionMult와 Determination moreArmourMult가 모두 곱해짐
-            snap.armour = (rawArmour + convertedEvasion * aura.moreEvasionMult) * aura.moreArmourMult;
+            // 검수 M2 + 6단계 검수 Major 3: PoB Iron Reflexes — 전환 회피에 Grace moreEvasionMult·mapEvasionFactor와 Determination moreArmourMult·mapArmourFactor 모두 곱해짐
+            snap.armour = (rawArmour + convertedEvasion * aura.moreEvasionMult * mapEvasionFactor) * aura.moreArmourMult * mapArmourFactor;
             snap.evasion = 0.0;
         } else {
             const double totalEvasionIncPct = p.incEvasionPct + p.incArmourAndEvasionPct +
                 gear.incEvasionPct + gear.incArmourAndEvasionPct + dexEvasionInc + lowLifeEvasionInc;
             const double rawEvasion = std::max(0.0, totalFlatEvasion * std::max(0.0, 1.0 + totalEvasionIncPct / 100.0));
-            snap.armour = rawArmour * aura.moreArmourMult;
-            snap.evasion = p.cannotEvade ? 0.0 : (rawEvasion * aura.moreEvasionMult);
+            snap.armour = rawArmour * aura.moreArmourMult * mapArmourFactor;
+            snap.evasion = p.cannotEvade ? 0.0 : (rawEvasion * aura.moreEvasionMult * mapEvasionFactor);
         }
 
-        // 동적 원소별 최대 저항 상한 (기본 75% + 패시브 + 참 최대 저항, PoE 하드캡 90%)
-        snap.maxFireResist = std::clamp(c.resistCap + p.maxFireResistBonus + cb.maxFireResist, 0.0, 90.0);
-        snap.maxColdResist = std::clamp(c.resistCap + p.maxColdResistBonus + cb.maxColdResist, 0.0, 90.0);
-        snap.maxLightningResist = std::clamp(c.resistCap + p.maxLightningResistBonus + cb.maxLightningResist, 0.0, 90.0);
-        snap.maxChaosResist = std::clamp(c.resistCap + p.maxChaosResistBonus, 0.0, 90.0);
+        // 결정 169: 동적 최대 저항은 90% 상한이며, 50% 하한은 활성 회차 셀 안에서만 적용한다.
+        constexpr double kMapMaxResistFloor = 50.0;
+        const double maxResistFloor = snap.inActiveMap ? kMapMaxResistFloor : 0.0;
+        snap.maxFireResist = std::clamp(c.resistCap + p.maxFireResistBonus + cb.maxFireResist - mapResPen, maxResistFloor, 90.0);
+        snap.maxColdResist = std::clamp(c.resistCap + p.maxColdResistBonus + cb.maxColdResist - mapResPen, maxResistFloor, 90.0);
+        snap.maxLightningResist = std::clamp(c.resistCap + p.maxLightningResistBonus + cb.maxLightningResist - mapResPen, maxResistFloor, 90.0);
+        snap.maxChaosResist = std::clamp(c.resistCap + p.maxChaosResistBonus - mapResPen, maxResistFloor, 90.0);
 
         const std::uint8_t clampedEnd = std::min(l2.enduranceCharges, snap.maxEnduranceCharges);
         const double endDR = clampedEnd * kEndurancePhysAndElemDR;

@@ -1,18 +1,20 @@
 // 런타임 목록 파일(지도 팩 ESP 옆의 .json). DLL은 손으로 옮긴 번호 대신 이것을 읽는다(6단계 계획 R1 7번, R4 1~3번).
-// 번호는 모두 지도 팩 플러그인의 로컬 FormID다(로드 순서와 무관). 원본 셀만 Skyrim.esm의 로컬 번호다.
-// 아직 없는 것(계획 R1 7번 가운데): 스폰 원형(결정 170: R3·R4에서 제안해 확인받음)과 막음 물체(실험 G-7에서 방법을 정함).
-// 그 필드는 정해진 뒤 manifestFormat을 올리며 더한다.
+// 복제 레코드는 지도 팩의 로컬 FormID, 원본 셀과 스폰 원형은 Skyrim.esm의 로컬 FormID다.
 using System.Text.Json.Serialization;
 
 namespace SkyrimPoE.Tools.DungeonClone;
 
 internal sealed class PackManifest
 {
-    public const int CurrentFormat = 1;
+    // 형식 4: 출구 구역 반경(exitZoneRadius)을 더함(결정 177 ③ 재보완).
+    public const int CurrentFormat = 4;
 
     [JsonRequired] public int ManifestFormat { get; set; } = CurrentFormat;
     [JsonRequired] public string Plugin { get; set; } = "";
     [JsonRequired] public int PackVersion { get; set; }
+    // 출구 구역 반경(유닛, 3차원). 원본 마스터의 엔진 자동 문 발동 거리(GMST fAutoDoorActivateDistance)를 그대로 옮긴다.
+    // 런타임은 플레이어가 자동 출구 자리에서 이 거리 안이면 지도를 떠나게 하고, verify는 입구·앵커가 이 반경 밖인지 확인한다.
+    [JsonRequired] public float ExitZoneRadius { get; set; }
     // 함께 설치된 ESP가 이 목록과 짝인지 런타임이 확인한다(SHA-256, 소문자 16진수).
     [JsonRequired] public string EspSha256 { get; set; } = "";
     [JsonRequired] public string SourceMaster { get; set; } = "Skyrim.esm";
@@ -27,12 +29,17 @@ internal sealed class DungeonManifest
     [JsonRequired] public string Name { get; set; } = "";
     [JsonRequired] public string SourceCell { get; set; } = "";
     [JsonRequired] public string Cell { get; set; } = "";
+    [JsonRequired] public float NavmeshMinZ { get; set; }
     [JsonRequired] public string EntryMarker { get; set; } = "";
     [JsonRequired] public string BossAnchor { get; set; } = "";
     [JsonRequired] public List<string> PackAnchors { get; set; } = new();
+    [JsonRequired] public string BossNpc { get; set; } = "";
+    public List<string>? PackNpcs { get; set; }
+    public List<string>? AddNpcs { get; set; }
     // 직접 여는 바깥문(순간이동을 지움). 런타임은 이 문을 열면 귀환을 묻는다.
     [JsonRequired] public List<string> ReturnDoors { get; set; } = new();
-    // 닿으면 넘어가는 자동 문(순간이동을 지움). 그 너머는 빈 공간일 수 있어 실험 G-7의 결과대로 막는다.
+    // 닿으면 넘어가던 자동 문(순간이동을 지우고 처음부터 꺼 둠). 런타임은 이 자리를 중심으로 한 출구 구역으로 지도를 떠나게 한다.
+    // 그 너머는 빈 공간일 수 있다(실험 G-7).
     [JsonRequired] public List<AutoExit> AutoExits { get; set; } = new();
     // 다른 실내 칸으로 가던, 직접 여는 문(순간이동을 지움). 열어도 아무 데도 가지 않는다(물리적으로 막은 것은 아님).
     [JsonRequired] public List<string> SealedDoors { get; set; } = new();

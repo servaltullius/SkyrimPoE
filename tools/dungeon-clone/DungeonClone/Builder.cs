@@ -61,6 +61,8 @@ internal sealed class DungeonReport
     public string Boss { get; set; } = "";
     public List<string> PackAnchors { get; set; } = new();
     public List<string> SkippedAnchorsNearEntry { get; set; } = new();
+    // 자동 출구의 출구 구역(반경 + 여유) 안이라 쓰지 않은 앵커(결정 177 ③ 재보완)
+    public List<string> SkippedAnchorsNearExit { get; set; } = new();
     public List<string> SkippedAnchorsFarFromNavmesh { get; set; } = new();
     public List<string> SkippedAnchorsTooClose { get; set; } = new();
     public List<string> RemainingScriptedRefs { get; set; } = new();
@@ -97,6 +99,23 @@ internal static class Builder
 
     public static double Distance(P3Float a, P3Float b)
         => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2) + Math.Pow(a.Z - b.Z, 2));
+
+    // 출구 구역 반경: 원본 마스터의 엔진 자동 문 발동 거리(GMST). 없거나 양의 유한한 수가 아니면 만들지 않는다.
+    public static float ExitZoneRadius(SourceIndex src)
+    {
+        var settings = src.Mod.GameSettings
+            .Where(g => string.Equals(g.EditorID, Policy.AutoDoorActivateDistanceSetting, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (settings.Count != 1 || settings[0] is not IGameSettingFloatGetter { Data: { } radius } || !float.IsFinite(radius) || radius <= 0
+            || radius > Policy.MaxExitZoneRadius)
+            throw new InvalidDataException($"{Policy.SourceMaster}에서 0보다 크고 {Policy.MaxExitZoneRadius} 이하인 GMST {Policy.AutoDoorActivateDistanceSetting}를 하나 찾지 못했습니다(출구 구역 반경).");
+        return radius;
+    }
+
+    // 이 자리에서 가장 가까운 자동 출구까지의 3차원 거리(자동 출구가 없으면 무한대)
+    public static double NearestExitDistance(P3Float p, IEnumerable<AutoExit> exits)
+        => exits.Select(x => Distance(p, new P3Float(x.Position[0], x.Position[1], x.Position[2])))
+            .DefaultIfEmpty(double.PositiveInfinity).Min();
 
     // 걸을 수 있는 삼각형만(삭제·물 표시와 넓이가 없는 삼각형은 뺌)
     public static IEnumerable<(P3Float A, P3Float B, P3Float C)> WalkableTriangles(IEnumerable<INavigationMeshGetter> navs)
@@ -206,17 +225,41 @@ internal static class Builder
             : throw new InvalidDataException($"{srcCell.EditorID}: 입구 마커(COCMarkerHeading)가 {markers.Count}개입니다. 정확히 하나여야 합니다.");
     }
 
+    internal static void ValidateSpawnTemplates(DungeonSpec dungeon, SourceIndex src)
+    {
+        if (dungeon.Role == "map" && dungeon.PackNpcs is not { Count: > 0 })
+            throw new InvalidDataException($"{dungeon.Key}: 지도에는 packNpcs가 하나 이상 필요합니다.");
+        if (dungeon.Role == "arena" && dungeon.AddNpcs is not { Count: > 0 })
+            throw new InvalidDataException($"{dungeon.Key}: 결투장에는 addNpcs가 하나 이상 필요합니다.");
+
+        foreach (var id in new[] { dungeon.BossNpc }.Concat(dungeon.PackNpcs ?? []).Concat(dungeon.AddNpcs ?? []))
+        {
+            if (id is not { Length: 6 } || !id.All(Uri.IsHexDigit))
+                throw new InvalidDataException($"{dungeon.Key}: 원형 ID '{id}'는 6자리 16진수여야 합니다.");
+            var key = new FormKey(Policy.SourceMaster, Convert.ToUInt32(id, 16));
+            if (!src.Cache.TryResolve(key, out var record) || record is not INpcGetter)
+                throw new InvalidDataException($"{dungeon.Key}: 원형 {key}를 NPC_로 찾지 못했습니다.");
+        }
+    }
+
     public static BuildResult Build(PackSpec pack, SourceIndex src, Ledger ledger, bool allowLedgerChanges)
     {
+        foreach (var dungeon in pack.Dungeons)
+            ValidateSpawnTemplates(dungeon, src);
+
         var outKey = ModKey.FromFileName(pack.Plugin);
         var outMod = new SkyrimMod(outKey, SkyrimRelease.SkyrimSE);
-        var manifest = new PackManifest { Plugin = pack.Plugin, PackVersion = pack.PackVersion, SourceMaster = Policy.SourceMaster.FileName };
+        var exitZoneRadius = ExitZoneRadius(src);
+        var manifest = new PackManifest
+        {
+            Plugin = pack.Plugin, PackVersion = pack.PackVersion, SourceMaster = Policy.SourceMaster.FileName, ExitZoneRadius = exitZoneRadius,
+        };
         var reports = new List<DungeonReport>();
         var blocks = new SortedDictionary<int, CellBlock>();
 
         foreach (var spec in pack.Dungeons)
         {
-            var (cell, dm, report) = BuildDungeon(pack, spec, src, ledger, allowLedgerChanges, outKey);
+            var (cell, dm, report) = BuildDungeon(pack, spec, src, ledger, allowLedgerChanges, outKey, exitZoneRadius);
             manifest.Dungeons.Add(dm);
             reports.Add(report);
 
@@ -305,7 +348,7 @@ internal static class Builder
     }
 
     private static (Cell, DungeonManifest, DungeonReport) BuildDungeon(
-        PackSpec pack, DungeonSpec spec, SourceIndex src, Ledger ledger, bool allowNew, ModKey outKey)
+        PackSpec pack, DungeonSpec spec, SourceIndex src, Ledger ledger, bool allowNew, ModKey outKey, float exitZoneRadius)
     {
         var srcCell = src.GetCell(spec.SourceCell);
         var report = new DungeonReport { Key = spec.Key, SourceCell = $"{srcCell.FormKey.ID:X6} {srcCell.EditorID}" };
@@ -365,6 +408,12 @@ internal static class Builder
         cell.Temporary.AddRange(temporary);
         cell.NavigationMeshes.Clear();
         cell.NavigationMeshes.AddRange(navmeshes);
+        var navmeshMinZ = WalkableTriangles(cell.NavigationMeshes)
+            .Select(t => Math.Min(t.A.Z, Math.Min(t.B.Z, t.C.Z)))
+            .DefaultIfEmpty(float.PositiveInfinity)
+            .Min();
+        if (!float.IsFinite(navmeshMinZ))
+            throw new InvalidDataException($"{spec.Key}: 걸을 수 있는 내비메쉬 삼각형의 최저 Z를 구할 수 없습니다.");
         report.Kept = persistent.Count + temporary.Count + navmeshes.Count;
         cell.RemapLinks(mapping);
         var newKeys = mapping.Values.Where(k => !k.IsNull).ToHashSet();
@@ -400,8 +449,11 @@ internal static class Builder
         {
             Key = spec.Key, Type = spec.Type, Role = spec.Role, Name = spec.Name,
             SourceCell = $"{srcCell.FormKey.ID:X6}", Cell = Ledger.Format(mapping[srcCell.FormKey].ID),
+            NavmeshMinZ = navmeshMinZ,
+            BossNpc = spec.BossNpc, PackNpcs = spec.PackNpcs, AddNpcs = spec.AddNpcs,
         };
         var cutDoors = new HashSet<FormKey>();
+        var autoExitKeys = new HashSet<FormKey>();
         foreach (var placed in cell.Persistent.Concat(cell.Temporary).OfType<PlacedObject>())
         {
             if (placed.TeleportDestination is not { } tele || newKeys.Contains(tele.Door.FormKey)) continue;
@@ -418,6 +470,13 @@ internal static class Builder
             if (door.Flags.HasFlag(Door.Flag.Automatic))
             {
                 var p = placed.Placement ?? throw new InvalidDataException($"{spec.Key}: 자동 문 {id}에 위치가 없습니다.");
+                // 결정 177 ③ 재보완: 엔진 자동 문은 구 경계를 넘는 순간에만 발동하고 목적지 없이도 화면을 어둡게 하므로 꺼 둔다.
+                // 출구는 런타임이 이 자리를 중심으로 한 구역으로 판정한다.
+                placed.MajorRecordFlagsRaw |= Policy.InitiallyDisabledFlag;
+                autoExitKeys.Add(placed.FormKey);
+                // 활성화 부모가 있으면 셀을 불러올 때 부모 상태를 따라 다시 켜질 수 있다. 그런 출구는 만들지 않는다.
+                if (placed.EnableParent is not null)
+                    throw new InvalidDataException($"{spec.Key}: 자동 출구 {id}에 활성화 부모가 있어 처음부터 꺼 둘 수 없습니다.");
                 dm.AutoExits.Add(new AutoExit
                 {
                     Id = id,
@@ -430,6 +489,17 @@ internal static class Builder
             else dm.ReturnDoors.Add(id);
         }
 
+        // 결정 177 ③ 재보완: 엔진 자동 문은 목적지를 확인하기 전에 화면을 어둡게 하므로, 원본부터 목적지가 없던 자동 문이 켜진 채
+        // 남으면 같은 멈춤이 생긴다. 출구를 활성화 부모로 쓰는 참조가 있으면 출구를 끄는 것이 그 참조까지 끈다(Codex 검토 2026-11-24).
+        foreach (var placed in cell.Persistent.Concat(cell.Temporary).OfType<PlacedObject>())
+        {
+            if (placed.EnableParent is { } parent && autoExitKeys.Contains(parent.Reference.FormKey))
+                throw new InvalidDataException($"{spec.Key}: {placed.FormKey}가 자동 출구 {parent.Reference.FormKey}를 활성화 부모로 씁니다.");
+            if ((placed.MajorRecordFlagsRaw & Policy.InitiallyDisabledFlag) != 0) continue;
+            if (src.Cache.TryResolve(placed.Base.FormKey, out var ab) && ab is IDoorGetter autoDoor && autoDoor.Flags.HasFlag(Door.Flag.Automatic))
+                throw new InvalidDataException($"{spec.Key}: 자동 문 {placed.FormKey}가 출구 목록에 없이 켜져 있습니다(목적지 없는 자동 문).");
+        }
+
         // 6) 안쪽 문(순간이동을 끊지 않은 문) 잠금을 푼다(결정 170 U-5: 열쇠를 가진 NPC와 열쇠를 뺐으므로).
         foreach (var placed in cell.Persistent.Concat(cell.Temporary).OfType<PlacedObject>())
         {
@@ -438,6 +508,12 @@ internal static class Builder
             placed.Lock = null;
             report.UnlockedDoors++;
         }
+
+        // 출구 구역 밖이어야 하는 최소 거리(결정 177 ③ 재보완). 입구 마커가 그 안이면 들어오자마자 떠나게 되므로 만들지 않는다.
+        var exitKeepOut = exitZoneRadius + pack.ExitZoneClearance;
+        var entryToExit = NearestExitDistance(entryPos, dm.AutoExits);
+        if (entryToExit < exitKeepOut)
+            throw new InvalidDataException($"{spec.Key}: 입구 마커가 자동 출구에서 {entryToExit:F0}유닛으로 출구 구역 반경과 여유({exitKeepOut:F0})보다 가깝습니다.");
 
         // 7) 입구 마커를 영구 참조로 옮긴다(셀이 로드되기 전에도 DLL이 찾게).
         var entryKey = mapping[srcEntry.FormKey];
@@ -480,11 +556,14 @@ internal static class Builder
             throw new InvalidDataException($"{spec.Key}: 보스 앵커를 내비메쉬로 {boss.Moved:F0}유닛 옮겨야 해서 {pack.AnchorMaxSnapDistance}를 넘습니다.");
         if (boss.Dist < pack.AnchorMinDistanceFromEntry)
             throw new InvalidDataException($"{spec.Key}: 보스 앵커가 입구에서 {boss.Dist:F0}유닛으로 {pack.AnchorMinDistanceFromEntry}보다 가깝습니다.");
+        if (NearestExitDistance(boss.Pos, dm.AutoExits) is var bossToExit && bossToExit < exitKeepOut)
+            throw new InvalidDataException($"{spec.Key}: 보스 앵커가 자동 출구에서 {bossToExit:F0}유닛으로 출구 구역 반경과 여유({exitKeepOut:F0})보다 가깝습니다.");
         var chosen = new List<Snapped> { boss };
         foreach (var c in candidates.Where(c => c != boss))
         {
             if (c.Moved > pack.AnchorMaxSnapDistance) { report.SkippedAnchorsFarFromNavmesh.Add(Describe(c)); continue; }
             if (c.Dist < pack.AnchorMinDistanceFromEntry) { report.SkippedAnchorsNearEntry.Add(Describe(c)); continue; }
+            if (NearestExitDistance(c.Pos, dm.AutoExits) < exitKeepOut) { report.SkippedAnchorsNearExit.Add(Describe(c)); continue; }
             if (chosen.Any(x => Distance(x.Pos, c.Pos) < pack.AnchorMinSeparation)) { report.SkippedAnchorsTooClose.Add(Describe(c)); continue; }
             chosen.Add(c);
         }

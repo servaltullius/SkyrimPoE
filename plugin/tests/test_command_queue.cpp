@@ -69,6 +69,70 @@ POE_TEST("CommandQueue: BumpGenerationAndClear drops pending and stale-generatio
     POE_CHECK(ran == 10);
 }
 
+POE_TEST("CommandQueue: cleanup preserves tracking pending, in the batch, and captured before invalidation")
+{
+    using Kind = CommandQueue::Kind;
+    CommandQueue q;
+    std::vector<int> ran;
+    const auto trackingGeneration = q.CurrentGeneration(Kind::Tracking);
+    const auto stateGeneration = q.CurrentGeneration();
+
+    q.Enqueue([&]() {
+        q.Enqueue([&]() { ran.push_back(-1); });
+        q.Enqueue([&]() { ran.push_back(2); }, Kind::Tracking);
+        q.InvalidatePending();
+        q.EnqueueForGeneration(trackingGeneration, Kind::Tracking, [&]() { ran.push_back(3); });
+        q.EnqueueForGeneration(stateGeneration, [&]() { ran.push_back(-2); });
+    });
+    q.Enqueue([&]() { ran.push_back(-3); });
+    q.Enqueue([&]() { ran.push_back(1); }, Kind::Tracking);
+
+    POE_CHECK(q.DrainFrame(0.0).droppedStale == 1);
+    POE_CHECK(q.CurrentGeneration(Kind::Tracking) == trackingGeneration);
+    POE_CHECK(q.DrainFrame(0.0).droppedStale == 1);
+    POE_CHECK((ran == std::vector<int>{ 1, 2, 3 }));
+}
+
+POE_TEST("CommandQueue: a load invalidates both kinds including tracking captured before the load")
+{
+    using Kind = CommandQueue::Kind;
+    CommandQueue q;
+    const auto trackingGeneration = q.CurrentGeneration(Kind::Tracking);
+    int ran = 0;
+    q.Enqueue([&]() { ++ran; }, Kind::Tracking);
+    q.Enqueue([&]() { ++ran; });
+    q.BumpGenerationAndClear();
+    POE_CHECK(q.PendingCount() == 0);
+    q.EnqueueForGeneration(trackingGeneration, Kind::Tracking, [&]() { ++ran; });
+    q.Enqueue([&]() { ran += 10; }, Kind::Tracking);
+    POE_CHECK(q.DrainFrame(0.0).droppedStale == 1);
+    POE_CHECK(ran == 10);
+}
+
+POE_TEST("CommandQueue: invalidation in a running task discards the old frame and pending work")
+{
+    CommandQueue q;
+    const auto originalGeneration = q.CurrentGeneration();
+    std::vector<int> ran;
+    q.Enqueue([&]() {
+        ran.push_back(1);
+        q.Enqueue([&]() { ran.push_back(2); });
+        POE_CHECK(q.InvalidatePending() == originalGeneration + 1);
+        POE_CHECK(q.PendingCount() == 0);
+        q.EnqueueForGeneration(originalGeneration, [&]() { ran.push_back(3); });
+        q.Enqueue([&]() { ran.push_back(4); });
+    });
+    q.Enqueue([&]() { ran.push_back(5); });
+
+    const auto first = q.DrainFrame(0.0);
+    POE_CHECK(first.executed == 1 && first.droppedStale == 1 && first.failed == 0);
+    POE_CHECK(ran == std::vector<int>{ 1 });
+
+    const auto second = q.DrainFrame(0.0);
+    POE_CHECK(second.executed == 1 && second.droppedStale == 1);
+    POE_CHECK((ran == std::vector<int>{ 1, 4 }));
+}
+
 POE_TEST("CommandQueue: budget deferral preserves FIFO order ahead of new tasks")
 {
     CommandQueue q;

@@ -5,6 +5,7 @@
 #include "core/DataPack.h"
 #include "core/ItemData.h"
 #include "core/ItemTypes.h"
+#include "core/MapTypes.h"
 #include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
@@ -41,6 +42,9 @@ namespace SkyrimPoE::Runtime
         std::array<Core::CharmSlotState, Core::kMaxCharmSlots> charmSlots{};
         std::unordered_map<std::uint32_t, Core::PoEItemRecord> socketedJewels;
 
+        // 6단계(결정 166): 아틀라스 영구 진행 상태(T1~T16 첫 클리어 +16 패시브, 첫 공물 지급)
+        Core::AtlasState atlas{};
+
         PersistentState()
         {
             for (std::size_t i = 0; i < slots.size(); ++i) {
@@ -63,6 +67,8 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kRecordSpirit = 'SPRT';
         static constexpr std::uint32_t kRecordGear = 'GEAR';
         static constexpr std::uint32_t kRecordSpeedMods = 'SPDM';
+        static constexpr std::uint32_t kRecordAtlas = 'ATLS';
+        static constexpr std::uint32_t kRecordMaps = 'MAPS';
         static constexpr std::uint32_t kCoreVersion = 2;
         static constexpr std::uint32_t kGemKeysVersion = 1;
         static constexpr std::uint32_t kTreeVersion = 1;
@@ -71,6 +77,14 @@ namespace SkyrimPoE::Runtime
         static constexpr std::uint32_t kSpiritVersion = 1;
         static constexpr std::uint32_t kGearVersion = 1;
         static constexpr std::uint32_t kSpeedModsVersion = 1;
+        static constexpr std::uint32_t kAtlasVersion = Core::kAtlasSaveVersion;
+        static constexpr std::uint32_t kMapsVersion = Core::kMapSaveVersion;
+
+        struct LoadedMapRecordVersions
+        {
+            std::uint32_t atlas = 0;
+            std::uint32_t maps = 0;
+        };
 
         static bool Install(
             Core::CommandQueue* queue,
@@ -85,6 +99,8 @@ namespace SkyrimPoE::Runtime
         static void SchedulePostLoadOrNewGameInit(bool isNewGame);
 
         [[nodiscard]] static PersistentState GetStateCopy();
+        // 마지막 로드에서 실제 읽기에 성공한 ATLS·MAPS 판(없으면 0).
+        [[nodiscard]] static LoadedMapRecordVersions GetLoadedMapRecordVersions();
         static void SetState(const PersistentState& state);
         static void UpdateState(const std::function<void(PersistentState&)>& mutator);
         // 결정 137(ㅁ): 젬·장비·주얼 거래를 코세이브 저장(OnSave)과 직렬화해 절반만 반영된 상태가 저장되지 않도록 보장한다.
@@ -101,5 +117,7 @@ namespace SkyrimPoE::Runtime
         static void ForgetSpeedRevert(RE::FormID actorId);
         // 주 갱신 스레드 전용: 맡긴 원복을 다시 시도한다(PostLoadInit과 주기 틱에서 호출).
         static void RetryPendingSpeedReverts(double deltaSec, bool gamePaused);
+        // 6단계 안전 제거 정리용: 미원복 SPDM 대기열 NPC SpeedMult 즉시 원복
+        static std::size_t RevertAllPendingSpeedModsNow();
     };
 }

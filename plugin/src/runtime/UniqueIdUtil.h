@@ -31,4 +31,7 @@ namespace SkyrimPoE::Runtime::UniqueIdUtil
     // RemoveItem(..., nullptr, ...)은 첫 ExtraDataList(추적품)를 먼저 소비한다.
     // 이 함수는 일반 스택(plain)만 정확히 count개 제거해 추적품·강화품을 건드리지 않는다.
     bool RemovePlainItem(RE::TESObjectREFR* owner, RE::TESBoundObject* baseObj, std::int32_t count = 1);
+
+    // RemovePlainItem이 실제로 제거할 수 있는 수량(일반 스택 + 보호되지 않은 ExtraDataList)
+    [[nodiscard]] std::int32_t CountRemovablePlainItems(RE::TESObjectREFR* owner, RE::TESBoundObject* baseObj);
 }

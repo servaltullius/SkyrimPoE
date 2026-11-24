@@ -71,6 +71,9 @@ namespace SkyrimPoE::Runtime
         // DeathListener 호출: SpeedMult 원복 + Berek's Respite 점화·감전 전파 (victim null이어도 actorId 즉시 정리)
         static void OnActorKilled(RE::FormID actorId, RE::Actor* victim, bool playerHasBerekProlif);
         static void OnActorReset(RE::FormID actorId);
+        // 6단계: 지도 사망 탈출/안전 제거 시 플레이어 상태이상 해제 및 전 액터 SpeedMult 즉시 원복
+        static void ClearPlayerAilments() noexcept;
+        static void RevertAllTrackedSpeedsNow();
         // Q-1: 세이브 시점에 적용 중인 kTemporary SpeedMult 델타 스냅샷(순수 메모리 읽기, 엔진 호출 금지)
         [[nodiscard]] static std::vector<std::pair<RE::FormID, float>> TakeActiveSpeedDeltasForSave();
         // SKSE OnRevert 전용: 순수 메모리 정리만 수행(엔진 함수 호출 금지)

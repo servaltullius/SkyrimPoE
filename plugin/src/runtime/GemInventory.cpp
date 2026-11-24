@@ -457,6 +457,7 @@ namespace SkyrimPoE::Runtime
                 const RE::TESUniqueIDChangeEvent* event,
                 RE::BSTEventSource<RE::TESUniqueIDChangeEvent>*) override
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                 // 무효한 이전 키(0:0)는 추적 대상이 아니므로 즉시 무시해 무관한 아이템 탈취를 막는다.
                 if (!event || event->oldBaseID == 0 || event->oldUniqueID == 0) {
                     return RE::BSEventNotifyControl::kContinue;
@@ -474,6 +475,9 @@ namespace SkyrimPoE::Runtime
 
                 {
                     std::scoped_lock lock(g_mutex);
+                    if (g_queue && generation != g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking)) {
+                        return RE::BSEventNotifyControl::kContinue;
+                    }
                     for (auto it = g_entries.begin(); it != g_entries.end(); ++it) {
                         if (it->key.ownerFormId == event->oldBaseID &&
                             it->key.uniqueId == event->oldUniqueID) {
@@ -512,7 +516,7 @@ namespace SkyrimPoE::Runtime
                 // 참조가 아직 조회되지 않을 때만 주 갱신 큐로 1회 보완을 예약한다.
                 if (droppedInstanceId != 0 && droppedRefId != 0 && stampUid != 0) {
                     if (!TryStampDroppedWorldRef(droppedRefId, droppedInstanceId, stampUid, droppedGemId, priorKey) && g_queue) {
-                        g_queue->Enqueue([droppedRefId, droppedInstanceId, stampUid, droppedGemId, priorKey]() {
+                        g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, [droppedRefId, droppedInstanceId, stampUid, droppedGemId, priorKey]() {
                             (void)TryStampDroppedWorldRef(droppedRefId, droppedInstanceId, stampUid, droppedGemId, priorKey);
                         });
                     }
@@ -539,6 +543,7 @@ namespace SkyrimPoE::Runtime
                 const RE::TESContainerChangedEvent* event,
                 RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
             {
+                const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                 if (!event || !g_queue ||
                     !WorldStampLink::IsStampedWorldPickup(
                         event->oldContainer, event->newContainer, event->uniqueID, event->itemCount, kGemStampBand)) {
@@ -563,7 +568,7 @@ namespace SkyrimPoE::Runtime
                 if (tracked) {
                     const RE::FormID newOwner = event->newContainer;
                     const std::uint16_t stamp = event->uniqueID;
-                    g_queue->Enqueue([newOwner, stamp]() {
+                    g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, [newOwner, stamp]() {
                         RelinkPickedUpGemOnMainUpdate(newOwner, stamp);
                     });
                 }
