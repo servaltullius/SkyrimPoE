@@ -6,6 +6,7 @@
 #include "core/ContentCheck.h"
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
+#include "core/EspFormCheck.h"
 #include "core/ItemData.h"
 #include "core/KillTracker.h"
 #include "core/PassiveTreeData.h"
@@ -252,92 +253,78 @@ namespace
         spdlog::set_default_logger(std::move(logger));
     }
 
-    void VerifyEspForms()
+    std::string VerifyEspForms()
     {
-        std::size_t found = 0;
-        std::size_t missing = 0;
-
-        auto check = [&](auto* ptr, const char* label, RE::FormID localId) {
-            if (ptr) {
-                ++found;
-            } else {
-                ++missing;
-                SKSE::log::warn("ESP form missing: {} (0x{:06X} in {}).", label, localId, Runtime::FormIds::kPluginName);
-            }
+        using namespace Runtime::FormIds;
+        auto* data = RE::TESDataHandler::GetSingleton();
+        std::vector<Core::EspFormObservation> observations;
+        const auto check = [&](RE::FormType expectedType, std::string_view name, RE::FormID localId) {
+            // The typed lookup returns null for both an absent form and a type mismatch.
+            const auto* form = data ? data->LookupForm(localId, kPluginName) : nullptr;
+            const auto* owner = form ? form->GetFile(0) : nullptr;
+            observations.push_back({ name, localId, form != nullptr, form && form->GetFormType() == expectedType,
+                owner && _stricmp(std::string(owner->GetFilename()).c_str(), std::string(kPluginName).c_str()) == 0,
+                form && form->IsDeleted() });
         };
 
-        check(Runtime::FormIds::Lookup<RE::EffectSetting>(Runtime::FormIds::kProxySpellEffect),
-            "SPOE_ProxySpellEffect", Runtime::FormIds::kProxySpellEffect);
-        check(Runtime::FormIds::Lookup<RE::EffectSetting>(Runtime::FormIds::kProxyPowerEffect),
-            "SPOE_ProxyPowerEffect", Runtime::FormIds::kProxyPowerEffect);
+        check(RE::EffectSetting::FORMTYPE, "SPOE_ProxySpellEffect", kProxySpellEffect);
+        check(RE::EffectSetting::FORMTYPE, "SPOE_ProxyPowerEffect", kProxyPowerEffect);
 
-        for (std::size_t i = 0; i < Runtime::FormIds::kProxySpells.size(); ++i) {
-            check(Runtime::FormIds::Lookup<RE::SpellItem>(Runtime::FormIds::kProxySpells[i]),
-                "SPOE_ProxySpell", Runtime::FormIds::kProxySpells[i]);
+        for (const auto fid : kProxySpells) {
+            check(RE::SpellItem::FORMTYPE, "SPOE_ProxySpell", fid);
         }
-        for (std::size_t i = 0; i < Runtime::FormIds::kProxyPowers.size(); ++i) {
-            check(Runtime::FormIds::Lookup<RE::SpellItem>(Runtime::FormIds::kProxyPowers[i]),
-                "SPOE_ProxyPower", Runtime::FormIds::kProxyPowers[i]);
+        for (const auto fid : kProxyPowers) {
+            check(RE::SpellItem::FORMTYPE, "SPOE_ProxyPower", fid);
         }
-        for (const auto& entry : Runtime::FormIds::kStage2GemForms) {
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId),
-                entry.gemId.data(), entry.localFormId);
+        for (const auto& entry : kStage2GemForms) {
+            check(RE::TESObjectMISC::FORMTYPE, entry.gemId, entry.localFormId);
         }
-        check(Runtime::FormIds::Lookup<RE::BGSExplosion>(Runtime::FormIds::kVfxIceNova),
-            "SPOE_Vfx_IceNova", Runtime::FormIds::kVfxIceNova);
-        check(Runtime::FormIds::Lookup<RE::BGSExplosion>(Runtime::FormIds::kVfxShockNova),
-            "SPOE_Vfx_ShockNova", Runtime::FormIds::kVfxShockNova);
+        check(RE::BGSExplosion::FORMTYPE, "SPOE_Vfx_IceNova", kVfxIceNova);
+        check(RE::BGSExplosion::FORMTYPE, "SPOE_Vfx_ShockNova", kVfxShockNova);
 
         // 4단계 폼(화폐 오브 12종 + 봉인 토큰 80종 + 빛기둥 마커 2종)
-        for (const auto fid : Runtime::FormIds::kCurrencyOrbForms) {
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Orb", fid);
+        for (const auto fid : kCurrencyOrbForms) {
+            check(RE::TESObjectMISC::FORMTYPE, "SPOE_Orb", fid);
         }
-        for (std::size_t off = 0; off < Runtime::FormIds::kSealedTokenCount; ++off) {
-            const auto fid = Runtime::FormIds::kSealedTokenBase + static_cast<RE::FormID>(off);
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Tok", fid);
+        for (std::size_t off = 0; off < kSealedTokenCount; ++off) {
+            const auto fid = kSealedTokenBase + static_cast<RE::FormID>(off);
+            check(RE::TESObjectMISC::FORMTYPE, "SPOE_Tok", fid);
         }
-        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamRare),
-            "SPOE_LootBeam_Rare", Runtime::FormIds::kLootBeamRare);
-        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamCurrency),
-            "SPOE_LootBeam_Currency", Runtime::FormIds::kLootBeamCurrency);
+        check(RE::TESObjectSTAT::FORMTYPE, "SPOE_LootBeam_Rare", kLootBeamRare);
+        check(RE::TESObjectSTAT::FORMTYPE, "SPOE_LootBeam_Currency", kLootBeamCurrency);
 
         // 5단계 폼(벨트 5 + 벨트 토큰 10 + 주얼 3 + 참 6 + 투사체 3 + 폭발 VFX 1 + 고유 토큰 1 + 고유 빛기둥 1)
-        for (const auto fid : Runtime::FormIds::kBeltBaseForms) {
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Belt", fid);
+        for (const auto fid : kBeltBaseForms) {
+            check(RE::TESObjectMISC::FORMTYPE, "SPOE_Belt", fid);
         }
-        for (std::size_t off = 0; off < Runtime::FormIds::kBeltTokenCount; ++off) {
-            const auto fid = Runtime::FormIds::kBeltTokenBase + static_cast<RE::FormID>(off);
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Tok_Belt", fid);
+        for (std::size_t off = 0; off < kBeltTokenCount; ++off) {
+            const auto fid = kBeltTokenBase + static_cast<RE::FormID>(off);
+            check(RE::TESObjectMISC::FORMTYPE, "SPOE_Tok_Belt", fid);
         }
-        for (const auto fid : Runtime::FormIds::kJewelBaseForms) {
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Jewel", fid);
+        for (const auto fid : kJewelBaseForms) {
+            check(RE::TESObjectMISC::FORMTYPE, "SPOE_Jewel", fid);
         }
-        for (const auto fid : Runtime::FormIds::kCharmForms) {
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Charm", fid);
+        for (const auto fid : kCharmForms) {
+            check(RE::TESObjectMISC::FORMTYPE, "SPOE_Charm", fid);
         }
-        check(Runtime::FormIds::Lookup<RE::BGSProjectile>(Runtime::FormIds::kProjFireball),
-            "SPOE_Proj_Fireball", Runtime::FormIds::kProjFireball);
-        check(Runtime::FormIds::Lookup<RE::BGSProjectile>(Runtime::FormIds::kProjFreezingPulse),
-            "SPOE_Proj_FreezingPulse", Runtime::FormIds::kProjFreezingPulse);
-        check(Runtime::FormIds::Lookup<RE::BGSProjectile>(Runtime::FormIds::kProjSpark),
-            "SPOE_Proj_Spark", Runtime::FormIds::kProjSpark);
-        check(Runtime::FormIds::Lookup<RE::BGSExplosion>(Runtime::FormIds::kVfxFireBurst),
-            "SPOE_Vfx_FireBurst", Runtime::FormIds::kVfxFireBurst);
-        check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(Runtime::FormIds::kUniqueSealedToken),
-            "SPOE_Tok_Unique", Runtime::FormIds::kUniqueSealedToken);
-        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamUnique),
-            "SPOE_LootBeam_Unique", Runtime::FormIds::kLootBeamUnique);
+        check(RE::BGSProjectile::FORMTYPE, "SPOE_Proj_Fireball", kProjFireball);
+        check(RE::BGSProjectile::FORMTYPE, "SPOE_Proj_FreezingPulse", kProjFreezingPulse);
+        check(RE::BGSProjectile::FORMTYPE, "SPOE_Proj_Spark", kProjSpark);
+        check(RE::BGSExplosion::FORMTYPE, "SPOE_Vfx_FireBurst", kVfxFireBurst);
+        check(RE::TESObjectMISC::FORMTYPE, "SPOE_Tok_Unique", kUniqueSealedToken);
+        check(RE::TESObjectSTAT::FORMTYPE, "SPOE_LootBeam_Unique", kLootBeamUnique);
 
         // 6단계 폼(지도 T1..T16 16종 + 4차 전직 공물 1종 + 지도 빛기둥 1종 = 18종, 누적 192폼 ESL)
-        for (const auto fid : Runtime::FormIds::kMapItemForms) {
-            check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(fid), "SPOE_Map", fid);
+        for (const auto fid : kMapItemForms) {
+            check(RE::TESObjectMISC::FORMTYPE, "SPOE_Map", fid);
         }
-        check(Runtime::FormIds::Lookup<RE::TESObjectMISC>(Runtime::FormIds::kAscendancy4Tribute),
-            "SPOE_Tribute_Ascendancy4", Runtime::FormIds::kAscendancy4Tribute);
-        check(Runtime::FormIds::Lookup<RE::TESObjectSTAT>(Runtime::FormIds::kLootBeamMap),
-            "SPOE_LootBeam_Map", Runtime::FormIds::kLootBeamMap);
+        check(RE::TESObjectMISC::FORMTYPE, "SPOE_Tribute_Ascendancy4", kAscendancy4Tribute);
+        check(RE::TESObjectSTAT::FORMTYPE, "SPOE_LootBeam_Map", kLootBeamMap);
 
-        SKSE::log::info("SkyrimPoE.esp form verification: {} found, {} missing.", found, missing);
+        auto result = Core::CheckEspForms(observations);
+        SKSE::log::info("{} form verification: {} found, {} missing. {} failed (type={}, owner={}, deleted={}).",
+            kPluginName, result.found, result.missing, result.failedForms, result.wrongType, result.wrongOwner, result.deleted);
+        return std::move(result.reason);
     }
 
     void OnDataLoaded() try
@@ -353,8 +340,12 @@ namespace
 
         auto generation = LoadAndCheckContent();
         if (generation && g_serializationInstalled) {
-            VerifyEspForms();
-            Runtime::MapPackRuntime::Initialize();
+            if (auto reason = VerifyEspForms(); !reason.empty()) {
+                PreserveStartup(std::move(reason));
+                generation.reset();
+            } else {
+                Runtime::MapPackRuntime::Initialize();
+            }
         }
 
         // 4. 주 갱신 훅을 먼저 설치해 CommandQueue 드레인을 보장한 뒤 전투·스킬·처치·아이템 훅을 건다.

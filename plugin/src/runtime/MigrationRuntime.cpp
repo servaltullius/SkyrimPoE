@@ -81,22 +81,21 @@ namespace SkyrimPoE::Runtime
         {
         public:
             RuntimeCleanupOps(RE::PlayerCharacter* player, RE::ActorValueOwner& values,
-                const ActiveMapState* run, RE::FormID cell, MigrationDiagnostics& diagnostics,
+                const ActiveMapState* run, RE::FormID cell, LegacyBossObservation bossAtConfirmation,
+                MigrationDiagnostics& diagnostics,
                 const std::function<MigrationSpeedResult(const MigrationSpeedMod&)>& speed,
                 const std::function<void()>& clearCosave)
-                : player_(player), values_(values), run_(run), cell_(cell),
+                : player_(player), values_(values), run_(run), cell_(cell), bossAtConfirmation_(bossAtConfirmation),
                   diagnostics_(diagnostics), speed_(speed), clearCosave_(clearCosave) {}
 
             StepOutcome CloseMapRun(MigrationState& state) override
             {
                 if (run_) {
                     auto& result = diagnostics_.mapClose;
-                    result = MapDeviceRuntime::CloseLegacyRun(player_, *run_, cell_, state.worldDrops);
-                    using Refund = LegacyRunCloseResult::Refund;
+                    result = MapDeviceRuntime::CloseLegacyRun(player_, *run_, cell_, bossAtConfirmation_, state.worldDrops);
                     const bool refundLost = result.refund == LegacyRunCloseResult::Refund::Lost;
                     const bool partial = diagnostics_.map == MigrationDiagnostics::MapResult::Partial ||
-                        refundLost || result.refund == Refund::WithheldUnknown ||
-                        result.spawnsFailed != 0 || result.dropsFailed != 0 || !result.cellResetQueued ||
+                        refundLost || result.spawnsFailed != 0 || result.dropsFailed != 0 || !result.cellResetQueued ||
                         run_->unresolvedBossRefFormId != 0;
                     diagnostics_.map = partial ? MigrationDiagnostics::MapResult::Partial : MigrationDiagnostics::MapResult::Closed;
                     diagnostics_.dropResults[static_cast<std::size_t>(WorldDropTracker::LegacyDropReturn::Lost)] += result.dropsFailed;
@@ -266,6 +265,7 @@ namespace SkyrimPoE::Runtime
             RE::ActorValueOwner& values_;
             const ActiveMapState* run_;
             RE::FormID cell_;
+            LegacyBossObservation bossAtConfirmation_;
             MigrationDiagnostics& diagnostics_;
             const std::function<MigrationSpeedResult(const MigrationSpeedMod&)>& speed_;
             const std::function<void()>& clearCosave_;
@@ -312,8 +312,12 @@ namespace SkyrimPoE::Runtime
         if (run_) {
             legacyCell_ = MapDeviceRuntime::LegacyDungeonCell(*run_, legacyCell_);
         }
+        const auto observation = MapDeviceRuntime::ObserveLegacyEscape(player, legacyCell_);
+        if (run_ && legacyCell_ != 0 && observation.cell == legacyCell_) {
+            bossAtConfirmation_ = MapDeviceRuntime::ObserveLegacyBoss(run_->bossRefFormId, legacyCell_);
+        }
         const bool activeRunUnreadable = candidate_.state.mapRun.active && !run_;
-        phase_ = !activeRunUnreadable && MapDeviceRuntime::ObserveLegacyEscape(player, legacyCell_).inPackCell
+        phase_ = !activeRunUnreadable && observation.inPackCell
             ? Phase::Escaping : Phase::Ready;
     }
 
@@ -404,7 +408,7 @@ namespace SkyrimPoE::Runtime
         diagnostics.speedModsFiltered = candidate_.report.speedModsFiltered;
         diagnostics.speedModsUnresolved = candidate_.report.speedModsUnresolved;
         diagnostics.tickThreadId = REX::W32::GetCurrentThreadId();
-        RuntimeCleanupOps ops(player, values, run_ ? &*run_ : nullptr, legacyCell_, diagnostics, speed, clearCosave);
+        RuntimeCleanupOps ops(player, values, run_ ? &*run_ : nullptr, legacyCell_, bossAtConfirmation_, diagnostics, speed, clearCosave);
         if (Core::CompleteCleanup(state, ops) != Core::StepOutcome::Done) {
             throw std::logic_error("A migration operation did not finish in its commit tick.");
         }
@@ -455,7 +459,10 @@ namespace SkyrimPoE::Runtime
 
     std::string MigrationDiagnostics::Describe() const
     {
-        constexpr std::array refundResults{ "억제", "환불", "실패", "환불 보류(확인 불가)" };
+        constexpr std::array refundResults{ "억제", "환불", "실패" };
+        constexpr std::array bossSources{ "커밋 조회", "확인 시점 관측", "MAPS 기록" };
+        const auto bossSource = mapClose.bossDecisionSource ?
+            bossSources[static_cast<std::size_t>(*mapClose.bossDecisionSource)] : "해당 없음";
         std::string lostForms;
         for (const auto& [form, count] : lostReturnsByForm) {
             lostForms += std::format(" {:08X}={}", form, count);
@@ -463,7 +470,7 @@ namespace SkyrimPoE::Runtime
         return std::format(
             "step={} (1~9 완료={}), 반환[젬/보조/주얼/참]={}/{}/{}/{}, 반환 실패={}/{}/{}/{} (폼{}, 미해석 {}), 손실 합계={}, 손상={} ({}), "
             "체력 원복={:.6f}->{:.6f} (델타 {:.6f}), 매지카 원복={:.6f}->{:.6f} (델타 {:.6f}), Variable09={}, 대리 주문={}, 파워={}, {}, "
-            "지도={}, 회차 드랍 폐기={}, 폐기 실패={}, 스폰 정리 실패={}, 셀 리셋 예약={}, 입장 비용={}, "
+            "지도={}, 회차 드랍 폐기={}, 폐기 실패={}, 스폰 정리 실패={}, 셀 리셋 예약={}, 입장 비용={}, 보스 판정 출처={}, "
             "SPDM 원본={}, [원복/이미 0/보류/포기/입력에서 걸러짐]={}/{}/{}/{}/{}, "
             "WDRP[회수/이미 회수됨/이관/포기]={}/{}/{}/{}, 시작 지급 완료={}, tick thread={}",
             static_cast<unsigned>(step), step == Complete,
@@ -472,7 +479,7 @@ namespace SkyrimPoE::Runtime
             magickaBefore, magickaAfter, magickaDelta, engineResidue.variable09, engineResidue.proxySpells, engineResidue.proxyPowers,
             engineRevertMismatch ? "원복 불일치" : "원복 확인", MapResultName(),
             mapClose.dropsDiscarded, mapClose.dropsFailed, mapClose.spawnsFailed, mapClose.cellResetQueued,
-            refundResults[static_cast<std::size_t>(mapClose.refund)],
+            refundResults[static_cast<std::size_t>(mapClose.refund)], bossSource,
             speedInputCount, speedResults[0], speedResults[1], speedResults[2], speedResults[3], speedModsFiltered,
             dropResults[0], dropResults[1], dropResults[2], dropResults[3], starterGranted, tickThreadId);
     }

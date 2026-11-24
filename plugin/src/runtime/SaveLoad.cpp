@@ -1367,9 +1367,10 @@ namespace SkyrimPoE::Runtime
                 "레벨·트리·스킬은 초기화했습니다. 되돌리려면 저장하지 말고 다시 불러오세요.";
             notice += std::format(" 돌려주지 못한 물건 {}개. 지도 {}.", lostItems, result.MapResultName());
             if (result.map == MigrationDiagnostics::MapResult::Partial) {
-                const auto refundStatus = refund == Refund::WithheldUnknown ? "환불 보류(확인 불가)" :
-                    refund == Refund::Lost ? "환불 실패" : "환불 보류 없음";
-                notice += std::format(" 스폰 정리 실패 {}개, {}.", result.mapClose.spawnsFailed, refundStatus);
+                notice += std::format(" 스폰 정리 실패 {}개.", result.mapClose.spawnsFailed);
+                if (refund == Refund::Lost) {
+                    notice += " 입장 비용을 돌려주지 못했습니다.";
+                }
             }
             notice += std::format(" 원복하지 못한 NPC 속도 {}건·월드 드랍 {}개. 손상 레코드 {}개.",
                 lostSpeed, lostDrops, result.damagedRecords);

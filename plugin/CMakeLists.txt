@@ -30,6 +30,7 @@ add_library(skyrimpoe_core STATIC
     src/core/Config.cpp
     src/core/DataPack.cpp
     src/core/ContentCheck.cpp
+    src/core/EspFormCheck.cpp
     src/core/SaveGeneration.cpp
     src/core/Migration.cpp
     src/core/SaveRecordFormat.cpp
@@ -120,9 +121,11 @@ add_executable(skyrimpoe_tests
     tests/test_main.cpp
     tests/test_datapack.cpp
     tests/test_content_check.cpp
+    tests/test_esp_form_check.cpp
     tests/test_save_generation.cpp
     tests/test_migration.cpp
     tests/test_migration_runtime.cpp
+    tests/test_legacy_run_refund.cpp
     tests/test_save_records.cpp
     tests/test_conversion.cpp
     tests/test_command_queue.cpp

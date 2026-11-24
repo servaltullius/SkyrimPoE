@@ -6,6 +6,7 @@
 #include "core/EnergyShield.h"
 #include "core/ItemData.h"
 #include "core/ItemTypes.h"
+#include "core/LegacyRunRefund.h"
 #include "core/MapSystem.h"
 #include "core/MapTravel.h"
 #include "core/PassiveTreeData.h"
@@ -97,8 +98,9 @@ namespace SkyrimPoE::Runtime
 
     struct LegacyRunCloseResult
     {
-        enum class Refund { Suppressed, Returned, Lost, WithheldUnknown };
+        enum class Refund { Suppressed, Returned, Lost };
         Refund refund = Refund::Suppressed;
+        std::optional<Core::LegacyBossDecisionSource> bossDecisionSource;
         std::size_t dropsDiscarded = 0;
         std::size_t dropsFailed = 0;
         std::size_t spawnsFailed = 0;
@@ -163,10 +165,11 @@ namespace SkyrimPoE::Runtime
         static MapActionResult SafeEscape(RE::PlayerCharacter* player);
         [[nodiscard]] static RE::FormID LegacyDungeonCell(const Core::ActiveMapState& run, RE::FormID legacyCell);
         [[nodiscard]] static Core::MapTravelObservation ObserveLegacyEscape(RE::PlayerCharacter* player, RE::FormID legacyCell);
+        [[nodiscard]] static Core::LegacyBossObservation ObserveLegacyBoss(RE::FormID bossId, RE::FormID cellId);
         [[nodiscard]] static std::optional<Core::MapTravelRequest> RequestLegacyEscape(
             RE::PlayerCharacter* player, const Core::ActiveMapState* run, RE::FormID legacyCell);
         [[nodiscard]] static LegacyRunCloseResult CloseLegacyRun(RE::PlayerCharacter* player, const Core::ActiveMapState& run,
-            RE::FormID cellId, std::span<Core::MigrationWorldDrop> drops);
+            RE::FormID cellId, Core::LegacyBossObservation bossAtConfirmation, std::span<Core::MigrationWorldDrop> drops);
         static void ClearPlayerPoolsAndStats();
         [[nodiscard]] static MapTravelStatus GetTravelStatus(RE::PlayerCharacter* player);
         [[nodiscard]] static Core::MapTravelSettings GetTravelSettings() noexcept;

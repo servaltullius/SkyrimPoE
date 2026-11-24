@@ -94,6 +94,7 @@ namespace SkyrimPoE::Runtime
         Core::LegacyMigrationResult candidate_;
         std::optional<Core::ActiveMapState> run_;
         RE::FormID legacyCell_ = 0;
+        Core::LegacyBossObservation bossAtConfirmation_ = Core::LegacyBossObservation::Unknown;
         Phase phase_ = Phase::None;
         std::uint64_t world_ = 0;
         std::uint32_t unresolvedMapForms_ = 0;

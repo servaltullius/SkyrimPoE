@@ -3005,6 +3005,16 @@ namespace SkyrimPoE::Runtime
         return observation;
     }
 
+    Core::LegacyBossObservation MapDeviceRuntime::ObserveLegacyBoss(RE::FormID bossId, RE::FormID cellId)
+    {
+        using enum Core::LegacyBossObservation;
+        const auto boss = LookupMapBoss(bossId, cellId);
+        if (!boss) {
+            return Unknown;
+        }
+        return boss->IsDead() ? Dead : Alive;
+    }
+
     std::optional<Core::MapTravelRequest> MapDeviceRuntime::RequestLegacyEscape(
         RE::PlayerCharacter* player, const Core::ActiveMapState* run, RE::FormID legacyCell)
     {
@@ -3024,7 +3034,8 @@ namespace SkyrimPoE::Runtime
     }
 
     LegacyRunCloseResult MapDeviceRuntime::CloseLegacyRun(RE::PlayerCharacter* player,
-        const Core::ActiveMapState& run, RE::FormID cellId, std::span<Core::MigrationWorldDrop> drops)
+        const Core::ActiveMapState& run, RE::FormID cellId, Core::LegacyBossObservation bossAtConfirmation,
+        std::span<Core::MigrationWorldDrop> drops)
     {
         LegacyRunCloseResult result;
         auto spawnIds = Core::MapSystem::MapSpawnCleanupIds(run);
@@ -3045,19 +3056,16 @@ namespace SkyrimPoE::Runtime
                 ++result.dropsFailed;
             }
         }
-        const auto boss = LookupMapBoss(run.bossRefFormId, cellId);
-        const bool bossDead = boss && boss->IsDead();
+        const auto bossAtCommit = ObserveLegacyBoss(run.bossRefFormId, cellId);
+        const auto decision = Core::DecideLegacyRunRefund(bossAtConfirmation, bossAtCommit, run.bossKilled, run.failed);
+        result.bossDecisionSource = decision.source;
         const auto resetCell = packOwnsCell ? cellId : 0;
         (void)CleanupClosedRunSpawnsOnMainThread(spawnIds, run.runId, resetCell, {}, &result.spawnsFailed);
         result.cellResetQueued = resetCell != 0;
-        if (!run.bossKilled && !run.failed && !bossDead) {
-            if (!boss) {
-                result.refund = LegacyRunCloseResult::Refund::WithheldUnknown;
-            } else {
-                // 시작 비용의 폼·수량은 공통 환불 경로를 쓴다. 옛 어픽스와 ITEM 추적은 초기화 대상이다.
-                result.refund = RefundEntryOnMainThread(player, run.tier, run.isArena4, std::nullopt)
-                    ? LegacyRunCloseResult::Refund::Returned : LegacyRunCloseResult::Refund::Lost;
-            }
+        if (decision.refund) {
+            // 시작 비용의 폼·수량은 공통 환불 경로를 쓴다. 옛 어픽스와 ITEM 추적은 초기화 대상이다.
+            result.refund = RefundEntryOnMainThread(player, run.tier, run.isArena4, std::nullopt)
+                ? LegacyRunCloseResult::Refund::Returned : LegacyRunCloseResult::Refund::Lost;
         }
         return result;
     }

@@ -38,6 +38,6 @@
 
 ## 빌드와 시험
 
-- 빌드 스크립트는 대개 `prototypes/<번호>/plugin/build.bat`입니다(프로토타입 2는 `prototypes/02-skill-input/build.bat`. 1·3은 DLL이 없고 Python 스크립트로 만들고 배치함, 각 README). 배치는 `build.bat deploy "G:\TAKEALOOK\mods"`이고, 게임이 켜져 있으면 배치를 건너뜁니다. 빌드 폴더는 저장소 밖(`G:\skyrim-build`)입니다.
+- 본 모드의 빌드는 `plugin/build.bat`입니다(빌드·단위 시험·묶기, `build.bat deploy "G:\TAKEALOOK\mods"`로 배치). 프로토타입의 빌드 스크립트는 대개 `prototypes/<번호>/plugin/build.bat`입니다(프로토타입 2는 `prototypes/02-skill-input/build.bat`. 1·3은 DLL이 없고 Python 스크립트로 만들고 배치함, 각 README). 배치는 `build.bat deploy "G:\TAKEALOOK\mods"`이고, 게임이 켜져 있으면 배치를 건너뜁니다. 빌드 폴더는 저장소 밖(`G:\skyrim-build`)입니다.
 - 배치 파일은 CRLF여야 합니다(`chcp 65001`이 든 파일이 LF면 깨짐).
 - 게임은 AE 1.6.1170(MO2 인스턴스 `G:\TAKEALOOK`)입니다. 그 밖의 환경과 경로는 `docs/설계-현황.md` 6장, 빌드와 엔진에서 겪은 함정은 7장의 "작업할 때 알아 둘 것"에 있습니다.
