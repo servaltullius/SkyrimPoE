@@ -325,9 +325,15 @@ html, body {
   cursor: pointer;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: #352f40;
   border-color: #c59f58;
+}
+
+/* 막힌 버튼이 활성 버튼과 같아 보이지 않게 한다(.mastery-opt-btn, .orb-btn과 같은 표시). */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .btn-primary {
