@@ -20,3 +20,7 @@ __pycache__/
 *.VC.db
 *.opendb
 .claude/settings.local.json
+
+# PoB에서 뽑은 PoE2 원천 팩(결정 191, docs/7단계-P0-계약.md 6장). PoB만 있으면 tools로 다시 만든다.
+# 개수·해시 요약(data/poe2/<판>.summary.json)과 선택 목록(data/poe2/selections/)은 넣는다.
+data/poe2/raw/
