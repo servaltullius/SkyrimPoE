@@ -12,7 +12,6 @@ set(POE_ESP_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../esp/SkyrimPoE.esp" CACHE FILEPA
 set(POE_MAPS_PACK_DIR "G:/skyrim-build/SkyrimPoE-maps" CACHE PATH "지도 팩 ESP와 목록 파일 폴더")
 set(POE_UI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ui" CACHE PATH "Prisma UI 화면 폴더")
 set(POE_OAR_PACKAGER "${CMAKE_CURRENT_SOURCE_DIR}/../tools/package_oar.py" CACHE FILEPATH "사이클론 OAR 패키징 스크립트")
-set(POE_TREE_COMPILER "${CMAKE_CURRENT_SOURCE_DIR}/../tools/compiler/compile_tree.py" CACHE FILEPATH "패시브 트리 컴파일러/래퍼 스크립트")
 
 if(NOT POE_BUILD_ROOT)
     message(FATAL_ERROR "POE_BUILD_ROOT가 비어 있습니다. CMakePresets.json의 프리셋으로 구성하세요.")
@@ -193,7 +192,10 @@ if(NOT actual STREQUAL expected)
     message(FATAL_ERROR "지도 팩 ESP와 목록 SHA-256 불일치. 목록: ${expected}, ESP: ${actual}")
 endif()
 ]=])
+set(POE_PACKAGE_STAMP "${CMAKE_CURRENT_SOURCE_DIR}/../tools/package/stamp.py")
 add_custom_target(package_mod
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${POE_PACKAGE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${POE_PACKAGE_DIR}"
     COMMAND ${CMAKE_COMMAND}
         "-Desp=${POE_MAPS_PACK_DIR}/SkyrimPoE_Maps.esp"
         "-Dmanifest=${POE_MAPS_PACK_DIR}/SkyrimPoE_Maps.json"
@@ -223,18 +225,6 @@ add_custom_target(package_mod
         "-Dmanifest=${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/maps/SkyrimPoE_Maps.json"
         -P "${CMAKE_CURRENT_BINARY_DIR}/VerifyMapsPack.cmake"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${POE_DATA_DIR}/packs/core_3_30.json"
-        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/core_3_30.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${POE_DATA_DIR}/packs/tree_3_30.json"
-        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${POE_DATA_DIR}/packs/items_3_30.json"
-        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/items_3_30.json"
-    COMMAND "${Python3_EXECUTABLE}" "${POE_TREE_COMPILER}"
-        --wrap-only-from "${POE_DATA_DIR}/packs/tree_3_30.json"
-        --js-out "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/tree-data.js"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${POE_DATA_DIR}/lang/ko-KR.json"
         "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/lang/ko-KR.json"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -259,6 +249,23 @@ add_custom_target(package_mod
         "${POE_UI_DIR}/maps.js"
         "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/maps.js"
     COMMAND "${Python3_EXECUTABLE}" "${POE_OAR_PACKAGER}" --package-dir "${POE_PACKAGE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_DATA_DIR}/packs/core_3_30.json"
+        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/core_3_30.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_DATA_DIR}/packs/tree_3_30.json"
+        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${POE_DATA_DIR}/packs/items_3_30.json"
+        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/items_3_30.json"
+    COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
+        stamp --package "${POE_PACKAGE_DIR}" --esp-name SkyrimPoE.esp
+    COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
+        wrap-tree --package "${POE_PACKAGE_DIR}"
+    COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
+        manifest --package "${POE_PACKAGE_DIR}"
+    COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
+        verify --package "${POE_PACKAGE_DIR}"
     DEPENDS SkyrimPoE
     VERBATIM
 )

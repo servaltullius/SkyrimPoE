@@ -61,10 +61,16 @@ if not exist "%MO2_MODS%\." (
     echo MO2 mods 폴더가 없습니다: %MO2_MODS%
     exit /b 1
 )
+where /q python
+if errorlevel 1 (
+    echo PATH에서 Python을 찾지 못했습니다. 배치 검사에 Python이 필요합니다.
+    exit /b 1
+)
 robocopy "%BUILD_ROOT%\package" "%MO2_MODS%\%MOD_NAME%" /e /njh /njs /ndl /nc /ns >nul
 if errorlevel 8 (
     echo 배치 중 복사에 실패했습니다.
     exit /b 1
 )
+python -I "%~dp0..\tools\package\stamp.py" deploy-clean --package "%BUILD_ROOT%\package" --target "%MO2_MODS%\%MOD_NAME%" || exit /b 1
 echo Deployed: %MO2_MODS%\%MOD_NAME%
 exit /b 0

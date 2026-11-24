@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
 import math
 import re
@@ -309,17 +311,32 @@ def split_stat_lines(raw_stats: list[Any]) -> list[str]:
     return [" ".join(g) for g in split_stat_line_groups(raw_stats)]
 
 
-def load_korean_maps(ko_dir: Path | None) -> tuple[dict[str, str], dict[str, str]]:
+def load_korean_maps(
+    ko_dir: Path | None, source_sha256: dict[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
     """Load Korean node-name and stat-description dictionaries using strict csv.reader."""
     dn_map: dict[str, str] = {}
     sd_map: dict[str, str] = {}
     if not ko_dir or not ko_dir.is_dir():
         return dn_map, sd_map
 
+    ko_dir = ko_dir.resolve()
+    repo_root = Path(__file__).resolve().parents[2]
+    if ko_dir.is_relative_to(repo_root):
+        ko_root = repo_root
+    elif ko_dir.parts[-3:] == ("Data", "Translate", "ko-KR"):
+        # The default dictionaries live in a separate Korean PoB distribution.
+        ko_root = ko_dir.parents[2]
+    else:
+        ko_root = ko_dir
+
     def read_csv_into(path: Path, target: dict[str, str]) -> None:
         if not path.is_file():
             return
-        with path.open("r", encoding="utf-8-sig", newline="") as f:
+        data = path.read_bytes()
+        if source_sha256 is not None:
+            source_sha256[path.relative_to(ko_root).as_posix()] = hashlib.sha256(data).hexdigest()
+        with io.StringIO(data.decode("utf-8-sig"), newline="") as f:
             for row in csv.reader(f):
                 if len(row) < 2:
                     continue
@@ -573,8 +590,11 @@ def compile_tree(pob_dir: Path, ko_dir: Path | None, version: str = "3_30") -> d
     if not tree_path.is_file():
         raise FileNotFoundError(f"PoB tree.lua not found: {tree_path}")
 
-    raw_tree = LuaTableParser(tree_path.read_text(encoding="utf-8")).parse()
-    dn_map, sd_map = load_korean_maps(ko_dir)
+    tree_source = tree_path.read_bytes()
+    source_sha256 = {tree_path.relative_to(pob_dir).as_posix(): hashlib.sha256(tree_source).hexdigest()}
+    tree_text = tree_source.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    raw_tree = LuaTableParser(tree_text).parse()
+    dn_map, sd_map = load_korean_maps(ko_dir, source_sha256)
 
     constants = raw_tree["constants"]
     radii = as_list(constants["orbitRadii"])
@@ -924,6 +944,14 @@ def compile_tree(pob_dir: Path, ko_dir: Path | None, version: str = "3_30") -> d
         "nodes": nodes_out,
         "visualEdges": visual_edges,
         "meta": {
+            "schema": "skyrimpoe.tree",
+            "schemaVersion": 1,
+            "game": "poe1",
+            "gameVersion": version.replace("_", "."),
+            "pobVersion": "2.68.1",
+            "contentGeneration": 0,
+            "extractorVersion": "compile_tree/1",
+            "sourceSha256": dict(sorted(source_sha256.items())),
             "nodeCount": len(nodes_out),
             "visualEdgeCount": len(visual_edges),
             "masteryEffectCount": len(mastery_effects_table),

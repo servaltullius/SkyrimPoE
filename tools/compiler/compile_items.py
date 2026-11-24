@@ -19,6 +19,7 @@ r"""PoB 2.68.1 (PoE 3.30) 아이템 어픽스·베이스 커브·화폐 메타�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -364,8 +365,15 @@ def is_rollable_in_stage4(parsed_lines: list[dict[str, Any]]) -> bool:
     return has_core_stat
 
 
-def parse_mod_explicit(pob: Path) -> list[dict[str, Any]]:
-    src = (pob / "Data" / "ModExplicit.lua").read_text(encoding="utf-8")
+def read_pob_text(pob: Path, relative_path: str, source_sha256: dict[str, str] | None) -> str:
+    data = (pob / relative_path).read_bytes()
+    if source_sha256 is not None:
+        source_sha256[relative_path] = hashlib.sha256(data).hexdigest()
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def parse_mod_explicit(pob: Path, source_sha256: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    src = read_pob_text(pob, "Data/ModExplicit.lua", source_sha256)
     raw_affixes: list[dict[str, Any]] = []
 
     for m in re.finditer(r'\["([^"]+)"\]\s*=\s*\{([^\n]+)\}', src):
@@ -440,7 +448,9 @@ def parse_mod_explicit(pob: Path) -> list[dict[str, Any]]:
     return raw_affixes
 
 
-def parse_armor_curves(pob: Path) -> dict[str, list[dict[str, Any]]]:
+def parse_armor_curves(
+    pob: Path, source_sha256: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Data/Bases/{helmet,body,gloves,boots,shield}.lua에서 (slotGroup, defenseSubtype)별 iLvl 커브 추출."""
     slot_files = {
         "Helmet": "helmet.lua",
@@ -457,7 +467,7 @@ def parse_armor_curves(pob: Path) -> dict[str, list[dict[str, Any]]]:
     curves: dict[str, list[dict[str, Any]]] = {}
 
     for slot_name, fname in slot_files.items():
-        src = (pob / "Data" / "Bases" / fname).read_text(encoding="utf-8")
+        src = read_pob_text(pob, f"Data/Bases/{fname}", source_sha256)
         grouped: dict[str, list[dict[str, Any]]] = {}
         for m in re.finditer(r'itemBases\["([^"]+)"\] = \{(.*?)\n\}', src, re.S):
             body = m.group(2)
@@ -515,7 +525,9 @@ def parse_armor_curves(pob: Path) -> dict[str, list[dict[str, Any]]]:
     return curves
 
 
-def parse_weapon_curves(pob: Path) -> dict[str, list[dict[str, Any]]]:
+def parse_weapon_curves(
+    pob: Path, source_sha256: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Data/Bases/{sword,axe,mace,dagger,bow,staff}.lua에서 무기 종류별 iLvl 커브 추출."""
     sources = [
         ("OneHandSword", "sword.lua", "One Handed Sword"),
@@ -533,7 +545,7 @@ def parse_weapon_curves(pob: Path) -> dict[str, list[dict[str, Any]]]:
 
     for key, fname, poe_type in sources:
         if fname not in file_cache:
-            file_cache[fname] = (pob / "Data" / "Bases" / fname).read_text(encoding="utf-8")
+            file_cache[fname] = read_pob_text(pob, f"Data/Bases/{fname}", source_sha256)
         src = file_cache[fname]
         by_lvl: dict[int, dict[str, Any]] = {}
         for m in re.finditer(r'itemBases\["([^"]+)"\] = \{(.*?)\n\}', src, re.S):
@@ -589,14 +601,16 @@ def parse_weapon_curves(pob: Path) -> dict[str, list[dict[str, Any]]]:
     return curves
 
 
-def parse_mod_jewel(pob: Path, existing_ids: set[str]) -> list[dict[str, Any]]:
+def parse_mod_jewel(
+    pob: Path, existing_ids: set[str], source_sha256: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Data/ModJewel.lua에서 일반 주얼(Crimson/Viridian/Cobalt) Prefix/Suffix 어픽스를 추출한다.
 
     검수 C3 반영:
       - type in ("Prefix", "Suffix")만 허용해 Corrupted 모드를 제외한다.
       - abyss_jewel 전용 모드는 제외하고 jewel/not_str/not_dex/not_int 부정 태그 순서를 보존한다.
     """
-    src = (pob / "Data" / "ModJewel.lua").read_text(encoding="utf-8")
+    src = read_pob_text(pob, "Data/ModJewel.lua", source_sha256)
     jewel_affixes: list[dict[str, Any]] = []
     jewel_tags = frozenset({"jewel", "not_str", "not_dex", "not_int", "default"})
 
@@ -931,9 +945,11 @@ STAGE5_UNIQUE_SPECS: list[dict[str, Any]] = [
 ]
 
 
-def extract_pob_unique_current_lines(pob: Path, fname: str, pob_name: str) -> set[str]:
+def extract_pob_unique_current_lines(
+    pob: Path, fname: str, pob_name: str, source_sha256: dict[str, str] | None = None,
+) -> set[str]:
     """PoB 2.68.1 Data/Uniques/<fname>에서 해당 고유 아이템의 Variant: Current 줄 집합을 검증한다."""
-    txt = (pob / "Data" / "Uniques" / fname).read_text(encoding="utf-8")
+    txt = read_pob_text(pob, f"Data/Uniques/{fname}", source_sha256)
     for blk in re.findall(r"\[\[(.*?)\]\]", txt, re.S):
         lines = [l.strip() for l in blk.strip().splitlines() if l.strip()]
         if not lines or lines[0] != pob_name:
@@ -968,6 +984,7 @@ def extract_pob_unique_current_lines(pob: Path, fname: str, pob_name: str) -> se
 def build_stage5_implicits_and_uniques(
     pob: Path,
     existing_ids: set[str],
+    source_sha256: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """벨트 임플리싯 및 고유 아이템 16종의 비롤러블 어픽스(Divine 재롤 지원)와 정의 테이블을 생성한다."""
     extra_affixes: list[dict[str, Any]] = []
@@ -1002,7 +1019,7 @@ def build_stage5_implicits_and_uniques(
 
     uniques_out: list[dict[str, Any]] = []
     for spec in STAGE5_UNIQUE_SPECS:
-        pob_lines = extract_pob_unique_current_lines(pob, spec["file"], spec["pobName"])
+        pob_lines = extract_pob_unique_current_lines(pob, spec["file"], spec["pobName"], source_sha256)
         imp_lines = spec.get("implicitLines", [])
         mod_lines = spec.get("overrideLines")
         if mod_lines is None:
@@ -1130,23 +1147,30 @@ def build_stage6_map_affixes(existing_ids: set[str]) -> list[dict[str, Any]]:
 
 
 def compile_items(pob: Path, out_dir: Path) -> dict[str, Any]:
-    affixes = parse_mod_explicit(pob)
+    source_sha256: dict[str, str] = {}
+    affixes = parse_mod_explicit(pob, source_sha256)
     existing_ids = {a["id"] for a in affixes}
-    jewel_affixes = parse_mod_jewel(pob, existing_ids)
-    extra_affixes, belt_defs, uniques = build_stage5_implicits_and_uniques(pob, existing_ids)
+    jewel_affixes = parse_mod_jewel(pob, existing_ids, source_sha256)
+    extra_affixes, belt_defs, uniques = build_stage5_implicits_and_uniques(pob, existing_ids, source_sha256)
     map_affixes = build_stage6_map_affixes(existing_ids)
     all_affixes = affixes + jewel_affixes + extra_affixes + map_affixes
 
-    armor_curves = parse_armor_curves(pob)
-    weapon_curves = parse_weapon_curves(pob)
+    armor_curves = parse_armor_curves(pob, source_sha256)
+    weapon_curves = parse_weapon_curves(pob, source_sha256)
 
     rollable_count = sum(1 for a in all_affixes if a["rollable"])
     local_count = sum(1 for a in all_affixes if a["isLocal"])
 
     pack = {
         "meta": {
+            "schema": "skyrimpoe.items",
             "schemaVersion": 2,
+            "game": "poe1",
+            "gameVersion": "3.30",
             "pobVersion": "2.68.1",
+            "contentGeneration": 0,
+            "extractorVersion": "compile_items/1",
+            "sourceSha256": dict(sorted(source_sha256.items())),
             "poeVersion": "3.30",
             "totalAffixes": len(all_affixes),
             "rollableAffixes": rollable_count,

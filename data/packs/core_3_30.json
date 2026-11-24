@@ -1,7 +1,30 @@
 {
   "meta": {
+    "schema": "skyrimpoe.core",
     "schemaVersion": 1,
+    "game": "poe1",
+    "gameVersion": "3.30",
     "pobVersion": "2.68.1",
+    "contentGeneration": 0,
+    "extractorVersion": "compile_stage2/1",
+    "sourceSha256": {
+      "Data/Bases/body.lua": "7d4fd63952f0cc33385e3e2974378ee08b36b90ebe3e97d25ba60ecd45953afa",
+      "Data/Bases/boots.lua": "b55f9556eb97c877596df1d8d62168b6919e6e4ad07f9855dac69395c8005903",
+      "Data/Bases/gloves.lua": "5d9afe5c074f8af48a959a7d4d71bddbcde9c878f85ec5e215a5579bfd9712f7",
+      "Data/Bases/helmet.lua": "d31a3543a80f6d44fbe3ababe708a3e42ff3dac324681ab83b7d92a98cabc4c8",
+      "Data/Gems.lua": "0de2ede0ec8621da5e19d97b997c9a15606a4588637946b1b0fd6dd81d41fe68",
+      "Data/Misc.lua": "4decfde5cd7050681925e18108172b88e3fa6ec5baebaa0d52d40c0f97d032fa",
+      "Data/ModExplicit.lua": "02baf447f851b13de705107429c790d37f166325a75a853f1595c789c594ebbf",
+      "Data/Skills/act_dex.lua": "4597118ce4fb1a7de9a390312b4fdf7ceaaf74216a2f5f66235db848a8d96dc3",
+      "Data/Skills/act_int.lua": "a6a21ee5313b22973e3a9672f06196ad7b1a3cd94374917e9e64027a597e2b99",
+      "Data/Skills/act_str.lua": "2f6bffbb1734c9a59a6b8af5bdb10904b4cc02bdd54ad870b2116d0b2017cbd6",
+      "Data/Skills/sup_dex.lua": "b20ceb43c89001bc83703284bbca15c54233e3cfaba68fbdccf2d59b1bcabcb2",
+      "Data/Skills/sup_int.lua": "2ba1f6ecfd9e04cfa59cfd40c02ae5fe1fd40d3efd37f562b3b619e64cfd47d6",
+      "Data/Skills/sup_str.lua": "795c1a8138846da7eb6ad8e1852cd3f1dea2c57da4e12b44052d607cf56cf317",
+      "Modules/CalcSetup.lua": "2144203c1d54599be5d7fd82fb6e2778e6786698e41506e9d480dd2aab8be7cb",
+      "Modules/Data.lua": "286f9ffd10b6e2e803801d65fa33122c6670f7af30d21d203dabf0361e67538f",
+      "TreeData/3_30/tree.lua": "a6c770cedd4a486f209ce9ad1b952d413ad95802d9ca033c68fe210d88f5a499"
+    },
     "poeVersion": "3.30"
   },
   "constants": {

@@ -6,6 +6,7 @@ r"""PoB 2.68.1 (PoE 3.30) 데이터를 2단계용 데이터 팩(core_3_30.json)�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -79,9 +80,18 @@ def gem_stat_requirement(level_req: int, is_support: bool, multi: int) -> int:
     return 0 if req < 14 else req
 
 
-def read_gem_req_multipliers(pob: Path) -> dict[str, tuple[int, int, int]]:
+def read_pob_text(pob: Path, relative_path: str, source_sha256: dict[str, str] | None) -> str:
+    data = (pob / relative_path).read_bytes()
+    if source_sha256 is not None:
+        source_sha256[relative_path] = hashlib.sha256(data).hexdigest()
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def read_gem_req_multipliers(
+    pob: Path, source_sha256: dict[str, str] | None = None,
+) -> dict[str, tuple[int, int, int]]:
     """Data/Gems.lua에서 grantedEffectId별 (reqStr, reqDex, reqInt) 배율(0..100)을 추출한다."""
-    gems_src = (pob / "Data" / "Gems.lua").read_text(encoding="utf-8")
+    gems_src = read_pob_text(pob, "Data/Gems.lua", source_sha256)
     out: dict[str, tuple[int, int, int]] = {}
     for m in re.finditer(r'\["[^"]+"\]\s*=\s*\{', gems_src):
         block = extract_balanced_block(gems_src, m.end() - 1)
@@ -199,10 +209,12 @@ def read_calc_setup_base(src: str, stat: str) -> float:
     return float(m.group(1))
 
 
-def read_defense_bases(pob: Path) -> dict[tuple[str, str], list[tuple[int, float]]]:
+def read_defense_bases(
+    pob: Path, source_sha256: dict[str, str] | None = None,
+) -> dict[tuple[str, str], list[tuple[int, float]]]:
     bases: dict[tuple[str, str], list[tuple[int, float]]] = {}
     for slot in SLOTS:
-        src = (pob / "Data" / "Bases" / f"{slot}.lua").read_text(encoding="utf-8")
+        src = read_pob_text(pob, f"Data/Bases/{slot}.lua", source_sha256)
         for m in re.finditer(r'itemBases\["([^"]+)"\] = \{(.*?)\n\}', src, re.S):
             body = m.group(2)
             sub = re.search(r'subType = "([^"]+)"', body)
@@ -222,8 +234,8 @@ def read_defense_bases(pob: Path) -> dict[tuple[str, str], list[tuple[int, float
     return bases
 
 
-def read_resist_tiers(pob: Path) -> list[tuple[int, float]]:
-    src = (pob / "Data" / "ModExplicit.lua").read_text(encoding="utf-8")
+def read_resist_tiers(pob: Path, source_sha256: dict[str, str] | None = None) -> list[tuple[int, float]]:
+    src = read_pob_text(pob, "Data/ModExplicit.lua", source_sha256)
     tiers: list[tuple[int, float]] = []
     for m in re.finditer(
         r'\["FireResist\d+"\] = \{ type = "Suffix", affix = "[^"]*", '
@@ -237,10 +249,10 @@ def read_resist_tiers(pob: Path) -> list[tuple[int, float]]:
 
 
 def build_expected_defense_table(
-    pob: Path, max_level: int
+    pob: Path, max_level: int, source_sha256: dict[str, str] | None = None,
 ) -> list[dict[str, float]]:
-    bases = read_defense_bases(pob)
-    tiers = read_resist_tiers(pob)
+    bases = read_defense_bases(pob, source_sha256)
+    tiers = read_resist_tiers(pob, source_sha256)
 
     def best_sum(kind: str, level: int) -> float:
         total = 0.0
@@ -264,9 +276,8 @@ def build_expected_defense_table(
     return rows
 
 
-def read_classes(pob: Path) -> list[dict[str, Any]]:
-    tree_path = pob / "TreeData" / "3_30" / "tree.lua"
-    src = tree_path.read_text(encoding="utf-8")
+def read_classes(pob: Path, source_sha256: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    src = read_pob_text(pob, "TreeData/3_30/tree.lua", source_sha256)
     m = re.search(r'\["classes"\]\s*=\s*\{', src)
     if not m:
         raise ValueError("TreeData/3_30/tree.lua에서 classes 블록을 찾지 못했습니다")
@@ -616,9 +627,10 @@ def build_lang_packs() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
-    misc_src = (pob / "Data" / "Misc.lua").read_text(encoding="utf-8")
-    mod_data_src = (pob / "Modules" / "Data.lua").read_text(encoding="utf-8")
-    calc_setup_src = (pob / "Modules" / "CalcSetup.lua").read_text(encoding="utf-8")
+    source_sha256: dict[str, str] = {}
+    misc_src = read_pob_text(pob, "Data/Misc.lua", source_sha256)
+    mod_data_src = read_pob_text(pob, "Modules/Data.lua", source_sha256)
+    calc_setup_src = read_pob_text(pob, "Modules/CalcSetup.lua", source_sha256)
 
     monster_life = read_lua_number_table(misc_src, "monsterLifeTable")[:100]
     monster_damage = read_lua_number_table(misc_src, "monsterDamageTable")[:100]
@@ -647,16 +659,16 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
         "minHitChance": 0.05,
     }
 
-    expected_defense = build_expected_defense_table(pob, 100)
-    classes = read_classes(pob)
-    gem_req_mults = read_gem_req_multipliers(pob)
+    expected_defense = build_expected_defense_table(pob, 100, source_sha256)
+    classes = read_classes(pob, source_sha256)
+    gem_req_mults = read_gem_req_multipliers(pob, source_sha256)
 
     skill_files_cache: dict[str, str] = {}
     gems_out: dict[str, Any] = {}
     for entry in STAGE2_GEMS:
         fname = entry["file"]
         if fname not in skill_files_cache:
-            skill_files_cache[fname] = (pob / "Data" / "Skills" / fname).read_text(encoding="utf-8")
+            skill_files_cache[fname] = read_pob_text(pob, f"Data/Skills/{fname}", source_sha256)
         req_mult = gem_req_mults.get(entry["id"], (0, 0, 0))
         parsed = parse_skill_block(
             skill_files_cache[fname], entry["id"], base_eff_const, inc_eff_const, req_mult
@@ -671,8 +683,14 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
 
     pack = {
         "meta": {
+            "schema": "skyrimpoe.core",
             "schemaVersion": 1,
+            "game": "poe1",
+            "gameVersion": "3.30",
             "pobVersion": "2.68.1",
+            "contentGeneration": 0,
+            "extractorVersion": "compile_stage2/1",
+            "sourceSha256": dict(sorted(source_sha256.items())),
             "poeVersion": "3.30",
         },
         "constants": constants,
