@@ -13,6 +13,7 @@
 #include "runtime/SaveLoad.h"
 #include "runtime/SimpleImeBridge.h"
 #include "runtime/SkillExecution.h"
+#include "runtime/TrueHudBridge.h"
 
 #include "core/EnemyEsHud.h"
 #include "core/GemTransaction.h"
@@ -224,13 +225,13 @@ namespace SkyrimPoE::Runtime
         }
 
         // 결정 185: 조준점의 살아 있는 적(ES가 없으면 숨김), 없으면 마지막 교전 적(5초)의 ES를 화면 위 가운데에 보여 준다.
-        // 자체 패널이 열려 있으면 숨긴다. 값이나 이름이 바뀔 때만 보낸다.
+        // 자체 패널이 열려 있거나 TrueHUD 특수 바를 쓰는 동안(결정 186)에는 숨긴다. 값이나 이름이 바뀔 때만 보낸다.
         void PushEnemyEsIfChanged(bool panelOpen)
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
             RE::NiPointer<RE::Actor> target;
             Core::EnemyEsView view{};
-            if (!panelOpen && player) {
+            if (!panelOpen && player && !TrueHudBridge::OwnsSpecialBar()) {
                 RE::NiPointer<RE::Actor> crosshairActor;
                 if (const auto* pick = RE::CrosshairPickData::GetSingleton()) {
                     if (const auto ref = pick->GetActiveTarget().get()) {
@@ -2201,6 +2202,9 @@ namespace SkyrimPoE::Runtime
             g_lastProcessedReqId.store(0, std::memory_order_release);
             g_hiddenKeys.reset();
         }
+
+        // 결정 186: TrueHUD 특수 바를 쓰는 중이면 소유자 확인·안전 제거 해제·적 ES 표 갱신(소유하지 않으면 아무것도 안 함)
+        TrueHudBridge::TickMainThread();
 
         // 창 전환(Alt+Tab 등 gameActive == false) 시 키 추적 테이블·텍스트 입력을 비우고 패널을 닫는다(결정 120).
         if (main && !main->gameActive) {

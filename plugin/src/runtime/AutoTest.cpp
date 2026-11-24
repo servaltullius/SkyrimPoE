@@ -16,6 +16,7 @@
 #include "runtime/SaveLoad.h"
 #include "runtime/SimpleImeBridge.h"
 #include "runtime/SkillExecution.h"
+#include "runtime/TrueHudBridge.h"
 #include "runtime/UiBridge.h"
 #include "runtime/UniqueIdUtil.h"
 #include "runtime/WorldDropTracker.h"
@@ -9171,6 +9172,12 @@ namespace SkyrimPoE::Runtime
             };
             switch (g_esTest.step) {
             case 0:
+                // 결정 186: TrueHUD 특수 바를 쓰는 중이면 자체 표시가 숨으므로 이 시험은 의미가 없다.
+                if (TrueHudBridge::OwnsSpecialBar()) {
+                    failRemaining("TrueHUD owns the special bars, so decision 186 hides the own display; run -Only es with TrueHudSpecialBar off.");
+                    FinishAndScheduleQuit("Enemy-ES run skipped because TrueHUD owns the special bars.");
+                    break;
+                }
                 // 조준점(화면 가운데)에 걸리지 않게 좌우와 뒤에 세운다.
                 g_esTest.a = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 0.0f, 260.0f, 2500.0f, false);
                 g_esTest.b = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 0.0f, -260.0f, 2500.0f, false);

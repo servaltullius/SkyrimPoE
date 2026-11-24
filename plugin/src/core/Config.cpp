@@ -132,6 +132,8 @@ namespace SkyrimPoE::Core
                     if (!ParseBool(val, c.yieldToFrenzy)) warnInvalid();
                 } else if (key == "GiveStarterGems") {
                     if (!ParseBool(val, c.giveStarterGems)) warnInvalid();
+                } else if (key == "TrueHudSpecialBar") {
+                    if (!ParseBool(val, c.trueHudSpecialBar)) warnInvalid();
                 } else if (key == "StarterSockets") {
                     std::uint32_t u = 0;
                     if (ParseUint(val, u) && u >= 1 && u <= kMaxGemSockets) c.starterSockets = static_cast<std::uint8_t>(u); else warnInvalid();

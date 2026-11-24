@@ -49,6 +49,15 @@ namespace SkyrimPoE::Core
         [[nodiscard]] bool operator==(const EnemyEsView&) const noexcept = default;
     };
 
+    // TrueHUD 특수 바 값 함수용(결정 186). 최대가 유한하고 0보다 클 때만 값이 있고, 현재는 0..최대로 자른다.
+    // float로 넘기므로 최대가 1e9를 넘으면 현재와 최대를 같은 비율로 줄여 충전 비율을 지킨다.
+    struct EnemyEsBarValues
+    {
+        float current = 0.0f;
+        float max = 0.0f;
+    };
+    [[nodiscard]] EnemyEsBarValues MakeEnemyEsBarValues(double currentEs, double maxEs) noexcept;
+
     // 화면 값. 수치는 정수로 반올림하고, 최대 ES가 0보다 크면 표시 최대치는 1 이상이다. 현재치는 0..최대로 자른다.
     // 막대 폭은 반올림 전 값의 비율이라 0.3 / 0.3 같은 작은 값도 가득 찬 막대가 된다.
     [[nodiscard]] EnemyEsView MakeEnemyEsView(

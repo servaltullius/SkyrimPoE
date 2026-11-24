@@ -333,6 +333,19 @@ namespace SkyrimPoE::Runtime
         return out;
     }
 
+    std::vector<MonsterRuntime::EnergyShieldEntry> MonsterRuntime::ListEnergyShieldProfiles()
+    {
+        std::vector<EnergyShieldEntry> out;
+        std::scoped_lock lk(g_mutex);
+        out.reserve(g_profiles.size());
+        for (const auto& [actorId, profile] : g_profiles) {
+            if (profile.maxEsSkyrim > 0.0) {
+                out.push_back({ actorId, profile.currentEsSkyrim, profile.maxEsSkyrim });
+            }
+        }
+        return out;
+    }
+
     std::optional<Core::MonsterProfile> MonsterRuntime::GetProfileCopy(RE::FormID actorId)
     {
         std::scoped_lock lk(g_mutex);

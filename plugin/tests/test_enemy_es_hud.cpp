@@ -46,6 +46,24 @@ POE_TEST("Enemy ES target falls back to the recent engaged enemy")
     POE_CHECK(SelectEnemyEsTarget(none, ally, 0.0) == 0u);
 }
 
+POE_TEST("Enemy ES bar values for TrueHUD keep the fill ratio and stay finite")
+{
+    const auto normal = MakeEnemyEsBarValues(120.5, 300.0);
+    POE_CHECK(normal.current == 120.5f && normal.max == 300.0f);
+    // 최대가 없거나 잘못되면 0/0
+    const auto none = MakeEnemyEsBarValues(10.0, 0.0);
+    POE_CHECK(none.current == 0.0f && none.max == 0.0f);
+    const auto nanMax = MakeEnemyEsBarValues(10.0, std::numeric_limits<double>::quiet_NaN());
+    POE_CHECK(nanMax.current == 0.0f && nanMax.max == 0.0f);
+    // 현재는 0..최대
+    POE_CHECK(MakeEnemyEsBarValues(-3.0, 50.0).current == 0.0f);
+    POE_CHECK(MakeEnemyEsBarValues(500.0, 50.0).current == 50.0f);
+    POE_CHECK(MakeEnemyEsBarValues(std::numeric_limits<double>::infinity(), 50.0).current == 0.0f);
+    // 아주 큰 값은 같은 비율로 줄여 반쯤 찬 바가 가득 차 보이지 않게
+    const auto huge = MakeEnemyEsBarValues(1.0e12, 2.0e12);
+    POE_CHECK(huge.max == 1.0e9f && huge.current == 5.0e8f);
+}
+
 POE_TEST("Enemy ES view rounds, clamps, keeps the true fill and hides enemies without ES")
 {
     POE_CHECK(!MakeEnemyEsView(0, MonsterRarity::Rare, 10.0, 100.0).visible);

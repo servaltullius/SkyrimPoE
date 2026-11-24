@@ -181,6 +181,8 @@ namespace SkyrimPoE::Core
         bool giveStarterGems = true;
         std::uint8_t starterSockets = 3;
         double mainUpdateBudgetMs = 2.0;
+        // 결정 184 ④·186: TrueHUD 특수 바에 적 ES를 넘김(기본 끔)
+        bool trueHudSpecialBar = false;
 
         // [Conversion]
         double offenseK = 75.0;

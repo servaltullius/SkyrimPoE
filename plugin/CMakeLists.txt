@@ -98,6 +98,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/runtime/DeathListener.cpp
         src/runtime/SimpleImeBridge.cpp
         src/runtime/UiBridge.cpp
+        src/runtime/TrueHudBridge.cpp
         src/runtime/AutoTest.cpp
 )
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)

@@ -29,6 +29,17 @@ namespace SkyrimPoE::Core
         return IsEnemyEsEngagementRecent(engagedAgeSec) && IsEnemyEsDisplayable(engaged) ? engaged.formId : 0u;
     }
 
+    EnemyEsBarValues MakeEnemyEsBarValues(double currentEs, double maxEs) noexcept
+    {
+        if (!std::isfinite(maxEs) || maxEs <= 0.0) {
+            return {};
+        }
+        const double cur = std::isfinite(currentEs) ? std::clamp(currentEs, 0.0, maxEs) : 0.0;
+        constexpr double kCap = 1.0e9;
+        const double scale = maxEs > kCap ? kCap / maxEs : 1.0;
+        return { static_cast<float>(cur * scale), static_cast<float>(maxEs * scale) };
+    }
+
     EnemyEsView MakeEnemyEsView(std::uint32_t formId, MonsterRarity rarity, double currentEs, double maxEs) noexcept
     {
         EnemyEsView view;

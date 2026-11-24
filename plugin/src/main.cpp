@@ -29,6 +29,7 @@
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
+#include "runtime/TrueHudBridge.h"
 #include "runtime/UiBridge.h"
 #include "runtime/WorldDropTracker.h"
 
@@ -244,6 +245,7 @@ namespace
         (void)Runtime::UiBridge::Install(
             &g_commandQueue, &g_statEngine, &g_energyShield, &g_dataPack, &g_treeData, &g_itemData, &g_config,
             &g_skillSystem, &g_charmSystem);
+        Runtime::TrueHudBridge::Initialize(&g_config);  // 결정 184 ④·186: 선택 연동(기본 끔)
         Runtime::AutoTest::Install(
             &g_commandQueue, &g_statEngine, &g_energyShield, &g_killTracker, &g_dataPack, &g_treeData, &g_itemData, &g_config,
             &g_skillSystem, &g_charmSystem);

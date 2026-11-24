@@ -45,6 +45,15 @@ namespace SkyrimPoE::Runtime
         static void NoteEngagedEnemy(RE::FormID actorId) noexcept;
         [[nodiscard]] static EngagedEnemy GetLastEngagedEnemy() noexcept;
 
+        // 결정 186: ES가 있는(최대 ES > 0) 프로필의 현재·최대 ES 사본(TrueHUD 값 표를 만들 때 주 갱신 스레드가 씀)
+        struct EnergyShieldEntry
+        {
+            RE::FormID actorId = 0;
+            double currentEs = 0.0;
+            double maxEs = 0.0;
+        };
+        [[nodiscard]] static std::vector<EnergyShieldEntry> ListEnergyShieldProfiles();
+
         // 스레드 안전 조회·적용(CombatHooks 워커 스레드 포함)
         [[nodiscard]] static std::optional<Core::MonsterProfile> GetProfileCopy(RE::FormID actorId);
         [[nodiscard]] static Core::MonsterIncomingResult ApplyPlayerHitToMonster(
