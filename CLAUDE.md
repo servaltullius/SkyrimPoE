@@ -1,6 +1,6 @@
 # Skyrim PoE 모드
 
-스카이림 SE/AE에서 Path of Exile 1의 빌드·파밍·엔드게임을 구현하는 SKSE 모드(`SkyrimPoE`)입니다.
+스카이림 SE/AE에서 Path of Exile의 빌드·파밍·엔드게임을 구현하는 SKSE 모드(`SkyrimPoE`)입니다. 기준 게임은 PoE2입니다(2026-11-24 결정 189, 그 전 코드와 문서는 PoE1 3.30 기준이라 전환 중).
 현재 단계는 설계와 프로토타입입니다. 본 모드의 코드는 아직 없고, `prototypes/`에 위험 요소를 먼저 확인하는 시험용 코드와 모드가 있습니다.
 
 ## 먼저 읽을 것
@@ -34,5 +34,5 @@
 ## 환경
 
 - MO2 인스턴스 `G:\TAKEALOOK` (게임 경로 `G:\TAKEALOOK\Stock Game`, AE 1.6.1170). houseCARL이 이 인스턴스를 읽습니다.
-- 기준 PoB 데이터(PoE 3.30, 결정 104) `G:\poe\PathOfBuilding-2.68.1\`. 예전 기준(3.29)은 `G:\poe\PathOfBuilding-2.67.2\`, PoE2용 0.23.1은 `G:\poe\PathOfBuilding-PoE2-0.23.1\`. 예전 3.27 한글판은 `G:\poe\POE1 한글 POB (2025.10.31)\`에 참고용으로 있습니다.
+- 기준 PoB 데이터(PoE2, 결정 189) `G:\poe\PathOfBuilding-PoE2-0.23.1\`(게임 0.5 데이터). PoE2 1.0(2026-12-11)용 PoB가 나오면 바꿉니다. 지금 코드가 쓰는 예전 기준(PoE1 3.30, 결정 104)은 `G:\poe\PathOfBuilding-2.68.1\`, 그 전(3.29)은 `G:\poe\PathOfBuilding-2.67.2\`. 예전 3.27 한글판은 `G:\poe\POE1 한글 POB (2025.10.31)\`에 참고용으로 있습니다.
 - 그 밖의 경로와 관련 프로젝트는 `docs/설계-현황.md` 6장에 있습니다.
