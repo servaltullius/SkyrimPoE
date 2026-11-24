@@ -55,6 +55,8 @@ namespace SkyrimPoE::Core::SaveRecord
     using Report = std::function<void(std::string_view)>;
 
     bool ReadGemInstance(std::span<const std::uint8_t>& bytes, GemInstance& out, std::uint32_t depth = 0);
+    bool ReadLegacyCoreV2Front(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& out);
+    bool ReadLegacyCoreV2Slots(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& out);
     bool ReadCoreV2(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& out);
     SaveDecision DecideSave(const SaveRecordBatch& batch, bool isNewGame, const SaveGeneration& pack);
     bool WriteSnapshot(const Snapshot& snapshot, const SaveGeneration& generation, const RecordSink& sink,

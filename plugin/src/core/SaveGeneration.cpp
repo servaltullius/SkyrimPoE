@@ -1,26 +1,27 @@
 #include "core/SaveGeneration.h"
 
+#include <format>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace SkyrimPoE::Core
 {
+    std::uint32_t SaveRecordCrc32(std::span<const std::uint8_t> bytes)
+    {
+        std::uint32_t crc = 0xFFFFFFFFu;
+        for (const auto byte : bytes) {
+            crc ^= byte;
+            for (int bit = 0; bit < 8; ++bit) {
+                const std::uint32_t mask = 0u - (crc & 1u);
+                crc = (crc >> 1u) ^ (0xEDB88320u & mask);
+            }
+        }
+        return ~crc;
+    }
+
     namespace
     {
-        std::uint32_t Crc32(std::span<const std::uint8_t> bytes)
-        {
-            std::uint32_t crc = 0xFFFFFFFFu;
-            for (const auto byte : bytes) {
-                crc ^= byte;
-                for (int bit = 0; bit < 8; ++bit) {
-                    const std::uint32_t mask = 0u - (crc & 1u);
-                    crc = (crc >> 1u) ^ (0xEDB88320u & mask);
-                }
-            }
-            return ~crc;
-        }
-
         void AppendU32(std::vector<std::uint8_t>& bytes, std::uint32_t value)
         {
             for (unsigned shift = 0; shift < 32; shift += 8) {
@@ -70,7 +71,7 @@ namespace SkyrimPoE::Core
         AppendString(bytes, generation.gameVersion);
         AppendString(bytes, generation.buildId);
         AppendString(bytes, generation.dllVersion);
-        AppendU32(bytes, Crc32(bytes));
+        AppendU32(bytes, SaveRecordCrc32(bytes));
         return bytes;
     }
 
@@ -85,7 +86,7 @@ namespace SkyrimPoE::Core
         auto payload = bytes.first(bytes.size() - crcSize);
         auto checksum = bytes.last(crcSize);
         std::uint32_t expected = 0;
-        if (!ReadU32(checksum, expected) || Crc32(payload) != expected) {
+        if (!ReadU32(checksum, expected) || SaveRecordCrc32(payload) != expected) {
             return damaged;
         }
 
@@ -105,8 +106,17 @@ namespace SkyrimPoE::Core
         if (input.isNewGame) {
             return { Normal, "새 게임입니다." };
         }
-        if (input.hasMigration) {
-            return { Preserve, "진행 중인 정리·이전 기록(MIGR)을 이 DLL에서 재개할 수 없습니다." };
+        const auto& migration = input.migration;
+        if (migration.status == MigrationRecordStatus::Damaged) {
+            return { Preserve, "정리·이전 기록(MIGR)이 손상되었거나 지원하지 않는 판입니다." };
+        }
+        if (migration.status == MigrationRecordStatus::Valid) {
+            if (migration.targetGame == input.packGame && migration.targetGeneration == input.packGeneration) {
+                return { ResumeMigration, "진행 중인 정리·이전(MIGR)을 재개합니다." };
+            }
+            return { Preserve, std::format("정리·이전 기록(MIGR)의 목표가 설치된 팩과 다릅니다. "
+                "출발 {}/{}, 목표 {}/{}, 팩 {}/{}.", migration.sourceGame, migration.sourceGeneration,
+                migration.targetGame, migration.targetGeneration, input.packGame, input.packGeneration) };
         }
         if (input.generation.status == GenerationRecordStatus::Damaged) {
             return { Preserve, "세이브 세대 기록(GENR)이 손상되었거나 지원하지 않는 판입니다." };
@@ -128,13 +138,15 @@ namespace SkyrimPoE::Core
             }
             return { Normal, "세이브와 팩의 콘텐츠 세대가 같습니다." };
         }
-        if (!input.hasOtherRecords && !input.hasIntactCoreV2) {
+        const bool hasCoreFront = input.hasIntactCoreV2 || input.hasIntactCoreV2Front;
+        const bool hasCore = input.packGeneration == 0 ? input.hasIntactCoreV2 : hasCoreFront;
+        if (!input.hasOtherRecords && !hasCore) {
             return { FirstInstall, "이 세이브에 모드 기록이 없거나 읽을 수 없어 처음 설치로 봅니다(.skse 분실·읽기 실패 포함)." };
         }
         if (input.packGeneration == 0) {
             return { Normal, "GENR이 없는 기존 세대 0 세이브입니다." };
         }
-        if (input.hasIntactCoreV2) {
+        if (hasCoreFront) {
             return { CleanupFromLegacy, "PoE1 세이브를 정리한 뒤 초기화해야 합니다." };
         }
         return { Preserve, "세이브에 모드 기록이 있으나 GENR과 온전한 CORE v2가 없어 기준 게임을 식별할 수 없습니다." };

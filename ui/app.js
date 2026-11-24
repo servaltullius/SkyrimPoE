@@ -17,6 +17,7 @@
 
   const panelBackdrop = document.getElementById("panel-backdrop");
   const panelHeaderMeta = document.getElementById("panel-header-meta");
+  const panelBuildWarning = document.getElementById("panel-build-warning");
   const panelToast = document.getElementById("panel-toast");
   const tabBtnSkills = document.getElementById("tab-btn-skills");
   const tabBtnTree = document.getElementById("tab-btn-tree");
@@ -32,17 +33,22 @@
   const statsGrid = document.getElementById("stats-grid");
   const btnClose = document.getElementById("btn-close");
 
+  const UI_PROTOCOL_VERSION = 1;
+  const treeBuildId = window.POE_TREE?.meta?.buildId;
+  const uiBuildId = typeof treeBuildId === "string" ? treeBuildId : "";
+
   // 검수 M4: app.js와 tree.js가 단일 공용 reqId 카운터를 공유해 탭 간 요청 번호 충돌을 방지한다.
   let sharedReqId = 1;
   window.poeNextReqId = () => sharedReqId++;
   window.poeSendCommand = (payload) => {
     if (typeof window.poeCommand === "function") {
-      window.poeCommand(JSON.stringify(payload));
+      window.poeCommand(JSON.stringify({ ...payload, buildId: uiBuildId, uiProtocol: UI_PROTOCOL_VERSION }));
     }
   };
 
   let activeTab = "skills";
   let lastPanelData = null;
+  let requestedBuildCheck = false;
   let lastManualTabSwitchAt = 0;
   let selectedTarget = null; // { mode: "equip"|"socket", slot: number, spellIdx: number, label: string }
 
@@ -625,6 +631,7 @@
     try {
       const data = JSON.parse(jsonStr);
       lastPanelData = data;
+      panelBuildWarning?.classList.toggle("hidden", data.uiBuildMismatch !== true);
       // C-31: 탭 전환 직후 앞서 보낸 명령의 응답이 방금 선택한 탭을 되돌리지 못하게 600ms 보호
       if (data.activeTab && (Date.now() - lastManualTabSwitchAt > 600 || data.activeTab === activeTab)) {
         applyActiveTab(data.activeTab);
@@ -668,6 +675,10 @@
     applyActiveTab(tab);
     if (lastPanelData) {
       renderSlots(lastPanelData);
+    }
+    if (!requestedBuildCheck && typeof window.poeCommand === "function") {
+      requestedBuildCheck = true;
+      sendCommand({ op: "refresh" });
     }
   };
 

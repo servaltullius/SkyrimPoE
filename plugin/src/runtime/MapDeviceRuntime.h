@@ -15,8 +15,11 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
+
+namespace SkyrimPoE::Core { struct MigrationWorldDrop; }
 
 namespace SkyrimPoE::Runtime
 {
@@ -92,6 +95,16 @@ namespace SkyrimPoE::Runtime
         bool operator==(const MapTravelStatus&) const = default;
     };
 
+    struct LegacyRunCloseResult
+    {
+        enum class Refund { Suppressed, Returned, Lost, WithheldUnknown };
+        Refund refund = Refund::Suppressed;
+        std::size_t dropsDiscarded = 0;
+        std::size_t dropsFailed = 0;
+        std::size_t spawnsFailed = 0;
+        bool cellResetQueued = false;
+    };
+
     struct MapCellResetStatus
     {
         bool pending = false;
@@ -148,6 +161,13 @@ namespace SkyrimPoE::Runtime
         static MapActionResult ReturnPortal(RE::PlayerCharacter* player);
         static MapActionResult AbandonActiveMap(RE::PlayerCharacter* player);
         static MapActionResult SafeEscape(RE::PlayerCharacter* player);
+        [[nodiscard]] static RE::FormID LegacyDungeonCell(const Core::ActiveMapState& run, RE::FormID legacyCell);
+        [[nodiscard]] static Core::MapTravelObservation ObserveLegacyEscape(RE::PlayerCharacter* player, RE::FormID legacyCell);
+        [[nodiscard]] static std::optional<Core::MapTravelRequest> RequestLegacyEscape(
+            RE::PlayerCharacter* player, const Core::ActiveMapState* run, RE::FormID legacyCell);
+        [[nodiscard]] static LegacyRunCloseResult CloseLegacyRun(RE::PlayerCharacter* player, const Core::ActiveMapState& run,
+            RE::FormID cellId, std::span<Core::MigrationWorldDrop> drops);
+        static void ClearPlayerPoolsAndStats();
         [[nodiscard]] static MapTravelStatus GetTravelStatus(RE::PlayerCharacter* player);
         [[nodiscard]] static Core::MapTravelSettings GetTravelSettings() noexcept;
         [[nodiscard]] static double GetTravelArrivalRadius() noexcept;
@@ -243,7 +263,7 @@ namespace SkyrimPoE::Runtime
         // SKSE 코세이브 회차 스냅샷/복원/초기화(순수 메모리) 및 PostLoad 재바인딩
         [[nodiscard]] static Core::ActiveMapState TakeSnapshotForSave();
         static void RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell, bool atlasDamaged, bool runDamaged);
-        static void OnPostLoadRebind();
-        static void ResetOnRevert();
+        static void OnPostLoadRebind(bool keepCleanupRequests = false);
+        static void ResetOnRevert(bool keepCleanupRequests = false);
     };
 }

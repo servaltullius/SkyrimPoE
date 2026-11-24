@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/AilmentRuntime.h"
+#include "runtime/AutoTest.h"
 #include "runtime/CraftingRuntime.h"
 #include "runtime/EquipmentSync.h"
 #include "runtime/FormIds.h"
@@ -18,8 +19,11 @@
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
 
+#include <REX/W32/KERNEL32.h>
+
 #include <bit>
 #include <cstring>
+#include <numeric>
 #include <unordered_set>
 
 namespace SkyrimPoE::Runtime
@@ -46,7 +50,15 @@ namespace SkyrimPoE::Runtime
         // 저장·로드·리버트와 콘텐츠 검사 결과를 직렬화한다. g_txMutex보다 먼저 잡는다.
         std::mutex g_cosaveMutex;
         std::optional<Core::SaveGeneration> g_currentGeneration;
+        std::optional<Core::SaveGeneration> g_testGeneration;
+        std::optional<Core::SaveGeneration> g_worldGeneration;
+        std::optional<Core::SaveGeneration> g_pendingLoadGeneration;
+        AutoTestMarker::CleanupLoadRequest g_cleanupLoadRequest;
+        bool g_thisLoadUsesTest = false;
         Core::SaveRecordTransition g_cosave;
+        MigrationRuntime g_migration;
+        std::shared_ptr<const MigrationDiagnostics> g_lastMigration;
+        std::uint64_t g_loadWorld = 0;
         SaveLoad::LoadDiagnostics g_lastLoad;
         SaveLoad::SaveDiagnostics g_lastSave;
         bool g_notifyOnLoad = false;
@@ -67,6 +79,68 @@ namespace SkyrimPoE::Runtime
         constexpr double kSpeedRevertRetryIntervalSec = 2.0;
         constexpr std::size_t kMaxPendingSpeedReverts = 1024;
 
+        // An absent static actor may return later. A vanished dynamic actor's ID may be reused.
+        std::optional<MigrationSpeedResult> TryRevertSpeed(RE::FormID actorId, float delta)
+        {
+            using enum MigrationSpeedResult;
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
+            if (!actor) {
+                return (actorId >> 24) == 0xFF ? std::optional{ Lost } : std::nullopt;
+            }
+            if (actor->IsPlayerRef() || actor->IsDeleted()) {
+                return Lost;
+            }
+            auto* av = actor->AsActorValueOwner();
+            if (!av) {
+                return std::nullopt;
+            }
+            constexpr auto temporary = RE::ACTOR_VALUE_MODIFIER::kTemporary;
+            if (std::abs(actor->GetActorValueModifier(temporary, RE::ActorValue::kSpeedMult)) < 0.01f ||
+                std::abs(delta) < 0.01f) {
+                return AlreadyZero;
+            }
+            av->ModActorValue(temporary, RE::ActorValue::kSpeedMult, -delta);
+            av->ModActorValue(temporary, RE::ActorValue::kCarryWeight, 0.01f);
+            av->ModActorValue(temporary, RE::ActorValue::kCarryWeight, -0.01f);
+            return Reverted;
+        }
+
+        bool QueueSpeedRevert(RE::FormID actorId, float delta, bool rejectAtCapacity)
+        {
+            if (actorId == 0 || !std::isfinite(delta) || std::abs(delta) < 0.01f) {
+                return false;
+            }
+            if ((actorId >> 24) == 0xFF) {
+                SKSE::log::info("SaveLoad: not deferring SpeedMult revert for vanished dynamic actor {:08X} (FormID may be reused).", actorId);
+                return false;
+            }
+            std::scoped_lock lock(g_speedModMutex);
+            if (g_pendingSpeedModReverts.size() >= kMaxPendingSpeedReverts) {
+                if (rejectAtCapacity) {
+                    return false;
+                }
+                SKSE::log::warn("SaveLoad: pending SpeedMult reverts exceeded {}; dropping the oldest.", kMaxPendingSpeedReverts);
+                g_pendingSpeedModReverts.erase(g_pendingSpeedModReverts.begin());
+            }
+            g_pendingSpeedModReverts.emplace_back(actorId, delta);
+            return true;
+        }
+
+        MigrationSpeedResult RevertLegacySpeed(const Core::MigrationSpeedMod& mod)
+        {
+            using enum MigrationSpeedResult;
+            const auto delta = static_cast<float>(mod.delta);
+            const auto result = TryRevertSpeed(mod.actorFormId, delta);
+            if (result && *result != Lost) {
+                return *result;
+            }
+            if (!result && QueueSpeedRevert(mod.actorFormId, delta, true)) {
+                return Deferred;
+            }
+            SKSE::log::warn("SaveLoad: abandoned legacy SpeedMult revert for actor {:08X}.", mod.actorFormId);
+            return Lost;
+        }
+
         // 재검수 R-9: 맡겨 둔 SpeedMult 원복을 지금 찾을 수 있는 액터에 적용한다(주 갱신 스레드 전용).
         // 목록을 빼내지 않고 복사해서 처리한 뒤, 끝난 항목(원복했거나 버릴 항목)만 잠금 아래에서 지운다.
         // 그래서 처리 도중 저장(OnSave)이 끼어들어도 아직 원복하지 않은 항목이 SPDM에서 빠지지 않는다(Codex 지적 9).
@@ -86,40 +160,13 @@ namespace SkyrimPoE::Runtime
             std::size_t remaining = 0;
             for (const auto& entry : speedReverts) {
                 const auto& [actorId, appliedDelta] = entry;
-                auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
-                if (!actor) {
-                    if ((actorId >> 24) == 0xFF) {
-                        // 실행 중 만든 FF 액터를 찾지 못하면 이미 지워진 것이고, 번호가 다른 액터에게 다시 쓰일 수 있다.
-                        // 세이브(SPDM)에서 읽은 항목도 여기서 버린다(Codex 지적 10).
-                        resolved.push_back(entry);
-                    } else {
-                        ++remaining;
-                    }
-                    continue;
-                }
-                if (actor->IsPlayerRef() || actor->IsDeleted()) {
-                    resolved.push_back(entry);
-                    continue;
-                }
-                auto* av = actor->AsActorValueOwner();
-                if (!av) {
+                const auto outcome = TryRevertSpeed(actorId, appliedDelta);
+                if (!outcome) {
                     ++remaining;
                     continue;
                 }
                 resolved.push_back(entry);
-                // 엔진이 리셋으로 임시 수정치를 이미 0으로 돌렸으면 원복할 것이 없다.
-                const float curTemp = actor->GetActorValueModifier(
-                    RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult);
-                if (std::abs(curTemp) < 0.01f) {
-                    continue;
-                }
-                const float restore = -appliedDelta;
-                if (std::abs(restore) >= 0.01f) {
-                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kSpeedMult, restore);
-                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, 0.01f);
-                    av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kCarryWeight, -0.01f);
-                    ++revertedActors;
-                }
+                revertedActors += *outcome == MigrationSpeedResult::Reverted;
             }
             if (!resolved.empty()) {
                 std::scoped_lock lock(g_speedModMutex);
@@ -293,7 +340,7 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void ResetMemoryState()
+        void ResetMemoryState(bool afterCleanup = false)
         {
             if (g_queue) {
                 (void)g_queue->BumpGenerationAndClear();
@@ -301,16 +348,23 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lock(g_stateMutex);
                 g_state = PersistentState{};
+                g_state.starterGemsGiven = afterCleanup;
+                g_state.starterStage5GemsGiven = afterCleanup;
+                g_state.starterCurrencyGiven = afterCleanup;
                 g_loadedMapRecordVersions = {};
             }
             GemInventory::Clear();
             ItemTracker::Clear();
             EquipmentSync::Clear();
-            WorldDropTracker::Clear();
-            MapDeviceRuntime::ResetOnRevert();
+            MapDeviceRuntime::ResetOnRevert(afterCleanup);
             if (g_charmSystem) {
                 g_charmSystem->ResetOnRevert();
             }
+            // The just-transferred WDRP/SPDM and map cleanup requests belong to the new state.
+            if (afterCleanup) {
+                return;
+            }
+            WorldDropTracker::Clear();
             {
                 std::scoped_lock lock(g_speedModMutex);
                 g_pendingSpeedModReverts.clear();
@@ -339,12 +393,17 @@ namespace SkyrimPoE::Runtime
         void OnRevert(SKSE::SerializationInterface*)
         {
             std::scoped_lock lock(g_cosaveMutex);
+            g_migration.Reset();
+            g_lastMigration.reset();
             g_cosave.Revert();
             if (!g_currentGeneration) {
                 return;
             }
             ResetMemoryState();
             if (!g_cosave.IsLoading()) {
+                g_worldGeneration = g_currentGeneration;
+                g_pendingLoadGeneration.reset();
+                g_thisLoadUsesTest = false;
                 g_notifyOnLoad = false;
                 ModState::Set(ModMode::Normal, "새 세계에서 모드 상태를 초기화했습니다.");
             }
@@ -413,12 +472,26 @@ namespace SkyrimPoE::Runtime
             bool replay = false;
             {
                 std::scoped_lock lock(g_cosaveMutex);
-                replay = g_cosave.IsLoading() || !ModState::AllowsGameplay() || !g_currentGeneration;
+                replay = g_cosave.IsLoading() || !ModState::AllowsGameplay() || !g_worldGeneration;
                 SaveLoad::SaveDiagnostics diagnostics{ .sequence = g_lastSave.sequence + 1 };
+                diagnostics.threadId = REX::W32::GetCurrentThreadId();
+                SKSE::log::info("SaveLoad: OnSave #{} thread={}, replay={}.", diagnostics.sequence, diagnostics.threadId, replay);
                 const auto emit = [intfc, replay, &diagnostics](const Core::RawSaveRecord& record) {
                     const bool written = Core::WriteSaveRecord(*intfc, record);
-                    if (record.type == kRecordGeneration && written) {
-                        diagnostics.wroteGeneration = true;
+                    if (written) {
+                        diagnostics.wroteGeneration |= record.type == kRecordGeneration;
+                        try {
+                            diagnostics.recordTypes.push_back(record.type);
+                            if (record.type == kRecordGeneration) {
+                                auto decoded = Core::ReadGenerationRecord(record.version, record.bytes);
+                                if (decoded.status == Core::GenerationRecordStatus::Valid) {
+                                    diagnostics.generation = std::move(decoded.value);
+                                }
+                            }
+                        } catch (...) {
+                            // Diagnostic allocation must not interrupt writing the save.
+                            diagnostics.generation.reset();
+                        }
                     }
                     if (!written) {
                         if (replay) {
@@ -433,7 +506,7 @@ namespace SkyrimPoE::Runtime
                         // Raw replay retains the old FormID indexes if the load order changed (contract 4.6).
                         complete = Core::ReplaySaveRecords(g_cosave.RecordsForSave(), emit);
                     } else {
-                        complete = WriteSnapshot(CaptureSaveSnapshot(), *g_currentGeneration, emit,
+                        complete = WriteSnapshot(CaptureSaveSnapshot(), *g_worldGeneration, emit,
                             [&](std::string_view warning) {
                                 ++diagnostics.failedRecords;
                                 ReportWriteWarning(warning);
@@ -449,7 +522,7 @@ namespace SkyrimPoE::Runtime
                     SKSE::log::error("SaveLoad: unknown co-save write exception.");
                 }
                 diagnostics.complete = complete;
-                g_lastSave = diagnostics;
+                g_lastSave = std::move(diagnostics);
             }
             if (!complete) {
                 const auto* notice = replay ?
@@ -1006,10 +1079,10 @@ namespace SkyrimPoE::Runtime
         // Call under g_cosaveMutex, before a playable load discards the raw records.
         void RecordLoadDiagnostics(const Core::SaveDecision& decision) noexcept
         {
-            g_lastLoad = { .decision = decision, .generation = std::nullopt,
-                .receivedLoad = g_cosave.receivedLoad,
+            g_lastLoad = { .receivedLoad = g_cosave.receivedLoad,
                 .collectionComplete = g_cosave.receivedLoad && g_cosave.current.complete };
             try {
+                g_lastLoad.decision = decision;
                 Core::GenerationRecord generation;
                 bool found = false;
                 for (const auto& record : g_cosave.current.records) {
@@ -1038,8 +1111,10 @@ namespace SkyrimPoE::Runtime
                     SKSE::log::info("SaveLoad: {}", decision.reason);
                 }
             } else {
-                ModState::Set(ModMode::Preserve, std::string(decision.reason));
-                SKSE::log::warn("SaveLoad: preserving co-save. {}", decision.reason);
+                const auto reason = decision.disposition == Core::SaveDisposition::ResumeMigration
+                    ? "진행 중인 정리·이전 기록(MIGR)이 있습니다." : decision.reason;
+                ModState::Set(ModMode::Preserve, reason);
+                SKSE::log::warn("SaveLoad: preserving co-save. {}", reason);
             }
             RecordLoadDiagnostics(decision);
         }
@@ -1051,7 +1126,12 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             std::scoped_lock lock(g_cosaveMutex);
+            g_migration.Reset();
+            g_lastMigration.reset();
+            g_pendingLoadGeneration.reset();
             if (!g_cosave.IsLoading() && g_currentGeneration) {
+                ++g_loadWorld;
+                g_thisLoadUsesTest = false;
                 ModState::Set(ModMode::Preserve, "불러오는 중");
             }
             g_cosave.receivedLoad = true;
@@ -1062,20 +1142,37 @@ namespace SkyrimPoE::Runtime
                 SKSE::log::warn("SaveLoad: co-save collection incomplete, retaining {} complete record(s).",
                     g_cosave.current.records.size());
             }
-            if (!g_currentGeneration) {
+            const auto* target = Core::SelectSaveTarget(g_currentGeneration, g_testGeneration, g_thisLoadUsesTest);
+            if (!target) {
                 return;
             }
             try {
-                const auto decision = DecideSave(g_cosave.current, false, *g_currentGeneration);
+                const auto decision = DecideSave(g_cosave.current, false, *target);
+                if (decision.disposition == Core::SaveDisposition::CleanupFromLegacy) {
+                    auto reason = g_migration.Prepare(g_cosave.current, *target,
+                        [intfc](auto raw, auto& resolved) { return intfc->ResolveFormID(raw, resolved); }, g_loadWorld);
+                    if (reason.empty()) {
+                        g_pendingLoadGeneration = *target;
+                        RecordLoadDiagnostics(decision);
+                        g_notifyOnLoad = false;
+                        ModState::Set(ModMode::CleanupPending, "PoE1 세이브 정리 준비");
+                    } else {
+                        SetSaveDecision({ Core::SaveDisposition::Preserve, std::move(reason) });
+                    }
+                    return;
+                }
                 const bool playable = IsPlayable(decision.disposition);
                 if (playable) {
                     RestoreLoadedRecords(intfc);
+                    g_pendingLoadGeneration = *target;
                 }
                 SetSaveDecision(decision);
                 if (playable) {
                     g_cosave.current = {};
                 }
             } catch (...) {
+                g_migration.Reset();
+                g_pendingLoadGeneration.reset();
                 SKSE::log::error("SaveLoad: failed to read or restore the entire co-save.");
                 SetSaveDecision({ Core::SaveDisposition::Preserve, "코세이브를 끝까지 읽거나 복원하지 못했습니다." });
             }
@@ -1120,19 +1217,188 @@ namespace SkyrimPoE::Runtime
     void SaveLoad::SetContentCheck(std::optional<Core::SaveGeneration> generation, std::string reason)
     {
         std::scoped_lock lock(g_cosaveMutex);
+        if (!g_worldGeneration) {
+            g_worldGeneration = generation;
+        }
         g_currentGeneration = std::move(generation);
         g_notifyOnLoad = !g_currentGeneration;
         ModState::Set(g_currentGeneration ? ModMode::Normal : ModMode::Preserve, std::move(reason));
     }
 
+    void SaveLoad::SetCleanupTestTarget(bool enabled)
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        if (enabled) {
+            g_testGeneration = Core::SaveGeneration{ "poe2", 1, "autotest", "autotest-cleanup",
+                SKSE::GetPluginVersion().string(".") };
+        } else if (g_testGeneration) {
+            g_cleanupLoadRequest.Clear();
+            g_testGeneration.reset();
+            if (g_thisLoadUsesTest && ModState::Get()->mode == ModMode::CleanupPending) {
+                g_migration.Reset();
+                g_pendingLoadGeneration.reset();
+                ModState::Set(ModMode::Preserve, "AutoTest가 정리를 마치기 전에 종료되었습니다.");
+            }
+            g_thisLoadUsesTest = false;
+        }
+    }
+
+    std::optional<Core::SaveGeneration> SaveLoad::GetCleanupTestTarget()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        return g_testGeneration;
+    }
+
+    void SaveLoad::ExpectCleanupTestLoad(std::string_view stem)
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        if (g_testGeneration) {
+            g_cleanupLoadRequest.Expect(stem);
+        }
+    }
+
+    bool SaveLoad::MatchCleanupTestLoad(std::string_view name) noexcept
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        g_thisLoadUsesTest = g_testGeneration && g_cosave.IsLoading() && g_cleanupLoadRequest.Match(name);
+        return g_thisLoadUsesTest;
+    }
+
+    std::optional<MigrationCandidateSnapshot> SaveLoad::GetMigrationCandidate(RE::PlayerCharacter* player)
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        if (ModState::Get()->mode != ModMode::CleanupPending || g_migration.GetPhase() == MigrationRuntime::Phase::None) {
+            return std::nullopt;
+        }
+        return g_migration.Snapshot(player);
+    }
+
+    std::optional<MigrationDiagnostics> SaveLoad::GetLastMigrationDiagnostics()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        return g_lastMigration ? std::optional{ *g_lastMigration } : std::nullopt;
+    }
+
+    void SaveLoad::ReleaseForTest()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        if (g_thisLoadUsesTest && g_migration.IsForWorld(g_loadWorld)) {
+            g_migration.ReleaseForTest();
+        }
+    }
+
+    void SaveLoad::TickMigration()
+    {
+        using enum MigrationRuntime::Phase;
+        std::string_view reason;
+        std::shared_ptr<const MigrationDiagnostics> completed;
+        std::optional<std::uint64_t> initGeneration;
+        {
+            std::scoped_lock cosaveLock(g_cosaveMutex);
+            if (g_cosave.IsLoading() || ModState::Get()->mode != ModMode::CleanupPending || !g_migration.IsForWorld(g_loadWorld) ||
+                (g_migration.GetPhase() != Escaping && g_migration.GetPhase() != Ready)) {
+                return;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const bool eligible = MigrationRuntime::CanTick(player);
+            reason = g_migration.TickEscape(player, eligible);
+            if (reason.empty()) {
+                if (!eligible || g_migration.GetPhase() != Ready || (g_thisLoadUsesTest && !g_migration.IsReleasedForTest())) {
+                    return;
+                }
+                auto* values = player->AsActorValueOwner();
+                reason = g_migration.CheckCommitGate(player);
+                if (reason.empty()) {
+                    SKSE::log::info("SaveLoad: migration tick thread={}, world={}.", REX::W32::GetCurrentThreadId(), g_loadWorld);
+                    std::scoped_lock txLock(g_txMutex);
+                    std::optional<Core::SaveRecordBatch> original;
+                    try {
+                        auto result = std::make_shared<MigrationDiagnostics>();
+                        *result = g_migration.Execute(player, *values, RevertLegacySpeed, [&] {
+                            ResetMemoryState(true);
+                            original = std::exchange(g_cosave.current, {});
+                        });
+                        ModState::Set(ModMode::Normal, "PoE1 세이브 정리를 마쳤습니다.");
+                        g_worldGeneration = std::move(g_pendingLoadGeneration);
+                        completed = g_lastMigration = std::move(result);
+                        initGeneration = g_queue ? g_queue->CurrentGeneration() : 0;
+                    } catch (...) {
+                        if (original) {
+                            g_cosave.current = std::move(*original);
+                        }
+                        g_lastMigration.reset();
+                        reason = "정리 중 오류가 발생했습니다. 상태 일부가 바뀌었을 수 있으니 저장하지 말고 다시 불러오세요.";
+                    }
+                }
+            }
+            g_migration.Reset();
+            g_pendingLoadGeneration.reset();
+            g_thisLoadUsesTest = false;
+            if (!initGeneration) {
+                ModState::Set(ModMode::Preserve, std::string(reason));
+            }
+        }
+        if (initGeneration) {
+            ScheduleEngineInit(false, true, *initGeneration);
+        }
+        if (!completed) {
+            try {
+                RE::SendHUDMessage::ShowHUDMessage(reason.data());
+                SKSE::log::warn("SaveLoad: legacy cleanup refused. {}", reason);
+            } catch (...) {
+                SKSE::log::error("SaveLoad: could not show the legacy cleanup refusal.");
+            }
+            return;
+        }
+        const auto& result = *completed;
+        try {
+            SKSE::log::info("SaveLoad: migration completed. {}", result.Describe());
+        } catch (...) {
+            SKSE::log::error("SaveLoad: could not report the legacy cleanup result.");
+        }
+        try {
+            const auto lostItems = std::accumulate(result.lostReturns.begin(), result.lostReturns.end(), std::size_t{});
+            const auto lostSpeed = result.speedResults[static_cast<std::size_t>(MigrationSpeedResult::Lost)] +
+                result.speedModsUnresolved;
+            const auto lostDrops = result.dropResults[static_cast<std::size_t>(WorldDropTracker::LegacyDropReturn::Lost)];
+            const auto refund = result.mapClose.refund;
+            using Refund = LegacyRunCloseResult::Refund;
+            std::string notice = "PoE1 세이브를 PoE2 판에 맞게 정리했습니다. "
+                "레벨·트리·스킬은 초기화했습니다. 되돌리려면 저장하지 말고 다시 불러오세요.";
+            notice += std::format(" 돌려주지 못한 물건 {}개. 지도 {}.", lostItems, result.MapResultName());
+            if (result.map == MigrationDiagnostics::MapResult::Partial) {
+                const auto refundStatus = refund == Refund::WithheldUnknown ? "환불 보류(확인 불가)" :
+                    refund == Refund::Lost ? "환불 실패" : "환불 보류 없음";
+                notice += std::format(" 스폰 정리 실패 {}개, {}.", result.mapClose.spawnsFailed, refundStatus);
+            }
+            notice += std::format(" 원복하지 못한 NPC 속도 {}건·월드 드랍 {}개. 손상 레코드 {}개.",
+                lostSpeed, lostDrops, result.damagedRecords);
+            if (result.engineRevertMismatch) {
+                notice += " 원복 불일치.";
+            }
+            RE::SendHUDMessage::ShowHUDMessage(notice.c_str());
+        } catch (...) {
+            SKSE::log::error("SaveLoad: could not show the legacy cleanup notice.");
+        }
+    }
+
     void SaveLoad::OnGameLoadStarted()
     {
         std::scoped_lock lock(g_cosaveMutex);
+        g_thisLoadUsesTest = false;
+        g_pendingLoadGeneration.reset();
         if (g_cosave.IsLoading()) {
+            ++g_loadWorld;
+            g_migration.Reset();
+            g_lastMigration.reset();
+            g_lastLoad = {};
+            g_cosave.Revert();
+            ModState::Set(ModMode::Preserve, "불러오는 중");
             return;
         }
         g_lastLoad = {};
-        const bool saveNormalState = ModState::AllowsGameplay() && g_currentGeneration.has_value();
+        const auto previousMode = ModState::Get()->mode;
+        const bool saveNormalState = previousMode == ModMode::Normal && g_worldGeneration;
         if (g_currentGeneration) {
             g_notifyOnLoad = false;
             ModState::Set(ModMode::Preserve, "불러오는 중");
@@ -1140,7 +1406,7 @@ namespace SkyrimPoE::Runtime
         Core::SaveRecordBatch snapshot;
         try {
             if (saveNormalState) {
-                snapshot.complete = WriteSnapshot(CaptureSaveSnapshot(), *g_currentGeneration,
+                snapshot.complete = WriteSnapshot(CaptureSaveSnapshot(), *g_worldGeneration,
                     [&](Core::RawSaveRecord&& record) {
                         snapshot.records.push_back(std::move(record));
                         return true;
@@ -1156,21 +1422,35 @@ namespace SkyrimPoE::Runtime
                 snapshot.records.size());
         }
         g_cosave.BeginLoad(std::move(snapshot));
+        ++g_loadWorld;
+        g_migration.Reset();
+        g_lastMigration.reset();
     }
 
     void SaveLoad::OnGameLoadFinished(bool succeeded)
     {
         bool incomplete = false;
+        std::uint64_t world = 0;
         {
             std::scoped_lock lock(g_cosaveMutex);
+            world = g_loadWorld;
             g_cosave.FinishLoad(succeeded);
-            if (!succeeded) {
+            if (succeeded) {
+                if (ModState::AllowsGameplay() && g_pendingLoadGeneration) {
+                    g_worldGeneration = std::exchange(g_pendingLoadGeneration, std::nullopt);
+                }
+            } else {
+                g_migration.Reset();
+                g_lastMigration.reset();
+                g_pendingLoadGeneration.reset();
+                g_thisLoadUsesTest = false;
+                g_cleanupLoadRequest.Clear();
                 incomplete = !g_cosave.current.complete;
                 ModState::Set(ModMode::Preserve, "불러오기 실패");
             }
         }
         if (succeeded) {
-            SchedulePostLoadOrNewGameInit(false);
+            ScheduleLoadInit(false, world);
         } else {
             SKSE::log::warn("SaveLoad: game load failed, restoring the pre-load co-save snapshot.");
             RE::SendHUDMessage::ShowHUDMessage(
@@ -1183,27 +1463,56 @@ namespace SkyrimPoE::Runtime
 
     void SaveLoad::SchedulePostLoadOrNewGameInit(bool isNewGame)
     {
+        ScheduleLoadInit(isNewGame, std::nullopt);
+    }
+
+    void SaveLoad::ScheduleLoadInit(bool isNewGame, std::optional<std::uint64_t> expectedWorld)
+    {
         MapDeviceRuntime::DisarmUninstallCleanup();
         std::string notice;
         bool playable = false;
         bool incomplete = false;
+        std::uint64_t queueGeneration = 0;
         {
             std::scoped_lock lock(g_cosaveMutex);
+            if (expectedWorld && *expectedWorld != g_loadWorld) {
+                return;
+            }
             if (isNewGame) {
                 g_cosave.FinishLoad(true);
+                ++g_loadWorld;
+                g_migration.Reset();
+                g_lastMigration.reset();
+                g_pendingLoadGeneration.reset();
+                g_thisLoadUsesTest = false;
+                g_cleanupLoadRequest.Clear();
             }
             if (isNewGame || !g_cosave.receivedLoad) {
                 // A new game can arrive without OnLoad. SKSE also skips OnLoad if the .skse file cannot be opened.
                 g_cosave.Revert();
-                if (g_currentGeneration) {
+                if (const auto* target = Core::SelectSaveTarget(g_currentGeneration, g_testGeneration, g_thisLoadUsesTest)) {
                     if (isNewGame) {
                         ResetMemoryState();
                     }
-                    SetSaveDecision(DecideSave(g_cosave.current, isNewGame, *g_currentGeneration));
+                    const auto decision = DecideSave(g_cosave.current, isNewGame, *target);
+                    if (IsPlayable(decision.disposition)) {
+                        g_pendingLoadGeneration = *target;
+                    }
+                    SetSaveDecision(decision);
                 }
             }
             const auto status = ModState::Get();
             playable = status->mode == ModMode::Normal;
+            queueGeneration = g_queue ? g_queue->CurrentGeneration() : 0;
+            if (status->mode == ModMode::CleanupPending) {
+                g_migration.Confirm(g_loadWorld, RE::PlayerCharacter::GetSingleton());
+            } else {
+                if (playable && g_pendingLoadGeneration) {
+                    g_worldGeneration = std::move(g_pendingLoadGeneration);
+                }
+                g_pendingLoadGeneration.reset();
+                g_thisLoadUsesTest = false;
+            }
             incomplete = !g_cosave.current.complete;
             if (std::exchange(g_notifyOnLoad, false)) {
                 notice = status->reason;
@@ -1218,12 +1527,19 @@ namespace SkyrimPoE::Runtime
         if (incomplete) {
             RE::SendHUDMessage::ShowHUDMessage(kIncompleteCosaveNotice);
         }
-        if (!playable || !g_queue) {
+        if (playable) {
+            ScheduleEngineInit(isNewGame, false, queueGeneration);
+        }
+    }
+
+    void SaveLoad::ScheduleEngineInit(bool isNewGame, bool afterCleanup, std::uint64_t queueGeneration)
+    {
+        if (!g_queue) {
             return;
         }
 
         // 결정 119, 150 ④: 세이브 로드·새 게임 직후 엔진 반영은 반드시 주 갱신 스레드에서만 실행한다.
-        g_queue->Enqueue([isNewGame]() {
+        g_queue->EnqueueForGeneration(queueGeneration, [isNewGame, afterCleanup]() {
             if (!ModState::AllowsGameplay()) {
                 return;
             }
@@ -1357,7 +1673,7 @@ namespace SkyrimPoE::Runtime
             // 검수 M3 & C4 & 6단계 C-3: 로드 직후 착용 장비 스캔, 고아 빛기둥 스윕, 활성 지도/결투장 보스 재바인딩
             EquipmentSync::RefreshFromPlayerNow();
             (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
-            MapDeviceRuntime::OnPostLoadRebind();
+            MapDeviceRuntime::OnPostLoadRebind(afterCleanup);
 
             SaveLoad::SyncStateToStatEngine();
             if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
@@ -1457,22 +1773,7 @@ namespace SkyrimPoE::Runtime
 
     void SaveLoad::DeferSpeedRevert(RE::FormID actorId, float appliedDelta)
     {
-        if (actorId == 0 || !std::isfinite(appliedDelta) || std::abs(appliedDelta) < 0.01f) {
-            return;
-        }
-        if ((actorId >> 24) == 0xFF) {
-            SKSE::log::info("SaveLoad: not deferring SpeedMult revert for vanished dynamic actor {:08X} (FormID may be reused).", actorId);
-            return;
-        }
-        std::scoped_lock lock(g_speedModMutex);
-        g_pendingSpeedModReverts.emplace_back(actorId, appliedDelta);
-        if (g_pendingSpeedModReverts.size() > kMaxPendingSpeedReverts) {
-            // 영영 다시 나타나지 않는 액터(지워진 임시 참조)의 항목이 끝없이 쌓이지 않게 가장 오래된 것부터 버린다.
-            const auto excess = g_pendingSpeedModReverts.size() - kMaxPendingSpeedReverts;
-            SKSE::log::warn("SaveLoad: pending SpeedMult reverts exceeded {}; dropping {} oldest.", kMaxPendingSpeedReverts, excess);
-            g_pendingSpeedModReverts.erase(g_pendingSpeedModReverts.begin(),
-                g_pendingSpeedModReverts.begin() + static_cast<std::ptrdiff_t>(excess));
-        }
+        (void)QueueSpeedRevert(actorId, appliedDelta, false);
     }
 
     void SaveLoad::ForgetSpeedRevert(RE::FormID actorId)

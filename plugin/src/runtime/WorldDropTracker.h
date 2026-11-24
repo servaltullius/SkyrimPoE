@@ -54,6 +54,11 @@ namespace SkyrimPoE::Runtime
         // 모든 활성 드랍을 즉시 시체로 회수/정리(AutoTest E7 검증용)
         static void ReturnAllToCorpsesNow();
 
+        enum class LegacyDropReturn { Returned, AlreadyGone, Deferred, Lost };
+        [[nodiscard]] static LegacyDropReturn ReturnLegacyDrop(const SavedWorldDropEntry& entry);
+        [[nodiscard]] static bool DiscardLegacyRunDrop(const SavedWorldDropEntry& entry,
+            std::span<const RE::FormID> corpseIds, RE::FormID runCellId, bool packOwnsCell);
+
         // 회차 스폰의 시체에서 나왔거나 회차 셀에 있는 추적 바닥 전리품과 빛기둥을 정리한다(주 갱신 스레드).
         // 삭제는 회차 셀 안의 참조에만 한다(FormID 재사용으로 다른 곳의 물건을 지우지 않게).
         static void DiscardDropsFromCorpses(std::span<const RE::FormID> corpseIds, RE::FormID runCellId);

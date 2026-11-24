@@ -34,21 +34,35 @@ namespace SkyrimPoE::Core
     [[nodiscard]] std::vector<std::uint8_t> WriteGenerationRecord(const SaveGeneration& generation);
     [[nodiscard]] GenerationRecord ReadGenerationRecord(std::uint32_t version, std::span<const std::uint8_t> bytes);
 
-    enum class SaveDisposition { Normal, FirstInstall, CleanupFromLegacy, MigrateGeneration, Preserve };
+    [[nodiscard]] std::uint32_t SaveRecordCrc32(std::span<const std::uint8_t> bytes);
+
+    enum class SaveDisposition { Normal, FirstInstall, CleanupFromLegacy, MigrateGeneration, Preserve, ResumeMigration };
 
     struct SaveDecision
     {
         SaveDisposition disposition;
-        std::string_view reason;
+        std::string reason;
+    };
+
+    enum class MigrationRecordStatus { Missing, Valid, Damaged };
+
+    struct MigrationGeneration
+    {
+        MigrationRecordStatus status = MigrationRecordStatus::Missing;
+        std::string sourceGame;
+        std::uint32_t sourceGeneration = 0;
+        std::string targetGame;
+        std::uint32_t targetGeneration = 0;
     };
 
     struct SaveGenerationInput
     {
         bool isNewGame = false;
         GenerationRecord generation;
-        bool hasMigration = false;
+        MigrationGeneration migration;
         bool hasOtherRecords = false;
         bool hasIntactCoreV2 = false;
+        bool hasIntactCoreV2Front = false;
         std::string_view packGame;
         std::uint32_t packGeneration = 0;
     };

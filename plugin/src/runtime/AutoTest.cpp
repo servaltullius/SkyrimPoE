@@ -31,6 +31,7 @@
 #include "core/MapSystem.h"
 #include "core/PassiveTree.h"
 #include "core/SkillSystem.h"
+#include "core/UiBuildCheck.h"
 #include "core/WorldStampLink.h"
 
 #include <nlohmann/json.hpp>
@@ -43,7 +44,9 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -66,7 +69,12 @@ namespace SkyrimPoE::Runtime
         constexpr auto kMarkerFilename = "SkyrimPoE.autotest";
         constexpr auto kReportFilename = "SkyrimPoE.autotest.log";
         constexpr auto kPrevReportFilename = "SkyrimPoE.autotest.previous.log";
-        constexpr auto kHCheckpointSuffix = "_h_restore";
+        using AutoTestMarker::AutoTestConfig;
+        using AutoTestMarker::kCleanupFinalSuffix;
+        using AutoTestMarker::kHCheckpointSuffix;
+        using AutoTestMarker::SameSaveStem;
+        using AutoTestMarker::StripSaveStem;
+        using AutoTestMarker::ToLowerAscii;
         constexpr unsigned kHCheckpointSaveCandidates = 16;
         constexpr unsigned kHCheckpointRestoreAttempts = 2;
 
@@ -89,25 +97,6 @@ namespace SkyrimPoE::Runtime
             static const REL::Relocation<DealDamageFn> fn{ REL::RelocationID(37673, 38627) };
             (void)fn(attacker, target, projectile, leftHand);
         }
-
-        // A~G의 저장 왕복, H의 이동·셀 초기화, 새 포털/경로 시험을 포함한 벽시계 예산.
-        // 2026-11-23 실측: H5~H7이 끝까지 돌면 H23 정리 20회까지 약 25~28분이 걸리고, 그 뒤 H26·H27 착지 탐침(17곳)과 H8이 남는다.
-        constexpr double kDefaultAutoTestTimeoutSec = 2700.0;
-        constexpr double kMaxAutoTestTimeoutSec = 7200.0;
-
-        struct AutoTestConfig
-        {
-            std::string baselineSave;
-            std::string tempSave = "SkyrimPoE_autotest";
-            bool quitWhenDone = true;
-            bool consumeMarker = true;
-            double globalTimeoutSec = kDefaultAutoTestTimeoutSec;
-            // 조사용 단축 실행. "h27"이면 기준 세이브를 불러온 뒤 곧바로 경로 탐침(H26·H27)만 돌고 끝낸다(앞 시나리오 상태 없이).
-            bool routeOnly = false;
-            // 결정 185 확인용 단축 실행. "es"이면 기준 세이브를 불러온 뒤 적 ES 표시 시험(ES1~ES5)만 돌고 끝낸다.
-            bool enemyEsOnly = false;
-            bool saveOnly = false;
-        };
 
         enum class Phase : std::uint8_t
         {
@@ -216,7 +205,11 @@ namespace SkyrimPoE::Runtime
             EnemyEsOnly,
             QuitDelay,
             Done,
-            SaveOnlyContent
+            SaveOnlyContent,
+            CleanupContent,
+            CleanupAwaitCommit,
+            CleanupSaveFinal,
+            CleanupReloadFinal
         };
 
         const char* PhaseName(Phase p) noexcept
@@ -224,6 +217,10 @@ namespace SkyrimPoE::Runtime
             switch (p) {
             case Phase::Inactive: return "Inactive";
             case Phase::SaveOnlyContent: return "SaveOnlyContent";
+            case Phase::CleanupContent: return "CleanupContent";
+            case Phase::CleanupAwaitCommit: return "CleanupAwaitCommit";
+            case Phase::CleanupSaveFinal: return "CleanupSaveFinal";
+            case Phase::CleanupReloadFinal: return "CleanupReloadFinal";
             case Phase::AwaitMainMenu: return "AwaitMainMenu";
             case Phase::MenuDelay: return "MenuDelay";
             case Phase::AwaitBaselineLoad: return "AwaitBaselineLoad";
@@ -369,6 +366,36 @@ namespace SkyrimPoE::Runtime
             std::size_t trackedItems = 0;
         };
         SaveOnlySnapshot g_saveOnlyBefore;
+
+        enum class CleanupCheck : std::size_t { Content, Candidate, Committed, Items, Engine, State, Write, Reload };
+        constexpr std::array kCleanupCheckNames{ "C0_ContentCheckPassed", "C1_LoadLegacyCandidate", "C2_CleanupCommitted",
+            "C3_ItemsReturned", "C4_EngineReverted", "C5_StateCleared", "C6_SaveWritesTarget", "C7_ReloadNormal" };
+        constexpr double kCleanupCommitTimeoutSec = 90.0;
+
+        struct SaveFiles
+        {
+            fs::path ess;
+            fs::path cosave;
+            std::optional<fs::file_time_type> essBefore;
+            std::optional<fs::file_time_type> cosaveBefore;
+        };
+
+        struct CleanupTestState
+        {
+            std::array<bool, kCleanupCheckNames.size()> reported{};
+            // The baseline is derived from the source candidate while the engine still holds its old inventory.
+            std::map<RE::FormID, std::pair<std::int32_t, std::size_t>> expectedItems;
+            std::size_t expectedReturns = 0;
+            std::size_t expectedWithoutForm = 0;
+            std::optional<Clock::time_point> lastEligibleTick;
+            double eligibleSeconds = 0.0;
+            std::optional<MigrationDiagnostics> committed;
+            std::array<std::pair<bool, std::string>, 3> outcomeChecks{};
+            std::optional<SaveFiles> finalFiles;
+            fs::file_time_type finalSaveRequestedAt{};
+            std::map<RE::FormID, std::int32_t> starterItemsBeforeSave;
+        };
+        CleanupTestState g_cleanupTest;
         constexpr double kEnemyEsWaitSec = 2.0;
         constexpr double kEnemyEsTestMaxEs = 300.0;
         // 결정 185의 유지 시간. 제품 상수(Core::kEnemyEsEngagedHoldSec)가 바뀌면 시험이 잡도록 따로 둔다.
@@ -691,14 +718,7 @@ namespace SkyrimPoE::Runtime
         bool g_saveMatched = false;
         std::uint64_t g_saveSequenceAtMessage = 0;
         std::optional<SaveLoad::SaveDiagnostics> g_saveAtNextMessage;
-        struct HSaveFiles
-        {
-            fs::path ess;
-            fs::path cosave;
-            std::optional<fs::file_time_type> essBefore;
-            std::optional<fs::file_time_type> cosaveBefore;
-        };
-        std::optional<HSaveFiles> g_hSaveFiles;
+        std::optional<SaveFiles> g_hSaveFiles;
 
         // 세이브 재시도 상태(프로토타입 5 검증: NPC 대화 등으로 Save()가 무시되면 2초마다 재시도)
         Clock::time_point g_nextSaveRetryAt{};
@@ -738,50 +758,6 @@ namespace SkyrimPoE::Runtime
         std::uint32_t g_exileLevelBeforeFox = 1;
         std::uint64_t g_exileXpBeforeFox = 0;
 
-        std::string Trim(std::string_view sv)
-        {
-            std::size_t b = 0;
-            while (b < sv.size() && std::isspace(static_cast<unsigned char>(sv[b]))) {
-                ++b;
-            }
-            std::size_t e = sv.size();
-            while (e > b && std::isspace(static_cast<unsigned char>(sv[e - 1]))) {
-                --e;
-            }
-            return std::string(sv.substr(b, e - b));
-        }
-
-        std::string ToLowerAscii(std::string_view sv)
-        {
-            std::string out(sv);
-            std::transform(out.begin(), out.end(), out.begin(),
-                [](unsigned char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
-            return out;
-        }
-
-        // 세이브 이름 안의 점(.)을 보존하면서 경로 접두사와 끝의 ".ess"만 대소문자 무관하게 떼어낸다.
-        std::string StripSaveStem(std::string_view raw)
-        {
-            while (!raw.empty() && raw.back() == '\0') {
-                raw.remove_suffix(1);
-            }
-            std::string s = Trim(raw);
-            if (const auto slash = s.find_last_of("\\/"); slash != std::string::npos) {
-                s = s.substr(slash + 1);
-            }
-            if (s.size() >= 4 && ToLowerAscii(std::string_view(s).substr(s.size() - 4)) == ".ess") {
-                s.resize(s.size() - 4);
-            }
-            return s;
-        }
-
-        bool ParseBool(std::string_view sv, bool fallback)
-        {
-            const auto low = ToLowerAscii(Trim(sv));
-            if (low == "true" || low == "1" || low == "yes" || low == "on") return true;
-            if (low == "false" || low == "0" || low == "no" || low == "off") return false;
-            return fallback;
-        }
 
         void WriteLine(std::string_view tag, const std::string& msg)
         {
@@ -830,6 +806,29 @@ namespace SkyrimPoE::Runtime
             Check(kSaveCheckNames[index], ok, detail);
         }
 
+        void CheckCleanup(CleanupCheck check, bool ok, const std::string& detail)
+        {
+            const auto index = static_cast<std::size_t>(check);
+            if (!std::exchange(g_cleanupTest.reported[index], true)) {
+                Check(kCleanupCheckNames[index], ok, detail);
+            }
+        }
+
+        void ReportCleanupCommitChecks(std::uint32_t saveThread)
+        {
+            if (!g_cleanupTest.committed || g_cleanupTest.reported[static_cast<std::size_t>(CleanupCheck::Committed)]) {
+                return;
+            }
+            const auto& result = *g_cleanupTest.committed;
+            CheckCleanup(CleanupCheck::Committed, result.step == Core::CleanupStep::Complete && result.starterGranted,
+                std::format("{}; OnSave thread={}", result.Describe(),
+                    saveThread == 0 ? "unobserved" : std::to_string(saveThread)));
+            for (std::size_t i = 0; i < g_cleanupTest.outcomeChecks.size(); ++i) {
+                const auto& [passed, detail] = g_cleanupTest.outcomeChecks[i];
+                CheckCleanup(static_cast<CleanupCheck>(static_cast<std::size_t>(CleanupCheck::Items) + i), passed, detail);
+            }
+        }
+
         const char* SaveDispositionName(Core::SaveDisposition disposition)
         {
             switch (disposition) {
@@ -838,6 +837,7 @@ namespace SkyrimPoE::Runtime
             case Core::SaveDisposition::CleanupFromLegacy: return "CleanupFromLegacy";
             case Core::SaveDisposition::MigrateGeneration: return "MigrateGeneration";
             case Core::SaveDisposition::Preserve: return "Preserve";
+            case Core::SaveDisposition::ResumeMigration: return "ResumeMigration";
             }
             return "Unknown";
         }
@@ -1233,7 +1233,14 @@ namespace SkyrimPoE::Runtime
             if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
                 return;
             }
-            if (g_cfg.saveOnly) {
+            if (g_cfg.cleanupOnly) {
+                SaveLoad::SetCleanupTestTarget(false);
+                ReportCleanupCommitChecks(0);
+                for (std::size_t i = 0; i < kCleanupCheckNames.size(); ++i) {
+                    CheckCleanup(static_cast<CleanupCheck>(i), false,
+                        std::format("Skipped in {}. {}", PhaseName(g_phase), reason));
+                }
+            } else if (g_cfg.saveOnly) {
                 for (std::size_t i = 0; i < kSaveCheckNames.size(); ++i) {
                     if (!g_saveChecksReported[i]) {
                         Check(kSaveCheckNames[i], false, std::format("Skipped in {}. {}", PhaseName(g_phase), reason));
@@ -1256,9 +1263,11 @@ namespace SkyrimPoE::Runtime
             }
             // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
             // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
-            const int expectedChecks = g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
+            const int expectedChecks = g_cfg.cleanupOnly ? static_cast<int>(kCleanupCheckNames.size()) :
+                g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
                 g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks : kExpectedAutoTestChecks;
-            const char* modeDescription = g_cfg.saveOnly ? " (save-only round-trip run)" :
+            const char* modeDescription = g_cfg.cleanupOnly ? " (cleanup-only migration run)" :
+                g_cfg.saveOnly ? " (save-only round-trip run)" :
                 g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" : "";
             const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
             const auto summary = std::format(
@@ -1293,16 +1302,7 @@ namespace SkyrimPoE::Runtime
             StartHContractAfterCosave(RE::PlayerCharacter::GetSingleton());
         }
 
-        std::string SaveStemFromMessage(const SKSE::MessagingInterface::Message& msg)
-        {
-            if (!msg.data || msg.dataLen == 0) {
-                return {};
-            }
-            const std::string_view raw(static_cast<const char*>(msg.data), msg.dataLen);
-            return StripSaveStem(raw);
-        }
-
-        fs::path HSaveDirectory()
+        fs::path SaveDirectory()
         {
             // Keep the game's INI-relative path, including MO2's virtual profile save directory.
             const auto* local = RE::GetINISetting("sLocalSavePath:General");
@@ -1310,7 +1310,7 @@ namespace SkyrimPoE::Runtime
             return g_reportPath.parent_path().parent_path() / (subdir && *subdir ? subdir : "Saves");
         }
 
-        bool ReadHSaveTimestamp(const fs::path& path, std::optional<fs::file_time_type>& timestamp)
+        bool ReadSaveTimestamp(const fs::path& path, std::optional<fs::file_time_type>& timestamp)
         {
             std::error_code error;
             const auto status = fs::status(path, error);
@@ -1329,19 +1329,29 @@ namespace SkyrimPoE::Runtime
             return true;
         }
 
-        std::optional<HSaveFiles> ObserveHSaveFiles(const std::string& stem)
+        std::optional<SaveFiles> ObserveSaveFiles(const fs::path& stem)
         {
-            const auto dir = HSaveDirectory();
-            HSaveFiles files{ dir / (stem + ".ess"), dir / (stem + ".skse"), {}, {} };
-            if (!ReadHSaveTimestamp(files.ess, files.essBefore) || !ReadHSaveTimestamp(files.cosave, files.cosaveBefore)) {
+            auto base = SaveDirectory() / stem;
+            SaveFiles files{ base, std::move(base), {}, {} };
+            files.ess += ".ess";
+            files.cosave += ".skse";
+            if (!ReadSaveTimestamp(files.ess, files.essBefore) || !ReadSaveTimestamp(files.cosave, files.cosaveBefore)) {
                 return std::nullopt;
             }
             return files;
         }
 
+        bool SaveFileUpdated(const fs::path& path, std::optional<fs::file_time_type> before,
+            std::optional<fs::file_time_type> requestedAt = std::nullopt)
+        {
+            std::optional<fs::file_time_type> modified;
+            return ReadSaveTimestamp(path, modified) && modified && modified != before &&
+                (!requestedAt || *modified >= *requestedAt);
+        }
+
         bool BeginHVerifiedSave(const std::string& stem)
         {
-            g_hSaveFiles = ObserveHSaveFiles(stem);
+            g_hSaveFiles = ObserveSaveFiles(stem);
             std::scoped_lock lock(g_msgMutex);
             g_expectedSaveStem = stem;
             g_saveMatched = false;
@@ -1356,11 +1366,8 @@ namespace SkyrimPoE::Runtime
                     return false;
                 }
             }
-            std::optional<fs::file_time_type> essTime;
-            std::optional<fs::file_time_type> cosaveTime;
             const auto& files = *g_hSaveFiles;
-            return ReadHSaveTimestamp(files.ess, essTime) && essTime && essTime != files.essBefore &&
-                ReadHSaveTimestamp(files.cosave, cosaveTime) && cosaveTime && cosaveTime != files.cosaveBefore;
+            return SaveFileUpdated(files.ess, files.essBefore) && SaveFileUpdated(files.cosave, files.cosaveBefore);
         }
 
         std::optional<std::string> FindUnusedHCheckpointStem()
@@ -1371,85 +1378,12 @@ namespace SkyrimPoE::Runtime
                 if (ToLowerAscii(stem) == ToLowerAscii(g_cfg.baselineSave)) {
                     continue;
                 }
-                const auto files = ObserveHSaveFiles(stem);
+                const auto files = ObserveSaveFiles(stem);
                 if (files && !files->essBefore && !files->cosaveBefore) {
                     return stem;
                 }
             }
             return std::nullopt;
-        }
-
-        bool ParseMarkerFile(const fs::path& markerPath, AutoTestConfig& out)
-        {
-            std::ifstream ifs(markerPath);
-            if (!ifs) {
-                return false;
-            }
-            std::string line;
-            bool firstLine = true;
-            while (std::getline(ifs, line)) {
-                if (firstLine) {
-                    firstLine = false;
-                    // UTF-8 BOM 제거
-                    if (line.size() >= 3 &&
-                        static_cast<unsigned char>(line[0]) == 0xEF &&
-                        static_cast<unsigned char>(line[1]) == 0xBB &&
-                        static_cast<unsigned char>(line[2]) == 0xBF) {
-                        line.erase(0, 3);
-                    }
-                }
-                const auto trimmed = Trim(line);
-                if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') {
-                    continue;
-                }
-                const auto eq = trimmed.find('=');
-                if (eq == std::string::npos) {
-                    continue;
-                }
-                const auto key = ToLowerAscii(Trim(std::string_view(trimmed).substr(0, eq)));
-                const auto val = Trim(std::string_view(trimmed).substr(eq + 1));
-                if (key == "save") {
-                    out.baselineSave = StripSaveStem(val);
-                } else if (key == "temp_save") {
-                    const auto stripped = StripSaveStem(val);
-                    if (!stripped.empty()) {
-                        out.tempSave = stripped;
-                    }
-                } else if (key == "quit") {
-                    out.quitWhenDone = ParseBool(val, out.quitWhenDone);
-                } else if (key == "consume_marker") {
-                    out.consumeMarker = ParseBool(val, out.consumeMarker);
-                } else if (key == "only") {
-                    const auto mode = ToLowerAscii(val);
-                    if (mode.empty()) {
-                        continue;
-                    }
-                    if (mode != "h27" && mode != "es" && mode != "save") {
-                        SKSE::log::error("AutoTest: unknown only='{}' in the marker; supported: h27, es, save.", mode);
-                        return false;
-                    }
-                    out.routeOnly = mode == "h27";
-                    out.enemyEsOnly = mode == "es";
-                    out.saveOnly = mode == "save";
-                } else if (key == "timeout_sec") {
-                    try {
-                        const double sec = std::stod(val);
-                        // 기본값(kDefaultAutoTestTimeoutSec)보다 넉넉히 늘릴 수 있게 상한을 둔다. tools/autotest.ps1과 같은 범위.
-                        if (std::isfinite(sec) && sec >= 30.0 && sec <= kMaxAutoTestTimeoutSec) {
-                            out.globalTimeoutSec = sec;
-                        }
-                    } catch (...) {
-                    }
-                }
-            }
-            // T-5: 임시 세이브가 기준 사용자 세이브를 덮어쓰지 못하게 거부
-            if (!out.baselineSave.empty() && !out.tempSave.empty() &&
-                (ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave) ||
-                    ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave + kHCheckpointSuffix))) {
-                SKSE::log::error("AutoTest: refusing marker where a temporary save stem equals the baseline save (T-5).");
-                return false;
-            }
-            return true;
         }
 
         bool IsPlayerReadyInWorld()
@@ -1907,9 +1841,12 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void SendUiCmd(const json& obj)
+        void SendUiCmd(json cmd)
         {
-            UiBridge::ExecuteCommandForTestOnMainThread(obj.dump());
+            const auto content = SaveLoad::GetContentGeneration();
+            cmd["buildId"] = content ? content->buildId : std::string{};
+            cmd["uiProtocol"] = Core::UiBuildCheck::kUiProtocolVersion;
+            UiBridge::ExecuteCommandForTestOnMainThread(cmd.dump());
         }
 
         // 장착 중인 모든 슬롯의 중첩 소켓 젬까지 역순으로 완전히 분리한 뒤 탈착한다.
@@ -2223,14 +2160,379 @@ namespace SkyrimPoE::Runtime
             }
             {
                 std::scoped_lock lock(g_msgMutex);
-                g_expectedLoadStem = ToLowerAscii(saveStem);
+                g_expectedLoadStem = g_cfg.cleanupOnly ? saveStem : ToLowerAscii(saveStem);
                 g_preLoadMatched = false;
                 g_postLoadSignaled = false;
                 g_postLoadSucceeded = false;
             }
+            if (g_cfg.cleanupOnly) {
+                SaveLoad::ExpectCleanupTestLoad(saveStem);
+            }
             // 누락 모드 경고 모달로 멈추지 않도록 a_checkForMods=false로 로드한다.
             mgr->Load(saveStem.c_str(), false);
             return true;
+        }
+
+        bool IsCleanupTarget(const Core::SaveGeneration& generation)
+        {
+            return generation.game == "poe2" && generation.contentGeneration == 1;
+        }
+
+        bool ObserveCleanupBaseline(RE::PlayerCharacter* player, bool succeeded)
+        {
+            const auto load = SaveLoad::GetLastLoadDiagnostics();
+            const auto candidate = SaveLoad::GetMigrationCandidate(player);
+            const auto mode = ModState::Get();
+            const bool pending = mode->mode == ModMode::CleanupPending;
+            const bool legacy = load.decision && load.decision->disposition == Core::SaveDisposition::CleanupFromLegacy;
+            if (!succeeded || !load.receivedLoad || !load.collectionComplete || !pending || !legacy || !candidate) {
+                CheckCleanup(CleanupCheck::Candidate, false, std::format(
+                    "save='{}', success={}, collected={}, decision={}, CleanupPending={}, reason={}",
+                    g_cfg.baselineSave, succeeded, load.collectionComplete,
+                    load.decision ? SaveDispositionName(load.decision->disposition) : "unavailable", pending, mode->reason));
+                return false;
+            }
+            std::array<std::size_t, 4> returnKinds{};
+            g_cleanupTest.expectedReturns = candidate->returns.size();
+            for (const auto& entry : candidate->returns) {
+                ++returnKinds[static_cast<std::size_t>(entry.kind)];
+                if (auto* form = MigrationRuntime::ReturnForm(entry)) {
+                    auto [it, inserted] = g_cleanupTest.expectedItems.try_emplace(form->GetFormID());
+                    if (inserted) {
+                        it->second.first = player->GetItemCount(form);
+                    }
+                    ++it->second.second;
+                } else {
+                    ++g_cleanupTest.expectedWithoutForm;
+                }
+            }
+            std::string baselineCounts;
+            for (const auto& [form, count] : g_cleanupTest.expectedItems) {
+                baselineCounts += std::format(" {:08X}={} (+{})", form, count.first, count.second);
+            }
+            constexpr auto permanent = RE::ACTOR_VALUE_MODIFIER::kPermanent;
+            CheckCleanup(CleanupCheck::Candidate, true, std::format(
+                "save='{}', decision=CleanupFromLegacy, CleanupPending=true, {}, inventory=[{} ], "
+                "returns(gem/support/jewel/charm)={}/{}/{}/{}, unresolvedReturnForms={}, permanent(health/magicka)={:.6f}/{:.6f}, "
+                "delta={:.6f}/{:.6f}, mapRun={}, inMapCell={}",
+                g_cfg.baselineSave, candidate->report, baselineCounts, returnKinds[0], returnKinds[1], returnKinds[2], returnKinds[3],
+                g_cleanupTest.expectedWithoutForm,
+                player->GetActorValueModifier(permanent, RE::ActorValue::kHealth),
+                player->GetActorValueModifier(permanent, RE::ActorValue::kMagicka),
+                candidate->healthDelta, candidate->magickaDelta, candidate->hasMapRun, candidate->inMapCell));
+            return true;
+        }
+
+        std::pair<bool, std::string> CheckCleanupItems(RE::PlayerCharacter* player, const MigrationDiagnostics& result)
+        {
+            const auto totalLost = std::accumulate(result.lostReturns.begin(), result.lostReturns.end(), std::size_t{ 0 });
+            if (g_cleanupTest.expectedReturns == 0) {
+                return { totalLost == 0 && result.lostReturnsByForm.empty() && result.lostReturnsWithoutForm == 0,
+                    "미실행(대상 없음)" };
+            }
+            bool matched = g_cleanupTest.expectedWithoutForm == result.lostReturnsWithoutForm;
+            std::size_t totalIncrease = 0;
+            std::size_t countedLosses = result.lostReturnsWithoutForm;
+            auto detail = std::format("expected={}, unresolved(expected={}, lost={})", g_cleanupTest.expectedReturns,
+                g_cleanupTest.expectedWithoutForm, result.lostReturnsWithoutForm);
+            for (const auto& [id, baseline] : g_cleanupTest.expectedItems) {
+                auto* form = RE::TESForm::LookupByID<RE::TESObjectMISC>(id);
+                const auto lost = result.lostReturnsByForm.find(id);
+                const auto lostCount = lost == result.lostReturnsByForm.end() ? 0 : lost->second;
+                const auto increase = form ? player->GetItemCount(form) - baseline.first : -1;
+                matched &= increase >= 0 && static_cast<std::size_t>(increase) + lostCount == baseline.second;
+                totalIncrease += static_cast<std::size_t>(std::max(0, increase));
+                countedLosses += lostCount;
+                detail += std::format(" {:08X}(expected={}, increase={}, lost={})", id, baseline.second, increase, lostCount);
+            }
+            matched &= std::ranges::all_of(result.lostReturnsByForm,
+                [](const auto& entry) { return g_cleanupTest.expectedItems.contains(entry.first); });
+            matched &= countedLosses == totalLost && totalIncrease + totalLost == g_cleanupTest.expectedReturns;
+            detail += std::format(" totalIncrease={}, totalLost={}", totalIncrease, totalLost);
+            return { matched, std::move(detail) };
+        }
+
+        std::pair<bool, std::string> CheckCleanupEngine(RE::PlayerCharacter* player, const MigrationDiagnostics& result)
+        {
+            const auto current = MigrationRuntime::ObserveEngineResidue(player);
+            const auto healthChange = result.healthAfter - result.healthBefore;
+            const auto magickaChange = result.magickaAfter - result.magickaBefore;
+            const bool deltas = std::abs(healthChange + result.healthDelta) <= Core::kLegacyDeltaTolerance &&
+                std::abs(magickaChange + result.magickaDelta) <= Core::kLegacyDeltaTolerance;
+            return { deltas && result.engineResidue.Empty() && current.Empty(),
+                std::format("healthChange={:.6f} expected={:.6f}, magickaChange={:.6f} expected={:.6f}, "
+                    "afterRevert(Variable09={}, proxySpells={}, proxyPowers={}), current(Variable09={}, proxySpells={}, proxyPowers={})",
+                    healthChange, -result.healthDelta, magickaChange, -result.magickaDelta,
+                    result.engineResidue.variable09, result.engineResidue.proxySpells, result.engineResidue.proxyPowers,
+                    current.variable09, current.proxySpells, current.proxyPowers) };
+        }
+
+        std::pair<bool, std::string> CheckCleanupState()
+        {
+            const auto state = SaveLoad::GetStateCopy();
+            const auto slots = std::ranges::count_if(state.slots, [](const auto& slot) { return slot.occupied; });
+            const bool virtualSlotsEmpty = state.virtualRing2Key == Core::InventoryItemKey{} && state.virtualRing2BaseFormId == 0 &&
+                state.virtualBeltKey == Core::InventoryItemKey{} && state.virtualBeltBaseFormId == 0;
+            const auto charmOccupied = [](const auto& slot) { return slot.occupied; };
+            const auto charms = std::ranges::count_if(state.charmSlots, charmOccupied);
+            const auto liveCharms = g_charmSystem ? std::ranges::count_if(g_charmSystem->Slots(), charmOccupied) : charms;
+            const auto trackedGems = GemInventory::CountTracked();
+            const auto trackedItems = ItemTracker::CountTracked();
+            const bool atlasReset = state.atlas.completedTierMask == 0 && state.atlas.totalMapsCleared == 0 &&
+                state.atlas.highestTierCleared == 0 && !state.atlas.firstTributeGiven;
+            const bool starter = state.starterGemsGiven && state.starterCurrencyGiven && state.starterStage5GemsGiven;
+            const bool ok = state.exileLevel == 1 && state.exileXp == 0 && state.tree.allocatedNodes.empty() &&
+                slots == 0 && state.activeAuraMask == 0 && virtualSlotsEmpty && charms == 0 && liveCharms == 0 &&
+                state.socketedJewels.empty() && trackedGems == 0 && trackedItems == 0 && atlasReset && starter;
+            return { ok, std::format("level={}, xp={}, nodes={}, skills={}, auras={}, virtualSlotsEmpty={}, charms={}/{}, jewels={}, "
+                    "trackedGems={}, trackedItems={}, atlasReset={}, starterFlags={}/{}/{}", state.exileLevel, state.exileXp,
+                    state.tree.allocatedNodes.size(), slots, state.activeAuraMask, virtualSlotsEmpty, charms, liveCharms,
+                    state.socketedJewels.size(), trackedGems, trackedItems, atlasReset, state.starterGemsGiven,
+                    state.starterCurrencyGiven, state.starterStage5GemsGiven) };
+        }
+
+        std::map<RE::FormID, std::int32_t> CaptureCleanupStarterItems(RE::PlayerCharacter* player)
+        {
+            std::map<RE::FormID, std::int32_t> counts;
+            const auto capture = [&](RE::FormID localId) {
+                auto* form = FormIds::Lookup<RE::TESObjectMISC>(localId);
+                counts.emplace(localId, form ? player->GetItemCount(form) : -1);
+            };
+            for (const auto& entry : FormIds::kAllGemForms) {
+                capture(entry.localFormId);
+            }
+            using enum Core::CurrencyKind;
+            for (const auto kind : { ScrollOfWisdom, Transmutation, Augmentation, Alteration,
+                    Regal, Alchemy, Chaos, Scouring, Regret, Jeweller }) {
+                capture(FormIds::CurrencyLocalFormId(kind));
+            }
+            return counts;
+        }
+
+        std::pair<bool, std::string> CheckCleanupStarterItems(RE::PlayerCharacter* player)
+        {
+            const auto after = CaptureCleanupStarterItems(player);
+            const auto& before = g_cleanupTest.starterItemsBeforeSave;
+            bool equal = before.size() == after.size();
+            std::string differences;
+            for (const auto& [id, count] : after) {
+                const auto previous = before.find(id);
+                const auto savedCount = previous != before.end() ? previous->second : -1;
+                if (savedCount < 0 || count != savedCount) {
+                    equal = false;
+                    differences += std::format(" {:06X}={}->{}", id, savedCount, count);
+                }
+            }
+            return { equal, std::format("starterInventoryEqual={}, forms={}, differences=[{} ]", equal, after.size(), differences) };
+        }
+
+        void CloseDialogueWhileAwaitingSave(RE::UI* ui)
+        {
+            // 시험 세이브 주변 NPC가 말을 걸어 대화 메뉴가 열리면 저장이 막혀 시나리오 전체가 건너뛰어졌다(실행 20, E7).
+            // 시험은 대화를 쓰지 않으므로 저장을 기다리는 동안 열린 대화 메뉴는 닫는다.
+            if (ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+                bool awaitingSave = false;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    // 저장이 확인된 뒤(g_saveMatched)에는 정상 대화를 닫지 않는다(Codex 검토 2026-11-24).
+                    awaitingSave = !g_expectedSaveStem.empty() && !g_saveMatched;
+                }
+                // 닫기 요청은 메뉴가 실제로 닫힐 때까지 몇 틱 걸리므로 1초에 한 번만 보내고 남긴다.
+                static Clock::time_point lastDialogueClose{};
+                if (awaitingSave && Clock::now() - lastDialogueClose >= std::chrono::seconds(1)) {
+                    if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
+                        lastDialogueClose = Clock::now();
+                        queue->AddMessage(RE::DialogueMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                        LogInfo(std::format("Closed a Dialogue Menu that blocked the pending test save in {}.", PhaseName(g_phase)));
+                    }
+                }
+            }
+        }
+
+        void TickCleanupOnly()
+        {
+            const auto now = Clock::now();
+            if (std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
+                FinishAndScheduleQuit(std::format("Cleanup AutoTest timed out in {}.", PhaseName(g_phase)));
+                return;
+            }
+            auto* ui = RE::UI::GetSingleton();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const bool eligible = MigrationRuntime::CanTick(player);
+            const auto finalSave = g_cfg.tempSave + kCleanupFinalSuffix;
+            const auto loadSignal = [] {
+                std::scoped_lock lock(g_msgMutex);
+                return std::pair{ g_postLoadSignaled, g_postLoadSucceeded };
+            };
+            switch (g_phase) {
+            case Phase::CleanupContent: {
+                const auto content = SaveLoad::GetContentGeneration();
+                const auto target = SaveLoad::GetCleanupTestTarget();
+                const bool ok = content && target && IsCleanupTarget(*target) && ModState::AllowsGameplay();
+                CheckCleanup(CleanupCheck::Content, ok, std::format("contentCheckPassed={}, target={}/{}",
+                    content.has_value(), target ? target->game : "unavailable", target ? target->contentGeneration : 0));
+                if (!ok || g_cfg.baselineSave.empty()) {
+                    FinishAndScheduleQuit("Cleanup AutoTest requires verified content and a baseline save.");
+                } else {
+                    EnterPhase(Phase::AwaitMainMenu);
+                }
+                break;
+            }
+            case Phase::AwaitMainMenu:
+                if ((ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) || IsPlayerReadyInWorld()) {
+                    EnterPhase(Phase::MenuDelay);
+                }
+                break;
+            case Phase::MenuDelay:
+                if (PhaseElapsedSec() >= 2.0) {
+                    if (RequestLoadSave(g_cfg.baselineSave)) {
+                        EnterPhase(Phase::AwaitBaselineLoad);
+                    } else {
+                        FinishAndScheduleQuit("Could not request the cleanup baseline load.");
+                    }
+                }
+                break;
+            case Phase::AwaitBaselineLoad: {
+                const auto [signaled, succeeded] = loadSignal();
+                if (!signaled || (succeeded && !eligible)) {
+                    if (PhaseElapsedSec() > 90.0) {
+                        FinishAndScheduleQuit("Cleanup baseline load did not become ready.");
+                    }
+                    break;
+                }
+                if (!ObserveCleanupBaseline(player, succeeded)) {
+                    FinishAndScheduleQuit("Baseline load did not produce the legacy candidate.");
+                    break;
+                }
+                SaveLoad::ReleaseForTest();
+                g_cleanupTest.lastEligibleTick = now;
+                EnterPhase(Phase::CleanupAwaitCommit);
+                break;
+            }
+            case Phase::CleanupAwaitCommit: {
+                if (eligible && g_cleanupTest.lastEligibleTick) {
+                    const auto elapsed = std::chrono::duration<double>(now - *g_cleanupTest.lastEligibleTick).count();
+                    g_cleanupTest.eligibleSeconds += std::clamp(elapsed, 0.0, 0.25);
+                }
+                g_cleanupTest.lastEligibleTick = eligible ? std::optional{ now } : std::nullopt;
+                if (g_cleanupTest.eligibleSeconds > kCleanupCommitTimeoutSec || ModState::Get()->mode == ModMode::Preserve) {
+                    FinishAndScheduleQuit(std::format("Cleanup commit failed after {:.2f}s of eligible time. {}",
+                        g_cleanupTest.eligibleSeconds, ModState::Get()->reason));
+                    break;
+                }
+                if (!ModState::AllowsGameplay() || !eligible) {
+                    break;
+                }
+                g_cleanupTest.committed = SaveLoad::GetLastMigrationDiagnostics();
+                if (!g_cleanupTest.committed || g_cleanupTest.committed->step != Core::CleanupStep::Complete) {
+                    FinishAndScheduleQuit("Normal mode was reached without a completed cleanup.");
+                    break;
+                }
+                g_cleanupTest.outcomeChecks[0] = CheckCleanupItems(player, *g_cleanupTest.committed);
+                g_cleanupTest.outcomeChecks[1] = CheckCleanupEngine(player, *g_cleanupTest.committed);
+                g_cleanupTest.outcomeChecks[2] = CheckCleanupState();
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem = finalSave;
+                    g_saveMatched = false;
+                    g_saveAtNextMessage.reset();
+                }
+                g_nextSaveRetryAt = now;
+                EnterPhase(Phase::CleanupSaveFinal);
+                break;
+            }
+            case Phase::CleanupSaveFinal: {
+                CloseDialogueWhileAwaitingSave(ui);
+                bool matched = false;
+                std::uint64_t before = 0;
+                auto write = SaveLoad::GetLastSaveDiagnostics();
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    matched = g_saveMatched;
+                    before = g_saveSequenceAtMessage;
+                    if (g_saveAtNextMessage) {
+                        write = *g_saveAtNextMessage;
+                    }
+                }
+                const bool timedOut = PhaseElapsedSec() > kScenarioASaveTimeoutSec || !ModState::AllowsGameplay();
+                if (matched && write.sequence != before) {
+                    ReportCleanupCommitChecks(write.sequence == before + 1 ? write.threadId : 0);
+                    const bool noMigration = std::ranges::find(write.recordTypes, Core::kRecordMigration) == write.recordTypes.end();
+                    const bool stamp = write.generation && IsCleanupTarget(*write.generation);
+                    const auto tickThread = g_cleanupTest.committed->tickThreadId;
+                    const bool sameThread = write.threadId != 0 && write.threadId == tickThread;
+                    const bool callbackWritten = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
+                        noMigration && stamp && sameThread;
+                    const auto& files = g_cleanupTest.finalFiles;
+                    const auto requestedAt = g_cleanupTest.finalSaveRequestedAt;
+                    const bool essUpdated = files && SaveFileUpdated(files->ess, files->essBefore, requestedAt);
+                    const bool cosaveUpdated = files && SaveFileUpdated(files->cosave, files->cosaveBefore, requestedAt);
+                    const bool written = callbackWritten && essUpdated && cosaveUpdated;
+                    if (callbackWritten && !written && !timedOut) {
+                        break;
+                    }
+                    std::string records;
+                    for (const auto type : write.recordTypes) {
+                        records += std::format(" {}{}{}{}", static_cast<char>(type >> 24), static_cast<char>(type >> 16),
+                            static_cast<char>(type >> 8), static_cast<char>(type));
+                    }
+                    CheckCleanup(CleanupCheck::Write, written, std::format(
+                        "save='{}', sequence={}->{}, complete={}, failedRecords={}, records=[{} ], GENR={}/{}, "
+                        "tick thread={}, OnSave thread={}, sameThread={}, essUpdated={}, skseUpdated={}",
+                        finalSave, before, write.sequence, write.complete, write.failedRecords, records,
+                        write.generation ? write.generation->game : "unavailable",
+                        write.generation ? write.generation->contentGeneration : 0, tickThread, write.threadId, sameThread,
+                        essUpdated, cosaveUpdated));
+                    if (written && RequestLoadSave(finalSave)) {
+                        EnterPhase(Phase::CleanupReloadFinal);
+                    } else {
+                        FinishAndScheduleQuit("Could not verify the final save or request its reload.");
+                    }
+                } else if (timedOut) {
+                    FinishAndScheduleQuit("Final co-save write did not complete.");
+                } else if (!matched && eligible && now >= g_nextSaveRetryAt) {
+                    g_nextSaveRetryAt = now + std::chrono::seconds(2);
+                    if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                        const fs::path stem{ std::u8string(finalSave.begin(), finalSave.end()) };
+                        g_cleanupTest.finalFiles = ObserveSaveFiles(stem);
+                        if (!g_cleanupTest.finalFiles) {
+                            FinishAndScheduleQuit("Could not read the final ESS and SKSE timestamps before saving.");
+                            break;
+                        }
+                        g_cleanupTest.starterItemsBeforeSave = CaptureCleanupStarterItems(player);
+                        g_cleanupTest.finalSaveRequestedAt = fs::file_time_type::clock::now();
+                        mgr->Save(finalSave.c_str());
+                    }
+                }
+                break;
+            }
+            case Phase::CleanupReloadFinal: {
+                const auto [signaled, succeeded] = loadSignal();
+                if (!signaled || (succeeded && !eligible)) {
+                    if (PhaseElapsedSec() > 90.0) {
+                        FinishAndScheduleQuit("Final save reload did not become ready.");
+                    }
+                    break;
+                }
+                const auto load = SaveLoad::GetLastLoadDiagnostics();
+                const auto [stateReset, stateDetail] = CheckCleanupState();
+                const bool stamp = load.generation && load.generation->status == Core::GenerationRecordStatus::Valid &&
+                    IsCleanupTarget(load.generation->value);
+                const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
+                    ModState::AllowsGameplay();
+                const auto [starterItemsEqual, starterItemsDetail] = succeeded ? CheckCleanupStarterItems(player) :
+                    std::pair{ false, std::string("starter inventory unavailable") };
+                CheckCleanup(CleanupCheck::Reload, succeeded && load.receivedLoad && load.collectionComplete &&
+                    stamp && normal && stateReset && starterItemsEqual, std::format(
+                    "save='{}', success={}, collected={}, GENR=poe2/1:{}, normal={}, {}, {}",
+                    finalSave, succeeded, load.collectionComplete, stamp, normal, stateDetail, starterItemsDetail));
+                FinishAndScheduleQuit("Cleanup AutoTest finished.");
+                break;
+            }
+            default:
+                FinishAndScheduleQuit("Unexpected cleanup AutoTest phase.");
+                break;
+            }
         }
 
 
@@ -4550,17 +4852,19 @@ namespace SkyrimPoE::Runtime
             return;
         }
 
-        AutoTestConfig parsed;
-        if (!ParseMarkerFile(markerPath, parsed)) {
+        std::ifstream marker(markerPath);
+        auto parsed = marker ? AutoTestMarker::ParseMarker(marker) : std::nullopt;
+        marker.close();
+        if (!parsed) {
             SKSE::log::warn("AutoTest: marker '{}' found but unreadable; ignoring.", markerPath.string());
             return;
         }
 
-        if (parsed.consumeMarker) {
+        if (parsed->consumeMarker) {
             fs::remove(markerPath, ec);
         }
 
-        g_cfg = std::move(parsed);
+        g_cfg = std::move(*parsed);
         g_reportPath = *logDir / kReportFilename;
         const auto prevPath = *logDir / kPrevReportFilename;
         if (fs::exists(g_reportPath, ec)) {
@@ -4571,12 +4875,13 @@ namespace SkyrimPoE::Runtime
         g_passCount = 0;
         g_hChecksReported.fill(false);
         g_saveChecksReported.fill(false);
+        g_cleanupTest = {};
         g_failCount = 0;
         g_warnCount = 0;
         g_startedAt = Clock::now();
         // U2 확정(2026-11-20): 출시 기본값 EnforceGemRequirements=true에서 Lv1 기준 세이브의
         // 스타터 젬(Cyclone Lv28 등) 통합 시험이 가능하도록 AutoTest 실행 중에만 임시 false 적용(종료 시 원복)
-        if (g_config && !g_cfg.saveOnly) {
+        if (g_config && !g_cfg.saveOnly && !g_cfg.cleanupOnly) {
             g_savedEnforceGemReq = g_config->enforceGemRequirements;
             g_hasSavedEnforceGemReq = true;
             g_config->enforceGemRequirements = false;
@@ -4586,6 +4891,11 @@ namespace SkyrimPoE::Runtime
         LogInfo(std::format("SkyrimPoE Stage 6 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
             g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
+        if (g_cfg.cleanupOnly) {
+            SaveLoad::SetCleanupTestTarget(true);
+            EnterPhase(Phase::CleanupContent);
+            return;
+        }
         if (g_cfg.saveOnly) {
             EnterPhase(Phase::SaveOnlyContent);
             return;
@@ -4604,21 +4914,27 @@ namespace SkyrimPoE::Runtime
         return g_enabled.load(std::memory_order_acquire);
     }
 
+    bool AutoTest::IsCleanupOnly() noexcept
+    {
+        return IsEnabled() && g_cfg.cleanupOnly;
+    }
+
     void AutoTest::TickSaveOnlyWhileSuspended(RE::Main* main)
     {
-        if (IsEnabled() && g_cfg.saveOnly) {
+        if (IsEnabled() && (g_cfg.saveOnly || g_cfg.cleanupOnly)) {
             Tick(main, 0.0);
         }
     }
 
-    void AutoTest::OnPreLoadGame(const SKSE::MessagingInterface::Message& msg)
+    void AutoTest::OnPreLoadGame(std::string_view saveName)
     {
         if (!IsEnabled()) {
             return;
         }
-        const auto stem = ToLowerAscii(SaveStemFromMessage(msg));
+        const bool cleanupMatch = g_cfg.cleanupOnly && SaveLoad::MatchCleanupTestLoad(saveName);
+        const auto stem = g_cfg.cleanupOnly ? std::string{} : ToLowerAscii(StripSaveStem(saveName));
         std::scoped_lock lock(g_msgMutex);
-        g_preLoadMatched = !g_expectedLoadStem.empty() && stem == g_expectedLoadStem;
+        g_preLoadMatched = g_cfg.cleanupOnly ? cleanupMatch : !g_expectedLoadStem.empty() && stem == g_expectedLoadStem;
         g_postLoadSignaled = false;
         g_postLoadSucceeded = false;
     }
@@ -4640,13 +4956,13 @@ namespace SkyrimPoE::Runtime
         g_postLoadSucceeded = succeeded;
     }
 
-    void AutoTest::OnSaveGame(const SKSE::MessagingInterface::Message& msg)
+    void AutoTest::OnSaveGame(std::string_view saveName)
     {
         if (!IsEnabled()) {
             return;
         }
-        const auto stem = SaveStemFromMessage(msg);
-        if (g_cfg.saveOnly) {
+        const auto stem = StripSaveStem(saveName);
+        if (g_cfg.saveOnly || g_cfg.cleanupOnly) {
             // SKSE dispatches kSaveGame before it invokes the co-save writer.
             const auto previous = SaveLoad::GetLastSaveDiagnostics();
             std::scoped_lock lock(g_msgMutex);
@@ -4657,7 +4973,8 @@ namespace SkyrimPoE::Runtime
                 if (!g_saveAtNextMessage) {
                     g_saveAtNextMessage = previous;
                 }
-            } else if (ToLowerAscii(stem) == ToLowerAscii(g_expectedSaveStem)) {
+            } else if (g_cfg.cleanupOnly ? SameSaveStem(stem, g_expectedSaveStem) :
+                                         ToLowerAscii(stem) == ToLowerAscii(g_expectedSaveStem)) {
                 g_saveSequenceAtMessage = previous.sequence;
                 g_saveMatched = true;
             }
@@ -4688,6 +5005,17 @@ namespace SkyrimPoE::Runtime
                 if (auto* m = main ? main : RE::Main::GetSingleton()) {
                     m->GetRuntimeData().quitGame = true;
                 }
+            }
+            return;
+        }
+
+        if (g_cfg.cleanupOnly) {
+            try {
+                TickCleanupOnly();
+            } catch (const std::exception& e) {
+                FinishAndScheduleQuit(std::format("Cleanup AutoTest failed: {}", e.what()));
+            } catch (...) {
+                FinishAndScheduleQuit("Cleanup AutoTest failed with an unknown exception.");
             }
             return;
         }
@@ -4735,24 +5063,8 @@ namespace SkyrimPoE::Runtime
         }
 
         auto* ui = RE::UI::GetSingleton();
-        // 시험 세이브 주변 NPC가 말을 걸어 대화 메뉴가 열리면 저장이 막혀 시나리오 전체가 건너뛰어졌다(실행 20, E7).
-        // 시험은 대화를 쓰지 않으므로 저장을 기다리는 동안 열린 대화 메뉴는 닫는다.
-        if (!saveOnlySuspended && ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
-            bool awaitingSave = false;
-            {
-                std::scoped_lock lock(g_msgMutex);
-                // 저장이 확인된 뒤(g_saveMatched)에는 정상 대화를 닫지 않는다(Codex 검토 2026-11-24).
-                awaitingSave = !g_expectedSaveStem.empty() && !g_saveMatched;
-            }
-            // 닫기 요청은 메뉴가 실제로 닫힐 때까지 몇 틱 걸리므로 1초에 한 번만 보내고 남긴다.
-            static Clock::time_point lastDialogueClose{};
-            if (awaitingSave && Clock::now() - lastDialogueClose >= std::chrono::seconds(1)) {
-                if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
-                    lastDialogueClose = Clock::now();
-                    queue->AddMessage(RE::DialogueMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
-                    LogInfo(std::format("Closed a Dialogue Menu that blocked the pending test save in {}.", PhaseName(g_phase)));
-                }
-            }
+        if (!saveOnlySuspended) {
+            CloseDialogueWhileAwaitingSave(ui);
         }
         const bool paused = ui && ui->GameIsPaused();
         if (!g_cfg.saveOnly && IsHCompanionCleanupPending()) {

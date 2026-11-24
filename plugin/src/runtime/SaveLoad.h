@@ -10,6 +10,7 @@
 #include "core/SaveRecordFormat.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
+#include "runtime/MigrationRuntime.h"
 
 #include <array>
 #include <cstddef>
@@ -50,6 +51,9 @@ namespace SkyrimPoE::Runtime
             bool wroteGeneration = false;
             std::size_t failedRecords = 0;
             bool complete = false;
+            std::vector<std::uint32_t> recordTypes;
+            std::optional<Core::SaveGeneration> generation;
+            std::uint32_t threadId = 0;
         };
 
         static bool Install(
@@ -62,6 +66,14 @@ namespace SkyrimPoE::Runtime
             Core::CharmSystem* charmSystem = nullptr);
 
         static void SetContentCheck(std::optional<Core::SaveGeneration> generation, std::string reason);
+        static void SetCleanupTestTarget(bool enabled);
+        [[nodiscard]] static std::optional<Core::SaveGeneration> GetCleanupTestTarget();
+        static void ExpectCleanupTestLoad(std::string_view stem);
+        [[nodiscard]] static bool MatchCleanupTestLoad(std::string_view name) noexcept;
+        [[nodiscard]] static std::optional<MigrationCandidateSnapshot> GetMigrationCandidate(RE::PlayerCharacter* player);
+        [[nodiscard]] static std::optional<MigrationDiagnostics> GetLastMigrationDiagnostics();
+        static void ReleaseForTest();
+        static void TickMigration();
         static void OnGameLoadStarted();
         static void OnGameLoadFinished(bool succeeded);
 
@@ -93,5 +105,9 @@ namespace SkyrimPoE::Runtime
         static void RetryPendingSpeedReverts(double deltaSec, bool gamePaused);
         // 6단계 안전 제거 정리용: 미원복 SPDM 대기열 NPC SpeedMult 즉시 원복
         static std::size_t RevertAllPendingSpeedModsNow();
+
+    private:
+        static void ScheduleLoadInit(bool isNewGame, std::optional<std::uint64_t> expectedWorld);
+        static void ScheduleEngineInit(bool isNewGame, bool afterCleanup, std::uint64_t queueGeneration);
     };
 }

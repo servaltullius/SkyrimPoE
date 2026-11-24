@@ -450,7 +450,7 @@ namespace
                 OnDataLoaded();
                 break;
             case SKSE::MessagingInterface::kPreLoadGame: {
-                const bool notifyAutoTest = Runtime::ModState::AllowsGameplay();
+                const bool notifyAutoTest = Runtime::ModState::AllowsGameplay() || Runtime::AutoTest::IsCleanupOnly();
                 Runtime::SaveLoad::OnGameLoadStarted();
                 Runtime::MapDeviceRuntime::DisarmUninstallCleanup();
                 Runtime::UiBridge::ClosePanelOnMainThread();
@@ -465,7 +465,7 @@ namespace
                 Runtime::SaveLoad::SchedulePostLoadOrNewGameInit(true);
                 break;
             case SKSE::MessagingInterface::kPostLoadGame: {
-                const bool notifyAutoTest = std::exchange(g_autoTestLoadStarted, false);
+                const bool notifyAutoTest = std::exchange(g_autoTestLoadStarted, false) || Runtime::AutoTest::IsCleanupOnly();
                 Runtime::SaveLoad::OnGameLoadFinished(msg->data != nullptr);
                 if (notifyAutoTest) {
                     Runtime::AutoTest::OnPostLoadGame(msg->data != nullptr);
@@ -473,7 +473,7 @@ namespace
                 break;
             }
             case SKSE::MessagingInterface::kSaveGame:
-                if (Runtime::ModState::AllowsGameplay()) {
+                if (Runtime::ModState::AllowsGameplay() || Runtime::AutoTest::IsCleanupOnly()) {
                     Runtime::AutoTest::OnSaveGame(*msg);
                 }
                 break;

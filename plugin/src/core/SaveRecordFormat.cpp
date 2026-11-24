@@ -1,4 +1,5 @@
 #include "core/SaveRecordFormat.h"
+#include "core/Migration.h"
 #include "core/SaveCapPolicy.h"
 
 #include <algorithm>
@@ -150,47 +151,53 @@ namespace SkyrimPoE::Core::SaveRecord
         return true;
     }
 
-    bool ReadCoreV2(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
+    bool ReadLegacyCoreV2Front(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
     {
         std::uint8_t starterByte = 0;
-        std::uint32_t slotCount = 0;
-        bool ok = true;
-        ok = ok && ReadPod(bytes, tmp.exileLevel);
-        ok = ok && ReadPod(bytes, tmp.exileXp);
-        ok = ok && ReadPod(bytes, tmp.unallocatedPassivePoints);
-        ok = ok && ReadString(bytes, tmp.className);
-        ok = ok && ReadPod(bytes, starterByte);
-        ok = ok && ReadPod(bytes, tmp.nextGemInstanceId);
-        ok = ok && ReadPod(bytes, tmp.appliedHealthDelta);
-        ok = ok && ReadPod(bytes, tmp.appliedMagickaDelta);
-        ok = ok && ReadPod(bytes, slotCount);
+        if (!ReadPod(bytes, tmp.exileLevel) || !ReadPod(bytes, tmp.exileXp) ||
+            !ReadPod(bytes, tmp.unallocatedPassivePoints) || !ReadString(bytes, tmp.className) ||
+            !ReadPod(bytes, starterByte) || !ReadPod(bytes, tmp.nextGemInstanceId) ||
+            !ReadPod(bytes, tmp.appliedHealthDelta) || !ReadPod(bytes, tmp.appliedMagickaDelta)) {
+            return false;
+        }
+        tmp.starterGemsGiven = starterByte != 0;
+        return true;
+    }
 
-        if (ok && slotCount <= Core::kSkillSlotCount) {
-            tmp.exileLevel = std::clamp<std::uint32_t>(tmp.exileLevel, 1, Core::kMaxExileLevel);
-            tmp.starterGemsGiven = (starterByte != 0);
-            if (!std::isfinite(tmp.appliedHealthDelta)) tmp.appliedHealthDelta = 0.0;
-            if (!std::isfinite(tmp.appliedMagickaDelta)) tmp.appliedMagickaDelta = 0.0;
-            if (tmp.nextGemInstanceId == 0) {
-                tmp.nextGemInstanceId = 1;
+    bool ReadLegacyCoreV2Slots(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
+    {
+        std::uint32_t slotCount = 0;
+        if (!ReadPod(bytes, slotCount) || slotCount > kSkillSlotCount) {
+            return false;
+        }
+        for (std::uint32_t i = 0; i < slotCount; ++i) {
+            std::uint8_t occupiedByte = 0;
+            std::int8_t linked = -1;
+            if (!ReadPod(bytes, occupiedByte) || !ReadPod(bytes, linked)) {
+                return false;
             }
-            for (std::uint32_t i = 0; i < slotCount && ok; ++i) {
-                std::uint8_t occupiedByte = 0;
-                std::int8_t linked = -1;
-                ok = ok && ReadPod(bytes, occupiedByte);
-                ok = ok && ReadPod(bytes, linked);
-                tmp.slots[i].slotIndex = static_cast<std::uint8_t>(i);
-                tmp.slots[i].occupied = (occupiedByte != 0);
-                tmp.slots[i].linkedAttackSlot =
-                    (linked >= 0 && linked < static_cast<std::int8_t>(Core::kSkillSlotCount)) ? linked : -1;
-                if (tmp.slots[i].occupied) {
-                    ok = ok && ReadGemInstance(bytes, tmp.slots[i].gem);
-                }
+            auto& slot = tmp.slots[i];
+            slot.slotIndex = static_cast<std::uint8_t>(i);
+            slot.occupied = occupiedByte != 0;
+            slot.linkedAttackSlot = (linked >= 0 && linked < static_cast<std::int8_t>(kSkillSlotCount)) ? linked : -1;
+            if (slot.occupied && !ReadGemInstance(bytes, slot.gem)) {
+                return false;
             }
-        } else {
-            ok = false;
+        }
+        return true;
+    }
+
+    bool ReadCoreV2(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
+    {
+        if (!ReadLegacyCoreV2Front(bytes, tmp) || !ReadLegacyCoreV2Slots(bytes, tmp)) {
+            return false;
         }
 
-        return ok;
+        tmp.exileLevel = std::clamp(tmp.exileLevel, 1u, kMaxExileLevel);
+        tmp.nextGemInstanceId = std::max<std::uint64_t>(tmp.nextGemInstanceId, 1);
+        if (!std::isfinite(tmp.appliedHealthDelta)) tmp.appliedHealthDelta = 0.0;
+        if (!std::isfinite(tmp.appliedMagickaDelta)) tmp.appliedMagickaDelta = 0.0;
+        return true;
     }
 
     SaveDecision DecideSave(const SaveRecordBatch& batch, bool isNewGame, const SaveGeneration& pack)
@@ -201,6 +208,7 @@ namespace SkyrimPoE::Core::SaveRecord
         SaveGenerationInput input{
             .isNewGame = isNewGame,
             .generation = {},
+            .migration = {},
             .packGame = pack.game,
             .packGeneration = pack.contentGeneration
         };
@@ -213,14 +221,23 @@ namespace SkyrimPoE::Core::SaveRecord
                 }
                 continue;
             }
-            // An in-progress migration is opaque to P2a-1.
-            input.hasMigration |= record.type == 'MIGR';
+            if (record.type == kRecordMigration) {
+                if (input.migration.status != MigrationRecordStatus::Missing) {
+                    input.migration.status = MigrationRecordStatus::Damaged;
+                } else {
+                    auto migration = ReadMigrationRecord(record.version, record.bytes);
+                    auto& state = migration.state;
+                    input.migration = { migration.status, std::move(state.sourceGame), state.sourceGeneration,
+                        std::move(state.targetGame), state.targetGeneration };
+                }
+                continue;
+            }
             input.hasOtherRecords = true;
-            if (input.packGeneration != 0 && !input.hasIntactCoreV2 &&
-                record.type == kRecordCore && record.version == kCoreVersion) {
+            if (input.packGeneration != 0 && !input.hasIntactCoreV2Front &&
+                record.type == kRecordCore && record.version == kLegacyCoreVersion) {
                 std::span<const std::uint8_t> bytes = record.bytes;
                 Runtime::PersistentState core;
-                input.hasIntactCoreV2 = ReadCoreV2(bytes, core) && bytes.empty();
+                input.hasIntactCoreV2Front = ReadLegacyCoreV2Front(bytes, core);
             }
         }
         return DecideSaveGeneration(input);

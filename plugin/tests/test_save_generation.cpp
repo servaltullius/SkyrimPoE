@@ -82,7 +82,7 @@ POE_TEST("Save generation gives the new game message priority")
     for (const auto packGeneration : { 0u, 1u }) {
         auto input = WithPack(packGeneration);
         input.isNewGame = true;
-        input.hasMigration = true;
+        input.migration.status = MigrationRecordStatus::Damaged;
         input.hasOtherRecords = true;
         input.hasIntactCoreV2 = true;
         input.generation.status = GenerationRecordStatus::Damaged;
@@ -101,12 +101,12 @@ POE_TEST("Save generation accepts a matching GENR even if its build ID differs")
     }
 }
 
-POE_TEST("Save generation preserves an in-progress migration")
+POE_TEST("Save generation preserves a damaged migration")
 {
     for (const auto packGeneration : { 0u, 1u }) {
         auto input = WithPack(packGeneration);
         SetRecord(input, packGeneration, input.packGame);
-        input.hasMigration = true;
+        input.migration.status = MigrationRecordStatus::Damaged;
         ExpectDecision(input, SaveDisposition::Preserve, "MIGR");
     }
 }

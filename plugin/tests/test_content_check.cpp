@@ -1,6 +1,7 @@
 #include "test_harness.h"
 
 #include "core/ContentCheck.h"
+#include "core/UiBuildCheck.h"
 
 #include <nlohmann/json.hpp>
 
@@ -212,4 +213,73 @@ POE_TEST("ContentCheck: collects malformed metadata, manifest format, duplicate 
     POE_CHECK(HasReason(result, "manifest.json", "missing or unsupported manifestVersion"));
     POE_CHECK(HasReason(result, fixture.files[0].path, "missing or invalid sha256"));
     POE_CHECK(HasReason(result, fixture.files[1].path, "duplicate entries"));
+}
+
+POE_TEST("UiBuildCheck: classifies every known operation and treats unknown operations as state-changing")
+{
+    using namespace UiBuildCheck;
+    constexpr std::string_view readOnly[] = { "close", "refresh", "treeSearchFocus", "switchTab" };
+    constexpr std::string_view stateChanging[] = {
+        "equip", "unequip", "socket", "unsocket", "link", "toggleAura",
+        "treeAllocatePath", "treeRefundNode", "treeRefundAll", "treeSelectClass", "treeSelectAscendancy",
+        "treeClearAscendancy", "treeSelectMastery", "treeSocketJewel", "treeUnsocketJewel",
+        "gearIdentifyToken", "gearIdentifyUnique", "gearApplyOrb", "gearApplyJeweller",
+        "gearEquipRing2", "gearUnequipRing2", "gearEquipBelt", "gearUnequipBelt", "gearEquipCharm", "gearUnequipCharm",
+        "mapOpen", "mapOpenArena4", "mapReenter", "mapReturnPortal", "mapAbandon", "mapSafeEscape", "mapSafeUninstall",
+    };
+
+    static_assert(std::size(kOperations) == std::size(readOnly) + std::size(stateChanging));
+    for (const auto op : readOnly) {
+        POE_CHECK(ClassifyOperation(op) == OperationKind::ReadOnly);
+    }
+    for (const auto op : stateChanging) {
+        POE_CHECK(std::ranges::any_of(kOperations, [op](const auto& entry) { return entry.first == op; }));
+        POE_CHECK(ClassifyOperation(op) == OperationKind::StateChanging);
+    }
+    POE_CHECK(ClassifyOperation("") == OperationKind::StateChanging);
+    POE_CHECK(ClassifyOperation("treeFutureCommand") == OperationKind::StateChanging);
+}
+
+POE_TEST("UiBuildCheck: accepts matching build ID and protocol")
+{
+    using namespace UiBuildCheck;
+    constexpr auto buildId = "1234567890abcdef";
+    static_assert(kUiProtocolVersion == 1);
+    const auto result = Evaluate(buildId, 1, buildId, kUiProtocolVersion);
+    POE_CHECK(result.match);
+    POE_CHECK(result.reason.empty());
+}
+
+POE_TEST("UiBuildCheck: rejects absent or differing build IDs")
+{
+    using namespace UiBuildCheck;
+    constexpr auto buildId = "1234567890abcdef";
+
+    const auto unavailable = Evaluate(buildId, 1, "", 1);
+    POE_CHECK(!unavailable.match);
+    POE_CHECK(unavailable.reason == "DLL build ID is unavailable");
+    POE_CHECK(!Evaluate("", 1, "", 1).match);
+
+    const auto missing = Evaluate("", 1, buildId, 1);
+    POE_CHECK(!missing.match);
+    POE_CHECK(missing.reason == "UI build ID is missing or invalid");
+
+    const auto differing = Evaluate("fedcba0987654321", 1, buildId, 1);
+    POE_CHECK(!differing.match);
+    POE_CHECK(differing.reason == "build ID mismatch");
+}
+
+POE_TEST("UiBuildCheck: rejects an absent or differing UI protocol")
+{
+    using namespace UiBuildCheck;
+    constexpr auto buildId = "1234567890abcdef";
+
+    const auto missing = Evaluate(buildId, std::nullopt, buildId, 1);
+    POE_CHECK(!missing.match);
+    POE_CHECK(missing.reason == "UI protocol is missing or invalid");
+
+    const auto differing = Evaluate(buildId, 2, buildId, 1);
+    POE_CHECK(!differing.match);
+    POE_CHECK(differing.reason == "UI protocol mismatch");
+    POE_CHECK(!Evaluate(buildId, 0, buildId, 1).match);
 }

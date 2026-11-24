@@ -4,6 +4,7 @@
 #include "runtime/AutoTest.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/ModState.h"
+#include "runtime/SaveLoad.h"
 #include "runtime/TrueHudBridge.h"
 #include "runtime/UiBridge.h"
 
@@ -64,6 +65,15 @@ namespace SkyrimPoE::Runtime
                 AutoTest::TickSaveOnlyWhileSuspended(main);
             } catch (...) {
                 SKSE::log::warn("MainUpdateHook: suspended AutoTest frame failed.");
+            }
+            if (ModState::Get()->mode == ModMode::CleanupPending) {
+                try {
+                    SaveLoad::TickMigration();
+                } catch (const std::exception& e) {
+                    SKSE::log::error("MainUpdateHook: legacy cleanup tick failed: {}", e.what());
+                } catch (...) {
+                    SKSE::log::error("MainUpdateHook: legacy cleanup tick failed with an unknown exception.");
+                }
             }
             CallOriginalMainUpdate(main);
             return true;

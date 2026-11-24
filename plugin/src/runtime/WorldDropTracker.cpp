@@ -5,6 +5,7 @@
 
 #include "core/LootTable.h"
 #include "core/MapSystem.h"
+#include "core/Migration.h"
 
 #include <cmath>
 #include <mutex>
@@ -167,6 +168,41 @@ namespace SkyrimPoE::Runtime
                 return ReturnOutcome::Completed;
             }
             return ReturnOutcome::CorpseGone;
+        }
+
+        bool DiscardRunDrop(const ActiveWorldDrop& drop, std::span<const RE::FormID> corpseIds,
+            RE::FormID runCellId, bool packOwnsCell)
+        {
+            const auto resolve = [&]() -> RE::NiPointer<RE::TESObjectREFR> {
+                if (auto ptr = drop.dropHandle.get()) {
+                    return ptr;
+                }
+                auto* form = RE::TESForm::LookupByID(drop.dropRefFormId);
+                return RE::NiPointer<RE::TESObjectREFR>(form ? form->As<RE::TESObjectREFR>() : nullptr);
+            };
+            const auto inRunCell = [runCellId](const RE::TESObjectREFR* ref) {
+                const auto* cell = ref ? ref->GetParentCell() : nullptr;
+                return runCellId != 0 && cell && cell->GetFormID() == runCellId;
+            };
+
+            auto ref = resolve();
+            const bool fromRunCorpse = Core::MapSystem::IsRunDrop(drop.corpseRefFormId, corpseIds);
+            const bool inCell = inRunCell(ref.get());
+            if (!Core::IsLegacyRunDrop(fromRunCorpse, inCell, packOwnsCell)) {
+                return false;
+            }
+            if (ref && inCell && !ref->IsDeleted() && !ref->IsDisabled() && !ref->As<RE::Actor>() &&
+                IsSkyrimPoELootForm(ref->GetBaseObject())) {
+                ref->Disable();
+                ref->SetDelete(true);
+            }
+            if (auto* beamForm = drop.beamRefFormId ? RE::TESForm::LookupByID(drop.beamRefFormId) : nullptr) {
+                auto* beam = beamForm->As<RE::TESObjectREFR>();
+                if (beam && (inRunCell(beam) || !beam->GetParentCell())) {
+                    DeleteBeamMarker(drop.beamRefFormId);
+                }
+            }
+            return true;
         }
     }
 
@@ -576,24 +612,68 @@ namespace SkyrimPoE::Runtime
         }
     }
 
+    WorldDropTracker::LegacyDropReturn WorldDropTracker::ReturnLegacyDrop(const SavedWorldDropEntry& entry)
+    {
+        if (entry.dropRefFormId == 0) {
+            DeleteBeamMarker(entry.beamRefFormId);
+            return LegacyDropReturn::Lost;
+        }
+        const ActiveWorldDrop drop{ .dropRefFormId = entry.dropRefFormId };
+        const RE::NiPointer<RE::TESObjectREFR> ref{ ResolveDropRef(drop) };
+        if (!ref || ref->IsDeleted() || ref->IsDisabled() || !ref->GetParentCell()) {
+            DeleteBeamMarker(entry.beamRefFormId);
+            return LegacyDropReturn::AlreadyGone;
+        }
+        const RE::NiPointer<RE::Actor> corpse{
+            entry.corpseRefFormId ? RE::TESForm::LookupByID<RE::Actor>(entry.corpseRefFormId) : nullptr
+        };
+        if (entry.corpseRefFormId == 0 || (corpse && (corpse->IsDeleted() || corpse->IsDisabled() || !corpse->IsDead()))) {
+            DeleteBeamMarker(entry.beamRefFormId);
+            return LegacyDropReturn::Lost;
+        }
+        if (!corpse || !corpse->Is3DLoaded()) {
+            return LegacyDropReturn::Deferred;
+        }
+
+        auto* base = ref->GetBaseObject();
+        const auto count = std::max<std::int32_t>(1, ref->extraList.GetCount());
+        const auto before = CountItemInContainer(corpse.get(), base);
+        corpse->AddObjectToContainer(base, nullptr, count, nullptr);
+        const auto after = CountItemInContainer(corpse.get(), base);
+        const auto remaining = Core::RemainingLegacyDropCount(count, before, after);
+        if (remaining != 0) {
+            if (remaining < count) {
+                try {
+                    ref->extraList.SetCount(static_cast<std::uint16_t>(remaining));
+                } catch (...) {
+                    // Read and report the remaining stack even if the engine rejected the update.
+                }
+            }
+            const auto actualRemaining = std::max<std::int32_t>(1, ref->extraList.GetCount());
+            SKSE::log::warn("WorldDropTracker: legacy drop {:08X}, corpse {:08X}: expected increase {}, observed {}, "
+                "remaining on ground {} (expected {}).", entry.dropRefFormId, entry.corpseRefFormId, count,
+                static_cast<std::int64_t>(after) - before, actualRemaining, remaining);
+            DeleteBeamMarker(entry.beamRefFormId);
+            return LegacyDropReturn::Lost;
+        }
+        ref->Disable();
+        ref->SetDelete(true);
+        DeleteBeamMarker(entry.beamRefFormId);
+        return LegacyDropReturn::Returned;
+    }
+
+    bool WorldDropTracker::DiscardLegacyRunDrop(const SavedWorldDropEntry& entry,
+        std::span<const RE::FormID> corpseIds, RE::FormID runCellId, bool packOwnsCell)
+    {
+        return DiscardRunDrop({ .dropRefFormId = entry.dropRefFormId, .corpseRefFormId = entry.corpseRefFormId,
+            .beamRefFormId = entry.beamRefFormId }, corpseIds, runCellId, packOwnsCell);
+    }
+
     void WorldDropTracker::DiscardDropsFromCorpses(std::span<const RE::FormID> corpseIds, RE::FormID runCellId)
     {
         if (corpseIds.empty() && runCellId == 0) {
             return;
         }
-        // 드랍 참조를 핸들로 잡아 두고(강한 참조) 판정·삭제가 끝날 때까지 유지한다.
-        const auto resolve = [](const ActiveWorldDrop& drop) -> RE::NiPointer<RE::TESObjectREFR> {
-            if (auto ptr = drop.dropHandle.get()) {
-                return ptr;
-            }
-            auto* form = RE::TESForm::LookupByID(drop.dropRefFormId);
-            return RE::NiPointer<RE::TESObjectREFR>(form ? form->As<RE::TESObjectREFR>() : nullptr);
-        };
-        const auto inRunCell = [runCellId](const RE::TESObjectREFR* ref) {
-            const auto* cell = ref ? ref->GetParentCell() : nullptr;
-            return runCellId != 0 && cell && cell->GetFormID() == runCellId;
-        };
-
         std::vector<ActiveWorldDrop> candidates;
         {
             std::scoped_lock lock(g_dropMutex);
@@ -601,28 +681,10 @@ namespace SkyrimPoE::Runtime
         }
         std::vector<RE::FormID> finished;
         for (const auto& drop : candidates) {
-            auto ref = resolve(drop);
-            // 회차 소속: 그 회차 스폰의 시체에서 나왔거나(시체 ID), 지금 그 회차 셀에 있는 추적 드랍.
-            // FormID가 재사용돼 다른 곳의 물건을 지우지 않도록, 실제 삭제는 회차 셀 안에 있을 때만 한다.
-            const bool fromRunCorpse = Core::MapSystem::IsRunDrop(drop.corpseRefFormId, corpseIds);
-            const bool inCell = inRunCell(ref.get());
-            if (!fromRunCorpse && !inCell) {
-                continue;
+            // 실제 삭제는 회차 셀 안으로 한정한다(FormID 재사용 방지).
+            if (DiscardRunDrop(drop, corpseIds, runCellId, true)) {
+                finished.push_back(drop.dropRefFormId);
             }
-            if (ref && inCell && !ref->IsDeleted() && !ref->IsDisabled() && !ref->As<RE::Actor>() &&
-                IsSkyrimPoELootForm(ref->GetBaseObject())) {
-                ref->Disable();
-                ref->SetDelete(true);
-            }
-            // 빛기둥도 같은 셀에 있을 때만 지운다.
-            if (auto* beamForm = drop.beamRefFormId ? RE::TESForm::LookupByID(drop.beamRefFormId) : nullptr) {
-                auto* beam = beamForm->As<RE::TESObjectREFR>();
-                if (beam && (inRunCell(beam) || !beam->GetParentCell())) {
-                    DeleteBeamMarker(drop.beamRefFormId);
-                }
-            }
-            // 기존 Tick과 같은 규칙: 조회되지 않는 드랍은 주웠거나 사라진 것으로 보고 추적을 끝낸다.
-            finished.push_back(drop.dropRefFormId);
         }
         if (!finished.empty()) {
             std::scoped_lock lock(g_dropMutex);

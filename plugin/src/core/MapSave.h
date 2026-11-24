@@ -5,6 +5,8 @@
 #include "core/SaveAffixList.h"
 
 #include <bit>
+#include <cstring>
+#include <span>
 
 namespace SkyrimPoE::Core
 {
@@ -247,5 +249,20 @@ namespace SkyrimPoE::Core
         run.summary = MapSystem::AggregateMapMods(run.mods);
         record.run = legacyIndex && !run.active ? ActiveMapState{} : std::move(run);
         return record;
+    }
+
+    template <class Resolve>
+    MapSaveRecord ReadMapSave(std::uint32_t version, std::span<const std::uint8_t> bytes, Resolve&& resolve)
+    {
+        return ReadMapSave(version, bytes.size(), [&bytes](void* out, std::size_t size) {
+            if (size > bytes.size()) {
+                return false;
+            }
+            if (size != 0) {
+                std::memcpy(out, bytes.data(), size);
+                bytes = bytes.subspan(size);
+            }
+            return true;
+        }, std::forward<Resolve>(resolve));
     }
 }

@@ -222,10 +222,17 @@ html, body {
   background: #3d2e28;
 }
 
-.panel-toast {
+.panel-toast,
+.panel-build-warning {
   padding: 7px 16px;
   font-size: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.panel-build-warning {
+  flex-shrink: 0;
+  background: #312515;
+  color: #ffe8ad;
 }
 
 .panel-toast.ok {

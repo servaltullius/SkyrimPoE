@@ -12,8 +12,9 @@ param(
     # 조사용 단축 실행. h27이면 기준 세이브를 불러온 뒤 경로 탐침(H26·H27)만 돈다.
     # es이면 적 ES 표시 시험(ES1~ES5, 결정 185)만 돈다.
     # save이면 콘텐츠 검사와 코세이브 왕복(S0~S5)만 돈다.
+    # cleanup이면 PoE1 세이브 정리와 임시 슬롯 재로드(C0~C7)만 돈다.
     # 기존 위치 인자 호출(다섯 번째가 TimeoutSec)이 깨지지 않게 맨 뒤에 둔다.
-    [ValidateSet("", "h27", "es", "save")]
+    [ValidateSet("", "h27", "es", "save", "cleanup")]
     [string]$Only = ""
 )
 
@@ -33,6 +34,16 @@ function Normalize-SaveStem([string]$Name, [string]$ParamName) {
     return $trimmed
 }
 
+function Assert-AutoTestSaveSlots([string]$Baseline, [string]$Temporary, [string]$Mode) {
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+    $checkpointPattern = '^' + [regex]::Escape($Temporary) + '_h_restore(?:_[0-9]+_[0-9]+)?$'
+    if ($Temporary.Equals($Baseline, $comparison) -or
+        ($Mode -eq "cleanup" -and ($Temporary + '_final').Equals($Baseline, $comparison)) -or
+        $Baseline -match $checkpointPattern) {
+        throw "Refusing to arm AutoTest: -TempSave and its derived save names must differ from -Save."
+    }
+}
+
 $skseDir = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition\SKSE"
 $markerPath = Join-Path $skseDir "SkyrimPoE.autotest"
 $reportPath = Join-Path $skseDir "SkyrimPoE.autotest.log"
@@ -47,11 +58,9 @@ switch ($Action) {
         if ([string]::IsNullOrWhiteSpace($cleanTemp)) {
             throw "Parameter -TempSave cannot be empty."
         }
-        # T-5: 직접 쓰는 임시 세이브와 H 체크포인트 이름이 기준 세이브와 겹치는지 확인한다.
-        $checkpointPattern = '^' + [regex]::Escape($cleanTemp) + '_h_restore(?:_[0-9]+_[0-9]+)?$'
-        if ($cleanTemp.Equals($cleanSave, [System.StringComparison]::OrdinalIgnoreCase) -or
-            $cleanSave -match $checkpointPattern) {
-            throw "Refusing to arm AutoTest: -TempSave and its derived checkpoint names must differ from -Save."
+        Assert-AutoTestSaveSlots $cleanSave $cleanTemp $Only
+        if ($Only -eq "cleanup" -and -not $Quit) {
+            throw "Refusing to arm AutoTest: -Only cleanup requires -Quit:`$true."
         }
         $lines = @(
             "# SkyrimPoE Stage 2 AutoTest marker (consumed on startup)"

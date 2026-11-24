@@ -23,10 +23,14 @@
 #include "core/KillTracker.h"
 #include "core/MapSystem.h"
 #include "core/PassiveTree.h"
+#include "core/UiBuildCheck.h"
 
 #include <bitset>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <set>
+#include <tuple>
 
 namespace SkyrimPoE::Runtime
 {
@@ -34,6 +38,7 @@ namespace SkyrimPoE::Runtime
     {
         using json = nlohmann::json;
         using Clock = std::chrono::steady_clock;
+        namespace UiBuildCheck = Core::UiBuildCheck;
 
         constexpr auto kViewPath = "SkyrimPoE/index.html";
 
@@ -165,6 +170,11 @@ namespace SkyrimPoE::Runtime
         std::atomic_bool g_needCloseOnMain{ false };
         std::atomic_bool g_needResetOnMain{ false };
         std::atomic<std::uint64_t> g_lastProcessedReqId{ 0 };
+        bool g_uiBuildMismatch = false;
+        // 받은 buildId, 받은 uiProtocol, 기대 buildId. 기대 프로토콜은 실행 중 고정이다.
+        std::set<std::tuple<std::string, std::string, std::string>> g_loggedUiBuildMismatches;
+        constexpr std::size_t kMaxLoggedUiBuildMismatches = 32;
+        bool g_uiBuildMismatchOverflowLogged = false;
 
         // 직전 HUD 스냅샷(값이 실제로 바뀔 때만 JS로 푸시해 유휴 프레임 비용 0 유지)
         struct CachedHud
@@ -661,15 +671,18 @@ namespace SkyrimPoE::Runtime
                 return "{}";
             }
 
-            // 계약(C-1·C-34): 주 갱신 스레드, g_txMutex 미보유 상태에서만 호출한다.
-            // 줍기 예약이 실행되지 못한 바닥 스탬프 젬·아이템을 목록/장비 구성 직전에 보완 연결한다.
-            (void)GemInventory::RelinkPickedUpGems(player);
-            (void)ItemTracker::RelinkPickedUpItems(player);
+            // 판이 다른 UI의 상태 응답을 만들 때는 기존 스냅샷을 읽는다.
+            if (!g_uiBuildMismatch) {
+                // 계약(C-1·C-34): 주 갱신 스레드, g_txMutex 미보유 상태에서만 호출한다.
+                // 줍기 예약이 실행되지 못한 바닥 스탬프 젬·아이템을 목록/장비 구성 직전에 보완 연결한다.
+                (void)GemInventory::RelinkPickedUpGems(player);
+                (void)ItemTracker::RelinkPickedUpItems(player);
 
-            // 장비 탭·능력치에 최신 착용 장비 및 제작 변경이 즉시 반영되도록 더티 상태를 플러시하고 스탯을 재계산한다(검수 C3).
-            EquipmentSync::FlushIfDirty();
-            if (!MapDeviceRuntime::IsUninstallCleanupArmed() && g_dataPack && g_dataPack->IsLoaded()) {
-                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                // 장비 탭·능력치에 최신 착용 장비 및 제작 변경이 즉시 반영되도록 더티 상태를 플러시하고 스탯을 재계산한다(검수 C3).
+                EquipmentSync::FlushIfDirty();
+                if (!MapDeviceRuntime::IsUninstallCleanupArmed() && g_dataPack && g_dataPack->IsLoaded()) {
+                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                }
             }
 
             const auto state = SaveLoad::GetStateCopy();
@@ -697,6 +710,7 @@ namespace SkyrimPoE::Runtime
 
             json root;
             root["activeTab"] = std::string(TabNameFromId(g_activeTab.load(std::memory_order_acquire)));
+            root["uiBuildMismatch"] = g_uiBuildMismatch;
             root["simpleImeAvailable"] = SimpleImeBridge::Available();
             root["freePassiveRefund"] = g_config->freePassiveRefund;
             root["exileLevel"] = state.exileLevel;
@@ -1531,6 +1545,49 @@ namespace SkyrimPoE::Runtime
                 }
 
                 const std::string op = cmd.contains("op") && cmd["op"].is_string() ? cmd["op"].get<std::string>() : "";
+                const auto content = SaveLoad::GetContentGeneration();
+                const std::string_view expectedBuildId = content ? std::string_view(content->buildId) : std::string_view{};
+                const auto buildField = cmd.find("buildId");
+                const std::string_view receivedBuildId = buildField != cmd.end() && buildField->is_string()
+                    ? std::string_view(buildField->get_ref<const std::string&>()) : std::string_view{};
+                const auto protocolField = cmd.find("uiProtocol");
+                std::optional<std::uint64_t> receivedProtocol;
+                if (protocolField != cmd.end() && protocolField->is_number_unsigned()) {
+                    receivedProtocol = protocolField->get<std::uint64_t>();
+                }
+
+                const auto buildCheck = UiBuildCheck::Evaluate(
+                    receivedBuildId, receivedProtocol, expectedBuildId, UiBuildCheck::kUiProtocolVersion);
+                const bool mismatchChanged = g_uiBuildMismatch != !buildCheck.match;
+                g_uiBuildMismatch = !buildCheck.match;
+                if (g_uiBuildMismatch) {
+                    if (!g_uiBuildMismatchOverflowLogged) {
+                        auto key = std::tuple{
+                            buildField != cmd.end() ? buildField->dump() : "<missing>",
+                            protocolField != cmd.end() ? protocolField->dump() : "<missing>",
+                            std::string(expectedBuildId) };
+                        if (g_loggedUiBuildMismatches.size() < kMaxLoggedUiBuildMismatches) {
+                            const auto [logged, inserted] = g_loggedUiBuildMismatches.insert(std::move(key));
+                            if (inserted) {
+                                const auto& [loggedBuildId, loggedProtocol, loggedExpectedBuildId] = *logged;
+                                SKSE::log::warn(
+                                    "UiBridge: {} (received buildId={}, uiProtocol={}; expected buildId=\"{}\", uiProtocol={}).",
+                                    buildCheck.reason, loggedBuildId, loggedProtocol, loggedExpectedBuildId,
+                                    UiBuildCheck::kUiProtocolVersion);
+                            }
+                        } else if (!g_loggedUiBuildMismatches.contains(key)) {
+                            g_uiBuildMismatchOverflowLogged = true;
+                            SKSE::log::warn("UiBridge: 추가 불일치는 생략합니다.");
+                        }
+                    }
+                    if (UiBuildCheck::ClassifyOperation(op) == UiBuildCheck::OperationKind::StateChanging) {
+                        PushToastToJs(false, "UI 판이 모드 DLL과 맞지 않습니다. 모드를 다시 설치하거나 게임을 다시 시작하세요.");
+                        // 일반 명령과 같은 토스트·패널 갱신으로 거부 결과를 돌려준다.
+                        PushPanelStateToJs();
+                        return;
+                    }
+                }
+
                 // 검수 C1/M4: close, refresh, treeSearchFocus, switchTab은 reqId·사망 검사보다 먼저 처리해 포커스 해제 누락을 차단한다.
                 if (op == "close") {
                     UiBridge::ClosePanelOnMainThread();
@@ -1546,6 +1603,9 @@ namespace SkyrimPoE::Runtime
                         (g_activeTab.load(std::memory_order_acquire) == kTabTree);
                     g_searchFocused.store(active, std::memory_order_release);
                     SimpleImeBridge::SetTextEntry(active);
+                    if (mismatchChanged && g_panelOpen.load(std::memory_order_acquire)) {
+                        PushPanelStateToJs();
+                    }
                     return;
                 }
                 if (op == "switchTab") {
@@ -2056,6 +2116,7 @@ namespace SkyrimPoE::Runtime
             if (!g_api) {
                 return;
             }
+            g_uiBuildMismatch = false;
             g_domReady.store(false, std::memory_order_release);
             g_lastProcessedReqId.store(0, std::memory_order_release);
             g_view = g_api->CreateView(kViewPath, [](PRISMA_UI_API::PrismaView) {
