@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/ModState.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/CycloneRuntime.h"
 #include "runtime/DeathListener.h"
@@ -2370,7 +2371,8 @@ namespace SkyrimPoE::Runtime
             RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* event,
                 RE::BSTEventSource<RE::TESActivateEvent>*) override
             {
-                if (event && event->actionRef && event->actionRef->IsPlayerRef() && event->objectActivated && g_queue) {
+                if (ModState::AllowsGameplay() && event && event->actionRef && event->actionRef->IsPlayerRef() &&
+                    event->objectActivated && g_queue) {
                     const auto generation = g_queue->CurrentGeneration();
                     const auto doorId = event->objectActivated->GetFormID();
                     const auto cellId = MapPackRuntime::ReturnDoorCell(doorId);
@@ -3629,7 +3631,9 @@ namespace SkyrimPoE::Runtime
 
     bool MapDeviceRuntime::IsUninstallCleanupActive() noexcept
     {
-        return g_uninstallCleanupStatus.load(std::memory_order_acquire) != CleanupStatus::Idle;
+        // The combat and stat hooks use this gate even outside the main update.
+        return !ModState::AllowsGameplay() ||
+            g_uninstallCleanupStatus.load(std::memory_order_acquire) != CleanupStatus::Idle;
     }
 
     void MapDeviceRuntime::DisarmUninstallCleanup() noexcept

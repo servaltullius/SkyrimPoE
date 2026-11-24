@@ -6,6 +6,7 @@
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/ModState.h"
 #include "runtime/MapPackRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/PrismaUIApi.h"
@@ -1282,7 +1283,7 @@ namespace SkyrimPoE::Runtime
 
         void HandleKeyboardEvents(RE::InputEvent* events)
         {
-            if (!g_config || !g_queue) {
+            if (!ModState::AllowsGameplay() || !g_config || !g_queue) {
                 return;
             }
             const auto generation = g_queue->CurrentGeneration();
@@ -1384,7 +1385,7 @@ namespace SkyrimPoE::Runtime
                     }
                 };
 
-                if (!a_events || !*a_events) {
+                if (!ModState::AllowsGameplay() || !a_events || !*a_events) {
                     callOrig(a_events);
                     return;
                 }
@@ -1550,6 +1551,10 @@ namespace SkyrimPoE::Runtime
                 if (op == "switchTab") {
                     const std::string tab = cmd.contains("tab") && cmd["tab"].is_string() ? cmd["tab"].get<std::string>() : "skills";
                     SwitchTabOnMainThread(TabIdFromName(tab));
+                    return;
+                }
+
+                if (!ModState::AllowsGameplay()) {
                     return;
                 }
 
@@ -2022,7 +2027,7 @@ namespace SkyrimPoE::Runtime
 
         void OnJsCommand(const char* argument)
         {
-            if (!argument || !g_queue) {
+            if (!ModState::AllowsGameplay() || !argument || !g_queue) {
                 return;
             }
             const auto generation = g_queue->CurrentGeneration();
@@ -2189,6 +2194,26 @@ namespace SkyrimPoE::Runtime
         g_acquiredFocus = false;
     }
 
+    namespace
+    {
+        void HideHudOnMainThread()
+        {
+            if (g_hudShown.load(std::memory_order_acquire)) {
+                if (ViewUsable()) {
+                    g_api->Hide(g_view);
+                }
+                g_hudShown.store(false, std::memory_order_release);
+            }
+        }
+    }
+
+    void UiBridge::SuspendHudOnMainThread()
+    {
+        ClosePanelOnMainThread();
+        g_hiddenKeys.reset();
+        HideHudOnMainThread();
+    }
+
     void UiBridge::Tick(RE::Main* main)
     {
         if (!g_installed || !g_config) {
@@ -2243,10 +2268,7 @@ namespace SkyrimPoE::Runtime
         const bool panelOpen = g_panelOpen.load(std::memory_order_acquire);
         const bool showView = inGameplay && (panelOpen || !IsOtherBlockingMenuOpen());
         if (!showView) {
-            if (g_hudShown.load(std::memory_order_acquire)) {
-                g_api->Hide(g_view);
-                g_hudShown.store(false, std::memory_order_release);
-            }
+            HideHudOnMainThread();
             return;
         }
         if (!g_hudShown.load(std::memory_order_acquire)) {

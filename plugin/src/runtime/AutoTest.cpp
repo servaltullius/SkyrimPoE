@@ -10,6 +10,7 @@
 #include "runtime/ItemTracker.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/MapPackRuntime.h"
+#include "runtime/ModState.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -105,6 +106,7 @@ namespace SkyrimPoE::Runtime
             bool routeOnly = false;
             // 결정 185 확인용 단축 실행. "es"이면 기준 세이브를 불러온 뒤 적 ES 표시 시험(ES1~ES5)만 돌고 끝낸다.
             bool enemyEsOnly = false;
+            bool saveOnly = false;
         };
 
         enum class Phase : std::uint8_t
@@ -213,13 +215,15 @@ namespace SkyrimPoE::Runtime
             ScenarioH_UninstallVerifyWait,
             EnemyEsOnly,
             QuitDelay,
-            Done
+            Done,
+            SaveOnlyContent
         };
 
         const char* PhaseName(Phase p) noexcept
         {
             switch (p) {
             case Phase::Inactive: return "Inactive";
+            case Phase::SaveOnlyContent: return "SaveOnlyContent";
             case Phase::AwaitMainMenu: return "AwaitMainMenu";
             case Phase::MenuDelay: return "MenuDelay";
             case Phase::AwaitBaselineLoad: return "AwaitBaselineLoad";
@@ -352,6 +356,19 @@ namespace SkyrimPoE::Runtime
             "ES3_NoEsEngagedHides", "ES6_IncomingHitTarget", "ES7_DamageOverTimeKeepsTarget", "ES4_DeadTargetHides",
             "ES5_EngagedHoldExpires" };
         constexpr int kEnemyEsOnlyChecks = static_cast<int>(kEnemyEsCheckNames.size());
+        constexpr double kScenarioASaveTimeoutSec = 25.0;
+        enum class SaveCheck : std::size_t { Content, Baseline, Write, Reload, State, Preserved };
+        constexpr std::array kSaveCheckNames{ "S0_ContentCheckPassed", "S1_LoadBaselineNormal",
+            "S2_SaveWroteGeneration", "S3_ReloadHasGeneration", "S4_StateRoundTrip", "S5_PreservedStoreEmpty" };
+        std::array<bool, kSaveCheckNames.size()> g_saveChecksReported{};
+
+        struct SaveOnlySnapshot
+        {
+            PersistentState state;
+            std::size_t trackedGems = 0;
+            std::size_t trackedItems = 0;
+        };
+        SaveOnlySnapshot g_saveOnlyBefore;
         constexpr double kEnemyEsWaitSec = 2.0;
         constexpr double kEnemyEsTestMaxEs = 300.0;
         // 결정 185의 유지 시간. 제품 상수(Core::kEnemyEsEngagedHoldSec)가 바뀌면 시험이 잡도록 따로 둔다.
@@ -672,6 +689,8 @@ namespace SkyrimPoE::Runtime
         bool g_preLoadMatched = false;
         std::string g_expectedSaveStem;
         bool g_saveMatched = false;
+        std::uint64_t g_saveSequenceAtMessage = 0;
+        std::optional<SaveLoad::SaveDiagnostics> g_saveAtNextMessage;
         struct HSaveFiles
         {
             fs::path ess;
@@ -797,6 +816,121 @@ namespace SkyrimPoE::Runtime
                 ++g_failCount;
                 WriteLine("FAIL", std::format("{}: {}", name, detail));
             }
+        }
+
+        bool SaveCheckReported(SaveCheck check)
+        {
+            return g_saveChecksReported[static_cast<std::size_t>(check)];
+        }
+
+        void CheckSave(SaveCheck check, bool ok, const std::string& detail)
+        {
+            const auto index = static_cast<std::size_t>(check);
+            g_saveChecksReported[index] = true;
+            Check(kSaveCheckNames[index], ok, detail);
+        }
+
+        const char* SaveDispositionName(Core::SaveDisposition disposition)
+        {
+            switch (disposition) {
+            case Core::SaveDisposition::Normal: return "Normal";
+            case Core::SaveDisposition::FirstInstall: return "FirstInstall";
+            case Core::SaveDisposition::CleanupFromLegacy: return "CleanupFromLegacy";
+            case Core::SaveDisposition::MigrateGeneration: return "MigrateGeneration";
+            case Core::SaveDisposition::Preserve: return "Preserve";
+            }
+            return "Unknown";
+        }
+
+        bool CheckSaveOnlyLoad(SaveCheck check, bool succeeded, const std::string& stem)
+        {
+            const auto load = SaveLoad::GetLastLoadDiagnostics();
+            const auto pack = SaveLoad::GetContentGeneration();
+            const auto mode = ModState::Get();
+            const bool normal = mode->mode == ModMode::Normal;
+            const bool normalDecision = load.decision && load.decision->disposition == Core::SaveDisposition::Normal;
+            const auto* generation = load.generation ? &*load.generation : nullptr;
+            const bool valid = generation && generation->status == Core::GenerationRecordStatus::Valid;
+            const bool missing = generation && generation->status == Core::GenerationRecordStatus::Missing;
+            const char* recordStatus = valid ? "valid" : missing ? "missing" : generation ? "damaged" : "unavailable";
+            const auto describeGeneration = [](const Core::SaveGeneration& identity) {
+                return std::format("game='{}', generation={}, buildId='{}'",
+                    identity.game, identity.contentGeneration, identity.buildId);
+            };
+            const bool baseline = check == SaveCheck::Baseline;
+            const bool legacyZero = missing && pack && pack->contentGeneration == 0;
+            const bool matchesPack = valid && pack && generation->value.game == pack->game &&
+                generation->value.contentGeneration == pack->contentGeneration && generation->value.buildId == pack->buildId;
+            const bool generationOk = baseline ? (legacyZero || valid) : matchesPack;
+            const bool ok = succeeded && normal && normalDecision && load.collectionComplete && generationOk;
+            CheckSave(check, ok, std::format(
+                "save='{}', kPostLoadGame={}, decision={} ({}), normalMode={} ({}), "
+                "GENR={} [{}], pack=[{}], receivedLoad={}, collectionComplete={}{}",
+                stem, succeeded, load.decision ? SaveDispositionName(load.decision->disposition) : "unavailable",
+                load.decision ? load.decision->reason : "", normal, mode->reason, recordStatus,
+                generation && !generation->value.game.empty() ? describeGeneration(generation->value) : "unavailable",
+                pack ? describeGeneration(*pack) : "unavailable", load.receivedLoad, load.collectionComplete,
+                ok && baseline ? (legacyZero ? " (missing GENR, normal generation 0)" : " (valid GENR, normal load)") : ""));
+            return ok;
+        }
+
+        SaveOnlySnapshot CaptureSaveOnlySnapshot()
+        {
+            SaveOnlySnapshot snapshot;
+            SaveLoad::RunSerializedTransaction([&] {
+                snapshot.state = SaveLoad::GetStateCopy();
+                snapshot.trackedGems = GemInventory::CountTracked();
+                snapshot.trackedItems = ItemTracker::CountTracked();
+            });
+            return snapshot;
+        }
+
+        void CheckSaveOnlyRoundTrip()
+        {
+            const auto after = CaptureSaveOnlySnapshot();
+            const auto& before = g_saveOnlyBefore.state;
+            const auto& state = after.state;
+            std::string differences;
+            const auto compare = [&](std::string_view name, const auto& original, const auto& restored) {
+                if (original != restored) {
+                    std::format_to(std::back_inserter(differences), "{}{}: '{}' -> '{}'",
+                        differences.empty() ? "" : ", ", name, original, restored);
+                }
+            };
+            compare("exileLevel", before.exileLevel, state.exileLevel);
+            compare("exileXp", before.exileXp, state.exileXp);
+            compare("unallocatedPassivePoints", before.unallocatedPassivePoints, state.unallocatedPassivePoints);
+            compare("className", before.className, state.className);
+            compare("classSelected", before.tree.classSelected, state.tree.classSelected);
+            compare("classId", before.tree.classId, state.tree.classId);
+            compare("allocatedNodes.size", before.tree.allocatedNodes.size(), state.tree.allocatedNodes.size());
+            compare("trackedGems", g_saveOnlyBefore.trackedGems, after.trackedGems);
+            compare("trackedItems", g_saveOnlyBefore.trackedItems, after.trackedItems);
+            compare("atlas.completedTierMask", before.atlas.completedTierMask, state.atlas.completedTierMask);
+            compare("atlas.totalMapsCleared", before.atlas.totalMapsCleared, state.atlas.totalMapsCleared);
+            compare("appliedHealthDelta", before.appliedHealthDelta, state.appliedHealthDelta);
+            compare("appliedMagickaDelta", before.appliedMagickaDelta, state.appliedMagickaDelta);
+            compare("activeAuraMask", before.activeAuraMask, state.activeAuraMask);
+            for (std::size_t i = 0; i < state.slots.size(); ++i) {
+                const auto& original = before.slots[i];
+                const auto& restored = state.slots[i];
+                if (original.occupied != restored.occupied || (original.occupied && original.gem.gemId != restored.gem.gemId)) {
+                    std::format_to(std::back_inserter(differences), "{}slots[{}].gemId: {} -> {}",
+                        differences.empty() ? "" : ", ", i,
+                        original.occupied ? std::format("'{}'", original.gem.gemId) : "<empty>",
+                        restored.occupied ? std::format("'{}'", restored.gem.gemId) : "<empty>");
+                }
+            }
+            CheckSave(SaveCheck::State, differences.empty(),
+                differences.empty() ? "All captured state fields matched." : differences);
+        }
+
+        void CheckSaveOnlyPreservedStore()
+        {
+            const bool normal = ModState::AllowsGameplay();
+            const auto records = SaveLoad::GetPreservedRecordCount();
+            CheckSave(SaveCheck::Preserved, normal && records == 0,
+                std::format("normalMode={}, preservedRecords={}", normal, records));
         }
 
         // 지도 이동이 끝나(요청 없음·3D 준비) 기대 상태를 기다리기 시작한 시각(단계 경과 초). 음수면 아직 이동 중.
@@ -1007,8 +1141,8 @@ namespace SkyrimPoE::Runtime
 
         void ReportMissingHChecks(const std::string& reason)
         {
-            // 적 ES 단축 실행(-Only es)은 H를 돌지 않으므로 H 체크를 기대하지 않는다.
-            if (g_cfg.enemyEsOnly) {
+            // 적 ES와 세이브 단축 실행은 H를 돌지 않는다.
+            if (g_cfg.enemyEsOnly || g_cfg.saveOnly) {
                 return;
             }
             for (std::size_t i = 0; i < kHChecks.size(); ++i) {
@@ -1050,18 +1184,15 @@ namespace SkyrimPoE::Runtime
             return true;
         }
 
-        void FinishAndScheduleQuit(const std::string& reason)
+        bool CleanUpScenariosBeforeFinish(const std::string& reason)
         {
-            if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
-                return;
-            }
             if (g_cfg.enemyEsOnly) {
                 CleanupEnemyEsActors();
             }
             // 체크포인트 복원으로 돌아가기 전에 뺀다. 불러온 저장은 결투장 전 것이라 여유가 없다.
             ClearHArenaHealthBuffer(RE::PlayerCharacter::GetSingleton());
             if (ScheduleHCheckpointRestore(reason)) {
-                return;
+                return false;
             }
             CycloneRuntime::SetAutoTestHeld(false);
             if (auto* player = RE::PlayerCharacter::GetSingleton()) {
@@ -1094,6 +1225,23 @@ namespace SkyrimPoE::Runtime
                     (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
                 }
             }
+            return true;
+        }
+
+        void FinishAndScheduleQuit(const std::string& reason)
+        {
+            if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
+                return;
+            }
+            if (g_cfg.saveOnly) {
+                for (std::size_t i = 0; i < kSaveCheckNames.size(); ++i) {
+                    if (!g_saveChecksReported[i]) {
+                        Check(kSaveCheckNames[i], false, std::format("Skipped in {}. {}", PhaseName(g_phase), reason));
+                    }
+                }
+            } else if (!CleanUpScenariosBeforeFinish(reason)) {
+                return;
+            }
             {
                 std::scoped_lock lock(g_msgMutex);
                 g_expectedLoadStem.clear();
@@ -1108,12 +1256,14 @@ namespace SkyrimPoE::Runtime
             }
             // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
             // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
-            const int expectedChecks = g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks : kExpectedAutoTestChecks;
+            const int expectedChecks = g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
+                g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks : kExpectedAutoTestChecks;
+            const char* modeDescription = g_cfg.saveOnly ? " (save-only round-trip run)" :
+                g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" : "";
             const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
             const auto summary = std::format(
                 "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={}{} ===",
-                g_passCount, expectedChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL",
-                g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" : "");
+                g_passCount, expectedChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL", modeDescription);
             SKSE::log::info("AutoTest {}", summary);
             if (g_report.is_open()) {
                 g_report << summary << '\n';
@@ -1271,16 +1421,16 @@ namespace SkyrimPoE::Runtime
                     out.consumeMarker = ParseBool(val, out.consumeMarker);
                 } else if (key == "only") {
                     const auto mode = ToLowerAscii(val);
-                    if (mode == "h27") {
-                        out.routeOnly = true;
-                        out.enemyEsOnly = false;
-                    } else if (mode == "es") {
-                        out.enemyEsOnly = true;
-                        out.routeOnly = false;
-                    } else if (!mode.empty()) {
-                        SKSE::log::error("AutoTest: unknown only='{}' in the marker; supported: h27, es.", mode);
+                    if (mode.empty()) {
+                        continue;
+                    }
+                    if (mode != "h27" && mode != "es" && mode != "save") {
+                        SKSE::log::error("AutoTest: unknown only='{}' in the marker; supported: h27, es, save.", mode);
                         return false;
                     }
+                    out.routeOnly = mode == "h27";
+                    out.enemyEsOnly = mode == "es";
+                    out.saveOnly = mode == "save";
                 } else if (key == "timeout_sec") {
                     try {
                         const double sec = std::stod(val);
@@ -4420,12 +4570,13 @@ namespace SkyrimPoE::Runtime
 
         g_passCount = 0;
         g_hChecksReported.fill(false);
+        g_saveChecksReported.fill(false);
         g_failCount = 0;
         g_warnCount = 0;
         g_startedAt = Clock::now();
         // U2 확정(2026-11-20): 출시 기본값 EnforceGemRequirements=true에서 Lv1 기준 세이브의
         // 스타터 젬(Cyclone Lv28 등) 통합 시험이 가능하도록 AutoTest 실행 중에만 임시 false 적용(종료 시 원복)
-        if (g_config) {
+        if (g_config && !g_cfg.saveOnly) {
             g_savedEnforceGemReq = g_config->enforceGemRequirements;
             g_hasSavedEnforceGemReq = true;
             g_config->enforceGemRequirements = false;
@@ -4435,6 +4586,10 @@ namespace SkyrimPoE::Runtime
         LogInfo(std::format("SkyrimPoE Stage 6 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
             g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
+        if (g_cfg.saveOnly) {
+            EnterPhase(Phase::SaveOnlyContent);
+            return;
+        }
         if (g_cfg.baselineSave.empty()) {
             Check("A0_MarkerConfig", false, "Marker file missing required 'save=<stem>' entry.");
             FinishAndScheduleQuit("Aborting due to missing baseline save.");
@@ -4447,6 +4602,13 @@ namespace SkyrimPoE::Runtime
     bool AutoTest::IsEnabled() noexcept
     {
         return g_enabled.load(std::memory_order_acquire);
+    }
+
+    void AutoTest::TickSaveOnlyWhileSuspended(RE::Main* main)
+    {
+        if (IsEnabled() && g_cfg.saveOnly) {
+            Tick(main, 0.0);
+        }
     }
 
     void AutoTest::OnPreLoadGame(const SKSE::MessagingInterface::Message& msg)
@@ -4484,6 +4646,23 @@ namespace SkyrimPoE::Runtime
             return;
         }
         const auto stem = SaveStemFromMessage(msg);
+        if (g_cfg.saveOnly) {
+            // SKSE dispatches kSaveGame before it invokes the co-save writer.
+            const auto previous = SaveLoad::GetLastSaveDiagnostics();
+            std::scoped_lock lock(g_msgMutex);
+            if (g_expectedSaveStem.empty()) {
+                return;
+            }
+            if (g_saveMatched) {
+                if (!g_saveAtNextMessage) {
+                    g_saveAtNextMessage = previous;
+                }
+            } else if (ToLowerAscii(stem) == ToLowerAscii(g_expectedSaveStem)) {
+                g_saveSequenceAtMessage = previous.sequence;
+                g_saveMatched = true;
+            }
+            return;
+        }
         if (stem.empty()) {
             return;
         }
@@ -4513,6 +4692,25 @@ namespace SkyrimPoE::Runtime
             return;
         }
 
+        const bool saveOnlySuspended = g_cfg.saveOnly && !ModState::AllowsGameplay();
+        if (g_phase == Phase::SaveOnlyContent) {
+            const auto pack = SaveLoad::GetContentGeneration();
+            const auto status = ModState::Get();
+            const bool normal = status->mode == ModMode::Normal;
+            const bool ok = pack.has_value() && normal;
+            CheckSave(SaveCheck::Content, ok, std::format("contentCheckPassed={}, normalMode={}, failureReasons=[{}]",
+                pack.has_value(), normal, ok ? "" : status->reason));
+            if (!ok) {
+                FinishAndScheduleQuit("Startup content or mod mode check failed.");
+            } else if (g_cfg.baselineSave.empty()) {
+                CheckSave(SaveCheck::Baseline, false, "Marker file missing required 'save=<stem>' entry.");
+                FinishAndScheduleQuit("Aborting due to missing baseline save.");
+            } else {
+                EnterPhase(Phase::AwaitMainMenu);
+            }
+            return;
+        }
+
         const double totalSec = std::chrono::duration<double>(Clock::now() - g_startedAt).count();
         if (totalSec > g_cfg.globalTimeoutSec && !g_globalTimeoutReported) {
             g_globalTimeoutReported = true;
@@ -4520,7 +4718,7 @@ namespace SkyrimPoE::Runtime
             const auto detail = std::format("GlobalTimeout exceeded {:.0f}s in {}.", g_cfg.globalTimeoutSec, PhaseName(g_phase));
             WriteLine("ERROR", detail);
             // 걷기 탐침 도중이면 자동 이동·강제 1인칭을 풀고 끝낸다. 체크포인트 불러오기나 조작 반환이 그 상태로 일어나지 않게 한다.
-            if (g_hContract.walkActive) {
+            if (!g_cfg.saveOnly && g_hContract.walkActive) {
                 StopHWalk();
             }
             FinishAndScheduleQuit(detail);
@@ -4529,10 +4727,17 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        // Preserve is also the transient mode during a load. Let its matched post-load message determine the result.
+        if (saveOnlySuspended &&
+            g_phase != Phase::AwaitBaselineLoad && g_phase != Phase::ScenarioA_AwaitReload) {
+            FinishAndScheduleQuit(std::format("Mod left normal mode in {}. {}", PhaseName(g_phase), ModState::Get()->reason));
+            return;
+        }
+
         auto* ui = RE::UI::GetSingleton();
         // 시험 세이브 주변 NPC가 말을 걸어 대화 메뉴가 열리면 저장이 막혀 시나리오 전체가 건너뛰어졌다(실행 20, E7).
         // 시험은 대화를 쓰지 않으므로 저장을 기다리는 동안 열린 대화 메뉴는 닫는다.
-        if (ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+        if (!saveOnlySuspended && ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
             bool awaitingSave = false;
             {
                 std::scoped_lock lock(g_msgMutex);
@@ -4550,7 +4755,7 @@ namespace SkyrimPoE::Runtime
             }
         }
         const bool paused = ui && ui->GameIsPaused();
-        if (IsHCompanionCleanupPending()) {
+        if (!g_cfg.saveOnly && IsHCompanionCleanupPending()) {
             PumpHCompanionCleanup(!paused && IsPlayerReadyInWorld());
         }
         // MainUpdateHook의 0.25s 상한과 동일한 deltaSec를 그대로 누적해 EnergyShieldPool::Tick과 시계 편차를 없앤다.
@@ -4576,7 +4781,11 @@ namespace SkyrimPoE::Runtime
             }
             LogInfo(std::format("Loading baseline save '{}'...", g_cfg.baselineSave));
             if (!RequestLoadSave(g_cfg.baselineSave)) {
-                Check("A0_LoadBaseline", false, "BGSSaveLoadManager singleton unavailable.");
+                if (g_cfg.saveOnly) {
+                    CheckSave(SaveCheck::Baseline, false, "BGSSaveLoadManager singleton unavailable.");
+                } else {
+                    Check("A0_LoadBaseline", false, "BGSSaveLoadManager singleton unavailable.");
+                }
                 FinishAndScheduleQuit("Failed to request baseline save load.");
                 return;
             }
@@ -4592,16 +4801,28 @@ namespace SkyrimPoE::Runtime
                 signaled = g_postLoadSignaled;
                 ok = g_postLoadSucceeded;
             }
+            if (g_cfg.saveOnly && signaled && !SaveCheckReported(SaveCheck::Baseline) &&
+                !CheckSaveOnlyLoad(SaveCheck::Baseline, ok, g_cfg.baselineSave)) {
+                FinishAndScheduleQuit("Baseline save did not load in normal mode with a supported GENR.");
+                return;
+            }
             if (signaled && !ok) {
                 Check("A0_LoadBaseline", false, std::format("kPostLoadGame reported failure for '{}'.", g_cfg.baselineSave));
                 FinishAndScheduleQuit("Baseline save failed to load.");
                 return;
             }
             if (signaled && ok && IsPlayerReadyInWorld()) {
-                LogInfo("Baseline save loaded; settling unpaused world + Prisma DOM.");
+                LogInfo(g_cfg.saveOnly ? "Baseline save loaded; settling unpaused world." :
+                    "Baseline save loaded; settling unpaused world + Prisma DOM.");
                 EnterPhase(Phase::BaselineSettle);
             } else if (PhaseElapsedSec() > 90.0) {
-                Check("A0_LoadBaseline", false, "Timed out waiting for baseline save load.");
+                if (!g_cfg.saveOnly) {
+                    Check("A0_LoadBaseline", false, "Timed out waiting for baseline save load.");
+                } else if (!SaveCheckReported(SaveCheck::Baseline)) {
+                    (void)CheckSaveOnlyLoad(SaveCheck::Baseline, false, g_cfg.baselineSave);
+                } else {
+                    g_runError = true;
+                }
                 FinishAndScheduleQuit("Baseline load timeout.");
             }
             break;
@@ -4609,11 +4830,23 @@ namespace SkyrimPoE::Runtime
 
         case Phase::BaselineSettle: {
             const bool minSettled = (g_unpausedAccumSec >= 2.5);
-            const bool domReady = UiBridge::IsDomReady();
+            const bool domReady = g_cfg.saveOnly || UiBridge::IsDomReady();
             if (!minSettled && PhaseElapsedSec() < 8.0) {
                 break;
             }
             if (!domReady && PhaseElapsedSec() < 8.0) {
+                break;
+            }
+            if (g_cfg.saveOnly) {
+                g_saveAttempts = 0;
+                g_nextSaveRetryAt = Clock::now();
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem = g_cfg.tempSave;
+                    g_saveMatched = false;
+                    g_saveAtNextMessage.reset();
+                }
+                EnterPhase(Phase::ScenarioA_SavePump);
                 break;
             }
             if (g_cfg.enemyEsOnly) {
@@ -4833,7 +5066,7 @@ namespace SkyrimPoE::Runtime
                 matched = g_saveMatched;
             }
             if (matched) {
-                {
+                if (!g_cfg.saveOnly) {
                     std::scoped_lock lock(g_msgMutex);
                     g_expectedSaveStem.clear();
                 }
@@ -4841,19 +5074,28 @@ namespace SkyrimPoE::Runtime
                 EnterPhase(Phase::ScenarioA_SaveWaitBeforeLoad);
                 break;
             }
-            if (PhaseElapsedSec() > 25.0) {
+            if (PhaseElapsedSec() > kScenarioASaveTimeoutSec) {
                 {
                     std::scoped_lock lock(g_msgMutex);
                     g_expectedSaveStem.clear();
                 }
-                Check("A9_SaveLoadRoundTrip", false,
-                    std::format("Timed out waiting for kSaveGame('{}') after {} attempts.", g_cfg.tempSave, g_saveAttempts));
+                const auto detail = std::format("Timed out waiting for kSaveGame('{}') after {} attempts.",
+                    g_cfg.tempSave, g_saveAttempts);
+                if (g_cfg.saveOnly) {
+                    CheckSave(SaveCheck::Write, false, detail);
+                    FinishAndScheduleQuit("Temporary save did not reach the co-save check.");
+                    return;
+                }
+                Check("A9_SaveLoadRoundTrip", false, detail);
                 BeginScenarioB();
                 break;
             }
             const auto now = Clock::now();
             if (now >= g_nextSaveRetryAt) {
                 if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    if (g_cfg.saveOnly) {
+                        g_saveOnlyBefore = CaptureSaveOnlySnapshot();
+                    }
                     ++g_saveAttempts;
                     mgr->Save(g_cfg.tempSave.c_str());
                 }
@@ -4863,11 +5105,42 @@ namespace SkyrimPoE::Runtime
         }
 
         case Phase::ScenarioA_SaveWaitBeforeLoad: {
-            if (PhaseElapsedSec() < 1.0) {
+            const double elapsed = PhaseElapsedSec();
+            if (elapsed < 1.0) {
                 break;
+            }
+            if (g_cfg.saveOnly) {
+                std::uint64_t sequenceAtMessage = 0;
+                auto write = SaveLoad::GetLastSaveDiagnostics();
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    sequenceAtMessage = g_saveSequenceAtMessage;
+                    if (g_saveAtNextMessage) {
+                        write = *g_saveAtNextMessage;
+                    } else if (write.sequence == sequenceAtMessage && elapsed < kScenarioASaveTimeoutSec) {
+                        break;
+                    }
+                    g_expectedSaveStem.clear();
+                }
+                const bool matchedCallback = write.sequence == sequenceAtMessage + 1;
+                const bool written = matchedCallback && write.wroteGeneration && write.failedRecords == 0 && write.complete;
+                CheckSave(SaveCheck::Write, written, std::format(
+                    "save='{}', matchedCallback={}, sequence={} -> {}, GENR written={}, failedRecords={}, complete={}",
+                    g_cfg.tempSave, matchedCallback, sequenceAtMessage, write.sequence,
+                    matchedCallback && write.wroteGeneration,
+                    matchedCallback ? std::to_string(write.failedRecords) : "unavailable", matchedCallback && write.complete));
+                if (!written) {
+                    FinishAndScheduleQuit("Temporary co-save write could not be verified.");
+                    return;
+                }
             }
             LogInfo(std::format("Reloading temp save '{}' to verify SPOE co-save round-trip...", g_cfg.tempSave));
             if (!RequestLoadSave(g_cfg.tempSave)) {
+                if (g_cfg.saveOnly) {
+                    CheckSave(SaveCheck::Reload, false, "BGSSaveLoadManager singleton unavailable.");
+                    FinishAndScheduleQuit("Could not request the temporary save reload.");
+                    return;
+                }
                 Check("A9_SaveLoadRoundTrip", false, "BGSSaveLoadManager singleton unavailable.");
                 BeginScenarioB();
                 break;
@@ -4884,6 +5157,17 @@ namespace SkyrimPoE::Runtime
                 signaled = g_postLoadSignaled;
                 ok = g_postLoadSucceeded;
             }
+            if (g_cfg.saveOnly && signaled && !SaveCheckReported(SaveCheck::Reload)) {
+                (void)CheckSaveOnlyLoad(SaveCheck::Reload, ok, g_cfg.tempSave);
+            }
+            if (g_cfg.saveOnly && signaled && (!ok || saveOnlySuspended)) {
+                if (ok) {
+                    CheckSave(SaveCheck::State, false, "Skipped because the reloaded mod is not in normal mode.");
+                    CheckSaveOnlyPreservedStore();
+                }
+                FinishAndScheduleQuit("Temporary save reload did not return to normal mode.");
+                return;
+            }
             if (signaled && !ok) {
                 Check("A9_SaveLoadRoundTrip", false, "kPostLoadGame reported failure on temp save reload.");
                 FinishAndScheduleQuit("Reload failed.");
@@ -4892,7 +5176,13 @@ namespace SkyrimPoE::Runtime
             if (signaled && ok && IsPlayerReadyInWorld()) {
                 EnterPhase(Phase::ScenarioA_ReloadSettle);
             } else if (PhaseElapsedSec() > 90.0) {
-                Check("A9_SaveLoadRoundTrip", false, "Timed out waiting for temp save reload.");
+                if (!g_cfg.saveOnly) {
+                    Check("A9_SaveLoadRoundTrip", false, "Timed out waiting for temp save reload.");
+                } else if (!SaveCheckReported(SaveCheck::Reload)) {
+                    (void)CheckSaveOnlyLoad(SaveCheck::Reload, false, g_cfg.tempSave);
+                } else {
+                    g_runError = true;
+                }
                 FinishAndScheduleQuit("Reload timeout.");
             }
             break;
@@ -4901,6 +5191,12 @@ namespace SkyrimPoE::Runtime
         case Phase::ScenarioA_ReloadSettle: {
             if (g_unpausedAccumSec < 2.5 && PhaseElapsedSec() < 8.0) {
                 break;
+            }
+            if (g_cfg.saveOnly) {
+                CheckSaveOnlyRoundTrip();
+                CheckSaveOnlyPreservedStore();
+                FinishAndScheduleQuit("Save-only round-trip run finished.");
+                return;
             }
             auto* player = RE::PlayerCharacter::GetSingleton();
             const auto st = SaveLoad::GetStateCopy();

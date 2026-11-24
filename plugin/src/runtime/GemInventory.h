@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/SaveRecordState.h"
+
 #include "core/CommandQueue.h"
 #include "core/GemTransaction.h"
 #include "core/Types.h"
@@ -12,15 +14,6 @@
 
 namespace SkyrimPoE::Runtime
 {
-    struct TrackedGemEntry
-    {
-        Core::InventoryItemKey key;
-        bool isWorld = false;
-        Core::GemInstance gem;
-        // C-35: TESUniqueIDChangeEvent 싱크에서 폼 조회 없이 event->objectID를 대조하기 위한 런타임 베이스 폼 ID 캐시
-        RE::FormID baseFormId = 0;
-    };
-
     struct PlayerGemInventorySnapshot
     {
         struct PlainStack

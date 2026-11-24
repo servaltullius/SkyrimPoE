@@ -3,6 +3,7 @@
 #include "core/CharmSystem.h"
 #include "core/CommandQueue.h"
 #include "core/Config.h"
+#include "core/ContentCheck.h"
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
 #include "core/ItemData.h"
@@ -24,6 +25,7 @@
 #include "runtime/MainUpdateHook.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/MapPackRuntime.h"
+#include "runtime/ModState.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
@@ -34,6 +36,11 @@
 #include "runtime/WorldDropTracker.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
+#include <nlohmann/json.hpp>
+#include <Windows.h>
+#include <bcrypt.h>
+#include <fstream>
+#include <limits>
 
 namespace
 {
@@ -41,9 +48,13 @@ namespace
     using namespace SkyrimPoE;
 
     constexpr auto kConfigPath = "Data/SKSE/Plugins/SkyrimPoE.ini";
-    constexpr auto kDataPackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/core_3_30.json";
-    constexpr auto kTreePackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json";
-    constexpr auto kItemsPackPath = "Data/SKSE/Plugins/SkyrimPoE/packs/items_3_30.json";
+    constexpr auto kManifestPath = "Data/SKSE/Plugins/SkyrimPoE/manifest.json";
+    constexpr std::array<std::string_view, 4> kContentPaths{
+        "SKSE/Plugins/SkyrimPoE/packs/core_3_30.json",
+        "SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json",
+        "SKSE/Plugins/SkyrimPoE/packs/items_3_30.json",
+        Runtime::FormIds::kPluginName
+    };
 
     Core::Config g_config;
     Core::DataPack g_dataPack;
@@ -55,6 +66,169 @@ namespace
     Core::SkillSystem g_skillSystem;
     Core::CharmSystem g_charmSystem;
     Core::KillTracker g_killTracker;
+    bool g_serializationInstalled = false;
+    bool g_autoTestLoadStarted = false;
+
+    void PreserveStartup(std::string reason)
+    {
+        SKSE::log::error("SkyrimPoE startup: {}", reason);
+        Runtime::SaveLoad::SetContentCheck(std::nullopt, std::move(reason));
+    }
+
+    std::string ReadContentFile(const fs::path& path)
+    {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        const auto length = static_cast<std::streamoff>(file.tellg());
+        if (length < 0 || length > std::numeric_limits<ULONG>::max()) {
+            throw std::runtime_error("could not open file or determine a supported size");
+        }
+        std::string bytes(static_cast<std::size_t>(length), '\0');
+        if (!file.seekg(0).read(bytes.data(), static_cast<std::streamsize>(length)) ||
+            file.peek() != std::char_traits<char>::eof() || file.bad()) {
+            throw std::runtime_error("could not read the entire file");
+        }
+        return bytes;
+    }
+
+    std::string Sha256(std::string& bytes)
+    {
+        BCRYPT_ALG_HANDLE provider = nullptr;
+        if (BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+            throw std::runtime_error("could not open SHA-256 provider");
+        }
+        const auto closeProvider = [](void* handle) { BCryptCloseAlgorithmProvider(handle, 0); };
+        const std::unique_ptr<void, decltype(closeProvider)> algorithm(provider, closeProvider);
+        BCRYPT_HASH_HANDLE handle = nullptr;
+        if (BCryptCreateHash(algorithm.get(), &handle, nullptr, 0, nullptr, 0, 0) != 0) {
+            throw std::runtime_error("could not initialize SHA-256");
+        }
+        const std::unique_ptr<void, decltype(&BCryptDestroyHash)> hash(handle, &BCryptDestroyHash);
+        std::array<UCHAR, 32> digest{};
+        if (BCryptHashData(hash.get(), reinterpret_cast<PUCHAR>(bytes.data()),
+                static_cast<ULONG>(bytes.size()), 0) != 0 ||
+            BCryptFinishHash(hash.get(), digest.data(), static_cast<ULONG>(digest.size()), 0) != 0) {
+            throw std::runtime_error("could not compute SHA-256");
+        }
+        std::string hex;
+        hex.reserve(digest.size() * 2);
+        for (const auto byte : digest) {
+            std::format_to(std::back_inserter(hex), "{:02x}", byte);
+        }
+        return hex;
+    }
+
+    std::optional<std::uint32_t> ReadEspGeneration(std::vector<std::string>& reasons)
+    {
+        constexpr RE::FormID localId = 0xC00;
+        constexpr std::string_view editorId = "SPOE_ContentGeneration";
+        auto* data = RE::TESDataHandler::GetSingleton();
+        const auto* plugin = data ? data->LookupModByName(Runtime::FormIds::kPluginName) : nullptr;
+        if (!plugin || plugin->GetCompileIndex() == 0xFF) {
+            reasons.emplace_back("SkyrimPoE.esp is not loaded.");
+            return std::nullopt;
+        }
+        const auto* form = data->LookupForm(localId, Runtime::FormIds::kPluginName);
+        for (const auto* global : data->GetFormArray<RE::TESGlobal>()) {
+            if (global && global != form && global->GetFile(0) == plugin &&
+                editorId == global->GetFormEditorID()) {
+                reasons.emplace_back("SkyrimPoE.esp: SPOE_ContentGeneration GLOB must use local FormID 0xC00.");
+                break;
+            }
+        }
+        if (!form) {
+            return std::nullopt;  // A missing marker is the generation-zero format.
+        }
+        const auto* marker = form->As<RE::TESGlobal>();
+        if (!marker || form->GetFile(0) != plugin || form->IsDeleted() ||
+            editorId != marker->GetFormEditorID() || marker->type.get() != RE::TESGlobal::Type::kShort ||
+            !std::isfinite(marker->value) || marker->value < 0 ||
+            marker->value > std::numeric_limits<std::int16_t>::max() || std::trunc(marker->value) != marker->value) {
+            reasons.emplace_back("SkyrimPoE.esp: invalid SPOE_ContentGeneration GLOB at 0xC00.");
+            return std::nullopt;
+        }
+        return static_cast<std::uint32_t>(marker->value);
+    }
+
+    std::optional<Core::SaveGeneration> LoadAndCheckContent() try
+    {
+        std::vector<std::string> reasons;
+        std::array<nlohmann::json, 3> packMeta;
+        std::array<Core::ContentFile, kContentPaths.size()> files;
+        const auto load = [&](std::size_t index, auto& pack) {
+            const auto path = kContentPaths[index];
+            files[index].path = path;
+            try {
+                auto bytes = ReadContentFile(fs::path("Data") / path);
+                try {
+                    files[index].sha256 = Sha256(bytes);
+                } catch (const std::exception& e) {
+                    reasons.push_back(std::format("{}: {}", path, e.what()));
+                }
+                std::string error;
+                const bool loaded = pack.LoadFromJsonString(bytes, &error);
+                if (!loaded) {
+                    reasons.push_back(std::format("{}: pack load failed: {}", path, error));
+                }
+                const auto root = nlohmann::json::parse(bytes, nullptr, false);
+                if (const auto meta = root.find("meta"); meta != root.end()) {
+                    packMeta[index] = *meta;
+                }
+                return loaded;
+            } catch (const std::exception& e) {
+                reasons.push_back(std::format("{}: {}", path, e.what()));
+                return false;
+            }
+        };
+        if (load(0, g_dataPack)) {
+            SKSE::log::info("DataPack loaded: gems={}, lifeBase={:.0f}, manaBase={:.0f}.",
+                g_dataPack.AllGems().size(), g_dataPack.Constants().lifeBase, g_dataPack.Constants().manaBase);
+        }
+        if (load(1, g_treeData)) {
+            SKSE::log::info("PassiveTreeData loaded: classes={}, nodes={}, masteryEffects={}.",
+                g_treeData.Classes().size(), g_treeData.NodeCount(), g_treeData.MasteryEffectCount());
+        }
+        if (load(2, g_itemData)) {
+            SKSE::log::info("ItemData loaded: affixes={}, currencies={}, belts={}, charms={}, monsterMods={}, uniques={}.",
+                g_itemData.AllAffixes().size(), g_itemData.AllCurrencies().size(), g_itemData.AllBelts().size(),
+                g_itemData.AllCharms().size(), g_itemData.AllMonsterMods().size(), g_itemData.AllUniques().size());
+        }
+
+        files.back().path = kContentPaths.back();
+        try {
+            auto bytes = ReadContentFile(fs::path("Data") / files.back().path);
+            files.back().sha256 = Sha256(bytes);
+        } catch (const std::exception& e) {
+            reasons.push_back(std::format("{}: {}", files.back().path, e.what()));
+        }
+        nlohmann::json manifest;
+        try {
+            manifest = nlohmann::json::parse(ReadContentFile(kManifestPath));
+        } catch (const std::exception& e) {
+            reasons.push_back(std::format("{}: {}", kManifestPath, e.what()));
+        }
+        const auto espGeneration = ReadEspGeneration(reasons);
+        const auto check = Core::CheckContent(packMeta, manifest, files, espGeneration);
+        reasons.insert(reasons.end(), check.reasons.begin(), check.reasons.end());
+        if (!reasons.empty()) {
+            for (const auto& reason : reasons) {
+                SKSE::log::error("Content check failed: {}", reason);
+            }
+            PreserveStartup(std::format("콘텐츠 검사 실패. {} 자세한 이유는 SkyrimPoE.log를 확인하세요.", reasons.front()));
+            return std::nullopt;
+        }
+        const auto& identity = *check.identity;
+        SKSE::log::info("Content check passed: {} {}, generation {}, build {}.",
+            identity.game, identity.gameVersion, identity.contentGeneration, identity.buildId);
+        return Core::SaveGeneration{
+            identity.game, identity.contentGeneration, identity.gameVersion, identity.buildId, SKSE::GetPluginVersion().string(".")
+        };
+    } catch (const std::exception& e) {
+        PreserveStartup(std::format("콘텐츠 검사 중 오류가 발생했습니다. {}", e.what()));
+        return std::nullopt;
+    } catch (...) {
+        PreserveStartup("콘텐츠 검사 중 알 수 없는 오류가 발생했습니다. SkyrimPoE.log를 확인하세요.");
+        return std::nullopt;
+    }
 
     void SetupLogging()
     {
@@ -166,7 +340,7 @@ namespace
         SKSE::log::info("SkyrimPoE.esp form verification: {} found, {} missing.", found, missing);
     }
 
-    void OnDataLoaded()
+    void OnDataLoaded() try
     {
         // 1. INI 설정 로드
         const auto cfgRes = Core::LoadConfigFromFile(kConfigPath);
@@ -177,46 +351,24 @@ namespace
             SKSE::log::warn("Config warning: {}", w);
         }
 
-        // 2. 데이터 팩 로드
-        std::string packError;
-        if (!g_dataPack.LoadFromFile(kDataPackPath, &packError)) {
-            SKSE::log::error("DataPack load failed ('{}'): {}. Runtime hooks disabled.", kDataPackPath, packError);
-            return;
+        auto generation = LoadAndCheckContent();
+        if (generation && g_serializationInstalled) {
+            VerifyEspForms();
+            Runtime::MapPackRuntime::Initialize();
         }
-        SKSE::log::info("DataPack loaded: gems={}, lifeBase={:.0f}, manaBase={:.0f}.",
-            g_dataPack.AllGems().size(),
-            g_dataPack.Constants().lifeBase,
-            g_dataPack.Constants().manaBase);
-
-        // 2b. 3단계 패시브 트리 데이터 로드
-        std::string treeError;
-        if (g_treeData.LoadFromFile(kTreePackPath, &treeError)) {
-            SKSE::log::info("PassiveTreeData loaded: classes={}, nodes={}, masteryEffects={}.",
-                g_treeData.Classes().size(), g_treeData.NodeCount(), g_treeData.MasteryEffectCount());
-        } else {
-            SKSE::log::error("PassiveTreeData load failed ('{}'): {}. Passive tree UI disabled.",
-                kTreePackPath, treeError);
-        }
-
-        // 2c. 4~5단계 아이템·어픽스·화폐·벨트·참·몬스터 속성·고유 데이터 로드
-        std::string itemsError;
-        if (g_itemData.LoadFromFile(kItemsPackPath, &itemsError)) {
-            SKSE::log::info("ItemData loaded: affixes={}, currencies={}, belts={}, charms={}, monsterMods={}, uniques={}.",
-                g_itemData.AllAffixes().size(), g_itemData.AllCurrencies().size(),
-                g_itemData.AllBelts().size(), g_itemData.AllCharms().size(),
-                g_itemData.AllMonsterMods().size(), g_itemData.AllUniques().size());
-        } else {
-            SKSE::log::error("ItemData load failed ('{}'): {}. Item crafting disabled.",
-                kItemsPackPath, itemsError);
-        }
-
-        // 3. ESP 폼 검증
-        VerifyEspForms();
-        Runtime::MapPackRuntime::Initialize();
 
         // 4. 주 갱신 훅을 먼저 설치해 CommandQueue 드레인을 보장한 뒤 전투·스킬·처치·아이템 훅을 건다.
-        if (!Runtime::MainUpdateHook::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_config)) {
+        const bool hookInstalled = Runtime::MainUpdateHook::Install(&g_commandQueue, &g_statEngine, &g_dataPack, &g_config);
+        if (!hookInstalled) {
             SKSE::log::error("MainUpdateHook installation failed. Combat/skill hooks skipped.");
+        }
+
+        if (!generation) {
+            return;
+        }
+        if (!g_serializationInstalled || !hookInstalled) {
+            PreserveStartup(!g_serializationInstalled ?
+                "SKSE 직렬화 콜백을 등록하지 못했습니다." : "주 갱신 훅을 설치하지 못했습니다.");
             return;
         }
 
@@ -278,8 +430,13 @@ namespace
             Runtime::AutoTest::Tick(main, dt);
         });
 
+        Runtime::SaveLoad::SetContentCheck(std::move(generation), "콘텐츠 검사와 런타임 초기화를 마쳤습니다.");
         Runtime::SaveLoad::SyncStateToStatEngine();
         SKSE::log::info("SkyrimPoE Stage 6 runtime initialization complete.");
+    } catch (const std::exception& e) {
+        PreserveStartup(std::format("런타임 초기화 중 오류가 발생했습니다. {}", e.what()));
+    } catch (...) {
+        PreserveStartup("런타임 초기화 중 알 수 없는 오류가 발생했습니다. SkyrimPoE.log를 확인하세요.");
     }
 
     void OnSkseMessage(SKSE::MessagingInterface::Message* msg)
@@ -292,23 +449,33 @@ namespace
             case SKSE::MessagingInterface::kDataLoaded:
                 OnDataLoaded();
                 break;
-            case SKSE::MessagingInterface::kPreLoadGame:
+            case SKSE::MessagingInterface::kPreLoadGame: {
+                const bool notifyAutoTest = Runtime::ModState::AllowsGameplay();
+                Runtime::SaveLoad::OnGameLoadStarted();
                 Runtime::MapDeviceRuntime::DisarmUninstallCleanup();
                 Runtime::UiBridge::ClosePanelOnMainThread();
                 (void)g_commandQueue.BumpGenerationAndClear();
-                Runtime::AutoTest::OnPreLoadGame(*msg);
+                g_autoTestLoadStarted = notifyAutoTest;
+                if (g_autoTestLoadStarted) {
+                    Runtime::AutoTest::OnPreLoadGame(*msg);
+                }
                 break;
+            }
             case SKSE::MessagingInterface::kNewGame:
                 Runtime::SaveLoad::SchedulePostLoadOrNewGameInit(true);
                 break;
-            case SKSE::MessagingInterface::kPostLoadGame:
-                if (msg->data != nullptr) {
-                    Runtime::SaveLoad::SchedulePostLoadOrNewGameInit(false);
+            case SKSE::MessagingInterface::kPostLoadGame: {
+                const bool notifyAutoTest = std::exchange(g_autoTestLoadStarted, false);
+                Runtime::SaveLoad::OnGameLoadFinished(msg->data != nullptr);
+                if (notifyAutoTest) {
+                    Runtime::AutoTest::OnPostLoadGame(msg->data != nullptr);
                 }
-                Runtime::AutoTest::OnPostLoadGame(msg->data != nullptr);
                 break;
+            }
             case SKSE::MessagingInterface::kSaveGame:
-                Runtime::AutoTest::OnSaveGame(*msg);
+                if (Runtime::ModState::AllowsGameplay()) {
+                    Runtime::AutoTest::OnSaveGame(*msg);
+                }
                 break;
             default:
                 break;
@@ -353,7 +520,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
         }
 
         // SKSE 직렬화 콜백은 SKSEPluginLoad 단계에서 등록한다.
-        (void)Runtime::SaveLoad::Install(
+        g_serializationInstalled = Runtime::SaveLoad::Install(
             &g_commandQueue, &g_statEngine, &g_dataPack, &g_treeData, &g_config, &g_itemData, &g_charmSystem);
     } catch (const std::exception& e) {
         SKSE::log::error("SkyrimPoE startup exception: {}", e.what());

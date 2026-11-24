@@ -7,83 +7,49 @@
 #include "core/ItemTypes.h"
 #include "core/MapTypes.h"
 #include "core/PassiveTreeData.h"
+#include "core/SaveRecordFormat.h"
 #include "core/StatEngine.h"
 #include "core/Types.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
 namespace SkyrimPoE::Runtime
 {
-    struct PersistentState
-    {
-        std::uint32_t exileLevel = 1;
-        std::uint64_t exileXp = 0;
-        std::uint32_t unallocatedPassivePoints = 0;
-        std::string className = "Scion";
-        bool starterGemsGiven = false;
-        bool starterCurrencyGiven = false;  // 4단계: 'ITEM' 헤더에 저장(CORE v2 하위 호환 유지)
-        bool starterStage5GemsGiven = false; // 5단계: 'SPRT' v1에 저장(4단계 세이브 업그레이드용)
-        std::uint64_t nextGemInstanceId = 1;
-        double appliedHealthDelta = 0.0;   // kPermanent 체력 보정 누적치(세이브 왕복 드리프트 방지)
-        double appliedMagickaDelta = 0.0;  // kPermanent 매지카 보정 누적치(세이브 왕복 드리프트 방지)
-        std::array<Core::SkillSlot, Core::kSkillSlotCount> slots{};
-        Core::PassiveTreeState tree{};
-
-        // 5단계(결정 161~164): 정신력 오라 토글, 논리 10칸 가상 반지2/벨트, 벨트 참, 패시브 주얼 소켓
-        std::uint16_t activeAuraMask = 0;
-        Core::InventoryItemKey virtualRing2Key{};
-        RE::FormID virtualRing2BaseFormId = 0;
-        Core::InventoryItemKey virtualBeltKey{};
-        RE::FormID virtualBeltBaseFormId = 0;
-        std::array<Core::CharmSlotState, Core::kMaxCharmSlots> charmSlots{};
-        std::unordered_map<std::uint32_t, Core::PoEItemRecord> socketedJewels;
-
-        // 6단계(결정 166): 아틀라스 영구 진행 상태(T1~T16 첫 클리어 +16 패시브, 첫 공물 지급)
-        Core::AtlasState atlas{};
-
-        PersistentState()
-        {
-            for (std::size_t i = 0; i < slots.size(); ++i) {
-                slots[i].slotIndex = static_cast<std::uint8_t>(i);
-            }
-        }
-    };
-
     // SKSE 코세이브('SPOE')와 세이브 전환 생명주기 관리(결정 59, 105~108, 117~119, 138, 150 ④, 161~164).
     // 코세이브 콜백(OnSave/OnLoad/OnRevert)은 순수 메모리 작업만 수행하고, 엔진 상태 반영은 CommandQueue로 넘긴다.
     class SaveLoad
     {
     public:
         static constexpr std::uint32_t kCosaveId = 'SPOE';
-        static constexpr std::uint32_t kRecordCore = 'CORE';
-        static constexpr std::uint32_t kRecordGemKeys = 'GKEY';
-        static constexpr std::uint32_t kRecordTree = 'TREE';
-        static constexpr std::uint32_t kRecordItems = 'ITEM';
-        static constexpr std::uint32_t kRecordWorldDrops = 'WDRP';
-        static constexpr std::uint32_t kRecordSpirit = 'SPRT';
-        static constexpr std::uint32_t kRecordGear = 'GEAR';
-        static constexpr std::uint32_t kRecordSpeedMods = 'SPDM';
-        static constexpr std::uint32_t kRecordAtlas = 'ATLS';
-        static constexpr std::uint32_t kRecordMaps = 'MAPS';
-        static constexpr std::uint32_t kCoreVersion = 2;
-        static constexpr std::uint32_t kGemKeysVersion = 1;
-        static constexpr std::uint32_t kTreeVersion = 1;
-        static constexpr std::uint32_t kItemsVersion = 2;
-        static constexpr std::uint32_t kWorldDropsVersion = 1;
-        static constexpr std::uint32_t kSpiritVersion = 1;
-        static constexpr std::uint32_t kGearVersion = 1;
-        static constexpr std::uint32_t kSpeedModsVersion = 1;
-        static constexpr std::uint32_t kAtlasVersion = Core::kAtlasSaveVersion;
-        static constexpr std::uint32_t kMapsVersion = Core::kMapSaveVersion;
+        static constexpr std::uint32_t kAtlasVersion = Core::SaveRecord::kAtlasVersion;
+        static constexpr std::uint32_t kMapsVersion = Core::SaveRecord::kMapsVersion;
 
         struct LoadedMapRecordVersions
         {
             std::uint32_t atlas = 0;
             std::uint32_t maps = 0;
+        };
+
+        struct LoadDiagnostics
+        {
+            std::optional<Core::SaveDecision> decision;
+            std::optional<Core::GenerationRecord> generation;
+            bool receivedLoad = false;
+            bool collectionComplete = false;
+        };
+
+        struct SaveDiagnostics
+        {
+            std::uint64_t sequence = 0;
+            bool wroteGeneration = false;
+            std::size_t failedRecords = 0;
+            bool complete = false;
         };
 
         static bool Install(
@@ -95,10 +61,18 @@ namespace SkyrimPoE::Runtime
             const Core::ItemData* itemData = nullptr,
             Core::CharmSystem* charmSystem = nullptr);
 
-        // kNewGame / kPostLoadGame 시 호출: 주 갱신 스레드에 초기화·Variable09 정리·스탯 빌드를 예약한다.
+        static void SetContentCheck(std::optional<Core::SaveGeneration> generation, std::string reason);
+        static void OnGameLoadStarted();
+        static void OnGameLoadFinished(bool succeeded);
+
+        // kNewGame / 성공한 kPostLoadGame 시 판정 및 주 갱신 스레드의 초기화를 예약한다.
         static void SchedulePostLoadOrNewGameInit(bool isNewGame);
 
         [[nodiscard]] static PersistentState GetStateCopy();
+        [[nodiscard]] static std::optional<Core::SaveGeneration> GetContentGeneration();
+        [[nodiscard]] static LoadDiagnostics GetLastLoadDiagnostics();
+        [[nodiscard]] static SaveDiagnostics GetLastSaveDiagnostics();
+        [[nodiscard]] static std::size_t GetPreservedRecordCount();
         // 마지막 로드에서 실제 읽기에 성공한 ATLS·MAPS 판(없으면 0).
         [[nodiscard]] static LoadedMapRecordVersions GetLoadedMapRecordVersions();
         static void SetState(const PersistentState& state);

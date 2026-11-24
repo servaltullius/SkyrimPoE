@@ -68,6 +68,12 @@ namespace SkyrimPoE::Runtime
             SKSE::log::warn("TrueHudBridge: {}; using the own enemy ES display.", reason);
         }
 
+        void ReleaseSpecialBar(const char* success, const char* failure)
+        {
+            const auto released = g_api->ReleaseSpecialResourceBarControl(g_handle);
+            StopUsing(released == TRUEHUD_API::APIResult::OK ? success : failure);
+        }
+
         // 결정 185와 같은 기준의 적(아군 아님, 처치 보상 기준 적대)이고 ES가 있는 살아 있는 액터만 표에 넣는다.
         void RebuildTable()
         {
@@ -140,10 +146,8 @@ namespace SkyrimPoE::Runtime
         }
         // 안전 제거 정리 뒤에는 넘길 ES가 없으므로 다른 모드가 쓸 수 있게 바를 놓는다.
         if (MapDeviceRuntime::IsUninstallCleanupArmed()) {
-            const auto released = g_api->ReleaseSpecialResourceBarControl(g_handle);
-            StopUsing(released == TRUEHUD_API::APIResult::OK
-                    ? "released the TrueHUD special bars for the safe uninstall"
-                    : "could not release the TrueHUD special bars for the safe uninstall");
+            ReleaseSpecialBar("released the TrueHUD special bars for the safe uninstall",
+                "could not release the TrueHUD special bars for the safe uninstall");
             return;
         }
         if (g_api->GetSpecialResourceBarControlOwner() != g_handle) {
@@ -155,6 +159,20 @@ namespace SkyrimPoE::Runtime
             g_nextTableBuild = now + kTableRebuildInterval;
             RebuildTable();
         }
+    }
+
+    void TrueHudBridge::SuspendSpecialBarOnMainThread()
+    {
+        if (!OwnsSpecialBar()) {
+            return;
+        }
+        if (g_api) {
+            ReleaseSpecialBar("released the TrueHUD special bars during preservation",
+                "could not release the TrueHUD special bars during preservation");
+        } else {
+            StopUsing("lost the TrueHUD interface");
+        }
+        SKSE::log::info("TrueHudBridge: special bar control will be requested again in the next game session.");
     }
 
     bool TrueHudBridge::OwnsSpecialBar() noexcept

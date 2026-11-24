@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "runtime/GemInventory.h"
 #include "runtime/FormIds.h"
+#include "runtime/ModState.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/UniqueIdUtil.h"
 #include "core/WorldStampLink.h"
@@ -459,7 +460,7 @@ namespace SkyrimPoE::Runtime
             {
                 const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                 // 무효한 이전 키(0:0)는 추적 대상이 아니므로 즉시 무시해 무관한 아이템 탈취를 막는다.
-                if (!event || event->oldBaseID == 0 || event->oldUniqueID == 0) {
+                if (!ModState::AllowsGameplay() || !event || event->oldBaseID == 0 || event->oldUniqueID == 0) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 // 소유자 없이 UID만 있는 비정상 이벤트는 무시한다.
@@ -544,7 +545,7 @@ namespace SkyrimPoE::Runtime
                 RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
             {
                 const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
-                if (!event || !g_queue ||
+                if (!ModState::AllowsGameplay() || !event || !g_queue ||
                     !WorldStampLink::IsStampedWorldPickup(
                         event->oldContainer, event->newContainer, event->uniqueID, event->itemCount, kGemStampBand)) {
                     return RE::BSEventNotifyControl::kContinue;

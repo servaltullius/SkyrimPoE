@@ -2,6 +2,7 @@
 #include "runtime/DeathListener.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/ModState.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/SaveLoad.h"
@@ -343,7 +344,7 @@ namespace SkyrimPoE::Runtime
                 const RE::TESResetEvent* event,
                 RE::BSTEventSource<RE::TESResetEvent>*) override
             {
-                if (event && event->object) {
+                if (ModState::AllowsGameplay() && event && event->object) {
                     const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
                     const auto id = event->object->GetFormID();
                     MapDeviceRuntime::ClearMapBossDeathStart(id);

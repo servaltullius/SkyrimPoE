@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/SaveRecordState.h"
+
 #include "core/CommandQueue.h"
 #include "core/ItemTypes.h"
 #include "core/Types.h"
@@ -11,13 +13,6 @@
 
 namespace SkyrimPoE::Runtime
 {
-    struct TrackedItemEntry
-    {
-        Core::InventoryItemKey key;
-        bool isWorld = false;
-        Core::PoEItemRecord record;
-    };
-
     // 결정 59, 123, 검수 C2/M1:
     // 프로토타입 5 검증 방식으로 PoE 어픽스 아이템을 (소유자 FormID, 고유 번호) 키로 추적한다.
     // - 컨테이너 이동/삭제: TESUniqueIDChangeEvent

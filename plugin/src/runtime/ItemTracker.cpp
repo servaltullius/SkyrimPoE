@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/ModState.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/UniqueIdUtil.h"
 #include "core/WorldStampLink.h"
@@ -357,7 +358,7 @@ namespace SkyrimPoE::Runtime
                 RE::BSTEventSource<RE::TESUniqueIDChangeEvent>*) override
             {
                 const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
-                if (!event || event->oldBaseID == 0 || event->oldUniqueID == 0) {
+                if (!ModState::AllowsGameplay() || !event || event->oldBaseID == 0 || event->oldUniqueID == 0) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 // 검수 Minor 6: 비정상 (newBaseID == 0 && newUniqueID != 0) 이벤트 무시(GemInventory와 동일 가드)
@@ -458,7 +459,7 @@ namespace SkyrimPoE::Runtime
                 RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
             {
                 const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
-                if (!event || !g_queue) {
+                if (!ModState::AllowsGameplay() || !event || !g_queue) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
 
@@ -507,7 +508,7 @@ namespace SkyrimPoE::Runtime
                 RE::BSTEventSource<RE::TESEquipEvent>*) override
             {
                 const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
-                if (!event || !event->actor || !g_queue || !g_onEquipChanged) {
+                if (!ModState::AllowsGameplay() || !event || !event->actor || !g_queue || !g_onEquipChanged) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 if (event->actor->IsPlayerRef()) {

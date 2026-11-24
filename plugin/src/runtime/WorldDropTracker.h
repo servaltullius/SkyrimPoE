@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/SaveRecordState.h"
+
 #include "core/ItemData.h"
 #include "core/Types.h"
 
@@ -10,14 +12,6 @@
 namespace SkyrimPoE::Runtime
 {
     // 코세이브 'WDRP' v1 직렬화 단위(검수 C4: 세이브 왕복 시 바닥 드랍+빛기둥 추적 복원)
-    struct SavedWorldDropEntry
-    {
-        RE::FormID dropRefFormId = 0;
-        RE::FormID corpseRefFormId = 0;
-        RE::FormID beamRefFormId = 0;
-        std::uint8_t worldDropTier = 2;
-    };
-
     // 결정 16, 159, 검수 C4:
     // 자체 바닥 물리 드랍 추적기(Death Drop Overhaul 미의존).
     // - 설정 등급 이상·동시 상한 내 전리품만 시체에서 월드로 배출(복제 금지) + 임시 빛기둥 + 효과음

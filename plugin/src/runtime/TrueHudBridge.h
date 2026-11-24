@@ -16,6 +16,7 @@ namespace SkyrimPoE::Runtime
         // 주 갱신 스레드에서 매 HUD 틱에 부른다. 소유 중이면 소유자가 아직 우리인지 보고(아니면 자체 표시로 돌아감),
         // 안전 제거 정리가 걸렸으면 바를 놓으며, 값 함수가 읽을 적 ES 표를 0.1초마다 새로 만든다.
         static void TickMainThread();
+        static void SuspendSpecialBarOnMainThread();
 
         // 특수 바를 얻어 값 함수를 등록했고 아직 우리 것인지(어느 스레드에서나 읽음)
         [[nodiscard]] static bool OwnsSpecialBar() noexcept;

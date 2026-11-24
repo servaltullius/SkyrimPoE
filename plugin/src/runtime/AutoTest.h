@@ -35,6 +35,8 @@ namespace SkyrimPoE::Runtime
 
         // 주 갱신 스레드 프레임 콜백에서 호출(비활성 시 즉시 반환)
         static void Tick(RE::Main* main, double deltaSec);
+        // 모드가 멈춘 프레임에서도 세이브 시험의 결과 보고와 종료를 처리한다.
+        static void TickSaveOnlyWhileSuspended(RE::Main* main);
 
         // SKSE 메시징 콜백에서 호출(비활성 시 즉시 반환, 원자/뮤텍스 플래그만 갱신)
         static void OnPreLoadGame(const SKSE::MessagingInterface::Message& msg);

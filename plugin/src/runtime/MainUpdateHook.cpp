@@ -1,7 +1,11 @@
 #include "PCH.h"
 #include "runtime/MainUpdateHook.h"
 #include "runtime/Addresses.h"
+#include "runtime/AutoTest.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/ModState.h"
+#include "runtime/TrueHudBridge.h"
+#include "runtime/UiBridge.h"
 
 #include <REL/Offset2ID.h>
 
@@ -22,6 +26,7 @@ namespace SkyrimPoE::Runtime
         std::atomic<std::uint64_t> g_tickCount{ 0 };
         std::chrono::steady_clock::time_point g_lastTick{};
         bool g_hasLastTick = false;
+        bool g_hudSuspended = false;
 
         bool ContainsAddress(const REL::Segment& seg, std::uintptr_t addr, std::size_t size) noexcept
         {
@@ -29,10 +34,47 @@ namespace SkyrimPoE::Runtime
             const auto end = begin + seg.size();
             return addr >= begin && addr <= end && size <= (end - addr);
         }
+
+        void CallOriginalMainUpdate(RE::Main* main)
+        {
+            const auto address = g_originalMainUpdateAddr.load(std::memory_order_acquire);
+            if (address != 0) {
+                using MainUpdateFn = void (*)(RE::Main*);
+                reinterpret_cast<MainUpdateFn>(address)(main);
+            }
+        }
+
+        bool SkipPluginFrame(RE::Main* main)
+        {
+            if (ModState::AllowsGameplay()) {
+                g_hudSuspended = false;
+                return false;
+            }
+            g_hasLastTick = false;
+            if (!g_hudSuspended) {
+                try {
+                    TrueHudBridge::SuspendSpecialBarOnMainThread();
+                    UiBridge::SuspendHudOnMainThread();
+                    g_hudSuspended = true;
+                } catch (...) {
+                    SKSE::log::warn("MainUpdateHook: could not suspend the HUD; retrying on the next update.");
+                }
+            }
+            try {
+                AutoTest::TickSaveOnlyWhileSuspended(main);
+            } catch (...) {
+                SKSE::log::warn("MainUpdateHook: suspended AutoTest frame failed.");
+            }
+            CallOriginalMainUpdate(main);
+            return true;
+        }
     }
 
     void MainUpdateHook::Thunk(RE::Main* a_main)
     {
+        if (SkipPluginFrame(a_main)) {
+            return;
+        }
         const auto now = std::chrono::steady_clock::now();
         double dt = 0.0;
         if (g_hasLastTick) {
@@ -54,6 +96,9 @@ namespace SkyrimPoE::Runtime
                 SKSE::log::error("MainUpdateHook: CommandQueue unknown exception.");
             }
         }
+        if (SkipPluginFrame(a_main)) {
+            return;
+        }
 
         // 2. 층 ①·②가 dirty면 주 갱신 스레드에서만 단일 불변 StatSnapshot 재계산(결정 117, 118, 137(다))
         if (g_statEngine && g_dataPack && g_config && g_dataPack->IsLoaded()) {
@@ -64,6 +109,9 @@ namespace SkyrimPoE::Runtime
             } catch (...) {
                 SKSE::log::error("MainUpdateHook: StatEngine unknown exception.");
             }
+        }
+        if (SkipPluginFrame(a_main)) {
+            return;
         }
 
         // 3. 등록된 런타임 프레임 콜백 실행(ES 재충전, 사이클론 틱 등 후속 마일스톤 확장점)
@@ -83,11 +131,7 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        const auto origAddr = g_originalMainUpdateAddr.load(std::memory_order_acquire);
-        if (origAddr != 0) {
-            using MainUpdateFn = void (*)(RE::Main*);
-            reinterpret_cast<MainUpdateFn>(origAddr)(a_main);
-        }
+        CallOriginalMainUpdate(a_main);
     }
 
     bool MainUpdateHook::Install(

@@ -7,6 +7,7 @@
 #include "runtime/GemInventory.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/MapDeviceRuntime.h"
+#include "runtime/ModState.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/UniqueIdUtil.h"
@@ -16,39 +17,22 @@
 #include "core/MapSave.h"
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
-#include "core/SaveCapPolicy.h"
 
 #include <bit>
+#include <cstring>
 #include <unordered_set>
 
 namespace SkyrimPoE::Runtime
 {
     namespace
     {
-        constexpr std::uint32_t kMaxListLen = 1024;
-        constexpr std::uint32_t kMaxTreeNodes = 4096;
-        constexpr std::uint32_t kMaxItemRecords = 8192;
-        constexpr std::uint32_t kMaxWorldDropRecords = 64;
-        constexpr std::uint32_t kMaxGemDepth = 4;
-        constexpr std::uint32_t kMaxSocketedJewels = 64;
-        constexpr std::uint32_t kPlayerRefFormId = 0x00000014;
+        using namespace Core::SaveRecord;
+
         // 결정 166의 MAPS v1을 불러올 때 귀환 여부를 판정하는 바닐라 셀 전용 표다.
         constexpr std::array<RE::FormID, 5> kLegacyMapsV1Cells{
             0x000B6BE6, 0x00043FAB, 0x00015224, 0x000152B1, 0x0001521C
         };
         constexpr RE::FormID kLegacyMapsV1ArenaCell = 0x00015211;
-
-        // 재검수 R-3: 상한을 넘으면 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다(Core::SelectEntriesWithinSaveCap).
-        template <class Entry>
-        [[nodiscard]] std::vector<std::size_t> SelectForSave(const std::vector<Entry>& entries, std::size_t cap)
-        {
-            std::vector<Core::SaveCapCandidate> cands;
-            cands.reserve(entries.size());
-            for (const auto& e : entries) {
-                cands.push_back(Core::SaveCapCandidate{ e.key.ownerFormId, e.isWorld });
-            }
-            return Core::SelectEntriesWithinSaveCap(cands, cap, kPlayerRefFormId);
-        }
 
         Core::CommandQueue* g_queue = nullptr;
         Core::StatEngine* g_statEngine = nullptr;
@@ -58,6 +42,16 @@ namespace SkyrimPoE::Runtime
         const Core::ItemData* g_itemData = nullptr;
         Core::CharmSystem* g_charmSystem = nullptr;
         bool g_installed = false;
+
+        // 저장·로드·리버트와 콘텐츠 검사 결과를 직렬화한다. g_txMutex보다 먼저 잡는다.
+        std::mutex g_cosaveMutex;
+        std::optional<Core::SaveGeneration> g_currentGeneration;
+        Core::SaveRecordTransition g_cosave;
+        SaveLoad::LoadDiagnostics g_lastLoad;
+        SaveLoad::SaveDiagnostics g_lastSave;
+        bool g_notifyOnLoad = false;
+        constexpr auto kIncompleteCosaveNotice =
+            "모드 기록을 완전히 읽지 못했습니다. 이 슬롯에 저장하면 기록이 줄어들 수 있으니 다른 슬롯에 저장하세요.";
 
         // 잠금 순서 고정: g_txMutex -> g_stateMutex / GemInventory::g_mutex (결정 137(ㅁ))
         std::mutex g_txMutex;
@@ -140,88 +134,39 @@ namespace SkyrimPoE::Runtime
             return { revertedActors, remaining };
         }
 
-        // SKSE::SerializationInterface::ReadRecordData는 bool이 아니라 실제 읽은 바이트 수(uint32_t)를 반환한다.
-        // 절단·손상 레코드에서 부분 읽기가 성공으로 오인되지 않도록 정확 길이를 비교한다.
-        bool ReadExact(SKSE::SerializationInterface* intfc, void* dst, std::uint32_t size)
+        struct RecordReader
         {
-            if (!intfc) {
+            SKSE::SerializationInterface* serialization;
+            std::span<const std::uint8_t> remaining;
+
+            bool ResolveFormID(std::uint32_t raw, std::uint32_t& resolved) const
+            {
+                return serialization->ResolveFormID(raw, resolved);
+            }
+        };
+
+        bool ReadExact(RecordReader* reader, void* dst, std::uint32_t size)
+        {
+            if (size > reader->remaining.size()) {
                 return false;
             }
-            if (size == 0) {
-                return true;
+            if (size != 0) {
+                std::memcpy(dst, reader->remaining.data(), size);
+                reader->remaining = reader->remaining.subspan(size);
             }
-            return intfc->ReadRecordData(dst, size) == size;
+            return true;
         }
 
         template <class T>
-        bool ReadExactPod(SKSE::SerializationInterface* intfc, T& out)
+        bool ReadExactPod(RecordReader* intfc, T& out)
         {
             return ReadExact(intfc, &out, static_cast<std::uint32_t>(sizeof(T)));
         }
 
-        bool WriteString(SKSE::SerializationInterface* intfc, const std::string& str)
-        {
-            return Core::WriteSaveString(
-                [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, str);
-        }
-
-        bool ReadString(SKSE::SerializationInterface* intfc, std::string& out)
+        bool ReadString(RecordReader* intfc, std::string& out)
         {
             return Core::ReadSaveString(
                 [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, out);
-        }
-
-        bool WriteGemInstance(SKSE::SerializationInterface* intfc, const Core::GemInstance& gem, std::uint32_t depth = 0)
-        {
-            if (depth > kMaxGemDepth) {
-                return false;
-            }
-            if (!intfc->WriteRecordData(&gem.instanceId, sizeof(gem.instanceId))) return false;
-            if (!WriteString(intfc, gem.gemId)) return false;
-            if (!intfc->WriteRecordData(&gem.level, sizeof(gem.level))) return false;
-            if (!intfc->WriteRecordData(&gem.quality, sizeof(gem.quality))) return false;
-            if (!intfc->WriteRecordData(&gem.xp, sizeof(gem.xp))) return false;
-            if (!intfc->WriteRecordData(&gem.socketCount, sizeof(gem.socketCount))) return false;
-
-            const auto childCount = static_cast<std::uint32_t>(std::min<std::size_t>(gem.socketedGems.size(), kMaxListLen));
-            if (!intfc->WriteRecordData(&childCount, sizeof(childCount))) return false;
-            for (std::uint32_t i = 0; i < childCount; ++i) {
-                if (!WriteGemInstance(intfc, gem.socketedGems[i], depth + 1)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        bool ReadGemInstance(SKSE::SerializationInterface* intfc, Core::GemInstance& out, std::uint32_t depth = 0)
-        {
-            if (depth > kMaxGemDepth) {
-                return false;
-            }
-            if (!ReadExactPod(intfc, out.instanceId)) return false;
-            if (!ReadString(intfc, out.gemId)) return false;
-            if (!ReadExactPod(intfc, out.level)) return false;
-            if (!ReadExactPod(intfc, out.quality)) return false;
-            if (!ReadExactPod(intfc, out.xp)) return false;
-            if (!ReadExactPod(intfc, out.socketCount)) return false;
-
-            out.level = static_cast<std::uint8_t>(std::clamp<std::uint32_t>(out.level, 1, Core::kMaxGemLevel));
-            out.socketCount = static_cast<std::uint8_t>(std::min<std::uint32_t>(out.socketCount, Core::kMaxGemSockets));
-
-            std::uint32_t childCount = 0;
-            if (!ReadExactPod(intfc, childCount) || childCount > kMaxListLen) {
-                return false;
-            }
-            out.socketedGems.clear();
-            out.socketedGems.reserve(childCount);
-            for (std::uint32_t i = 0; i < childCount; ++i) {
-                Core::GemInstance child;
-                if (!ReadGemInstance(intfc, child, depth + 1)) {
-                    return false;
-                }
-                out.socketedGems.push_back(std::move(child));
-            }
-            return true;
         }
 
         void CollectMaxInstanceId(const Core::GemInstance& gem, std::uint64_t& maxId, std::uint32_t depth = 0)
@@ -237,38 +182,10 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        bool WriteAffixList(SKSE::SerializationInterface* intfc, const std::vector<Core::RolledAffix>& list)
-        {
-            return Core::WriteSaveAffixList(
-                [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, list);
-        }
-
-        bool ReadAffixList(SKSE::SerializationInterface* intfc, std::vector<Core::RolledAffix>& out)
+        bool ReadAffixList(RecordReader* intfc, std::vector<Core::RolledAffix>& out)
         {
             return Core::ReadSaveAffixList(
                 [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); }, out);
-        }
-
-        bool WritePoEItemRecordV2(SKSE::SerializationInterface* intfc, const Core::PoEItemRecord& rec)
-        {
-            const auto rarityByte = static_cast<std::uint8_t>(rec.rarity);
-            const auto slotGroupByte = static_cast<std::uint8_t>(rec.slotGroup);
-            const auto defSubByte = static_cast<std::uint8_t>(rec.defenseSubtype);
-            const std::uint8_t amuletByte = rec.isAmulet ? 1 : 0;
-            bool ok = true;
-            ok = ok && intfc->WriteRecordData(&rec.baseFormId, sizeof(rec.baseFormId));
-            ok = ok && intfc->WriteRecordData(&rarityByte, sizeof(rarityByte));
-            ok = ok && intfc->WriteRecordData(&rec.itemLevel, sizeof(rec.itemLevel));
-            ok = ok && intfc->WriteRecordData(&slotGroupByte, sizeof(slotGroupByte));
-            ok = ok && intfc->WriteRecordData(&defSubByte, sizeof(defSubByte));
-            ok = ok && intfc->WriteRecordData(&amuletByte, sizeof(amuletByte));
-            ok = ok && WriteString(intfc, rec.weaponTag);
-            ok = ok && WriteAffixList(intfc, rec.affixes);
-            // v2 확장: 고유 아이템 ID, 주얼 색상, 고정 임플리싯 어픽스
-            ok = ok && WriteString(intfc, rec.uniqueId);
-            ok = ok && intfc->WriteRecordData(&rec.jewelColor, sizeof(rec.jewelColor));
-            ok = ok && WriteAffixList(intfc, rec.implicitAffixes);
-            return ok;
         }
 
         struct ReadPoEItemResult
@@ -279,7 +196,7 @@ namespace SkyrimPoE::Runtime
         };
 
         ReadPoEItemResult ReadPoEItemRecord(
-            SKSE::SerializationInterface* intfc,
+            RecordReader* intfc,
             Core::PoEItemRecord& out,
             std::uint32_t itemVersion)
         {
@@ -369,6 +286,13 @@ namespace SkyrimPoE::Runtime
             return l1;
         }
 
+        void UpdateStatLayerFromState()
+        {
+            if (g_statEngine) {
+                g_statEngine->SetLayer1(BuildLayer1FromState(SaveLoad::GetStateCopy()));
+            }
+        }
+
         void ResetMemoryState()
         {
             if (g_queue) {
@@ -414,18 +338,26 @@ namespace SkyrimPoE::Runtime
         // SKSE 코세이브 콜백: 되돌리기(순수 메모리 정리만 수행, 엔진 호출 금지)
         void OnRevert(SKSE::SerializationInterface*)
         {
+            std::scoped_lock lock(g_cosaveMutex);
+            g_cosave.Revert();
+            if (!g_currentGeneration) {
+                return;
+            }
             ResetMemoryState();
+            if (!g_cosave.IsLoading()) {
+                g_notifyOnLoad = false;
+                ModState::Set(ModMode::Normal, "새 세계에서 모드 상태를 초기화했습니다.");
+            }
             SKSE::log::info("SaveLoad: OnRevert cleared persistent state, gem keys, and command queue.");
         }
 
-        // SKSE 코세이브 콜백: 저장(메모리 스냅샷만 기록, 예약 큐는 저장하지 않음).
-        // 결정 137(ㅁ): g_txMutex로 젬 장착/탈착 거래와 직렬화해 일관 스냅샷을 확보한다.
-        void OnSave(SKSE::SerializationInterface* intfc)
+        void ReportWriteWarning(std::string_view message)
         {
-            if (!intfc) {
-                return;
-            }
+            SKSE::log::warn("SaveLoad: {}", message);
+        }
 
+        Snapshot CaptureSaveSnapshot()
+        {
             // 결정 137(ㅁ), 검수 M4: g_txMutex 아래 상태·젬·아이템·바닥드랍 일관 스냅샷을 원자 캡처한다.
             PersistentState state;
             std::vector<TrackedGemEntry> tracked;
@@ -467,253 +399,72 @@ namespace SkyrimPoE::Runtime
             std::sort(savedSpeedMods.begin(), savedSpeedMods.end(),
                 [](const auto& a, const auto& b) { return a.first < b.first; });
 
-            const bool coreOpened = intfc->OpenRecord(SaveLoad::kRecordCore, SaveLoad::kCoreVersion);
-            if (!coreOpened) {
-                SKSE::log::error("SaveLoad: failed to open CORE record for writing.");
-            }
-
-            bool ok = coreOpened;
-            ok = ok && intfc->WriteRecordData(&state.exileLevel, sizeof(state.exileLevel));
-            ok = ok && intfc->WriteRecordData(&state.exileXp, sizeof(state.exileXp));
-            ok = ok && intfc->WriteRecordData(&state.unallocatedPassivePoints, sizeof(state.unallocatedPassivePoints));
-            ok = ok && WriteString(intfc, state.className);
-            const std::uint8_t starterByte = state.starterGemsGiven ? 1 : 0;
-            ok = ok && intfc->WriteRecordData(&starterByte, sizeof(starterByte));
-            ok = ok && intfc->WriteRecordData(&state.nextGemInstanceId, sizeof(state.nextGemInstanceId));
-            ok = ok && intfc->WriteRecordData(&state.appliedHealthDelta, sizeof(state.appliedHealthDelta));
-            ok = ok && intfc->WriteRecordData(&state.appliedMagickaDelta, sizeof(state.appliedMagickaDelta));
-
-            const auto slotCount = static_cast<std::uint32_t>(state.slots.size());
-            ok = ok && intfc->WriteRecordData(&slotCount, sizeof(slotCount));
-            for (const auto& slot : state.slots) {
-                const std::uint8_t occupiedByte = slot.occupied ? 1 : 0;
-                ok = ok && intfc->WriteRecordData(&occupiedByte, sizeof(occupiedByte));
-                ok = ok && intfc->WriteRecordData(&slot.linkedAttackSlot, sizeof(slot.linkedAttackSlot));
-                if (slot.occupied) {
-                    ok = ok && WriteGemInstance(intfc, slot.gem);
-                }
-            }
-            // C-8: 레코드 단위 독립 쓰기 — 한 레코드가 실패해도 뒤 레코드 기록을 계속 시도한다.
-            std::uint32_t trackedCount = 0;
-            std::uint32_t nodeCount = 0;
-            std::uint32_t itemCount = 0;
-            std::uint32_t wdrpCount = 0;
-            std::uint32_t jewelCount = 0;
-
-            if (coreOpened && !ok) {
-                SKSE::log::error("SaveLoad: error while writing CORE record.");
-            }
-
-            if (intfc->OpenRecord(SaveLoad::kRecordGemKeys, SaveLoad::kGemKeysVersion)) {
-                // C-4, 재검수 R-3: 상한 초과 시 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다.
-                const auto keep = SelectForSave(tracked, kMaxListLen);
-                if (keep.size() < tracked.size()) {
-                    SKSE::log::warn("SaveLoad: GKEY count {} exceeded cap {}; dropped {} entries not held by the player first.",
-                        tracked.size(), kMaxListLen, tracked.size() - keep.size());
-                }
-                trackedCount = static_cast<std::uint32_t>(keep.size());
-                bool gkeyOk = intfc->WriteRecordData(&trackedCount, sizeof(trackedCount));
-                for (std::size_t k = 0; k < keep.size() && gkeyOk; ++k) {
-                    const auto& entry = tracked[keep[k]];
-                    const std::uint8_t worldByte = entry.isWorld ? 1 : 0;
-                    gkeyOk = gkeyOk && intfc->WriteRecordData(&entry.key.ownerFormId, sizeof(entry.key.ownerFormId));
-                    gkeyOk = gkeyOk && intfc->WriteRecordData(&entry.key.uniqueId, sizeof(entry.key.uniqueId));
-                    gkeyOk = gkeyOk && intfc->WriteRecordData(&worldByte, sizeof(worldByte));
-                    gkeyOk = gkeyOk && WriteGemInstance(intfc, entry.gem);
-                }
-                if (!gkeyOk) {
-                    SKSE::log::error("SaveLoad: error while writing GKEY record.");
-                }
-            } else {
-                SKSE::log::error("SaveLoad: failed to open GKEY record for writing.");
-            }
-
-            // 3단계: 패시브 트리·전직·보스 이정표 영구 상태('TREE' v1)
-            if (intfc->OpenRecord(SaveLoad::kRecordTree, SaveLoad::kTreeVersion)) {
-                const auto& tr = state.tree;
-                const std::uint8_t clsSelByte = tr.classSelected ? 1 : 0;
-                bool treeOk = intfc->WriteRecordData(&clsSelByte, sizeof(clsSelByte));
-                treeOk = treeOk && intfc->WriteRecordData(&tr.classId, sizeof(tr.classId));
-                treeOk = treeOk && WriteString(intfc, tr.ascendancyId);
-
-                nodeCount = static_cast<std::uint32_t>(std::min<std::size_t>(tr.allocatedNodes.size(), kMaxTreeNodes));
-                treeOk = treeOk && intfc->WriteRecordData(&nodeCount, sizeof(nodeCount));
-                for (std::uint32_t i = 0; i < nodeCount && treeOk; ++i) {
-                    treeOk = treeOk && intfc->WriteRecordData(&tr.allocatedNodes[i], sizeof(std::uint32_t));
-                }
-
-                std::vector<std::pair<std::uint32_t, std::uint32_t>> sortedMasteries(
-                    tr.masterySelections.begin(), tr.masterySelections.end());
-                std::sort(sortedMasteries.begin(), sortedMasteries.end());
-                const auto masteryCount = static_cast<std::uint32_t>(std::min<std::size_t>(sortedMasteries.size(), kMaxListLen));
-                treeOk = treeOk && intfc->WriteRecordData(&masteryCount, sizeof(masteryCount));
-                for (std::uint32_t i = 0; i < masteryCount && treeOk; ++i) {
-                    treeOk = treeOk && intfc->WriteRecordData(&sortedMasteries[i].first, sizeof(std::uint32_t));
-                    treeOk = treeOk && intfc->WriteRecordData(&sortedMasteries[i].second, sizeof(std::uint32_t));
-                }
-
-                treeOk = treeOk && intfc->WriteRecordData(&tr.bossKillCount, sizeof(tr.bossKillCount));
-                treeOk = treeOk && intfc->WriteRecordData(&tr.dragonKillCount, sizeof(tr.dragonKillCount));
-                treeOk = treeOk && intfc->WriteRecordData(&tr.ascendancyMilestonesBitmask, sizeof(tr.ascendancyMilestonesBitmask));
-                if (!treeOk) {
-                    SKSE::log::error("SaveLoad: error while writing TREE record.");
-                }
-            } else {
-                SKSE::log::error("SaveLoad: failed to open TREE record for writing.");
-            }
-
-            // 4~5단계: 제작/감정/고유/벨트/주얼 PoE 아이템('ITEM' v2) + starterCurrencyGiven 헤더
-            if (intfc->OpenRecord(SaveLoad::kRecordItems, SaveLoad::kItemsVersion)) {
-                const std::uint8_t starterCurrByte = state.starterCurrencyGiven ? 1 : 0;
-                // C-4, 재검수 R-3: GKEY와 같은 순위로 남긴다(장비 칸 GEAR가 가리키는 플레이어 소지품이 빠지지 않게).
-                const auto keep = SelectForSave(trackedItems, kMaxItemRecords);
-                if (keep.size() < trackedItems.size()) {
-                    SKSE::log::warn("SaveLoad: ITEM count {} exceeded cap {}; dropped {} entries not held by the player first.",
-                        trackedItems.size(), kMaxItemRecords, trackedItems.size() - keep.size());
-                }
-                itemCount = static_cast<std::uint32_t>(keep.size());
-                bool itemOk = intfc->WriteRecordData(&starterCurrByte, sizeof(starterCurrByte));
-                itemOk = itemOk && intfc->WriteRecordData(&itemCount, sizeof(itemCount));
-                for (std::size_t k = 0; k < keep.size() && itemOk; ++k) {
-                    const auto& entry = trackedItems[keep[k]];
-                    const std::uint8_t worldByte = entry.isWorld ? 1 : 0;
-                    itemOk = itemOk && intfc->WriteRecordData(&entry.key.ownerFormId, sizeof(entry.key.ownerFormId));
-                    itemOk = itemOk && intfc->WriteRecordData(&entry.key.uniqueId, sizeof(entry.key.uniqueId));
-                    itemOk = itemOk && intfc->WriteRecordData(&worldByte, sizeof(worldByte));
-                    itemOk = itemOk && WritePoEItemRecordV2(intfc, entry.record);
-                }
-                if (!itemOk) {
-                    SKSE::log::error("SaveLoad: error while writing ITEM record.");
-                }
-            } else {
-                SKSE::log::error("SaveLoad: failed to open ITEM record for writing.");
-            }
-
-            // 4단계(검수 C4): 활성 바닥 드랍·빛기둥('WDRP' v1)
-            if (intfc->OpenRecord(SaveLoad::kRecordWorldDrops, SaveLoad::kWorldDropsVersion)) {
-                const std::size_t startIdx = (savedWorldDrops.size() > kMaxWorldDropRecords)
-                    ? (savedWorldDrops.size() - kMaxWorldDropRecords) : 0;
-                wdrpCount = static_cast<std::uint32_t>(savedWorldDrops.size() - startIdx);
-                bool wdrpOk = intfc->WriteRecordData(&wdrpCount, sizeof(wdrpCount));
-                for (std::size_t i = startIdx; i < savedWorldDrops.size() && wdrpOk; ++i) {
-                    const auto& w = savedWorldDrops[i];
-                    wdrpOk = wdrpOk && intfc->WriteRecordData(&w.dropRefFormId, sizeof(w.dropRefFormId));
-                    wdrpOk = wdrpOk && intfc->WriteRecordData(&w.corpseRefFormId, sizeof(w.corpseRefFormId));
-                    wdrpOk = wdrpOk && intfc->WriteRecordData(&w.beamRefFormId, sizeof(w.beamRefFormId));
-                    wdrpOk = wdrpOk && intfc->WriteRecordData(&w.worldDropTier, sizeof(w.worldDropTier));
-                }
-                if (!wdrpOk) {
-                    SKSE::log::error("SaveLoad: error while writing WDRP record.");
-                }
-            } else {
-                SKSE::log::error("SaveLoad: failed to open WDRP record for writing.");
-            }
-
-            // 5단계(결정 161): 정신력 오라 토글 + 5단계 시작 젬 지급 여부('SPRT' v1)
-            if (intfc->OpenRecord(SaveLoad::kRecordSpirit, SaveLoad::kSpiritVersion)) {
-                const std::uint8_t starterS5Byte = state.starterStage5GemsGiven ? 1 : 0;
-                bool sprtOk = intfc->WriteRecordData(&state.activeAuraMask, sizeof(state.activeAuraMask));
-                sprtOk = sprtOk && intfc->WriteRecordData(&starterS5Byte, sizeof(starterS5Byte));
-                if (!sprtOk) {
-                    SKSE::log::error("SaveLoad: error while writing SPRT record.");
-                }
-            } else {
-                SKSE::log::error("SaveLoad: failed to open SPRT record for writing.");
-            }
-
-            // 5단계(결정 162, 164): 가상 반지2/벨트 + 참 슬롯 + 패시브 주얼 소켓('GEAR' v1)
-            if (intfc->OpenRecord(SaveLoad::kRecordGear, SaveLoad::kGearVersion)) {
-                bool gearOk = intfc->WriteRecordData(&state.virtualRing2Key.ownerFormId, sizeof(state.virtualRing2Key.ownerFormId));
-                gearOk = gearOk && intfc->WriteRecordData(&state.virtualRing2Key.uniqueId, sizeof(state.virtualRing2Key.uniqueId));
-                gearOk = gearOk && intfc->WriteRecordData(&state.virtualRing2BaseFormId, sizeof(state.virtualRing2BaseFormId));
-                gearOk = gearOk && intfc->WriteRecordData(&state.virtualBeltKey.ownerFormId, sizeof(state.virtualBeltKey.ownerFormId));
-                gearOk = gearOk && intfc->WriteRecordData(&state.virtualBeltKey.uniqueId, sizeof(state.virtualBeltKey.uniqueId));
-                gearOk = gearOk && intfc->WriteRecordData(&state.virtualBeltBaseFormId, sizeof(state.virtualBeltBaseFormId));
-
-                const auto charmCount = static_cast<std::uint32_t>(state.charmSlots.size());
-                gearOk = gearOk && intfc->WriteRecordData(&charmCount, sizeof(charmCount));
-                for (std::uint32_t c = 0; c < charmCount && gearOk; ++c) {
-                    const auto& cs = state.charmSlots[c];
-                    const std::uint8_t occ = cs.occupied ? 1 : 0;
-                    const auto kindByte = static_cast<std::uint8_t>(cs.kind);
-                    gearOk = gearOk && intfc->WriteRecordData(&occ, sizeof(occ));
-                    gearOk = gearOk && intfc->WriteRecordData(&kindByte, sizeof(kindByte));
-                    gearOk = gearOk && intfc->WriteRecordData(&cs.charges, sizeof(cs.charges));
-                }
-
-                std::vector<std::pair<std::uint32_t, Core::PoEItemRecord>> sortedJewels(
-                    state.socketedJewels.begin(), state.socketedJewels.end());
-                std::sort(sortedJewels.begin(), sortedJewels.end(),
-                    [](const auto& a, const auto& b) { return a.first < b.first; });
-                if (sortedJewels.size() > kMaxSocketedJewels) {
-                    SKSE::log::warn("SaveLoad: socketed jewel count {} exceeded cap {}.", sortedJewels.size(), kMaxSocketedJewels);
-                }
-                jewelCount = static_cast<std::uint32_t>(std::min<std::size_t>(sortedJewels.size(), kMaxSocketedJewels));
-                gearOk = gearOk && intfc->WriteRecordData(&jewelCount, sizeof(jewelCount));
-                for (std::uint32_t j = 0; j < jewelCount && gearOk; ++j) {
-                    gearOk = gearOk && intfc->WriteRecordData(&sortedJewels[j].first, sizeof(std::uint32_t));
-                    gearOk = gearOk && WritePoEItemRecordV2(intfc, sortedJewels[j].second);
-                }
-                if (!gearOk) {
-                    SKSE::log::error("SaveLoad: error while writing GEAR record.");
-                }
-            } else {
-                SKSE::log::error("SaveLoad: failed to open GEAR record for writing.");
-            }
-
-            // Q-1: 세이브 시점 잔존 NPC SpeedMult 델타('SPDM' v1) 기록
-            std::uint32_t spdmCount = 0;
-            if (!savedSpeedMods.empty()) {
-                if (intfc->OpenRecord(SaveLoad::kRecordSpeedMods, SaveLoad::kSpeedModsVersion)) {
-                    spdmCount = static_cast<std::uint32_t>(std::min<std::size_t>(savedSpeedMods.size(), kMaxListLen));
-                    if (savedSpeedMods.size() > kMaxListLen) {
-                        // Codex 지적 13: 상한을 넘은 액터의 원복 근거는 이 세이브에 남지 않는다. 조용히 버리지 않고 알린다.
-                        SKSE::log::warn("SaveLoad: SPDM has {} actors over cap {}; {} SpeedMult revert(s) will not be saved.",
-                            savedSpeedMods.size(), kMaxListLen, savedSpeedMods.size() - kMaxListLen);
-                    }
-                    bool spdmOk = intfc->WriteRecordData(&spdmCount, sizeof(spdmCount));
-                    for (std::uint32_t i = 0; i < spdmCount && spdmOk; ++i) {
-                        spdmOk = spdmOk && intfc->WriteRecordData(&savedSpeedMods[i].first, sizeof(RE::FormID));
-                        spdmOk = spdmOk && intfc->WriteRecordData(&savedSpeedMods[i].second, sizeof(float));
-                    }
-                    if (!spdmOk) {
-                        SKSE::log::error("SaveLoad: error while writing SPDM record.");
-                    }
-                } else {
-                    SKSE::log::error("SaveLoad: failed to open SPDM record for writing.");
-                }
-            }
-
-            // 결정 180: 두 레코드를 독립적으로 기록한다. 비활성 회차는 active=0 한 바이트다.
-            const auto write = [intfc](const void* data, std::uint32_t size) {
-                return intfc->WriteRecordData(data, size);
-            };
-            const bool atlasWritten = intfc->OpenRecord(SaveLoad::kRecordAtlas, SaveLoad::kAtlasVersion) &&
-                Core::WriteAtlasSave(write, state.atlas);
-            if (!atlasWritten) {
-                SKSE::log::error("SaveLoad: failed to write ATLS v{}.", SaveLoad::kAtlasVersion);
-            }
-            const bool mapsWritten = intfc->OpenRecord(SaveLoad::kRecordMaps, SaveLoad::kMapsVersion) &&
-                Core::WriteMapRunSave(write, savedMapState);
-            if (!mapsWritten) {
-                SKSE::log::error("SaveLoad: failed to write MAPS v{}.", SaveLoad::kMapsVersion);
-            }
-
-            SKSE::log::info(
-                "SaveLoad: saved CORE(Lv {}), GKEY({}), TREE(nodes={}), ITEM({}), WDRP({}), SPRT(0x{:X}), GEAR(jewels={}), SPDM({}), ATLS(v={}, ok={}, mask=0x{:04X}), MAPS(v={}, ok={}, active={}, spawns={}).",
-                state.exileLevel, trackedCount, nodeCount, itemCount, wdrpCount,
-                state.activeAuraMask, jewelCount, spdmCount,
-                SaveLoad::kAtlasVersion, atlasWritten, state.atlas.completedTierMask,
-                SaveLoad::kMapsVersion, mapsWritten, savedMapState.active, savedMapState.spawnedRefFormIds.size());
+            return { std::move(state), std::move(tracked), std::move(trackedItems),
+                std::move(savedWorldDrops), std::move(savedMapState), std::move(savedSpeedMods) };
         }
 
-        // SKSE 코세이브 콜백: 불러오기(순수 메모리 복원만 수행, 엔진 조작은 주 갱신으로 이연)
-        void OnLoad(SKSE::SerializationInterface* intfc)
+        // SKSE 코세이브 콜백: 저장(메모리 스냅샷만 기록, 예약 큐는 저장하지 않음).
+        void OnSave(SKSE::SerializationInterface* intfc)
         {
             if (!intfc) {
                 return;
             }
+            bool complete = false;
+            bool replay = false;
+            {
+                std::scoped_lock lock(g_cosaveMutex);
+                replay = g_cosave.IsLoading() || !ModState::AllowsGameplay() || !g_currentGeneration;
+                SaveLoad::SaveDiagnostics diagnostics{ .sequence = g_lastSave.sequence + 1 };
+                const auto emit = [intfc, replay, &diagnostics](const Core::RawSaveRecord& record) {
+                    const bool written = Core::WriteSaveRecord(*intfc, record);
+                    if (record.type == kRecordGeneration && written) {
+                        diagnostics.wroteGeneration = true;
+                    }
+                    if (!written) {
+                        if (replay) {
+                            ++diagnostics.failedRecords;
+                        }
+                        SKSE::log::error("SaveLoad: failed to write record 0x{:08X} v{}.", record.type, record.version);
+                    }
+                    return written;
+                };
+                try {
+                    if (replay) {
+                        // Raw replay retains the old FormID indexes if the load order changed (contract 4.6).
+                        complete = Core::ReplaySaveRecords(g_cosave.RecordsForSave(), emit);
+                    } else {
+                        complete = WriteSnapshot(CaptureSaveSnapshot(), *g_currentGeneration, emit,
+                            [&](std::string_view warning) {
+                                ++diagnostics.failedRecords;
+                                ReportWriteWarning(warning);
+                            });
+                        // WriteSnapshot reports each failed record through the warning sink, except for the final GENR emit.
+                        if (!complete && diagnostics.failedRecords == 0) {
+                            ++diagnostics.failedRecords;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    SKSE::log::error("SaveLoad: co-save write exception: {}", e.what());
+                } catch (...) {
+                    SKSE::log::error("SaveLoad: unknown co-save write exception.");
+                }
+                diagnostics.complete = complete;
+                g_lastSave = diagnostics;
+            }
+            if (!complete) {
+                const auto* notice = replay ?
+                    "SkyrimPoE 보존 기록을 모두 저장하지 못했습니다. 이전 세이브를 보관하세요." :
+                    "SkyrimPoE 모드 기록을 모두 저장하지 못했습니다. 이전 세이브를 보관하세요.";
+                SKSE::log::error("SaveLoad: co-save write incomplete (replay={}).", replay);
+                if (const auto* tasks = SKSE::GetTaskInterface()) {
+                    tasks->AddTask([notice] { RE::SendHUDMessage::ShowHUDMessage(notice); });
+                }
+            }
+        }
 
+        // 세대 판정을 통과한 뒤 기존 판별 순서대로 메모리를 복원한다.
+        void RestoreLoadedRecords(SKSE::SerializationInterface* serialization)
+        {
             PersistentState loadedState;
             bool hasCore = false;
             bool sawGemKeysRecord = false;  // Codex 지적 16: CORE만 손상되고 GKEY만 남은 세이브도 "이미 지급받은 세이브"로 본다
@@ -744,65 +495,27 @@ namespace SkyrimPoE::Runtime
             std::optional<Core::MapSaveRecord> mapsRecord;
             SaveLoad::LoadedMapRecordVersions mapVersions;
 
-            std::uint32_t type = 0;
-            std::uint32_t version = 0;
-            std::uint32_t length = 0;
-
-            while (intfc->GetNextRecordInfo(type, version, length)) {
-                if (type == SaveLoad::kRecordCore) {
-                    if (version != SaveLoad::kCoreVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported CORE record version {} (expected {}).", version, SaveLoad::kCoreVersion);
+            for (const auto& record : g_cosave.current.records) {
+                const auto& [type, version, bytes] = record;
+                const auto length = static_cast<std::uint32_t>(bytes.size());
+                RecordReader reader{ serialization, bytes };
+                auto* intfc = &reader;
+                if (type == kRecordCore) {
+                    if (version != kCoreVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported CORE record version {} (expected {}).", version, kCoreVersion);
                         continue;
                     }
                     PersistentState tmp;
-                    std::uint8_t starterByte = 0;
-                    std::uint32_t slotCount = 0;
-                    bool ok = true;
-                    ok = ok && ReadExactPod(intfc, tmp.exileLevel);
-                    ok = ok && ReadExactPod(intfc, tmp.exileXp);
-                    ok = ok && ReadExactPod(intfc, tmp.unallocatedPassivePoints);
-                    ok = ok && ReadString(intfc, tmp.className);
-                    ok = ok && ReadExactPod(intfc, starterByte);
-                    ok = ok && ReadExactPod(intfc, tmp.nextGemInstanceId);
-                    ok = ok && ReadExactPod(intfc, tmp.appliedHealthDelta);
-                    ok = ok && ReadExactPod(intfc, tmp.appliedMagickaDelta);
-                    ok = ok && ReadExactPod(intfc, slotCount);
-
-                    if (ok && slotCount <= Core::kSkillSlotCount) {
-                        tmp.exileLevel = std::clamp<std::uint32_t>(tmp.exileLevel, 1, Core::kMaxExileLevel);
-                        tmp.starterGemsGiven = (starterByte != 0);
-                        if (!std::isfinite(tmp.appliedHealthDelta)) tmp.appliedHealthDelta = 0.0;
-                        if (!std::isfinite(tmp.appliedMagickaDelta)) tmp.appliedMagickaDelta = 0.0;
-                        if (tmp.nextGemInstanceId == 0) {
-                            tmp.nextGemInstanceId = 1;
-                        }
-                        for (std::uint32_t i = 0; i < slotCount && ok; ++i) {
-                            std::uint8_t occupiedByte = 0;
-                            std::int8_t linked = -1;
-                            ok = ok && ReadExactPod(intfc, occupiedByte);
-                            ok = ok && ReadExactPod(intfc, linked);
-                            tmp.slots[i].slotIndex = static_cast<std::uint8_t>(i);
-                            tmp.slots[i].occupied = (occupiedByte != 0);
-                            tmp.slots[i].linkedAttackSlot =
-                                (linked >= 0 && linked < static_cast<std::int8_t>(Core::kSkillSlotCount)) ? linked : -1;
-                            if (tmp.slots[i].occupied) {
-                                ok = ok && ReadGemInstance(intfc, tmp.slots[i].gem);
-                            }
-                        }
-                    } else {
-                        ok = false;
-                    }
-
-                    if (ok) {
+                    if (ReadCoreV2(intfc->remaining, tmp)) {
                         loadedState = std::move(tmp);
                         hasCore = true;
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse CORE record (truncated or corrupt); falling back to defaults.");
                     }
-                } else if (type == SaveLoad::kRecordGemKeys) {
+                } else if (type == kRecordGemKeys) {
                     sawGemKeysRecord = true;
-                    if (version != SaveLoad::kGemKeysVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported GKEY record version {} (expected {}).", version, SaveLoad::kGemKeysVersion);
+                    if (version != kGemKeysVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported GKEY record version {} (expected {}).", version, kGemKeysVersion);
                         continue;
                     }
                     std::uint32_t count = 0;
@@ -821,7 +534,7 @@ namespace SkyrimPoE::Runtime
                         ok = ok && ReadExactPod(intfc, rawOwner);
                         ok = ok && ReadExactPod(intfc, uid);
                         ok = ok && ReadExactPod(intfc, worldByte);
-                        ok = ok && ReadGemInstance(intfc, gem);
+                        ok = ok && ReadGemInstance(intfc->remaining, gem);
                         if (!ok) {
                             break;
                         }
@@ -847,9 +560,9 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse full GKEY record (truncated or corrupt; recovered {} entries).",
                             loadedGems.size());
                     }
-                } else if (type == SaveLoad::kRecordTree) {
-                    if (version != SaveLoad::kTreeVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported TREE record version {} (expected {}).", version, SaveLoad::kTreeVersion);
+                } else if (type == kRecordTree) {
+                    if (version != kTreeVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported TREE record version {} (expected {}).", version, kTreeVersion);
                         continue;
                     }
                     Core::PassiveTreeState tmpTree;
@@ -894,10 +607,10 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse TREE record (truncated or corrupt); falling back to empty tree.");
                     }
-                } else if (type == SaveLoad::kRecordItems) {
+                } else if (type == kRecordItems) {
                     sawItemsRecord = true;
-                    if (version != 1 && version != SaveLoad::kItemsVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported ITEM record version {} (expected 1 or {}).", version, SaveLoad::kItemsVersion);
+                    if (version != 1 && version != kItemsVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported ITEM record version {} (expected 1 or {}).", version, kItemsVersion);
                         continue;
                     }
                     std::uint8_t starterCurrByte = 0;
@@ -952,9 +665,9 @@ namespace SkyrimPoE::Runtime
                     }
                     loadedItems = std::move(tmpItems);
                     hasItems = true;
-                } else if (type == SaveLoad::kRecordWorldDrops) {
-                    if (version != SaveLoad::kWorldDropsVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported WDRP record version {} (expected {}).", version, SaveLoad::kWorldDropsVersion);
+                } else if (type == kRecordWorldDrops) {
+                    if (version != kWorldDropsVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported WDRP record version {} (expected {}).", version, kWorldDropsVersion);
                         continue;
                     }
                     std::uint32_t count = 0;
@@ -991,10 +704,10 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse WDRP record.");
                     }
-                } else if (type == SaveLoad::kRecordSpirit) {
+                } else if (type == kRecordSpirit) {
                     sawSpiritRecord = true;
-                    if (version != SaveLoad::kSpiritVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported SPRT record version {} (expected {}).", version, SaveLoad::kSpiritVersion);
+                    if (version != kSpiritVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported SPRT record version {} (expected {}).", version, kSpiritVersion);
                         continue;
                     }
                     std::uint16_t auraMask = 0;
@@ -1012,9 +725,9 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse SPRT record.");
                     }
-                } else if (type == SaveLoad::kRecordGear) {
-                    if (version != SaveLoad::kGearVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported GEAR record version {} (expected {}).", version, SaveLoad::kGearVersion);
+                } else if (type == kRecordGear) {
+                    if (version != kGearVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported GEAR record version {} (expected {}).", version, kGearVersion);
                         continue;
                     }
                     RE::FormID rawR2Owner = 0, rawR2Base = 0;
@@ -1099,9 +812,9 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse GEAR record.");
                     }
-                } else if (type == SaveLoad::kRecordSpeedMods) {
-                    if (version != SaveLoad::kSpeedModsVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported SPDM record version {} (expected {}).", version, SaveLoad::kSpeedModsVersion);
+                } else if (type == kRecordSpeedMods) {
+                    if (version != kSpeedModsVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported SPDM record version {} (expected {}).", version, kSpeedModsVersion);
                         continue;
                     }
                     std::uint32_t spdmCount = 0;
@@ -1131,7 +844,7 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse SPDM record.");
                     }
-                } else if (type == SaveLoad::kRecordAtlas) {
+                } else if (type == kRecordAtlas) {
                     sawAtlasRecord = true;
                     const auto candidate = Core::ReadAtlasSave(version, length,
                         [intfc](void* data, std::uint32_t size) { return ReadExact(intfc, data, size); });
@@ -1141,7 +854,7 @@ namespace SkyrimPoE::Runtime
                     } else {
                         SKSE::log::error("SaveLoad: failed to parse ATLS v{} ({} bytes).", version, length);
                     }
-                } else if (type == SaveLoad::kRecordMaps) {
+                } else if (type == kRecordMaps) {
                     auto candidate = Core::ReadMapSave(version, length,
                         [intfc](void* data, std::size_t size) { return ReadExact(intfc, data, static_cast<std::uint32_t>(size)); },
                         [intfc](std::uint32_t raw, std::uint32_t& resolved) {
@@ -1161,7 +874,7 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse MAPS v{} run ({} bytes).", version, length);
                     }
                     Core::KeepLatestMapSave(mapsRecord, std::move(candidate));
-                } else {
+                } else if (type != kRecordGeneration) {
                     SKSE::log::warn("SaveLoad: ignoring unknown record type 0x{:08X}.", type);
                 }
             }
@@ -1275,7 +988,7 @@ namespace SkyrimPoE::Runtime
                 std::scoped_lock lock(g_speedModMutex);
                 g_pendingSpeedModReverts = std::move(loadedSpeedMods);
             }
-            SaveLoad::SyncStateToStatEngine();
+            UpdateStatLayerFromState();
 
             SKSE::log::info(
                 "SaveLoad: OnLoad restored CORE({}), TREE(nodes={}), GKEY({}), ITEM({}), WDRP({}), SPRT({}), GEAR(jewels={}), atlas(0x{:04X}), ATLS(v={}), MAPS(v={}).",
@@ -1283,6 +996,89 @@ namespace SkyrimPoE::Runtime
                 GemInventory::CountTracked(), ItemTracker::CountTracked(), WorldDropTracker::ActiveCount(),
                 hasSpirit, loadedState.socketedJewels.size(), loadedState.atlas.completedTierMask,
                 mapVersions.atlas, mapVersions.maps);
+        }
+
+        bool IsPlayable(Core::SaveDisposition disposition)
+        {
+            return disposition == Core::SaveDisposition::Normal || disposition == Core::SaveDisposition::FirstInstall;
+        }
+
+        // Call under g_cosaveMutex, before a playable load discards the raw records.
+        void RecordLoadDiagnostics(const Core::SaveDecision& decision) noexcept
+        {
+            g_lastLoad = { .decision = decision, .generation = std::nullopt,
+                .receivedLoad = g_cosave.receivedLoad,
+                .collectionComplete = g_cosave.receivedLoad && g_cosave.current.complete };
+            try {
+                Core::GenerationRecord generation;
+                bool found = false;
+                for (const auto& record : g_cosave.current.records) {
+                    if (record.type != kRecordGeneration) {
+                        continue;
+                    }
+                    if (found) {
+                        generation.status = Core::GenerationRecordStatus::Damaged;
+                        break;
+                    }
+                    found = true;
+                    generation = Core::ReadGenerationRecord(record.version, record.bytes);
+                }
+                g_lastLoad.generation = std::move(generation);
+            } catch (...) {
+                // Diagnostic decoding must not change the load decision or restoration.
+            }
+        }
+
+        void SetSaveDecision(const Core::SaveDecision& decision)
+        {
+            g_notifyOnLoad = decision.disposition != Core::SaveDisposition::Normal;
+            if (IsPlayable(decision.disposition)) {
+                ModState::Set(ModMode::Normal, std::string(decision.reason));
+                if (decision.disposition == Core::SaveDisposition::FirstInstall) {
+                    SKSE::log::info("SaveLoad: {}", decision.reason);
+                }
+            } else {
+                ModState::Set(ModMode::Preserve, std::string(decision.reason));
+                SKSE::log::warn("SaveLoad: preserving co-save. {}", decision.reason);
+            }
+            RecordLoadDiagnostics(decision);
+        }
+
+        // SKSE 코세이브 콜백: 버퍼를 수집하고 판정한 뒤에만 기존 로더가 팩을 참조한다.
+        void OnLoad(SKSE::SerializationInterface* intfc)
+        {
+            if (!intfc) {
+                return;
+            }
+            std::scoped_lock lock(g_cosaveMutex);
+            if (!g_cosave.IsLoading() && g_currentGeneration) {
+                ModState::Set(ModMode::Preserve, "불러오는 중");
+            }
+            g_cosave.receivedLoad = true;
+            g_cosave.current = Core::CollectSaveRecords(
+                [intfc](auto& type, auto& version, auto& length) { return intfc->GetNextRecordInfo(type, version, length); },
+                [intfc](void* data, std::uint32_t size) { return intfc->ReadRecordData(data, size); });
+            if (!g_cosave.current.complete) {
+                SKSE::log::warn("SaveLoad: co-save collection incomplete, retaining {} complete record(s).",
+                    g_cosave.current.records.size());
+            }
+            if (!g_currentGeneration) {
+                return;
+            }
+            try {
+                const auto decision = DecideSave(g_cosave.current, false, *g_currentGeneration);
+                const bool playable = IsPlayable(decision.disposition);
+                if (playable) {
+                    RestoreLoadedRecords(intfc);
+                }
+                SetSaveDecision(decision);
+                if (playable) {
+                    g_cosave.current = {};
+                }
+            } catch (...) {
+                SKSE::log::error("SaveLoad: failed to read or restore the entire co-save.");
+                SetSaveDecision({ Core::SaveDisposition::Preserve, "코세이브를 끝까지 읽거나 복원하지 못했습니다." });
+            }
         }
     }
 
@@ -1321,18 +1117,116 @@ namespace SkyrimPoE::Runtime
         return true;
     }
 
+    void SaveLoad::SetContentCheck(std::optional<Core::SaveGeneration> generation, std::string reason)
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        g_currentGeneration = std::move(generation);
+        g_notifyOnLoad = !g_currentGeneration;
+        ModState::Set(g_currentGeneration ? ModMode::Normal : ModMode::Preserve, std::move(reason));
+    }
+
+    void SaveLoad::OnGameLoadStarted()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        if (g_cosave.IsLoading()) {
+            return;
+        }
+        g_lastLoad = {};
+        const bool saveNormalState = ModState::AllowsGameplay() && g_currentGeneration.has_value();
+        if (g_currentGeneration) {
+            g_notifyOnLoad = false;
+            ModState::Set(ModMode::Preserve, "불러오는 중");
+        }
+        Core::SaveRecordBatch snapshot;
+        try {
+            if (saveNormalState) {
+                snapshot.complete = WriteSnapshot(CaptureSaveSnapshot(), *g_currentGeneration,
+                    [&](Core::RawSaveRecord&& record) {
+                        snapshot.records.push_back(std::move(record));
+                        return true;
+                    }, ReportWriteWarning);
+            } else {
+                snapshot = g_cosave.current;
+            }
+        } catch (...) {
+            snapshot.complete = false;
+        }
+        if (!snapshot.complete) {
+            SKSE::log::warn("SaveLoad: pre-load snapshot incomplete, retaining {} complete record(s).",
+                snapshot.records.size());
+        }
+        g_cosave.BeginLoad(std::move(snapshot));
+    }
+
+    void SaveLoad::OnGameLoadFinished(bool succeeded)
+    {
+        bool incomplete = false;
+        {
+            std::scoped_lock lock(g_cosaveMutex);
+            g_cosave.FinishLoad(succeeded);
+            if (!succeeded) {
+                incomplete = !g_cosave.current.complete;
+                ModState::Set(ModMode::Preserve, "불러오기 실패");
+            }
+        }
+        if (succeeded) {
+            SchedulePostLoadOrNewGameInit(false);
+        } else {
+            SKSE::log::warn("SaveLoad: game load failed, restoring the pre-load co-save snapshot.");
+            RE::SendHUDMessage::ShowHUDMessage(
+                "불러오기에 실패했습니다. 모드는 멈췄고 저장하면 이전 기록을 그대로 씁니다. 다시 불러오세요.");
+            if (incomplete) {
+                RE::SendHUDMessage::ShowHUDMessage(kIncompleteCosaveNotice);
+            }
+        }
+    }
+
     void SaveLoad::SchedulePostLoadOrNewGameInit(bool isNewGame)
     {
         MapDeviceRuntime::DisarmUninstallCleanup();
-        if (isNewGame) {
-            ResetMemoryState();
+        std::string notice;
+        bool playable = false;
+        bool incomplete = false;
+        {
+            std::scoped_lock lock(g_cosaveMutex);
+            if (isNewGame) {
+                g_cosave.FinishLoad(true);
+            }
+            if (isNewGame || !g_cosave.receivedLoad) {
+                // A new game can arrive without OnLoad. SKSE also skips OnLoad if the .skse file cannot be opened.
+                g_cosave.Revert();
+                if (g_currentGeneration) {
+                    if (isNewGame) {
+                        ResetMemoryState();
+                    }
+                    SetSaveDecision(DecideSave(g_cosave.current, isNewGame, *g_currentGeneration));
+                }
+            }
+            const auto status = ModState::Get();
+            playable = status->mode == ModMode::Normal;
+            incomplete = !g_cosave.current.complete;
+            if (std::exchange(g_notifyOnLoad, false)) {
+                notice = status->reason;
+            }
         }
-        if (!g_queue) {
+        if (!notice.empty()) {
+            if (!playable) {
+                notice = "SkyrimPoE 보존 모드. " + notice + " 호환되는 모드 판으로 돌아가거나 이 저장 전의 세이브를 쓰세요.";
+            }
+            RE::SendHUDMessage::ShowHUDMessage(notice.c_str());
+        }
+        if (incomplete) {
+            RE::SendHUDMessage::ShowHUDMessage(kIncompleteCosaveNotice);
+        }
+        if (!playable || !g_queue) {
             return;
         }
 
         // 결정 119, 150 ④: 세이브 로드·새 게임 직후 엔진 반영은 반드시 주 갱신 스레드에서만 실행한다.
         g_queue->Enqueue([isNewGame]() {
+            if (!ModState::AllowsGameplay()) {
+                return;
+            }
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player) {
                 SKSE::log::warn("SaveLoad::PostLoadInit: PlayerCharacter unavailable.");
@@ -1491,6 +1385,30 @@ namespace SkyrimPoE::Runtime
         return g_state;
     }
 
+    std::optional<Core::SaveGeneration> SaveLoad::GetContentGeneration()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        return g_currentGeneration;
+    }
+
+    SaveLoad::LoadDiagnostics SaveLoad::GetLastLoadDiagnostics()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        return g_lastLoad;
+    }
+
+    SaveLoad::SaveDiagnostics SaveLoad::GetLastSaveDiagnostics()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        return g_lastSave;
+    }
+
+    std::size_t SaveLoad::GetPreservedRecordCount()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        return g_cosave.RecordsForSave().records.size();
+    }
+
     SaveLoad::LoadedMapRecordVersions SaveLoad::GetLoadedMapRecordVersions()
     {
         std::scoped_lock lock(g_stateMutex);
@@ -1532,11 +1450,9 @@ namespace SkyrimPoE::Runtime
 
     void SaveLoad::SyncStateToStatEngine()
     {
-        if (!g_statEngine) {
-            return;
+        if (ModState::AllowsGameplay()) {
+            UpdateStatLayerFromState();
         }
-        const auto state = GetStateCopy();
-        g_statEngine->SetLayer1(BuildLayer1FromState(state));
     }
 
     void SaveLoad::DeferSpeedRevert(RE::FormID actorId, float appliedDelta)

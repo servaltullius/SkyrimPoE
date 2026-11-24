@@ -29,6 +29,10 @@ find_package(nlohmann_json CONFIG REQUIRED)
 add_library(skyrimpoe_core STATIC
     src/core/Config.cpp
     src/core/DataPack.cpp
+    src/core/ContentCheck.cpp
+    src/core/SaveGeneration.cpp
+    src/core/SaveRecordFormat.cpp
+    src/core/SaveRecords.cpp
     src/core/CommandQueue.cpp
     src/core/StatEngine.cpp
     src/core/DamageConversion.cpp
@@ -85,6 +89,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/runtime/CraftingRuntime.cpp
         src/runtime/WorldDropTracker.cpp
         src/runtime/SaveLoad.cpp
+        src/runtime/ModState.cpp
         src/runtime/SkillExecution.cpp
         src/runtime/MapDeviceRuntime.cpp
         src/runtime/MapPackRuntime.cpp
@@ -112,6 +117,9 @@ enable_testing()
 add_executable(skyrimpoe_tests
     tests/test_main.cpp
     tests/test_datapack.cpp
+    tests/test_content_check.cpp
+    tests/test_save_generation.cpp
+    tests/test_save_records.cpp
     tests/test_conversion.cpp
     tests/test_command_queue.cpp
     tests/test_cyclone_coc.cpp

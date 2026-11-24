@@ -40,6 +40,7 @@ namespace SkyrimPoE::Runtime
 
         // 주 갱신 스레드에서 패널 강제 닫기
         static void ClosePanelOnMainThread();
+        static void SuspendHudOnMainThread();
 
         [[nodiscard]] static bool IsPanelOpen() noexcept;
         // 결정 185: 적 ES 표시로 마지막에 보낸 값(주 갱신 스레드 전용, AutoTest -Only es가 읽음)
