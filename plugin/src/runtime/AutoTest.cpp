@@ -435,8 +435,9 @@ namespace SkyrimPoE::Runtime
         constexpr auto kHBossRouteCheck = "H26_BossAnchorLanding";
         constexpr auto kHExitRouteCheck = "H27_AutoExitFallProbes";
         constexpr auto kHExitZoneReturnCheck = "H28_ExitZonePortalReturn";
+        constexpr auto kHExitZoneRefusalCheck = "H29_ExitZoneRefusedBeforeBossKill";
         constexpr std::size_t kOriginalHCheckCount = 17;
-        constexpr std::array<std::string_view, kOriginalHCheckCount + 14> kHChecks = {
+        constexpr std::array<std::string_view, kOriginalHCheckCount + 15> kHChecks = {
             "H1_Stage6Esp192FormsAndMapKey", "H2_MapCraftingAndItemLevel", kHAffixCheck, kHDungeonCheck,
             kHOutdoorReturnCheck, "H5_MapReenterBossKillAndAtlasPoint", kHArenaCheck,
             "H7_MapsAndTreeCosaveRoundTrip", kHArenaCosaveCheck, "H8_SafeUninstallCleanupAndNoReapply",
@@ -444,7 +445,7 @@ namespace SkyrimPoE::Runtime
             "H12_Arena4Prerequisites", kHBypassCheck, kHCompanionCheck, "H14_MapBossWithoutContribution",
             kHPortalCheck, kHNormalReturnCheck, kHLastPortalCheck, kHArenaDeathCheck, kHPhysicalBurstCheck,
             kHMagicBurstCheck, kHIniOffCheck, kHOpenWorldCheck, kHCleanupCheck, kHReentrySpawnsCheck,
-            kHFreshRunCheck, kHBossRouteCheck, kHExitRouteCheck, kHExitZoneReturnCheck
+            kHFreshRunCheck, kHBossRouteCheck, kHExitRouteCheck, kHExitZoneReturnCheck, kHExitZoneRefusalCheck
         };
         std::array<bool, kHChecks.size()> g_hChecksReported{};
         std::optional<bool> g_hDeathInterceptBefore;
@@ -520,7 +521,7 @@ namespace SkyrimPoE::Runtime
         constexpr double kArenaPhase3InvulnerabilityWaitSec = 8.0;
         // 셀이 떨어진 뒤 보내고 VM 콜백까지 기다린다(콜백 시간 초과 10초로 다시 보내는 경우 포함).
         constexpr double kMapResetWaitSec = 60.0;
-        constexpr int kExpectedAutoTestChecks = 81;  // A~F 45건, G 5건, H 31건
+        constexpr int kExpectedAutoTestChecks = 82;  // A~F 45건, G 5건, H 32건
         static_assert(kExpectedAutoTestChecks == 50 + kHChecks.size());
         RE::FormID g_hMapCellId = 0;
         std::size_t g_hResetCountBeforeMap = 0;
@@ -2054,6 +2055,8 @@ namespace SkyrimPoE::Runtime
         constexpr float kHRouteApproachZoneClearance = 150.0f;
         // H28: 포털 시험의 몇 번째 입장 뒤 귀환을 출구 구역으로 하는지(나머지 귀환은 직접 포털 귀환).
         constexpr std::size_t kHExitZoneReturnEntry = 1;
+        // H29: 결투장 출구에 세워 두는 시간(출구 구역의 거절 뒤 재판정 1초의 두 배 넘게)
+        constexpr double kHExitZoneHoldSec = 2.5;
         constexpr float kHContractLowHealth = 2.0f;
         constexpr float kHContractMagicMagnitude = 1000.0f;
         constexpr float kHContractMagicEffectiveness = 1.0f;
@@ -2074,7 +2077,7 @@ namespace SkyrimPoE::Runtime
 
         enum class HContractStage
         {
-            PrepareCheckpoint, SaveCheckpoint, ClosePriorRun, OutdoorProbe, IndoorOrigin, Open, Entry,
+            PrepareCheckpoint, SaveCheckpoint, ClosePriorRun, OutdoorProbe, IndoorOrigin, Open, Entry, ExitZoneHold,
             Return, Reenter, SaveLastPortal, ExhaustedReentry, LoadLastPortal, Damage, DeathReturn,
             PartialKill, Close, Reset, VerifyEmptyCell, LeaveVerifiedCell, RecoverCleanup, RoutePrepare,
             RouteStart, RouteEntry, RouteObserve, RouteRecover, CloseRoutes,
@@ -2265,6 +2268,12 @@ namespace SkyrimPoE::Runtime
             // H28: 출구 구역으로 귀환시키는 중인지와 그 전의 출구 구역 이동 수
             bool exitZoneReturnPending = false;
             std::size_t exitZoneReturnBefore = 0;
+            // H29(결정 182): 포털이 남은 입장과 마지막 포털 입장에서 출구 구역 귀환 거절 여부, 결투장 입장 때의 거절 여부와
+            // 결투장 출구에 세운 뒤의 이동 수(결투장 출구 대기 단계에서 함께 판정)
+            std::optional<bool> exitZoneRefusedWithPortals;
+            std::optional<bool> exitZoneRefusedAtLastPortal;
+            bool exitZoneRefusedAtArenaEntry = false;
+            std::size_t exitZoneHoldBefore = 0;
             // 걷기 탐침이 1인칭으로 바꾸기 전 3인칭이었는지(경로 탐침이 끝나면 되돌림)
             bool routeRestoreThirdPerson = false;
             // 정리 시험을 시작할 때의 남은 스폰 청소 누적 수(결정 178 ⑦ 보완). 셀 초기화가 놓친 액터를 제품이 치운 횟수를 보고한다.
@@ -2277,7 +2286,7 @@ namespace SkyrimPoE::Runtime
         {
             constexpr std::array names{
                 "PrepareCheckpoint", "SaveCheckpoint", "ClosePriorRun", "OutdoorProbe", "IndoorOrigin", "Open", "Entry",
-                "Return", "Reenter", "SaveLastPortal", "ExhaustedReentry", "LoadLastPortal", "Damage", "DeathReturn",
+                "ExitZoneHold", "Return", "Reenter", "SaveLastPortal", "ExhaustedReentry", "LoadLastPortal", "Damage", "DeathReturn",
                 "PartialKill", "Close", "Reset", "VerifyEmptyCell", "LeaveVerifiedCell", "RecoverCleanup", "RoutePrepare",
                 "RouteStart", "RouteEntry", "RouteObserve", "RouteRecover", "CloseRoutes",
                 "RestoreCheckpoint", "AwaitCheckpoint"
@@ -2955,6 +2964,25 @@ namespace SkyrimPoE::Runtime
                         AbortHContract("H arena entry did not consume one tribute.");
                         break;
                     }
+                    if (test.trial == Trial::Arena) {
+                        // H29(결정 182): 결투 중(포털 0, 보스 생존)에 결투장 출구에 세워 출구 구역이 귀환을 걸지 않는지 본다(아래 ExitZoneHold).
+                        test.exitZoneRefusedAtArenaEntry = MapDeviceRuntime::ExitZoneReturnRefusal().has_value();
+                        if (dungeon->autoExits.empty()) {
+                            AbortHContract("H29 needs an automatic exit in the arena.");
+                            break;
+                        }
+                        const auto& exit = dungeon->autoExits.front();
+                        test.exitZoneHoldBefore = MapDeviceRuntime::GetExitZoneTravelCount();
+                        // 보스가 다가와도 출구에 서 있는 동안 쓰러지지 않게 한다(중단 때는 AbortHContract가 되돌림).
+                        if (!g_hRouteGodModeBefore) {
+                            g_hRouteGodModeBefore = RE::PlayerCharacter::IsGodMode();
+                        }
+                        SetPlayerGodModeFlag(true);
+                        LogInfo(std::format("H29: placing the player on arena exit 0x{:06X} in run {}.", exit.localId, run.runId));
+                        player->SetPosition(RE::NiPoint3{ exit.position[0], exit.position[1], exit.position[2] }, true);
+                        EnterHContract(Stage::ExitZoneHold);
+                        break;
+                    }
                     BeginHDamageTrial(run);
                     break;
                 }
@@ -2969,6 +2997,11 @@ namespace SkyrimPoE::Runtime
                     Check(kHIniOffCheck, !disabled && enabled,
                         std::format("Authorized cell: setting off={}, same position with setting on={}.", disabled, enabled));
                     test.openWorldRejected = test.openWorldRejected && enabled;
+                }
+                if (test.entryCount == kHExitZoneReturnEntry) {
+                    test.exitZoneRefusedWithPortals = MapDeviceRuntime::ExitZoneReturnRefusal().has_value();
+                } else if (test.entryCount == kHExpectedPortalSequence.size()) {
+                    test.exitZoneRefusedAtLastPortal = MapDeviceRuntime::ExitZoneReturnRefusal().has_value();
                 }
                 if (test.entryCount == kHExpectedPortalSequence.size()) {
                     test.lastPortalSave = MapDeviceRuntime::TakeSnapshotForSave();
@@ -3017,6 +3050,39 @@ namespace SkyrimPoE::Runtime
                 } else if (elapsed >= kMapBossKillWaitSec) {
                     failTrial("H preservation could not confirm the partial pack kill.");
                 }
+                break;
+            }
+
+            case Stage::ExitZoneHold: {
+                // 출구 구역은 거절 뒤 1초마다 다시 판정하므로 두 번 넘게 판정할 시간을 둔다. 이동이 걸리면 entered가 풀리거나 이동 수가 는다.
+                const auto travels = MapDeviceRuntime::GetExitZoneTravelCount() - test.exitZoneHoldBefore;
+                if (elapsed < kHExitZoneHoldSec && travels == 0) {
+                    break;
+                }
+                const bool held = entered && run.active && run.runId == test.runId && run.isArena4 && run.portalsRemaining == 0 &&
+                    !run.failed && !run.bossKilled && !run.endRequested && travels == 0;
+                const auto show = [](const std::optional<bool>& value) {
+                    return value ? (*value ? "refused" : "allowed") : "not observed";
+                };
+                Check(kHExitZoneRefusalCheck,
+                    test.exitZoneRefusedWithPortals == false && test.exitZoneRefusedAtLastPortal == true &&
+                        test.exitZoneRefusedAtArenaEntry && held,
+                    std::format("Exit zone return with portals={}, at the last portal={}, arena entry={}; on the arena exit for {:.1f}s: "
+                                "exit-zone travels={}, run {} kept={} (portals {}, failed={}, bossKilled={}).",
+                        show(test.exitZoneRefusedWithPortals), show(test.exitZoneRefusedAtLastPortal),
+                        test.exitZoneRefusedAtArenaEntry ? "refused" : "allowed", elapsed, travels, run.runId, held,
+                        run.portalsRemaining, run.failed, run.bossKilled));
+                const bool godModeRestored = RestoreHGodMode(player);
+                if (!held || !forms || !forms->entryMarker) {
+                    failTrial("H29 lost the arena run while standing on the exit.");
+                    break;
+                }
+                if (!godModeRestored) {
+                    AbortHContract("H29 could not restore god mode after the arena exit hold.");
+                    break;
+                }
+                player->MoveTo(forms->entryMarker);
+                BeginHDamageTrial(run);
                 break;
             }
 

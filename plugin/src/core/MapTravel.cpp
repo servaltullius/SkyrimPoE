@@ -75,7 +75,8 @@ namespace SkyrimPoE::Core
         return nearest;
     }
 
-    std::uint32_t NextExitZoneLatch(std::uint32_t latchedCell, const MapTravelObservation& player, bool inZone) noexcept
+    std::uint32_t NextExitZoneLatch(
+        std::uint32_t latchedCell, const MapTravelObservation& player, bool inZone, bool releaseOutsideZone) noexcept
     {
         if (!player.inPackCell || player.cell == 0) {
             return 0;
@@ -83,7 +84,7 @@ namespace SkyrimPoE::Core
         if (inZone) {
             return player.cell;
         }
-        return latchedCell == player.cell ? latchedCell : 0;
+        return !releaseOutsideZone && latchedCell == player.cell ? latchedCell : 0;
     }
 
     bool MapTravel::TryStart(MapTravelRequest request) noexcept

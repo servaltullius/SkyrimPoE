@@ -181,6 +181,10 @@ namespace SkyrimPoE::Core
         // 재입장 시 포털 1 소모 (포털 0, 실패 또는 종료 요청 상태면 false)
         [[nodiscard]] static bool TryConsumePortalForReenter(ActiveMapState& state) noexcept;
         [[nodiscard]] static bool ShouldEndOnReturn(const ActiveMapState& state) noexcept;
+        // 결정 182: 출구 구역 귀환이 보스 처치 전에 회차를 끝내게 되는 경우(포털 0, 보스 생존)는 거절한다.
+        // 종료 요청·실패한 회차, 끝낼 귀환으로 스폰을 이미 끈 회차, 이미 쓰러진 보스(처치 반영 대기 포함)는 귀환 쪽 규칙에 맡긴다.
+        // 런타임은 bossDeadNow=false로 불러 "구역 안에서만 귀환을 시도할 상태"(래치 해제)를 정하는 데도 쓴다.
+        [[nodiscard]] static bool ShouldRefuseExitZoneReturn(const ActiveMapState& state, bool bossDeadNow) noexcept;
         [[nodiscard]] static bool ShouldDeferReturnForBossDeath(
             bool bossKilled, bool bossDeadNow, bool deathConfirmed, bool killPending, double waitedSec) noexcept;
         // 사망 시작 기록(실패 전에만 남김)이 있으면 그때의 판정을, 없으면 지금 판정을 쓴다.

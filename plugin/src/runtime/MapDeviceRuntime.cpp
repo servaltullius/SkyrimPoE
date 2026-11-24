@@ -2343,15 +2343,24 @@ namespace SkyrimPoE::Runtime
 
         // 귀환 문과 출구 구역(결정 177 ③ 재보완)이 함께 쓰는 지도 떠나기. 허가된 회차 셀이면 포털 귀환, 허가가 없거나 안전 제거
         // 정리 상태면 안전 탈출. 이미 이동 중이면 아무것도 하지 않는다(nullopt).
-        std::optional<MapActionResult> LeaveMapThroughExit(RE::PlayerCharacter* player)
+        // fromExitZone: 위치로 판정한 출구 구역에서 온 요청이면 참. 직접 여는 귀환 문은 결정 182 거절을 받지 않는다.
+        std::optional<MapActionResult> LeaveMapThroughExit(RE::PlayerCharacter* player, bool fromExitZone)
         {
             const auto status = MapDeviceRuntime::GetTravelStatus(player);
             if (status.kind) {
                 return std::nullopt;
             }
             // 안전 제거 정리 뒤에도 갇히지 않도록 안전 탈출은 허용한다.
-            return status.unauthorized || MapDeviceRuntime::IsUninstallCleanupArmed()
-                ? MapDeviceRuntime::SafeEscape(player) : MapDeviceRuntime::ReturnPortal(player);
+            if (status.unauthorized || MapDeviceRuntime::IsUninstallCleanupArmed()) {
+                return MapDeviceRuntime::SafeEscape(player);
+            }
+            // 결정 182: 밀려 들어가도 보스 처치 전에 회차가 끝나지 않게 한다. 지도 탭의 귀환·포기는 그대로 끝낼 수 있다.
+            if (fromExitZone) {
+                if (auto refusal = MapDeviceRuntime::ExitZoneReturnRefusal()) {
+                    return MapActionResult{ false, std::move(*refusal) };
+                }
+            }
+            return MapDeviceRuntime::ReturnPortal(player);
         }
 
         // 직접 여는 귀환 문의 활성화를 우리 귀환으로 바꾼다. 출구 자동 통로 문은 ESP에서 꺼 두고 출구 구역으로 판정한다.
@@ -2380,7 +2389,7 @@ namespace SkyrimPoE::Runtime
                                     doorId, observation.cell, cellId, observation.loading);
                                 return;
                             }
-                            if (const auto result = LeaveMapThroughExit(player)) {
+                            if (const auto result = LeaveMapThroughExit(player, false)) {
                                 ShowMapMessage(*result);
                             }
                         });
@@ -2595,6 +2604,10 @@ namespace SkyrimPoE::Runtime
             g_permittedCell = access.permittedCell;
             accessChanged = g_playerInActiveMapCell.exchange(access.inActiveMap, std::memory_order_acq_rel) != access.inActiveMap;
             const auto pending = PendingTravelKindLocked();
+            // 결정 182: 허가된 회차가 포털 0이고 보스를 아직 처치하지 못했으면(처치 반영 대기 포함) 출구 구역은 그 안에서만 귀환을 시도한다.
+            // 거절된 뒤 구역을 벗어나면 래치를 풀어 결투 내내 다시 시도하거나 처치 순간 멀리서 귀환하지 않게 하고,
+            // 출구 쪽으로 나가지 않으므로 구역 안에서도 첫 스폰을 막지 않는다.
+            const bool exitZoneInsideOnly = access.inActiveMap && Core::MapSystem::ShouldRefuseExitZoneReturn(g_activeMap, false);
             resetCandidates = CollectCellResetCandidatesLocked(observation);
             if (!observation.loading) {
                 if (!access.unauthorized) {
@@ -2666,13 +2679,14 @@ namespace SkyrimPoE::Runtime
                     const auto exitHit = dungeon
                         ? Core::FindExitZoneHit(observation, dungeon->autoExits, MapPackRuntime::Manifest().exitZoneRadius)
                         : std::nullopt;
-                    const auto latched = Core::NextExitZoneLatch(g_exitZoneLatchCell, observation, exitHit.has_value());
+                    const auto latched = Core::NextExitZoneLatch(
+                        g_exitZoneLatchCell, observation, exitHit.has_value(), exitZoneInsideOnly);
                     if (exitHit && g_exitZoneLatchCell != latched) {
                         const auto& exit = dungeon->autoExits[exitHit->index];
                         SKSE::log::info("MapDeviceRuntime: entered the exit zone of {} exit 0x{:06X} at ({:.0f}, {:.0f}, {:.1f}), {:.0f} units "
-                                        "(radius {:.0f}); leaving the map (travelPending={}, deathEscape={}).",
+                                        "(radius {:.0f}); requesting an exit (travelPending={}, deathEscape={}, insideOnly={}).",
                             dungeon->key, exit.localId, observation.position[0], observation.position[1], observation.position[2],
-                            exitHit->distance, MapPackRuntime::Manifest().exitZoneRadius, pending.has_value(), deathEscaping);
+                            exitHit->distance, MapPackRuntime::Manifest().exitZoneRadius, pending.has_value(), deathEscaping, exitZoneInsideOnly);
                     }
                     g_exitZoneLatchCell = latched;
                     // 사망 가로채기가 꺼져 있으면 deathEscaping이 서지 않으므로 플레이어 사망도 따로 본다(Codex 검토 2026-11-24).
@@ -2716,7 +2730,8 @@ namespace SkyrimPoE::Runtime
                 if (g_activeMap.active && g_arenaPhaseInvulnSec > 0.0 && validDelta) {
                     g_arenaPhaseInvulnSec = std::max(0.0, g_arenaPhaseInvulnSec - deltaSec);
                 }
-                shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !belowMap && g_exitZoneLatchCell == 0 &&
+                shouldSpawnNow = access.inActiveMap && observation.loaded3D && !pending && !belowMap &&
+                    (g_exitZoneLatchCell == 0 || exitZoneInsideOnly) &&
                     !g_spawnedForCurrentRun &&
                     g_pendingSpawnRunId != 0 && g_pendingSpawnRunId == g_activeMap.runId;
                 // 남은 스폰 청소는 이동이 시작되지 않을 때만 한다. Disable은 작업 풀 예약이라, 같은 틱에 이동(낙하 복귀·안전 탈출·
@@ -2761,7 +2776,7 @@ namespace SkyrimPoE::Runtime
             RE::SendHUDMessage::ShowHUDMessage("입장 허가가 없습니다. 귀환 문이나 출구, 지도 탭의 안전 탈출을 이용하세요.");
         }
         if (exitZoneRequest) {
-            if (const auto result = LeaveMapThroughExit(player)) {
+            if (const auto result = LeaveMapThroughExit(player, true)) {
                 bool show = false;
                 {
                     std::scoped_lock lk(g_mutex);
@@ -3001,6 +3016,24 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lk(g_mutex);
         return g_exitZoneTravelCount;
+    }
+
+    std::optional<std::string> MapDeviceRuntime::ExitZoneReturnRefusal()
+    {
+        // 보스 조회는 폼을 찾으므로 잠금 밖에서 한다. 아직 스폰 전이거나 찾지 못한 보스는 살아 있는 것으로 본다.
+        const auto bossId = g_activeBossFormId.load(std::memory_order_acquire);
+        const bool bossLooksDead = IsBossDeadNow(bossId);
+        std::scoped_lock lk(g_mutex);
+        // 귀환 쪽(RequestReturn)과 같이 조회한 보스가 지금 회차의 보스인지 보고, 사망 시작·확정 기록이 있으면
+        // 액터를 찾지 못해도 쓰러진 것으로 본다(그 뒤 대기는 ReturnPortal의 처치 반영 대기가 맡음).
+        const bool bossDeadNow = (bossLooksDead && bossId == g_activeMap.bossRefFormId) ||
+            BossKillProcessingPendingLocked(g_activeMap.runId);
+        if (!Core::MapSystem::ShouldRefuseExitZoneReturn(g_activeMap, bossDeadNow)) {
+            return std::nullopt;
+        }
+        return g_activeMap.isArena4
+            ? std::string("결투 중에는 출구로 나갈 수 없습니다. 보스를 처치한 뒤 나가세요(지도 탭의 귀환·포기는 회차를 끝냅니다).")
+            : std::string("남은 포털이 없어 보스 처치 전에는 출구로 나갈 수 없습니다(지도 탭의 귀환·포기는 회차를 끝냅니다).");
     }
 
     std::size_t MapDeviceRuntime::GetExitDoorReenabledCount()

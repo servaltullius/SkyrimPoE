@@ -165,6 +165,35 @@ POE_TEST("An abandoned map ends on return even with portals and a living boss")
     POE_CHECK(MapSystem::ShouldEndOnReturn(run));
 }
 
+POE_TEST("The exit zone refuses a return that would end the run before the boss dies")
+{
+    // 결정 182: 결투장은 입장 때 포털 0이라 보스가 살아 있는 동안 출구 구역 귀환을 거절한다.
+    const auto arena = MapSystem::CreateArena4Run(1, 0, 0, {}, {});
+    POE_CHECK(arena.portalsRemaining == 0);
+    POE_CHECK(MapSystem::ShouldEndOnReturn(arena));
+    POE_CHECK(MapSystem::ShouldRefuseExitZoneReturn(arena, false));
+
+    // 포털이 남은 일반 지도는 출구 구역 귀환이 회차를 끝내지 않으므로 거절하지 않는다.
+    auto map = MapSystem::CreateNormalMapRun(2, 1, {}, 0, 0, {}, {});
+    POE_CHECK(map.portalsRemaining > 0);
+    POE_CHECK(!MapSystem::ShouldRefuseExitZoneReturn(map, false));
+    // 포털을 다 쓴 일반 지도는 결투장과 같다.
+    map.portalsRemaining = 0;
+    POE_CHECK(MapSystem::ShouldRefuseExitZoneReturn(map, false));
+
+    // 보스가 쓰러졌거나(처치 반영 대기 포함) 종료 요청·실패·스폰을 끈(끝낼 귀환이 실패한) 회차, 비활성 상태는 귀환 쪽 규칙에 맡긴다.
+    POE_CHECK(!MapSystem::ShouldRefuseExitZoneReturn(arena, true));
+    for (const auto flag : { &ActiveMapState::bossKilled, &ActiveMapState::endRequested, &ActiveMapState::failed,
+             &ActiveMapState::spawnsDisabled }) {
+        auto changed = arena;
+        changed.*flag = true;
+        POE_CHECK(!MapSystem::ShouldRefuseExitZoneReturn(changed, false));
+    }
+    auto inactive = arena;
+    inactive.active = false;
+    POE_CHECK(!MapSystem::ShouldRefuseExitZoneReturn(inactive, false));
+}
+
 POE_TEST("An abandoned map rejects reentry without consuming a portal")
 {
     auto run = MapSystem::CreateNormalMapRun(1, 1, {}, 0, 0, {}, {});

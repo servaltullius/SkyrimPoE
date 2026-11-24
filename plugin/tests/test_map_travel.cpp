@@ -278,6 +278,18 @@ POE_TEST("Map exit zone latch holds within the same pack cell until the cell cha
     POE_CHECK(NextExitZoneLatch(0xC2002800, player, true) == 0);
 }
 
+POE_TEST("Map exit zone latch releases outside the zone while the boss fight holds the exit")
+{
+    // 결정 182 상태(포털 0, 보스 미처치)에서는 구역 안에서만 다시 시도하고, 벗어나면 같은 셀이어도 잊는다.
+    auto player = kAtEntrance;
+    player.cell = 0xC2008800;
+    POE_CHECK(NextExitZoneLatch(0xC2008800, player, true, true) == 0xC2008800);
+    POE_CHECK(NextExitZoneLatch(0xC2008800, player, false, true) == 0);
+    POE_CHECK(NextExitZoneLatch(0, player, true, true) == 0xC2008800);
+    player.inPackCell = false;
+    POE_CHECK(NextExitZoneLatch(0xC2008800, player, true, true) == 0);
+}
+
 POE_TEST("Map fall margin INI accepts its bounds and defaults on invalid values")
 {
     POE_CHECK(LoadConfigFromString("[Maps]\n").mapTravel.fallMargin == 512.0);

@@ -448,6 +448,12 @@ namespace SkyrimPoE::Core
         return state.bossKilled || state.portalsRemaining == 0 || state.endRequested;
     }
 
+    bool MapSystem::ShouldRefuseExitZoneReturn(const ActiveMapState& state, bool bossDeadNow) noexcept
+    {
+        return state.active && !state.failed && !state.endRequested && !state.spawnsDisabled && !state.bossKilled && !bossDeadNow &&
+            state.portalsRemaining == 0;
+    }
+
     bool MapSystem::ShouldDeferReturnForBossDeath(
         bool bossKilled, bool bossDeadNow, bool deathConfirmed, bool killPending, double waitedSec) noexcept
     {

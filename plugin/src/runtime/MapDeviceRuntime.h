@@ -156,6 +156,8 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static std::size_t GetFallRecoveryCount();
         // 출구 구역(결정 177 ③ 재보완)이 이동을 건 누적 횟수와, 켜져 있던 출구 문을 다시 끈 누적 수(자동 시험 H27)
         [[nodiscard]] static std::size_t GetExitZoneTravelCount();
+        // 결정 182: 허가된 회차의 출구 구역 귀환을 거절해야 하면 그 안내 문구(포털 0, 보스 생존). 주 갱신 스레드 전용(자동 시험 H29도 씀).
+        [[nodiscard]] static std::optional<std::string> ExitZoneReturnRefusal();
         [[nodiscard]] static std::size_t GetExitDoorReenabledCount();
         // 셀이 다시 붙었을 때 남은 스폰으로 찾아 끄기를 요청한 누적 액터 수(결정 178 ⑦ 보완, 자동 시험 H23·H25)
         [[nodiscard]] static std::size_t GetLeftoverSweepCleanedCount() noexcept;

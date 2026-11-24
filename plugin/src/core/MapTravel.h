@@ -76,7 +76,9 @@ namespace SkyrimPoE::Core
         const MapTravelObservation& player, std::span<const MapAutoExit> exits, double radius) noexcept;
     // 출구 구역에 든 셀을 이동이 시작될 때까지 기억한다(귀환이 거절된 동안 구를 지나쳐 나가도 다시 시도하게).
     // 구역 안이면 그 셀, 같은 지도 팩 셀에 머무는 동안은 그대로, 셀이 바뀌거나 팩 밖이면 잊는다(0).
-    [[nodiscard]] std::uint32_t NextExitZoneLatch(std::uint32_t latchedCell, const MapTravelObservation& player, bool inZone) noexcept;
+    // releaseOutsideZone: 결정 182 상태(허가된 회차, 포털 0, 보스 미처치)면 구역을 벗어나는 즉시 잊는다(결투 중 다시 시도하거나 처치 순간 멀리서 귀환하지 않게).
+    [[nodiscard]] std::uint32_t NextExitZoneLatch(
+        std::uint32_t latchedCell, const MapTravelObservation& player, bool inZone, bool releaseOutsideZone = false) noexcept;
 
     class MapTravel
     {
