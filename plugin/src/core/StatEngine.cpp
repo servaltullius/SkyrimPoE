@@ -1,4 +1,5 @@
 #include "core/StatEngine.h"
+#include "core/GemForms.h"
 #include "core/Config.h"
 #include "core/DamageConversion.h"
 #include "core/EnergyShield.h"
@@ -349,7 +350,10 @@ namespace SkyrimPoE::Core
             out.level = gemInst.level;
             out.isTriggered = isTriggered;
 
-            const auto* def = pack.FindGem(gemInst.gemId);
+            if (!GemForms::AllowsExecution(l1.gemGeneration, gemInst.gemId)) {
+                return out;
+            }
+            const auto* def = pack.FindGem(gemInst.gemId, l1.gemGeneration);
             if (!def) {
                 return out;
             }
@@ -402,8 +406,9 @@ namespace SkyrimPoE::Core
             std::vector<std::string> dedupOrder;
             for (std::size_t s = 0; s < maxSockets; ++s) {
                 const auto& supInst = gemInst.socketedGems[s];
+                if (l1.gemGeneration != 0 && !GemForms::ClassifyUse(l1.gemGeneration, supInst.gemId).socket) continue;
                 if (config.enforceGemRequirements) {
-                    const auto* sDef = pack.FindGem(supInst.gemId);
+                    const auto* sDef = pack.FindGem(supInst.gemId, l1.gemGeneration);
                     const auto* sLv = sDef ? sDef->GetLevel(supInst.level) : nullptr;
                     if (!sLv || !MeetsGemRequirements(*sLv, snap)) {
                         continue;
@@ -424,7 +429,7 @@ namespace SkyrimPoE::Core
                 extraSkillTypes = *initialExtraTypes;
             }
             for (const auto& supId : dedupOrder) {
-                const auto* supDef = pack.FindGem(supId);
+                const auto* supDef = pack.FindGem(supId, l1.gemGeneration);
                 if (supDef && supDef->isSupport && !supDef->addSkillTypes.empty()) {
                     for (const auto& t : supDef->addSkillTypes) {
                         extraSkillTypes.insert(t);
@@ -436,10 +441,10 @@ namespace SkyrimPoE::Core
             for (const auto& supId : dedupOrder) {
                 const auto& supInst = *dedupSupports[supId];
                 if (!pack.CanSupportApply(supInst.gemId, gemInst.gemId,
-                        extraSkillTypes.empty() ? nullptr : &extraSkillTypes)) {
+                        extraSkillTypes.empty() ? nullptr : &extraSkillTypes, l1.gemGeneration)) {
                     continue;
                 }
-                const auto* supDef = pack.FindGem(supInst.gemId);
+                const auto* supDef = pack.FindGem(supInst.gemId, l1.gemGeneration);
                 const auto* supLv = supDef ? supDef->GetLevel(supInst.level) : nullptr;
                 if (!supLv) {
                     continue;
@@ -913,7 +918,8 @@ namespace SkyrimPoE::Core
         }
         if (slotIndex >= layer.slots.size() || !layer.slots[slotIndex].occupied) return {};
         const auto& gem = layer.slots[slotIndex].gem;
-        const auto* def = pack.FindGem(gem.gemId);
+        const auto* def = pack.FindGem(gem.gemId, layer.gemGeneration);
+        if (!GemForms::AllowsExecution(layer.gemGeneration, gem.gemId)) return {};
         const auto* level = def ? def->GetLevel(gem.level) : nullptr;
         if (!level || !CanReserveSpirit(*def)) return {};
 
@@ -933,6 +939,7 @@ namespace SkyrimPoE::Core
         StatSnapshot snap;
         const auto& rules = ActiveRuleValues();
         snap.version = nextVersion;
+        snap.gemGeneration = l1.gemGeneration;
         snap.exileLevel = std::clamp<std::uint32_t>(l1.exileLevel, 1, kMaxExileLevel);
 
         const auto& p = l1.passives;
@@ -1140,7 +1147,8 @@ namespace SkyrimPoE::Core
             if ((l1.activeAuraMask & static_cast<std::uint16_t>(1u << i)) == 0) continue;
             const auto& slot = l1.slots[i];
             if (!slot.occupied) continue;
-            const auto* def = pack.FindGem(slot.gem.gemId);
+            if (!GemForms::AllowsExecution(l1.gemGeneration, slot.gem.gemId)) continue;
+            const auto* def = pack.FindGem(slot.gem.gemId, l1.gemGeneration);
             if (!def) continue;
             const auto* lv = def->GetLevel(slot.gem.level);
             if (!lv || !CanReserveSpirit(*def)) continue;
@@ -1462,7 +1470,8 @@ namespace SkyrimPoE::Core
         for (std::size_t i = 0; i < kSkillSlotCount; ++i) {
             const auto& slot = l1.slots[i];
             if (!slot.occupied) continue;
-            const auto* def = pack.FindGem(slot.gem.gemId);
+            if (!GemForms::AllowsExecution(l1.gemGeneration, slot.gem.gemId)) continue;
+            const auto* def = pack.FindGem(slot.gem.gemId, l1.gemGeneration);
             if (!def || def->kind != GemKind::Trigger) continue;
             const auto* trigLv = def->GetLevel(slot.gem.level);
             if (config.enforceGemRequirements && (!trigLv || !MeetsGemRequirements(*trigLv, snap))) {
@@ -1473,7 +1482,7 @@ namespace SkyrimPoE::Core
                 const auto& atkSlot = l1.slots[targetIdx];
                 if (!attackHasTrigger[targetIdx] &&
                     atkSlot.occupied &&
-                    pack.CanTriggerLinkAttack(slot.gem.gemId, atkSlot.gem.gemId)) {
+                    pack.CanTriggerLinkAttack(slot.gem.gemId, atkSlot.gem.gemId, l1.gemGeneration)) {
                     attackHasTrigger[targetIdx] = true;
                     triggerLinkAccepted[i] = true;
                     if (trigLv) {
@@ -1488,7 +1497,8 @@ namespace SkyrimPoE::Core
             const auto& slot = l1.slots[i];
             if (!slot.occupied) continue;
 
-            const auto* def = pack.FindGem(slot.gem.gemId);
+            if (!GemForms::AllowsExecution(l1.gemGeneration, slot.gem.gemId)) continue;
+            const auto* def = pack.FindGem(slot.gem.gemId, l1.gemGeneration);
             if (!def) continue;
 
             if (def->kind == GemKind::Trigger) {
@@ -1518,7 +1528,7 @@ namespace SkyrimPoE::Core
                     slot.gem.socketCount);
                 for (std::size_t s = 0; s < maxSpellSockets; ++s) {
                     const auto& spellInst = slot.gem.socketedGems[s];
-                    if (!pack.CanTriggerSocketSpell(slot.gem.gemId, spellInst.gemId)) {
+                    if (!pack.CanTriggerSocketSpell(slot.gem.gemId, spellInst.gemId, l1.gemGeneration)) {
                         continue;
                     }
                     auto computed = ComputeSingleSkill(

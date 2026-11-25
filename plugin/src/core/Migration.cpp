@@ -623,7 +623,7 @@ namespace SkyrimPoE::Core
             }
             SortDeepestFirst(state.returns);
         }
-        report.gemKeys = ReadLegacyRecord(batch, kRecordGemKeys, kGemKeysVersion, [&](const auto& record) {
+        report.gemKeys = ReadLegacyRecord(batch, kRecordGemKeys, kLegacyGemKeysVersion, [&](const auto& record) {
             Reader reader{ record.bytes };
             std::vector<ReturnEntry> entries;
             if (!ReadLegacyGemKeys(reader, entries, report.gemKeyCount)) return false;

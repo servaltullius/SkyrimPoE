@@ -50,7 +50,8 @@ namespace SkyrimPoE::Core
             std::string_view gemId,
             std::uint8_t defaultSockets,
             const DataPack& pack,
-            IGemInventoryAdapter& inventory);
+            IGemInventoryAdapter& inventory,
+            std::uint32_t generation = 0);
 
         // 메인 스킬 칸(0..8)의 젬 탈착(보조 젬·발동 안 주문/보조 함께 보관해 인벤토리로 반환)
         static GemTransactionResult UnequipSkillGem(
@@ -74,7 +75,8 @@ namespace SkyrimPoE::Core
             std::string_view gemId,
             std::uint8_t defaultSockets,
             const DataPack& pack,
-            IGemInventoryAdapter& inventory);
+            IGemInventoryAdapter& inventory,
+            std::uint32_t generation = 0);
 
         // 소켓 탈착: 보조 젬 또는 발동 안 주문 젬(자체 보조 포함)을 인벤토리로 반환
         static GemTransactionResult UnsocketSubGem(
@@ -89,6 +91,7 @@ namespace SkyrimPoE::Core
             std::array<SkillSlot, kSkillSlotCount>& slots,
             std::uint8_t triggerSlotIndex,
             std::int8_t attackSlotIndex,
-            const DataPack& pack);
+            const DataPack& pack,
+            std::uint32_t generation = 0);
     };
 }

@@ -311,6 +311,8 @@ POE_TEST("GEAR sockets from another tree generation preserve the original record
 {
     auto snapshot = LegacySnapshot();
     auto gen0 = EncodeLegacy(snapshot);
+    snapshot.state.slots = {};
+    snapshot.tracked.clear();
     snapshot.state.tree.generation = kPoE2Pack.contentGeneration;
     auto gen1 = Encode(snapshot, kPoE2Pack);
     auto& gear = FindRecord(gen1, kRecordGear);

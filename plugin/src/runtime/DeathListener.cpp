@@ -126,7 +126,8 @@ namespace SkyrimPoE::Runtime
                     stateCopy.exileLevel,
                     *g_config,
                     fallbackExcluded,
-                    mapKill.rewardMonsterLevel);
+                    mapKill.rewardMonsterLevel,
+                    SaveLoad::WorldGemGeneration());
 
                 // 결정 119: 원시 Actor* 대신 ActorHandle을 캡처해 주 갱신에서 유효성 재확인
                 const RE::ActorHandle corpseHandle = actor->GetHandle();
@@ -265,7 +266,8 @@ namespace SkyrimPoE::Runtime
                                     st.unallocatedPassivePoints,
                                     reward.exileXpGained,
                                     *g_config);
-                                gemRes = Core::KillTracker::ApplyGemXpToSlots(st.slots, reward.gemXpGained);
+                                gemRes = Core::KillTracker::ApplyGemXpToSlots(
+                                    st.slots, reward.gemXpGained, SaveLoad::WorldGemGeneration());
                             }
                             if (isDragon) {
                                 ++st.tree.dragonKillCount;

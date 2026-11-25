@@ -3,6 +3,7 @@ chcp 65001 >nul
 rem SkyrimPoE 본 모드 DLL 빌드, 단위 테스트(ctest), 패키징, 배치 스크립트
 rem 사용: build.bat            빌드 + ctest + 묶기
 rem       build.bat deploy "MO2의 mods 폴더"
+rem       build.bat deploy-dev "MO2의 mods 폴더"   젬 시험 준비 팩 포함
 rem                            게임이 꺼져 있을 때 묶음을 모드 폴더로 복사
 setlocal
 set "VS_INSTALLER=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
@@ -46,7 +47,7 @@ ctest --preset %BUILD_PRESET% || exit /b 1
 cmake --build --preset %BUILD_PRESET% --target package_mod || exit /b 1
 echo Package: %BUILD_ROOT%\package
 
-if /i not "%~1"=="deploy" exit /b 0
+if /i not "%~1"=="deploy" if /i not "%~1"=="deploy-dev" exit /b 0
 set "MO2_MODS=%~2"
 if not defined MO2_MODS (
     echo 배치할 MO2 mods 폴더를 둘째 인자로 주세요.
@@ -72,5 +73,8 @@ if errorlevel 8 (
     exit /b 1
 )
 python -I "%~dp0..\tools\package\stamp.py" deploy-clean --package "%BUILD_ROOT%\package" --target "%MO2_MODS%\%MOD_NAME%" || exit /b 1
+if /i "%~1"=="deploy-dev" (
+    python -I "%~dp0..\tools\package\stamp.py" stage-dev --package "%BUILD_ROOT%\package" --target "%MO2_MODS%\%MOD_NAME%" || exit /b 1
+)
 echo Deployed: %MO2_MODS%\%MOD_NAME%
 exit /b 0

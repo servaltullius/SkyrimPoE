@@ -155,7 +155,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -208,7 +221,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -261,7 +287,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -314,7 +353,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -367,7 +419,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -420,7 +485,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -473,7 +551,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -526,7 +617,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -579,7 +683,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxySpellEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -624,7 +741,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -669,7 +799,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -714,7 +857,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -759,7 +915,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -804,7 +973,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -849,7 +1031,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -894,7 +1089,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -939,7 +1147,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -984,7 +1205,20 @@
           "type": "Effect",
           "fields": {
             "BaseEffect": "@SPOE_ProxyPowerEffect"
-          }
+          },
+          "sets": [
+            {
+              "path": "Data",
+              "compose": {
+                "type": "EffectData",
+                "fields": {
+                  "Magnitude": "0",
+                  "Area": "0",
+                  "Duration": "0"
+                }
+              }
+            }
+          ]
         }
       }
     ]
@@ -4816,6 +5050,754 @@
       {
         "field_path": "Model.File",
         "value": "Effects\\Ambient\\FXGlowFlatRndXBrt.nif"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_FrostBolt",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 서리 구체"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_FrostDarts",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 서리 화살침"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_BallLightning",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 구형 번개"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Boneshatter",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 뼈 박살"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Earthquake",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 지진"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_RollingSlam",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 몰려오는 강타"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_MoltenBlast",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 녹아내린 폭발"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_LightningArrow",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 번개 화살"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_IceShot",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 얼음 화살"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_PoisonBurstArrow",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 독 폭발 화살"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "100"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_Archmage",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 대마법사"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_IronWard",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 철의 수호"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_ArcticArmour",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 한기의 방어구"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_TimeOfNeed",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "스킬 젬: 긴요한 시기"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_HeraldOfThunder",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "전령 젬: 천둥의 전령"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "130"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_MetaCastOnCrit",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "메타 젬: 치명타 시 시전"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_MetaCastOnElementalAilment",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "메타 젬: 원소 상태 이상 시 시전"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "150"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupMultishot1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 다중 사격 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupChain1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 연쇄 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupPierce1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 관통 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupUnleash",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 촉발"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupControlledDestruction",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 제어된 파괴"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupMagnifiedArea1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 범위 확대 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupConcentratedArea",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 범위 집중"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupPinpointCritical",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 핵심 조준 치명타"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupBrutality1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 포악함 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupHeavySwing",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 묵직한 휘두르기"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupFirePenetration1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 화염 관통 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupColdPenetration",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 냉기 관통"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupLightningPenetration",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 번개 관통"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupDeadlyHerald",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 치명적인 전령"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Emerald.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupAftershock1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 여진 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupFistOfWar1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 전쟁의 주먹 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Ruby.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "MiscItem",
+    "editorid": "SPOE_Gem_SupRapidCasting1",
+    "ops": [
+      {
+        "field_path": "Name",
+        "value": "보조 젬: 빠른 시전 I"
+      },
+      {
+        "field_path": "Model.File",
+        "value": "Clutter\\Gemstones\\Sapphire.nif"
+      },
+      {
+        "field_path": "Value",
+        "value": "120"
+      },
+      {
+        "field_path": "Weight",
+        "value": "0.1"
       }
     ]
   }

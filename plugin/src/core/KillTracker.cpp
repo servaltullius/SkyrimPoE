@@ -141,7 +141,8 @@ namespace SkyrimPoE::Core
         std::uint32_t currentExileLevel,
         const Config& config,
         bool fallbackExcluded,
-        std::uint32_t overrideEffectiveMonsterLevel)
+        std::uint32_t overrideEffectiveMonsterLevel,
+        std::uint32_t gemGeneration)
     {
         KillRewardResult res;
         if (actorFormId == 0) {
@@ -190,10 +191,12 @@ namespace SkyrimPoE::Core
         if (res.exileXpGained == 0 && rawXp > 0.0) {
             res.exileXpGained = 1;
         }
-        const double rawGemXp = static_cast<double>(res.exileXpGained) * std::max(0.0, config.gemXpRatio);
-        res.gemXpGained = static_cast<std::uint64_t>(std::llround(rawGemXp));
-        if (res.gemXpGained == 0 && rawGemXp > 0.0) {
-            res.gemXpGained = 1;
+        if (gemGeneration == 0) {
+            const double rawGemXp = static_cast<double>(res.exileXpGained) * std::max(0.0, config.gemXpRatio);
+            res.gemXpGained = static_cast<std::uint64_t>(std::llround(rawGemXp));
+            if (res.gemXpGained == 0 && rawGemXp > 0.0) {
+                res.gemXpGained = 1;
+            }
         }
         res.awarded = true;
         return res;
@@ -359,10 +362,10 @@ namespace SkyrimPoE::Core
 
     GemLevelUpSummary KillTracker::ApplyGemXpToSlots(
         std::array<SkillSlot, kSkillSlotCount>& slots,
-        std::uint64_t gemXp) noexcept
+        std::uint64_t gemXp, std::uint32_t gemGeneration) noexcept
     {
         GemLevelUpSummary summary;
-        if (gemXp == 0) {
+        if (gemXp == 0 || gemGeneration != 0) {
             return summary;
         }
         for (auto& slot : slots) {

@@ -3079,7 +3079,7 @@ namespace SkyrimPoE::Runtime
             g_esPool->Clear();
         }
         if (g_statEngine) {
-            g_statEngine->SetLayer1(Core::Layer1Input{});
+            g_statEngine->SetLayer1(Core::Layer1Input{ .gemGeneration = SaveLoad::WorldGemGeneration() });
             g_statEngine->SetLayer2(Core::Layer2Input{});
         }
     }
@@ -3191,14 +3191,14 @@ namespace SkyrimPoE::Runtime
         bool ReturnUninstallGem(RE::PlayerCharacter* player, const Core::GemInstance& gem,
             std::size_t& returned, std::size_t& lost)
         {
-            const auto localId = FormIds::FindLocalFormIdForGem(gem.gemId);
+            const auto localId = Core::GemForms::RecoveryForm(SaveLoad::WorldGemGeneration(), gem.gemId);
             auto* base = localId != 0 ? FormIds::Lookup<RE::TESObjectMISC>(localId) : nullptr;
             if (!base) {
                 ++lost;
                 return true;
             }
             const auto countBefore = player->GetItemCount(base);
-            if (!GemInventory::ReturnGemToPlayerInventory(player, gem)) {
+            if (!GemInventory::ReturnGemToPlayerInventory(player, gem, true)) {
                 if (player->GetItemCount(base) <= countBefore) {
                     return false;
                 }

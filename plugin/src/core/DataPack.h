@@ -100,6 +100,8 @@ namespace SkyrimPoE::Core
     public:
         bool LoadFromFile(const std::filesystem::path& path, std::string* errorOut = nullptr);
         bool LoadFromJsonString(std::string_view jsonText, std::string* errorOut = nullptr);
+        bool LoadGen1GemsFromJsonString(std::string_view jsonText, std::string* errorOut = nullptr);
+        bool LoadGen1GemsFromFile(const std::filesystem::path& path, std::string* errorOut = nullptr);
 
         [[nodiscard]] bool IsLoaded() const noexcept { return loaded_; }
         [[nodiscard]] const PoEConstants& Constants() const noexcept { return constants_; }
@@ -110,7 +112,7 @@ namespace SkyrimPoE::Core
         [[nodiscard]] const ExpectedDefenseRow& ExpectedDefense(std::uint32_t level) const noexcept;
 
         [[nodiscard]] const ClassBase* FindClass(const std::string& name) const;
-        [[nodiscard]] const SkillEffectDefinition* FindGem(const std::string& gemId) const;
+        [[nodiscard]] const SkillEffectDefinition* FindGem(const std::string& gemId, std::uint32_t generation = 0) const;
         [[nodiscard]] const std::unordered_map<std::string, SkillEffectDefinition>& AllGems() const noexcept
         {
             return gems_;
@@ -120,17 +122,18 @@ namespace SkyrimPoE::Core
         [[nodiscard]] bool CanSupportApply(
             const std::string& supportGemId,
             const std::string& activeGemId,
-            const std::unordered_set<std::string>* extraSkillTypes = nullptr) const;
+            const std::unordered_set<std::string>* extraSkillTypes = nullptr,
+            std::uint32_t generation = 0) const;
 
         // 발동 젬(CoC 등)이 공격 스킬 칸과 연결될 수 있는지 판정한다(결정 100).
         [[nodiscard]] bool CanTriggerLinkAttack(
             const std::string& triggerGemId,
-            const std::string& attackGemId) const;
+            const std::string& attackGemId, std::uint32_t generation = 0) const;
 
         // 발동 젬 소켓에 주문 젬을 담을 수 있는지 판정한다(결정 132, PoB Triggerable+Spell RPN).
         [[nodiscard]] bool CanTriggerSocketSpell(
             const std::string& triggerGemId,
-            const std::string& spellGemId) const;
+            const std::string& spellGemId, std::uint32_t generation = 0) const;
 
     private:
         bool loaded_ = false;
@@ -138,5 +141,6 @@ namespace SkyrimPoE::Core
         std::vector<ExpectedDefenseRow> expectedDefense_;
         std::unordered_map<std::string, ClassBase> classes_;
         std::unordered_map<std::string, SkillEffectDefinition> gems_;
+        std::unordered_map<std::string, SkillEffectDefinition> gen1Gems_;
     };
 }

@@ -1,4 +1,5 @@
 #include "core/DataPack.h"
+#include "core/GemForms.h"
 #include "core/RulesPack.h"
 
 #include <nlohmann/json.hpp>
@@ -318,19 +319,136 @@ namespace SkyrimPoE::Core
         return it == classes_.end() ? nullptr : &it->second;
     }
 
-    const SkillEffectDefinition* DataPack::FindGem(const std::string& gemId) const
+    bool DataPack::LoadGen1GemsFromFile(const std::filesystem::path& path, std::string* errorOut)
     {
-        const auto it = gems_.find(gemId);
-        return it == gems_.end() ? nullptr : &it->second;
+        try {
+            std::ifstream file(path, std::ios::binary);
+            if (!file) throw std::runtime_error("Could not open generation-one gem catalog");
+            const auto bytes = std::string(std::istreambuf_iterator<char>(file), {});
+            return LoadGen1GemsFromJsonString(bytes, errorOut);
+        } catch (const std::exception& e) {
+            if (errorOut) *errorOut = e.what();
+            return false;
+        }
+    }
+
+    bool DataPack::LoadGen1GemsFromJsonString(std::string_view jsonText, std::string* errorOut)
+    {
+        try {
+            const auto root = nlohmann::json::parse(jsonText);
+            const auto& meta = root.at("meta");
+            const auto& gems = root.at("gems");
+            const auto& schemaVersion = meta.at("schemaVersion");
+            const auto& generation = meta.at("contentGeneration");
+            if (meta.at("schema") != "skyrimpoe.gems" || !schemaVersion.is_number_integer() || schemaVersion != 1 ||
+                meta.at("game") != "poe2" || !generation.is_number_integer() || generation != 1 ||
+                !gems.is_object() || gems.size() != GemForms::kContentKeys.size()) {
+                throw std::runtime_error("Invalid generation-one gem catalog");
+            }
+
+            std::unordered_map<std::string, SkillEffectDefinition> nextGems;
+            for (const auto& [id, gem] : gems.items()) {
+                const auto* key = GemForms::FindContent(id);
+                if (!key || gem.at("contentId") != id || gem.at("ready") != key->ready ||
+                    gem.at("shape") != "S" + std::to_string(static_cast<int>(key->execution) + 1)) {
+                    throw std::runtime_error("Gem catalog and form table disagree: " + id);
+                }
+
+                // The first effect and stat set are the base skill. Conditional sets are separate.
+                const auto& effect = gem.at("effects").at(0);
+                const auto& base = effect.at("statSets").at(0);
+                SkillEffectDefinition def;
+                def.id = id;
+                def.name = gem.at("nameKo").get<std::string>();
+                def.color = effect.value("color", std::uint8_t{});
+                def.castTime = effect.value("castTime", 0.0);
+                def.isSupport = key->execution == GemForms::GemExecution::S11;
+                const auto type = gem.at("gemType").get<std::string>();
+                if (def.isSupport) def.kind = GemKind::Support;
+                else if (type == "Spell") def.kind = GemKind::Spell;
+                else if (key->execution == GemForms::GemExecution::S12) def.kind = GemKind::AttackChannel;
+                else if (key->execution == GemForms::GemExecution::S8) def.kind = GemKind::Aura;
+                else if (key->execution == GemForms::GemExecution::S9) def.kind = GemKind::Herald;
+                else if (key->execution == GemForms::GemExecution::S10) def.kind = GemKind::Trigger;
+                // 실행 종류가 아직 정해지지 않은 젬은 준비 상태가 될 수 없다(장착 판정이 Unknown을 보조 젬처럼 거절함).
+                if (key->ready && def.kind == GemKind::Unknown) {
+                    throw std::runtime_error("Ready gem has no runtime kind: " + id);
+                }
+                def.skillTypes = effect.at("skillTypes").get<std::unordered_set<std::string>>();
+                def.requireSkillTypes = effect.value("requireSkillTypes", std::vector<std::string>{});
+                def.excludeSkillTypes = effect.value("excludeSkillTypes", std::vector<std::string>{});
+                def.addSkillTypes = effect.value("addSkillTypes", std::vector<std::string>{});
+                def.weaponTypes = effect.value("weaponTypes", std::unordered_set<std::string>{});
+
+                if (const auto constants = base.find("constantStats"); constants != base.end()) {
+                    for (const auto& stat : *constants) {
+                        def.constantStats.emplace(stat.at(0).get<std::string>(), stat.at(1).get<double>());
+                    }
+                }
+                const auto& statNames = base.at("stats");
+                for (const auto& [level, row] : effect.at("levels").items()) {
+                    auto values = ParseLevelData(row);
+                    const auto numericLevel = std::stoi(level);
+                    if (numericLevel < 1 || numericLevel > 255 || level != std::to_string(numericLevel)) {
+                        throw std::runtime_error("Invalid gem level: " + id);
+                    }
+                    values.level = static_cast<std::uint8_t>(numericLevel);
+                    const auto& requirements = row.at("requirements");
+                    values.reqStr = requirements.at("reqStr").get<std::uint32_t>();
+                    values.reqDex = requirements.at("reqDex").get<std::uint32_t>();
+                    values.reqInt = requirements.at("reqInt").get<std::uint32_t>();
+                    if (const auto cost = row.find("cost"); cost != row.end()) {
+                        values.manaCost = cost->value("Mana", 0.0);
+                    }
+                    if (key->ready && def.kind == GemKind::Spell && !(values.manaCost > 0.0)) {
+                        throw std::runtime_error("Ready spell has no mana cost at level " + level + ": " + id);
+                    }
+                    if (!def.isSupport && row.contains("spiritReservationFlat")) {
+                        values.spiritCost = row.at("spiritReservationFlat").get<std::uint32_t>();
+                    }
+                    const auto& statLevels = base.at("levels");
+                    if (key->ready && !statLevels.contains(level)) {
+                        throw std::runtime_error("Ready gem has no base stat row at level " + level + ": " + id);
+                    }
+                    if (const auto statRow = statLevels.find(level); statRow != statLevels.end()) {
+                        const auto& stats = statRow->at("values");
+                        if (stats.size() > statNames.size()) {
+                            throw std::runtime_error("Too many base stats: " + id);
+                        }
+                        for (std::size_t i = 0; i < stats.size(); ++i) {
+                            if (stats.at(i).is_number()) {
+                                values.stats.emplace(statNames.at(i).get<std::string>(), stats.at(i).get<double>());
+                            }
+                        }
+                    }
+                    def.levels.emplace(values.level, std::move(values));
+                }
+                if (!def.levels.contains(1)) throw std::runtime_error("Missing level one: " + id);
+                nextGems.emplace(id, std::move(def));
+            }
+            gen1Gems_ = std::move(nextGems);
+            return true;
+        } catch (const std::exception& e) {
+            if (errorOut) *errorOut = e.what();
+            return false;
+        }
+    }
+
+    const SkillEffectDefinition* DataPack::FindGem(const std::string& gemId, std::uint32_t generation) const
+    {
+        if (generation > 1) return nullptr;
+        const auto& catalog = generation == 0 ? gems_ : gen1Gems_;
+        const auto it = catalog.find(gemId);
+        return it == catalog.end() ? nullptr : &it->second;
     }
 
     bool DataPack::CanSupportApply(
         const std::string& supportGemId,
         const std::string& activeGemId,
-        const std::unordered_set<std::string>* extraSkillTypes) const
+        const std::unordered_set<std::string>* extraSkillTypes, std::uint32_t generation) const
     {
-        const auto* sup = FindGem(supportGemId);
-        const auto* act = FindGem(activeGemId);
+        const auto* sup = FindGem(supportGemId, generation);
+        const auto* act = FindGem(activeGemId, generation);
         if (!sup || !act || !sup->isSupport || sup->kind == GemKind::Trigger || act->isSupport) {
             return false;
         }
@@ -349,10 +467,10 @@ namespace SkyrimPoE::Core
 
     bool DataPack::CanTriggerLinkAttack(
         const std::string& triggerGemId,
-        const std::string& attackGemId) const
+        const std::string& attackGemId, std::uint32_t generation) const
     {
-        const auto* trig = FindGem(triggerGemId);
-        const auto* atk = FindGem(attackGemId);
+        const auto* trig = FindGem(triggerGemId, generation);
+        const auto* atk = FindGem(attackGemId, generation);
         if (!trig || !atk || trig->kind != GemKind::Trigger || atk->isSupport) {
             return false;
         }
@@ -367,10 +485,10 @@ namespace SkyrimPoE::Core
 
     bool DataPack::CanTriggerSocketSpell(
         const std::string& triggerGemId,
-        const std::string& spellGemId) const
+        const std::string& spellGemId, std::uint32_t generation) const
     {
-        const auto* trig = FindGem(triggerGemId);
-        const auto* spell = FindGem(spellGemId);
+        const auto* trig = FindGem(triggerGemId, generation);
+        const auto* spell = FindGem(spellGemId, generation);
         if (!trig || !spell || trig->kind != GemKind::Trigger || spell->kind != GemKind::Spell) {
             return false;
         }

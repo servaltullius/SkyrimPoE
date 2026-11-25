@@ -1,4 +1,5 @@
 #include "core/GemTransaction.h"
+#include "core/GemForms.h"
 
 #include <algorithm>
 #include <unordered_set>
@@ -20,6 +21,7 @@ namespace SkyrimPoE::Core
         std::unordered_set<std::string> CollectAddedSkillTypes(
             const GemInstance& parentGem,
             const DataPack& pack,
+            std::uint32_t generation,
             const SkillEffectDefinition* triggerParentDef = nullptr)
         {
             std::unordered_set<std::string> extra;
@@ -29,7 +31,7 @@ namespace SkyrimPoE::Core
                 }
             }
             for (const auto& sub : parentGem.socketedGems) {
-                if (const auto* def = pack.FindGem(sub.gemId); def && def->isSupport) {
+                if (const auto* def = pack.FindGem(sub.gemId, generation); def && def->isSupport) {
                     for (const auto& t : def->addSkillTypes) {
                         extra.insert(t);
                     }
@@ -95,12 +97,19 @@ namespace SkyrimPoE::Core
         std::string_view gemId,
         std::uint8_t defaultSockets,
         const DataPack& pack,
-        IGemInventoryAdapter& inventory)
+        IGemInventoryAdapter& inventory,
+        std::uint32_t generation)
     {
         if (slotIndex >= kSkillSlotCount) {
             return { false, "잘못된 스킬 칸 번호입니다.", std::nullopt };
         }
-        const auto* def = pack.FindGem(std::string(gemId));
+        if (generation != 0) {
+            const auto use = GemForms::ClassifyUse(generation, gemId);
+            if (!use.equip && use.reason != GemForms::GemUseReason::Available) {
+                return { false, std::string(GemForms::UseReasonText(use.reason)), std::nullopt };
+            }
+        }
+        const auto* def = pack.FindGem(std::string(gemId), generation);
         if (!def) {
             return { false, "알 수 없는 젬입니다.", std::nullopt };
         }
@@ -118,7 +127,7 @@ namespace SkyrimPoE::Core
         }
 
         // 회수된 데이터 젬의 실제 ID와 종류를 다시 검증(위조/불일치 요청 방어)
-        const auto* takenDef = pack.FindGem(taken->gemId);
+        const auto* takenDef = pack.FindGem(taken->gemId, generation);
         if (!takenDef || taken->gemId != def->id || !IsMainSlotEquipable(takenDef->kind)) {
             (void)inventory.ReturnGem(std::move(*taken));
             return { false, "인벤토리 젬 정보가 요청과 일치하지 않거나 장착할 수 없는 종류입니다.", std::nullopt };
@@ -192,14 +201,27 @@ namespace SkyrimPoE::Core
         std::string_view gemId,
         std::uint8_t defaultSockets,
         const DataPack& pack,
-        IGemInventoryAdapter& inventory)
+        IGemInventoryAdapter& inventory,
+        std::uint32_t generation)
     {
+        if (generation != 0) {
+            const auto use = GemForms::ClassifyUse(generation, gemId);
+            if (!use.socket) {
+                return { false, std::string(GemForms::UseReasonText(use.reason)), std::nullopt };
+            }
+        }
         if (slotIndex >= kSkillSlotCount || !slots[slotIndex].occupied) {
             return { false, "대상 스킬 칸이 비어 있습니다.", std::nullopt };
         }
 
         auto& rootGem = slots[slotIndex].gem;
-        const auto* rootDef = pack.FindGem(rootGem.gemId);
+        if (generation != 0) {
+            const auto use = GemForms::ClassifyUse(generation, rootGem.gemId);
+            if (!use.equip) {
+                return { false, std::string(GemForms::UseReasonText(use.reason)), std::nullopt };
+            }
+        }
+        const auto* rootDef = pack.FindGem(rootGem.gemId, generation);
         if (!rootDef) {
             return { false, "대상 스킬 젬 정보를 찾지 못했습니다.", std::nullopt };
         }
@@ -222,7 +244,13 @@ namespace SkyrimPoE::Core
                 return { false, "발동 젬 안의 주문 젬을 찾지 못했습니다.", std::nullopt };
             }
             targetParent = &rootGem.socketedGems[static_cast<std::size_t>(triggeredSpellIndex)];
-            targetParentDef = pack.FindGem(targetParent->gemId);
+            if (generation != 0) {
+                const auto use = GemForms::ClassifyUse(generation, targetParent->gemId);
+                if (!use.equip) {
+                    return { false, std::string(GemForms::UseReasonText(use.reason)), std::nullopt };
+                }
+            }
+            targetParentDef = pack.FindGem(targetParent->gemId, generation);
             if (!targetParentDef) {
                 return { false, "주문 젬 정보를 찾지 못했습니다.", std::nullopt };
             }
@@ -234,13 +262,13 @@ namespace SkyrimPoE::Core
             return { false, "남은 보조 소켓이 없습니다.", std::nullopt };
         }
 
-        const auto* subDef = pack.FindGem(std::string(gemId));
+        const auto* subDef = pack.FindGem(std::string(gemId), generation);
         if (!subDef) {
             return { false, "알 수 없는 젬입니다.", std::nullopt };
         }
 
         if (expectingSpell) {
-            if (!pack.CanTriggerSocketSpell(targetParentDef->id, subDef->id)) {
+            if (!pack.CanTriggerSocketSpell(targetParentDef->id, subDef->id, generation)) {
                 return { false, "이 발동 젬에 담을 수 없는 주문 젬입니다.", std::nullopt };
             }
         } else {
@@ -250,8 +278,8 @@ namespace SkyrimPoE::Core
             if (HasDuplicateGemId(targetParent->socketedGems, subDef->id)) {
                 return { false, "같은 종류의 보조 젬은 하나만 장착할 수 있습니다.", std::nullopt };
             }
-            const auto extraTypes = CollectAddedSkillTypes(*targetParent, pack, triggerParentDef);
-            if (!pack.CanSupportApply(subDef->id, targetParentDef->id, extraTypes.empty() ? nullptr : &extraTypes)) {
+            const auto extraTypes = CollectAddedSkillTypes(*targetParent, pack, generation, triggerParentDef);
+            if (!pack.CanSupportApply(subDef->id, targetParentDef->id, extraTypes.empty() ? nullptr : &extraTypes, generation)) {
                 return { false, "대상 스킬과 호환되지 않는 보조 젬입니다.", std::nullopt };
             }
         }
@@ -316,13 +344,20 @@ namespace SkyrimPoE::Core
         std::array<SkillSlot, kSkillSlotCount>& slots,
         std::uint8_t triggerSlotIndex,
         std::int8_t attackSlotIndex,
-        const DataPack& pack)
+        const DataPack& pack,
+        std::uint32_t generation)
     {
         if (triggerSlotIndex >= kSkillSlotCount || !slots[triggerSlotIndex].occupied) {
             return { false, "발동 젬 칸이 비어 있습니다.", std::nullopt };
         }
         auto& trigSlot = slots[triggerSlotIndex];
-        const auto* trigDef = pack.FindGem(trigSlot.gem.gemId);
+        if (generation != 0) {
+            const auto use = GemForms::ClassifyUse(generation, trigSlot.gem.gemId);
+            if (!use.equip) {
+                return { false, std::string(GemForms::UseReasonText(use.reason)), std::nullopt };
+            }
+        }
+        const auto* trigDef = pack.FindGem(trigSlot.gem.gemId, generation);
         if (!trigDef || trigDef->kind != GemKind::Trigger) {
             return { false, "발동 젬이 아닌 칸입니다.", std::nullopt };
         }
@@ -336,7 +371,11 @@ namespace SkyrimPoE::Core
         if (atkIdx >= kSkillSlotCount || atkIdx == triggerSlotIndex || !slots[atkIdx].occupied) {
             return { false, "연결할 공격 스킬 칸이 유효하지 않습니다.", std::nullopt };
         }
-        if (!pack.CanTriggerLinkAttack(trigSlot.gem.gemId, slots[atkIdx].gem.gemId)) {
+        if (generation != 0 && !GemForms::ClassifyUse(generation, slots[atkIdx].gem.gemId).equip) {
+            return { false, std::string(GemForms::UseReasonText(
+                GemForms::ClassifyUse(generation, slots[atkIdx].gem.gemId).reason)), std::nullopt };
+        }
+        if (!pack.CanTriggerLinkAttack(trigSlot.gem.gemId, slots[atkIdx].gem.gemId, generation)) {
             return { false, "이 발동 젬과 호환되지 않는 공격 스킬입니다.", std::nullopt };
         }
 

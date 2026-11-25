@@ -70,6 +70,7 @@ namespace SkyrimPoE::Core
         const EnergyShieldPool* phylacteryEnergyShield = nullptr;
         std::uint16_t activeAuraMask = 0;         // bit i = 스킬 칸 i의 오라/전령 ON 요청
         std::uint32_t achievementMask = 0;
+        std::uint32_t gemGeneration = 0;
     };
 
     // 층 ②: 충전·버프·이동·생명력 비율·참·헤드헌터·가드·활성 지도 상태 입력(결정 117, 166)
@@ -182,6 +183,7 @@ namespace SkyrimPoE::Core
     struct StatSnapshot
     {
         std::uint64_t version = 0;
+        std::uint32_t gemGeneration = 0;
         std::uint32_t exileLevel = 1;
         std::uint32_t str = 20;
         std::uint32_t dex = 20;

@@ -13,8 +13,9 @@ param(
     # es이면 적 ES 표시 시험(ES1~ES5, 결정 185)만 돈다.
     # save이면 콘텐츠 검사와 코세이브 왕복(S0~S5)만 돈다.
     # cleanup이면 PoE1 세이브 정리와 임시 슬롯 재로드(C0~C7)만 돈다.
+    # gems이면 세대 0 Spark, PoE1 정리, 세대 1 젬 장착·시전·저장 시험만 돈다.
     # 기존 위치 인자 호출(다섯 번째가 TimeoutSec)이 깨지지 않게 맨 뒤에 둔다.
-    [ValidateSet("", "h27", "es", "save", "cleanup")]
+    [ValidateSet("", "h27", "es", "save", "cleanup", "gems")]
     [string]$Only = ""
 )
 
@@ -37,8 +38,9 @@ function Normalize-SaveStem([string]$Name, [string]$ParamName) {
 function Assert-AutoTestSaveSlots([string]$Baseline, [string]$Temporary, [string]$Mode) {
     $comparison = [System.StringComparison]::OrdinalIgnoreCase
     $checkpointPattern = '^' + [regex]::Escape($Temporary) + '_h_restore(?:_[0-9]+_[0-9]+)?$'
+    $usesFinalSlot = $Mode -in "cleanup", "gems"
     if ($Temporary.Equals($Baseline, $comparison) -or
-        ($Mode -eq "cleanup" -and ($Temporary + '_final').Equals($Baseline, $comparison)) -or
+        ($usesFinalSlot -and ($Temporary + '_final').Equals($Baseline, $comparison)) -or
         $Baseline -match $checkpointPattern) {
         throw "Refusing to arm AutoTest: -TempSave and its derived save names must differ from -Save."
     }
@@ -59,8 +61,8 @@ switch ($Action) {
             throw "Parameter -TempSave cannot be empty."
         }
         Assert-AutoTestSaveSlots $cleanSave $cleanTemp $Only
-        if ($Only -eq "cleanup" -and -not $Quit) {
-            throw "Refusing to arm AutoTest: -Only cleanup requires -Quit:`$true."
+        if ($Only -in "cleanup", "gems" -and -not $Quit) {
+            throw "Refusing to arm AutoTest: -Only $Only requires -Quit:`$true."
         }
         $lines = @(
             "# SkyrimPoE Stage 2 AutoTest marker (consumed on startup)"

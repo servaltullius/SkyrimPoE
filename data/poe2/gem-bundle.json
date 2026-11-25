@@ -1,0 +1,1004 @@
+[
+  {
+    "contentId": "gem.Spark",
+    "nameKo": "전기불꽃",
+    "sourceKey": "Metadata/Items/Gems/SkillGemSpark",
+    "gameId": "Metadata/Items/Gems/SkillGemSpark",
+    "variantId": "Spark",
+    "grantedEffectId": "SparkPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": null,
+    "shape": "S1",
+    "defaultInput": "proxySpell",
+    "form": {
+      "plan": "keep",
+      "formId": "0x000880",
+      "editorId": "SPOE_Gem_Spark"
+    },
+    "dropCandidate": true,
+    "ready": true,
+    "additionalEffects": {
+      "SparkColdInfusedPlayer": {
+        "condition": "Consuming a Cold Infusion",
+        "statSet": "Cold-Infused"
+      }
+    }
+  },
+  {
+    "contentId": "gem.Fireball",
+    "nameKo": "화염구",
+    "sourceKey": "Metadata/Items/Gems/SkillGemFireball",
+    "gameId": "Metadata/Items/Gem/SkillGemFireball",
+    "variantId": "Fireball",
+    "grantedEffectId": "FireballPlayer",
+    "displayGrade": null,
+    "Tier": 3,
+    "gemFamily": null,
+    "shape": "S1",
+    "defaultInput": "proxySpell",
+    "form": {
+      "plan": "keep",
+      "formId": "0x00087D",
+      "editorId": "SPOE_Gem_Fireball"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "FireballExplosionPlayer": {
+        "condition": "On projectile impact",
+        "statSet": "Explosion"
+      },
+      "FireballSecondaryProjectilePlayer": {
+        "condition": "If the explosion consumes a Fire Infusion",
+        "statSet": "Firebolts"
+      }
+    }
+  },
+  {
+    "contentId": "gem.FrostBolt",
+    "nameKo": "서리 구체",
+    "sourceKey": "Metadata/Items/Gems/SkillGemFrostBolt",
+    "gameId": "Metadata/Items/Gems/SkillGemFrostbolt",
+    "variantId": "FrostBolt",
+    "grantedEffectId": "FrostboltPlayer",
+    "displayGrade": null,
+    "Tier": 5,
+    "gemFamily": null,
+    "shape": "S1",
+    "defaultInput": "proxySpell",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C0",
+      "editorId": "SPOE_Gem_FrostBolt"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "FrostboltExplosionPlayer": {
+        "condition": "On terrain collision",
+        "statSet": "Explosion"
+      }
+    }
+  },
+  {
+    "contentId": "gem.FrostDarts",
+    "nameKo": "서리 화살침",
+    "sourceKey": "Metadata/Items/Gems/SkillGemFrostDarts",
+    "gameId": "Metadata/Items/Gem/SkillGemFrostDarts",
+    "variantId": "FrostDarts",
+    "grantedEffectId": "FrostDartsPlayer",
+    "displayGrade": null,
+    "Tier": 3,
+    "gemFamily": null,
+    "shape": "S1",
+    "defaultInput": "proxySpell",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C1",
+      "editorId": "SPOE_Gem_FrostDarts"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "FrostDartsExplodePlayer": {
+        "condition": "Projectiles lodged in enemies after consuming a Cold Infusion explode",
+        "statSet": "Explosion"
+      },
+      "FrostDartsIceMortarPlayer": {
+        "condition": "Projectiles hitting Chilled or Frozen targets create chunks that deal damage on ground impact",
+        "statSet": "Ice Chunk"
+      }
+    }
+  },
+  {
+    "contentId": "gem.BallLightning",
+    "nameKo": "구형 번개",
+    "sourceKey": "Metadata/Items/Gems/SkillGemBallLightning",
+    "gameId": "Metadata/Items/Gems/SkillGemBallLightning",
+    "variantId": "BallLightning",
+    "grantedEffectId": "BallLightningPlayer",
+    "displayGrade": null,
+    "Tier": 11,
+    "gemFamily": null,
+    "shape": "S1",
+    "defaultInput": "proxySpell",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C2",
+      "editorId": "SPOE_Gem_BallLightning"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "BallLightningInfusedExplosionPlayer": {
+        "condition": "After a Fire-Infused orb dissipates",
+        "statSet": "Fire-Infused"
+      },
+      "BallLightningIgnitedGround": {
+        "condition": "Along the path of a Fire-Infused orb",
+        "statSet": "Ignited Ground"
+      }
+    }
+  },
+  {
+    "contentId": "gem.Arc",
+    "nameKo": "연쇄 번개",
+    "sourceKey": "Metadata/Items/Gems/SkillGemArc",
+    "gameId": "Metadata/Items/Gems/SkillGemArc",
+    "variantId": "Arc",
+    "grantedEffectId": "ArcPlayer",
+    "displayGrade": null,
+    "Tier": 5,
+    "gemFamily": null,
+    "shape": "S2",
+    "defaultInput": "proxySpell",
+    "form": {
+      "plan": "keep",
+      "formId": "0x00087F",
+      "editorId": "SPOE_Gem_Arc"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "gem.IceNova",
+    "nameKo": "얼음 폭발",
+    "sourceKey": "Metadata/Items/Gems/SkillGemIceNova",
+    "gameId": "Metadata/Items/Gems/SkillGemIceNova",
+    "variantId": "IceNova",
+    "grantedEffectId": "IceNovaPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": null,
+    "shape": "S3",
+    "defaultInput": "proxySpell",
+    "form": {
+      "plan": "keep",
+      "formId": "0x000816",
+      "editorId": "SPOE_Gem_IceNova"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "IceNovaPlayerOnFrostbolt": {
+        "condition": "When targeting near a Frostbolt Projectile, use the projectile as the origin",
+        "statSet": null
+      },
+      "IceNovaColdInfusedPlayer": {
+        "condition": "Consuming a Cold Infusion leaves Chilled Ground",
+        "statSet": "Cold-Infused"
+      }
+    }
+  },
+  {
+    "contentId": "gem.Boneshatter",
+    "nameKo": "뼈 박살",
+    "sourceKey": "Metadata/Items/Gems/SkillGemBoneshatter",
+    "gameId": "Metadata/Items/Gems/SkillGemBoneshatter",
+    "variantId": "Boneshatter",
+    "grantedEffectId": "BoneshatterPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": null,
+    "shape": "S4",
+    "defaultInput": "normalAttack",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C3",
+      "editorId": "SPOE_Gem_Boneshatter"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "BoneshatterShockwavePlayer": {
+        "condition": "On causing a Heavy Stun with the strike",
+        "statSet": "Shockwave"
+      }
+    }
+  },
+  {
+    "contentId": "gem.Earthquake",
+    "nameKo": "지진",
+    "sourceKey": "Metadata/Items/Gems/SkillGemEarthquake",
+    "gameId": "Metadata/Items/Gems/SkillGemEarthquake",
+    "variantId": "Earthquake",
+    "grantedEffectId": "EarthquakePlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": null,
+    "shape": "S5",
+    "defaultInput": "powerAttack",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C4",
+      "editorId": "SPOE_Gem_Earthquake"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "EarthquakeAftershockPlayer": {
+        "condition": "Jagged Ground erupts after its duration",
+        "statSet": "Aftershock"
+      }
+    }
+  },
+  {
+    "contentId": "gem.RollingSlam",
+    "nameKo": "몰려오는 강타",
+    "sourceKey": "Metadata/Items/Gems/SkillGemRollingSlam",
+    "gameId": "Metadata/Items/Gems/SkillGemRollingSlam",
+    "variantId": "RollingSlam",
+    "grantedEffectId": "RollingSlamPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": null,
+    "shape": "S5",
+    "defaultInput": "powerAttack",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C5",
+      "editorId": "SPOE_Gem_RollingSlam"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "RollingSlamFirstSlamPlayer": {
+        "condition": "Initial slam",
+        "statSet": "First Slam"
+      },
+      "RollingSlamSecondSlamPlayer": {
+        "condition": "Second slam after moving forward",
+        "statSet": "Second Slam"
+      }
+    }
+  },
+  {
+    "contentId": "gem.MoltenBlast",
+    "nameKo": "녹아내린 폭발",
+    "sourceKey": "Metadata/Items/Gems/SkillGemMoltenBlast",
+    "gameId": "Metadata/Items/Gem/SkillGemMoltenBlast",
+    "variantId": "MoltenBlast",
+    "grantedEffectId": "MoltenBlastPlayer",
+    "displayGrade": null,
+    "Tier": 5,
+    "gemFamily": null,
+    "shape": "S6",
+    "defaultInput": "skillKey",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C6",
+      "editorId": "SPOE_Gem_MoltenBlast"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "MoltenBlastSecondaryPlayer": {
+        "condition": "Projectile collision scatters shrapnel behind the explosion",
+        "statSet": "Shrapnel"
+      }
+    }
+  },
+  {
+    "contentId": "gem.LightningArrow",
+    "nameKo": "번개 화살",
+    "sourceKey": "Metadata/Items/Gems/SkillGemLightningArrow",
+    "gameId": "Metadata/Items/Gems/SkillGemLightningArrow",
+    "variantId": "LightningArrow",
+    "grantedEffectId": "LightningArrowPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": null,
+    "shape": "S7",
+    "defaultInput": "bowRelease",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C7",
+      "editorId": "SPOE_Gem_LightningArrow"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "LightningArrowArcPlayer": {
+        "condition": "Arrow hits an enemy or wall",
+        "statSet": "Beam"
+      }
+    }
+  },
+  {
+    "contentId": "gem.IceShot",
+    "nameKo": "얼음 화살",
+    "sourceKey": "Metadata/Items/Gems/SkillGemIceShot",
+    "gameId": "Metadata/Items/Gem/SkillGemIceShot",
+    "variantId": "IceShot",
+    "grantedEffectId": "IceShotPlayer",
+    "displayGrade": null,
+    "Tier": 9,
+    "gemFamily": null,
+    "shape": "S7",
+    "defaultInput": "bowRelease",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C8",
+      "editorId": "SPOE_Gem_IceShot"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "IceShotShardPlayer": {
+        "condition": "Arrow hits a target",
+        "statSet": "Shards"
+      }
+    }
+  },
+  {
+    "contentId": "gem.PoisonBurstArrow",
+    "nameKo": "독 폭발 화살",
+    "sourceKey": "Metadata/Items/Gems/SkillGemPoisonBurstArrow",
+    "gameId": "Metadata/Items/Gem/SkillGemPoisonBurstArrow",
+    "variantId": "PoisonBurstArrow",
+    "grantedEffectId": "PoisonBurstArrowPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": null,
+    "shape": "S7",
+    "defaultInput": "bowRelease",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008C9",
+      "editorId": "SPOE_Gem_PoisonBurstArrow"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "PoisonBurstArrowCloudPlayer": {
+        "condition": "Arrow hits a target",
+        "statSet": "Poison Burst"
+      }
+    }
+  },
+  {
+    "contentId": "gem.Archmage",
+    "nameKo": "대마법사",
+    "sourceKey": "Metadata/Items/Gems/SkillGemArchmage",
+    "gameId": "Metadata/Items/Gem/SkillGemArchmage",
+    "variantId": "Archmage",
+    "grantedEffectId": "ArchmagePlayer",
+    "displayGrade": null,
+    "Tier": 14,
+    "gemFamily": null,
+    "shape": "S8",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008CA",
+      "editorId": "SPOE_Gem_Archmage"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "gem.IronWard",
+    "nameKo": "철의 수호",
+    "sourceKey": "Metadata/Items/Gems/SkillGemIronWard",
+    "gameId": "Metadata/Items/Gem/SkillGemIronWard",
+    "variantId": "IronWard",
+    "grantedEffectId": "IronWardPlayer",
+    "displayGrade": null,
+    "Tier": 4,
+    "gemFamily": null,
+    "shape": "S8",
+    "defaultInput": "power",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008CB",
+      "editorId": "SPOE_Gem_IronWard"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "IronWardNovaPlayer": {
+        "condition": "Using the skill releases the stored damage"
+      }
+    }
+  },
+  {
+    "contentId": "gem.ArcticArmour",
+    "nameKo": "한기의 방어구",
+    "sourceKey": "Metadata/Items/Gems/SkillGemArcticArmour",
+    "gameId": "Metadata/Items/Gems/SkillGemArcticArmour",
+    "variantId": "ArcticArmour",
+    "grantedEffectId": "ArcticArmourPlayer",
+    "displayGrade": null,
+    "Tier": 4,
+    "gemFamily": null,
+    "shape": "S8",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008CC",
+      "editorId": "SPOE_Gem_ArcticArmour"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "gem.TimeOfNeed",
+    "nameKo": "긴요한 시기",
+    "sourceKey": "Metadata/Items/Gems/SkillGemTimeOfNeed",
+    "gameId": "Metadata/Items/Gem/SkillGemTimeOfNeed",
+    "variantId": "TimeOfNeed",
+    "grantedEffectId": "TimeOfNeedPlayer",
+    "displayGrade": null,
+    "Tier": 8,
+    "gemFamily": null,
+    "shape": "S8",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008CD",
+      "editorId": "SPOE_Gem_TimeOfNeed"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "gem.HeraldOfIce",
+    "nameKo": "얼음의 전령",
+    "sourceKey": "Metadata/Items/Gems/SkillGemHeraldOfIce",
+    "gameId": "Metadata/Items/Gems/SkillGemHeraldOfIce",
+    "variantId": "HeraldOfIce",
+    "grantedEffectId": "HeraldOfIcePlayer",
+    "displayGrade": null,
+    "Tier": 4,
+    "gemFamily": null,
+    "shape": "S9",
+    "defaultInput": "none",
+    "form": {
+      "plan": "keep",
+      "formId": "0x00088D",
+      "editorId": "SPOE_Gem_HeraldOfIce"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "HeraldOfIceOnKillPlayer": {
+        "condition": "While active, shatter an enemy with a non-Herald Attack Hit",
+        "statSet": "Explosion"
+      }
+    }
+  },
+  {
+    "contentId": "gem.HeraldOfAsh",
+    "nameKo": "재의 전령",
+    "sourceKey": "Metadata/Items/Gems/SkillGemHeraldOfAsh",
+    "gameId": "Metadata/Items/Gems/SkillGemHeraldOfAsh",
+    "variantId": "HeraldOfAsh",
+    "grantedEffectId": "HeraldOfAshPlayer",
+    "displayGrade": null,
+    "Tier": 4,
+    "gemFamily": null,
+    "shape": "S9",
+    "defaultInput": "none",
+    "form": {
+      "plan": "keep",
+      "formId": "0x00088E",
+      "editorId": "SPOE_Gem_HeraldOfAsh"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "HeraldOfAshOnKillPlayer": {
+        "condition": "While active, sufficiently overkill an enemy with a non-Herald Attack",
+        "statSet": "Explosion"
+      }
+    }
+  },
+  {
+    "contentId": "gem.HeraldOfThunder",
+    "nameKo": "천둥의 전령",
+    "sourceKey": "Metadata/Items/Gems/SkillGemHeraldOfThunder",
+    "gameId": "Metadata/Items/Gems/SkillGemHeraldOfThunder",
+    "variantId": "HeraldOfThunder",
+    "grantedEffectId": "HeraldOfThunderPlayer",
+    "displayGrade": null,
+    "Tier": 4,
+    "gemFamily": null,
+    "shape": "S9",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008CE",
+      "editorId": "SPOE_Gem_HeraldOfThunder"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "HeraldOfThunderOnKillPlayer": {
+        "condition": "Subsequent Attack Hits after killing a Shocked enemy with a non-Herald Attack Hit while active",
+        "statSet": "Bolt"
+      }
+    }
+  },
+  {
+    "contentId": "gem.CastOnCriticalStrike",
+    "nameKo": "치명타 시 시전",
+    "sourceKey": "Metadata/Items/Gems/SkillGemCastOnCriticalStrike",
+    "gameId": "Metadata/Items/Gems/SkillGemCastOnCritical",
+    "variantId": "CastOnCriticalStrike",
+    "grantedEffectId": "MetaCastOnCritPlayer",
+    "displayGrade": null,
+    "Tier": 14,
+    "gemFamily": null,
+    "shape": "S10",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008CF",
+      "editorId": "SPOE_Gem_MetaCastOnCrit"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "SupportMetaCastOnCritPlayer": {
+        "condition": "Socketed spells trigger at maximum energy gained from critical hits while active"
+      }
+    }
+  },
+  {
+    "contentId": "gem.CastOnElementalAilment",
+    "nameKo": "원소 상태 이상 시 시전",
+    "sourceKey": "Metadata/Items/Gems/SkillGemCastOnElementalAilment",
+    "gameId": "Metadata/Items/Gems/SkillGemCastOnElementalAilment",
+    "variantId": "CastOnElementalAilment",
+    "grantedEffectId": "MetaCastOnElementalAilmentPlayer",
+    "displayGrade": null,
+    "Tier": 14,
+    "gemFamily": null,
+    "shape": "S10",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D0",
+      "editorId": "SPOE_Gem_MetaCastOnElementalAilment"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "additionalEffects": {
+      "SupportMetaCastOnElementalAilmentPlayer": {
+        "condition": "Socketed spells trigger at maximum energy gained from freezing, shocking or igniting enemies while active"
+      }
+    }
+  },
+  {
+    "contentId": "gem.Cyclone",
+    "nameKo": "사이클론",
+    "sourceKey": "Metadata/Items/Gems/SkillGemCyclone",
+    "gameId": "Metadata/Items/Gems/SkillGemCyclone",
+    "variantId": "Cyclone",
+    "grantedEffectId": "Cyclone",
+    "displayGrade": null,
+    "Tier": null,
+    "gemFamily": null,
+    "shape": "S12",
+    "defaultInput": "holdPowerAttack",
+    "form": {
+      "plan": "keep",
+      "formId": "0x000814",
+      "editorId": "SPOE_Gem_Cyclone"
+    },
+    "dropCandidate": true,
+    "ready": false,
+    "borrowedFrom": "poe1-3.30",
+    "naturalMaxLevel": 20,
+    "tags": [
+      "dexterity",
+      "grants_active_skill",
+      "attack",
+      "area",
+      "melee",
+      "movement",
+      "channelling"
+    ]
+  },
+  {
+    "contentId": "sup.Multishot1",
+    "nameKo": "다중 사격 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemMultishotSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemScattershot",
+    "variantId": "MultishotSupport",
+    "grantedEffectId": "SupportMultishotPlayer",
+    "displayGrade": "I",
+    "Tier": 1,
+    "gemFamily": "Additional Projectiles",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D1",
+      "editorId": "SPOE_Gem_SupMultishot1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.Chain1",
+    "nameKo": "연쇄 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemChainSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemChain",
+    "variantId": "ChainSupport",
+    "grantedEffectId": "SupportChainPlayer",
+    "displayGrade": "I",
+    "Tier": 1,
+    "gemFamily": "Chain",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D2",
+      "editorId": "SPOE_Gem_SupChain1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.Fork",
+    "nameKo": "갈래",
+    "sourceKey": "Metadata/Items/Gems/SkillGemForkSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemFork",
+    "variantId": "ForkSupport",
+    "grantedEffectId": "SupportForkPlayer",
+    "displayGrade": null,
+    "Tier": 3,
+    "gemFamily": "Fork",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "keep",
+      "formId": "0x000883",
+      "editorId": "SPOE_Gem_SupFork"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.Pierce1",
+    "nameKo": "관통 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemPierceSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemPierce",
+    "variantId": "PierceSupport",
+    "grantedEffectId": "SupportPiercePlayer",
+    "displayGrade": "I",
+    "Tier": 1,
+    "gemFamily": "Pierce",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D3",
+      "editorId": "SPOE_Gem_SupPierce1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.SpellEcho",
+    "nameKo": "주문 메아리",
+    "sourceKey": "Metadata/Items/Gems/SkillGemSpellEchoSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemSpellEcho",
+    "variantId": "SpellEchoSupport",
+    "grantedEffectId": "SupportSpellEchoPlayer",
+    "displayGrade": null,
+    "Tier": 2,
+    "gemFamily": "Spell Echo",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "keep",
+      "formId": "0x000885",
+      "editorId": "SPOE_Gem_SupSpellEcho"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.Unleash",
+    "nameKo": "촉발",
+    "sourceKey": "Metadata/Items/Gems/SkillGemUnleashSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemUnleash",
+    "variantId": "UnleashSupport",
+    "grantedEffectId": "SupportUnleashPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": "Seal",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D4",
+      "editorId": "SPOE_Gem_SupUnleash"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.ControlledDestruction",
+    "nameKo": "제어된 파괴",
+    "sourceKey": "Metadata/Items/Gems/SkillGemControlledDestructionSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemControlledDestruction",
+    "variantId": "ControlledDestructionSupport",
+    "grantedEffectId": "SupportControlledDestructionPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": "Controlled Destruction",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D5",
+      "editorId": "SPOE_Gem_SupControlledDestruction"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.MagnifiedArea1",
+    "nameKo": "범위 확대 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemMagnifiedAreaSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemMagnifiedEffect",
+    "variantId": "MagnifiedAreaSupport",
+    "grantedEffectId": "SupportMagnifiedAreaPlayer",
+    "displayGrade": "I",
+    "Tier": 1,
+    "gemFamily": "Increased Area of Effect",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D6",
+      "editorId": "SPOE_Gem_SupMagnifiedArea1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.ConcentratedArea",
+    "nameKo": "범위 집중",
+    "sourceKey": "Metadata/Items/Gems/SkillGemConcentratedAreaSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemConcentratedEffect",
+    "variantId": "ConcentratedAreaSupport",
+    "grantedEffectId": "SupportConcentratedAreaPlayer",
+    "displayGrade": null,
+    "Tier": 1,
+    "gemFamily": "Concentrated Area",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D7",
+      "editorId": "SPOE_Gem_SupConcentratedArea"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.PinpointCritical",
+    "nameKo": "핵심 조준 치명타",
+    "sourceKey": "Metadata/Items/Gems/SkillGemPinpointCritical",
+    "gameId": "Metadata/Items/Gems/SupportGemPinpointCritical",
+    "variantId": "PinpointCritical",
+    "grantedEffectId": "SupportPinpointCriticalPlayer",
+    "displayGrade": null,
+    "Tier": 2,
+    "gemFamily": "Pinpoint Critical",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D8",
+      "editorId": "SPOE_Gem_SupPinpointCritical"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.Brutality1",
+    "nameKo": "포악함 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemBrutalitySupport",
+    "gameId": "Metadata/Items/Gems/SupportGemBrutality",
+    "variantId": "BrutalitySupport",
+    "grantedEffectId": "SupportBrutalityPlayer",
+    "displayGrade": "I",
+    "Tier": 1,
+    "gemFamily": "Brutality",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008D9",
+      "editorId": "SPOE_Gem_SupBrutality1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.HeavySwing",
+    "nameKo": "묵직한 휘두르기",
+    "sourceKey": "Metadata/Items/Gems/SkillGemMeleePhysicalDamageSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemHeavySwing",
+    "variantId": "MeleePhysicalDamageSupport",
+    "grantedEffectId": "SupportMeleePhysicalDamagePlayer",
+    "displayGrade": null,
+    "Tier": 4,
+    "gemFamily": "Heavy Swing",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008DA",
+      "editorId": "SPOE_Gem_SupHeavySwing"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.FirePenetration1",
+    "nameKo": "화염 관통 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemFirePenetrationSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemFirePenetration",
+    "variantId": "FirePenetrationSupport",
+    "grantedEffectId": "SupportFirePenetrationPlayer",
+    "displayGrade": "I",
+    "Tier": 2,
+    "gemFamily": "Fire Penetration",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008DB",
+      "editorId": "SPOE_Gem_SupFirePenetration1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.ColdPenetration",
+    "nameKo": "냉기 관통",
+    "sourceKey": "Metadata/Items/Gems/SkillGemColdPenetrationSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemColdPenetration",
+    "variantId": "ColdPenetrationSupport",
+    "grantedEffectId": "SupportColdPenetrationPlayer",
+    "displayGrade": null,
+    "Tier": 2,
+    "gemFamily": "Cold Penetration",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008DC",
+      "editorId": "SPOE_Gem_SupColdPenetration"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.LightningPenetration",
+    "nameKo": "번개 관통",
+    "sourceKey": "Metadata/Items/Gems/SkillGemLightningPenetrationSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemLightningPenetration",
+    "variantId": "LightningPenetrationSupport",
+    "grantedEffectId": "SupportLightningPenetrationPlayer",
+    "displayGrade": null,
+    "Tier": 2,
+    "gemFamily": "Lightning Penetration",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008DD",
+      "editorId": "SPOE_Gem_SupLightningPenetration"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.DeadlyHerald",
+    "nameKo": "치명적인 전령",
+    "sourceKey": "Metadata/Items/Gems/SkillGemDeadlyHeraldsSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemDeadlyHeralds",
+    "variantId": "DeadlyHeraldsSupport",
+    "grantedEffectId": "SupportDeadlyHeraldsPlayer",
+    "displayGrade": null,
+    "Tier": 3,
+    "gemFamily": "Deadly Heralds",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008DE",
+      "editorId": "SPOE_Gem_SupDeadlyHerald"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.Aftershock1",
+    "nameKo": "여진 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemAftershockChanceSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemAftershock",
+    "variantId": "AftershockChanceSupport",
+    "grantedEffectId": "SupportAftershockChancePlayer",
+    "displayGrade": "I",
+    "Tier": 2,
+    "gemFamily": "Aftershock",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008DF",
+      "editorId": "SPOE_Gem_SupAftershock1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.FistOfWar1",
+    "nameKo": "전쟁의 주먹 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemFistOfWarSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemFistOfWar",
+    "variantId": "FistOfWarSupport",
+    "grantedEffectId": "FistOfWarSupportPlayer",
+    "displayGrade": "I",
+    "Tier": 1,
+    "gemFamily": "Fist of War",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008E0",
+      "editorId": "SPOE_Gem_SupFistOfWar1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  },
+  {
+    "contentId": "sup.RapidCasting1",
+    "nameKo": "빠른 시전 I",
+    "sourceKey": "Metadata/Items/Gems/SkillGemRapidCastingSupport",
+    "gameId": "Metadata/Items/Gems/SupportGemArcaneTempo",
+    "variantId": "RapidCastingSupport",
+    "grantedEffectId": "SupportRapidCastingPlayer",
+    "displayGrade": "I",
+    "Tier": 1,
+    "gemFamily": "Rapid Casting",
+    "shape": "S11",
+    "defaultInput": "none",
+    "form": {
+      "plan": "new",
+      "formId": "0x0008E1",
+      "editorId": "SPOE_Gem_SupRapidCasting1"
+    },
+    "dropCandidate": true,
+    "ready": false
+  }
+]

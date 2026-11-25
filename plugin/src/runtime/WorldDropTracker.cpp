@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "runtime/WorldDropTracker.h"
 #include "runtime/FormIds.h"
+#include "runtime/SaveLoad.h"
 #include "runtime/MapDeviceRuntime.h"
 
 #include "core/LootTable.h"
@@ -49,6 +50,7 @@ namespace SkyrimPoE::Runtime
             if (localId == 0) {
                 return false;
             }
+            const auto* gem = Core::GemForms::FindPhysical(localId);
             return FormIds::CurrencyKindFromLocalFormId(localId).has_value() ||
                    FormIds::DecodeSealedTokenLocalFormId(localId).has_value() ||
                    localId == FormIds::kUniqueSealedToken ||
@@ -56,7 +58,7 @@ namespace SkyrimPoE::Runtime
                    FormIds::CharmKindFromLocalFormId(localId).has_value() ||
                    FormIds::IsMapItemLocalFormId(localId) ||
                    FormIds::IsAscendancy4TributeLocalFormId(localId) ||
-                   !FormIds::FindGemIdForLocalFormId(localId).empty();
+                   (gem && Core::GemForms::IsRecoveryForm(SaveLoad::WorldGemGeneration(), *gem));
         }
 
         [[nodiscard]] std::int32_t CountItemInContainer(RE::TESObjectREFR* owner, RE::TESBoundObject* obj)
@@ -349,12 +351,13 @@ namespace SkyrimPoE::Runtime
             player->AddObjectToContainer(tribute, nullptr, 1, nullptr);
             return CountItemInContainer(player, tribute) > countBefore;
         }
+        const auto gemGeneration = SaveLoad::WorldGemGeneration();
         std::vector<Core::DropEntry> drops;
         {
             std::scoped_lock lock(g_dropMutex);
             drops = Core::LootTable::RollKillDrops(
                 effectiveMonsterLevel, isBoss, isDragon, *g_config, *g_itemData, g_rng, monsterRarity,
-                activeMapTier, bonusIiqPct, bonusIirPct, guaranteeFirstTribute);
+                activeMapTier, bonusIiqPct, bonusIirPct, guaranteeFirstTribute, gemGeneration);
         }
         bool tributeCreated = false;
         for (const auto& d : drops) {
@@ -382,7 +385,7 @@ namespace SkyrimPoE::Runtime
                     misc = FormIds::Lookup<RE::TESObjectMISC>(FormIds::CharmLocalFormId(d.charm));
                     break;
                 case Core::DropKind::SkillGem:
-                    if (const auto localId = FormIds::FindLocalFormIdForGem(d.gemId); localId != 0) {
+                    if (const auto localId = Core::GemForms::ActiveForm(gemGeneration, d.gemId); localId != 0) {
                         misc = FormIds::Lookup<RE::TESObjectMISC>(localId);
                     }
                     break;

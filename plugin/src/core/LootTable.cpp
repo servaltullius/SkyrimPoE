@@ -1,4 +1,5 @@
 #include "core/LootTable.h"
+#include "core/GemForms.h"
 
 #include <algorithm>
 
@@ -42,19 +43,13 @@ namespace SkyrimPoE::Core
         std::uint8_t activeMapTier,
         double bonusIiqPct,
         double bonusIirPct,
-        bool guaranteeFirstTribute)
+        bool guaranteeFirstTribute,
+        std::uint32_t gemGeneration)
     {
         std::vector<DropEntry> drops;
         if (!config.enableLootDrops) {
             return drops;
         }
-
-        static constexpr const char* kStage5DropGems[] = {
-            "Fireball", "FreezingPulse", "Arc", "Spark",
-            "SupportGreaterMultipleProjectiles", "SupportChain", "SupportFork", "SupportPierce", "SupportSpellEcho",
-            "Determination", "Grace", "Discipline", "Hatred", "Wrath", "Anger", "PurityOfElements",
-            "HeraldOfIce", "HeraldOfAsh", "MoltenShell"
-        };
 
         const std::uint8_t tier = ItemLevelToTier(std::max<std::uint32_t>(1, effectiveMonsterLevel));
         const double safeIiq = std::isfinite(bonusIiqPct) ? std::clamp(bonusIiqPct, 0.0, 300.0) : 0.0;
@@ -131,12 +126,12 @@ namespace SkyrimPoE::Core
                 e.worldDropTier = 1;
                 drops.push_back(e);
             }
-            if (u01(rng) < std::clamp(0.04 * mult, 0.0, 0.30)) {
+            const auto gemIds = GemForms::DropIds(gemGeneration);
+            if (!gemIds.empty() && u01(rng) < std::clamp(0.04 * mult, 0.0, 0.30)) {
                 DropEntry e;
                 e.kind = DropKind::SkillGem;
-                constexpr std::size_t kGemCount = sizeof(kStage5DropGems) / sizeof(kStage5DropGems[0]);
-                std::uniform_int_distribution<std::size_t> gDist(0, kGemCount - 1);
-                e.gemId = kStage5DropGems[gDist(rng)];
+                std::uniform_int_distribution<std::size_t> gDist(0, gemIds.size() - 1);
+                e.gemId = gemIds[gDist(rng)];
                 e.worldDropTier = 1;
                 drops.push_back(e);
             }

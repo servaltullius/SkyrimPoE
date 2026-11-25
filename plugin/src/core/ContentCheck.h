@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,6 +12,18 @@
 
 namespace SkyrimPoE::Core
 {
+    class DataPack;
+
+    inline constexpr auto kContentManifestPath = "SKSE/Plugins/SkyrimPoE/manifest.json";
+    inline constexpr auto kStagedGemsPath = "SKSE/Plugins/SkyrimPoE/packs/gen1/gems.json";
+    // 준비 젬 표의 게임 판. 젬 시험 세계의 GENR도 이 값을 쓴다(tools/package/stamp.py STAGED_GAME_VERSION과 같아야 함).
+    inline constexpr auto kStagedGemsGameVersion = "0.5";
+
+    std::string ReadContentFile(const std::filesystem::path& path);
+    std::string ContentSha256(std::string_view bytes);
+    bool LoadStagedGems(DataPack& pack, const std::filesystem::path& dataRoot,
+        std::string_view buildId, std::string& error);
+
     struct ContentIdentity
     {
         std::string game;

@@ -270,8 +270,11 @@ namespace SkyrimPoE::Runtime
 
         [[nodiscard]] std::optional<std::uint8_t> FindEquippedCycloneSlot(const PersistentState& state) noexcept
         {
+            const auto generation = SaveLoad::WorldGemGeneration();
             for (std::size_t i = 0; i < state.slots.size(); ++i) {
-                if (state.slots[i].occupied && state.slots[i].gem.gemId == "Cyclone") {
+                const auto& slot = state.slots[i];
+                if (slot.occupied && Core::GemForms::AllowsExecution(generation, slot.gem.gemId) &&
+                    slot.gem.gemId == "Cyclone") {
                     return static_cast<std::uint8_t>(i);
                 }
             }

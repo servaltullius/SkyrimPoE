@@ -81,7 +81,7 @@ namespace
         }
     };
 
-    Snapshot MakeSnapshot(std::uint32_t exileLevel)
+    Snapshot MakeSnapshot(std::uint32_t exileLevel, std::uint32_t generation = 0)
     {
         Snapshot save;
         save.state.exileLevel = exileLevel;
@@ -90,8 +90,11 @@ namespace
         save.state.appliedHealthDelta = 2.5;
         auto& slot = save.state.slots[1];
         slot.occupied = true;
-        slot.gem = GemInstance{ .instanceId = 11, .gemId = "IceNova" };
-        slot.gem.socketedGems.push_back(GemInstance{ .instanceId = 12, .gemId = "SupportAddedCold" });
+        slot.gem = GemInstance{ .instanceId = 11, .gemId = generation == 0 ? "IceNova" : "gem.IceNova" };
+        slot.gem.socketedGems.push_back(GemInstance{
+            .instanceId = 12, .gemId = generation == 0 ? "SupportAddedCold" : "sup.ConcentratedArea"
+        });
+        save.state.tree.generation = generation;
         save.state.tree.allocatedNodes = { 100, 351 };
         save.state.tree.masterySelections = { { 41, 12 }, { 3, 2 } };
         save.state.atlas.completedTierMask = 0x32;
@@ -172,12 +175,12 @@ POE_TEST("Generation-zero legacy records collect, restore CORE and write the sam
 
 POE_TEST("PRAT round trips player rate deltas in both generations without changing the CORE payload")
 {
-    auto expected = MakeSnapshot(27);
-    expected.state.appliedSpeedMultDelta = 37.5;
-    expected.state.appliedMagickaRateMultDelta = -58.75;
     const auto legacy = EncodeToMemory(MakeSnapshot(27));
-    for (const auto& pack : { kPack, SaveGeneration{ "poe2", 1, "0.5", "1234567890abcdef", "0.1.0" } }) {
-        expected.state.tree.generation = pack.contentGeneration;
+    for (const auto& pack : { kPack, kGen1Pack }) {
+        auto expected = MakeSnapshot(27, pack.contentGeneration);
+        const auto beforeRates = EncodeToMemory(expected, pack);
+        expected.state.appliedSpeedMultDelta = 37.5;
+        expected.state.appliedMagickaRateMultDelta = -58.75;
         SaveRecordBatch written;
         written.complete = WriteSnapshot(expected, pack, [&](RawSaveRecord&& record) {
             written.records.push_back(std::move(record));
@@ -186,7 +189,7 @@ POE_TEST("PRAT round trips player rate deltas in both generations without changi
         POE_CHECK(written.complete);
         const auto& core = written.records.front();
         POE_CHECK(core.type == kRecordCore && core.version == (pack.contentGeneration == 0 ? 2u : 3u));
-        POE_CHECK(core.bytes == legacy.records.front().bytes);
+        POE_CHECK(core.bytes == beforeRates.records.front().bytes);
         POE_CHECK(DecideSave(written, false, pack).disposition == SaveDisposition::Normal);
 
         SkyrimPoE::Runtime::PersistentState restored;
@@ -218,8 +221,7 @@ POE_TEST("PRAT round trips player rate deltas in both generations without changi
 POE_TEST("Damaged PRAT is preserved in either generation and CORE v3 still requires GENR")
 {
     const SaveGeneration pack{ "poe2", 1, "0.5", "1234567890abcdef", "0.1.0" };
-    auto save = MakeSnapshot(27);
-    save.state.tree.generation = pack.contentGeneration;
+    auto save = MakeSnapshot(27, pack.contentGeneration);
     save.state.appliedMagickaRateMultDelta = -50.0;
     SaveRecordBatch written;
     written.complete = WriteSnapshot(save, pack, [&](RawSaveRecord&& record) {
@@ -271,8 +273,7 @@ POE_TEST("Damaged PRAT is preserved in either generation and CORE v3 still requi
 
 POE_TEST("Normal generation-one loads require exactly one PRAT, CORE v3 and TREE v2")
 {
-    auto save = MakeSnapshot(27);
-    save.state.tree.generation = kGen1Pack.contentGeneration;
+    auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
     const auto valid = EncodeToMemory(save, kGen1Pack);
     POE_CHECK(valid.complete && DecideSave(valid, false, kGen1Pack).disposition == SaveDisposition::Normal);
     for (const auto type : { kRecordPlayerRates, kRecordCore, kRecordTree }) {
@@ -300,8 +301,7 @@ POE_TEST("Normal generation-one loads require exactly one PRAT, CORE v3 and TREE
 
 POE_TEST("Generation-one GENR rejects a fully readable CORE v2")
 {
-    auto save = MakeSnapshot(27);
-    save.state.tree.generation = kGen1Pack.contentGeneration;
+    auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
     auto batch = EncodeToMemory(save, kGen1Pack);
     auto gen0 = EncodeToMemory(MakeSnapshot(27));
     FindRecord(batch, kRecordCore) = FindRecord(gen0, kRecordCore);
@@ -316,9 +316,8 @@ POE_TEST("CORE v3 rejects nonfinite health and magicka deltas while v2 still rea
              std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() }) {
         for (const auto delta : { &SkyrimPoE::Runtime::PersistentState::appliedHealthDelta,
                  &SkyrimPoE::Runtime::PersistentState::appliedMagickaDelta }) {
-            auto save = MakeSnapshot(27);
+            auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
             save.state.*delta = invalid;
-            save.state.tree.generation = kGen1Pack.contentGeneration;
             auto batch = EncodeToMemory(save, kGen1Pack);
             auto& core = FindRecord(batch, kRecordCore);
             SkyrimPoE::Runtime::PersistentState restored;
@@ -334,8 +333,7 @@ POE_TEST("CORE v3 rejects nonfinite health and magicka deltas while v2 still rea
 POE_TEST("Truncated TREE is preserved even if its generation was fully read")
 {
     for (const auto& pack : { kPack, kGen1Pack }) {
-        auto save = MakeSnapshot(27);
-        save.state.tree.generation = pack.contentGeneration;
+        auto save = MakeSnapshot(27, pack.contentGeneration);
         auto batch = EncodeToMemory(save, pack);
         if (pack.contentGeneration == 0) {
             auto duplicate = batch;
@@ -353,8 +351,7 @@ POE_TEST("Truncated TREE is preserved even if its generation was fully read")
 
 POE_TEST("Prior TREE v2 loads but a duplicate attribute selection key preserves the save")
 {
-    auto save = MakeSnapshot(27);
-    save.state.tree.generation = kGen1Pack.contentGeneration;
+    auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
     auto batch = EncodeToMemory(save, kGen1Pack);
     auto& tree = FindRecord(batch, kRecordTree);
     const auto setTree = [&](const auto& words) {
@@ -374,8 +371,7 @@ POE_TEST("Prior TREE v2 loads but a duplicate attribute selection key preserves 
 
 POE_TEST("Saving a selected class without an ID warns and keeps TREE; loading that invalid flag preserves")
 {
-    auto save = MakeSnapshot(27);
-    save.state.tree.generation = kGen1Pack.contentGeneration;
+    auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
     save.state.tree.classSelected = true;
     save.state.tree.bossKillCount = 7;
     SaveRecordBatch batch;

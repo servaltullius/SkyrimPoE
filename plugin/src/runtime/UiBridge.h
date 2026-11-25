@@ -56,6 +56,7 @@ namespace SkyrimPoE::Runtime
         // 자동 시험용(주 갱신 스레드 전용): 실제 사용자 경로와 동일한 패널 열기·JS 명령 처리·페이로드 생성 진입점
         static bool TryOpenPanelOnMainThread(std::string_view initialTab = "skills");
         static void ExecuteCommandForTestOnMainThread(std::string_view rawJson);
+        [[nodiscard]] static std::pair<bool, std::string> ExecuteGemCommandForTestOnMainThread(std::string_view rawJson);
         [[nodiscard]] static std::string BuildPanelJsonForTestOnMainThread();
     };
 }

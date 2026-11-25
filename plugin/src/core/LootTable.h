@@ -55,6 +55,7 @@ namespace SkyrimPoE::Core
             std::uint8_t activeMapTier = 0,
             double bonusIiqPct = 0.0,
             double bonusIirPct = 0.0,
-            bool guaranteeFirstTribute = false);
+            bool guaranteeFirstTribute = false,
+            std::uint32_t gemGeneration = 0);
     };
 }

@@ -362,7 +362,7 @@ namespace SkyrimPoE::Runtime
                 return it->second;
             }
             if (g_dataPack) {
-                if (const auto* def = g_dataPack->FindGem(gemId)) {
+                if (const auto* def = g_dataPack->FindGem(gemId, SaveLoad::WorldGemGeneration())) {
                     return def->name;
                 }
             }
@@ -568,11 +568,13 @@ namespace SkyrimPoE::Runtime
             j["name"] = DisplayGemName(gem.gemId);
             j["level"] = gem.level;
             j["xp"] = gem.xp;
-            j["reqXp"] = Core::KillTracker::RequiredXpForNextGemLevel(gem.level);
+            const auto gemGeneration = SaveLoad::WorldGemGeneration();
+            j["reqXp"] = gemGeneration == 0 ? Core::KillTracker::RequiredXpForNextGemLevel(gem.level) : 0;
+            j["reason"] = Core::GemForms::UseReasonText(Core::GemForms::ClassifyUse(gemGeneration, gem.gemId).reason);
             j["socketCount"] = gem.socketCount;
             Core::GemKind kind = Core::GemKind::Unknown;
             if (g_dataPack) {
-                if (const auto* def = g_dataPack->FindGem(gem.gemId)) {
+                if (const auto* def = g_dataPack->FindGem(gem.gemId, gemGeneration)) {
                     kind = def->kind;
                 }
             }
@@ -898,6 +900,7 @@ namespace SkyrimPoE::Runtime
             }
             root["slots"] = std::move(slotsArr);
 
+            const auto gemGeneration = SaveLoad::WorldGemGeneration();
             json invArr = json::array();
             for (const auto& t : inv.trackedGems) {
                 json tj;
@@ -906,13 +909,15 @@ namespace SkyrimPoE::Runtime
                 tj["uniqueId"] = t.key.uniqueId;
                 tj["gemId"] = t.gem.gemId;
                 tj["name"] = DisplayGemName(t.gem.gemId);
+                tj["reason"] = Core::GemForms::UseReasonText(
+                    Core::GemForms::ClassifyUse(gemGeneration, t.gem.gemId).reason);
                 tj["level"] = t.gem.level;
                 tj["socketCount"] = t.gem.socketCount;
                 tj["socketedCount"] = t.gem.socketedGems.size();
                 tj["count"] = 1;
                 Core::GemKind kind = Core::GemKind::Unknown;
                 if (g_dataPack) {
-                    if (const auto* def = g_dataPack->FindGem(t.gem.gemId)) {
+                    if (const auto* def = g_dataPack->FindGem(t.gem.gemId, gemGeneration)) {
                         kind = def->kind;
                     }
                 }
@@ -922,7 +927,7 @@ namespace SkyrimPoE::Runtime
             for (const auto& p : inv.plainStacks) {
                 Core::GemKind kind = Core::GemKind::Unknown;
                 if (g_dataPack) {
-                    if (const auto* def = g_dataPack->FindGem(p.gemId)) {
+                    if (const auto* def = g_dataPack->FindGem(p.gemId, gemGeneration)) {
                         kind = def->kind;
                     }
                 }
@@ -932,6 +937,8 @@ namespace SkyrimPoE::Runtime
                 pj["uniqueId"] = 0;
                 pj["gemId"] = p.gemId;
                 pj["name"] = DisplayGemName(p.gemId);
+                pj["reason"] = Core::GemForms::UseReasonText(
+                    Core::GemForms::ClassifyUse(gemGeneration, p.gemId).reason);
                 pj["level"] = 1;
                 const bool hasNoSockets =
                     (kind == Core::GemKind::Support || kind == Core::GemKind::Aura || kind == Core::GemKind::Herald);
@@ -1121,9 +1128,13 @@ namespace SkyrimPoE::Runtime
                     if (!s.occupied) {
                         continue;
                     }
+                    // 세계 세대에서 쓸 수 없는 젬(구판·미준비)은 쥬얼러 대상이 아니다.
+                    if (!Core::GemForms::AllowsExecution(gemGeneration, s.gem.gemId)) {
+                        continue;
+                    }
                     Core::GemKind rootKind = Core::GemKind::Unknown;
                     if (g_dataPack) {
-                        if (const auto* def = g_dataPack->FindGem(s.gem.gemId)) {
+                        if (const auto* def = g_dataPack->FindGem(s.gem.gemId, gemGeneration)) {
                             rootKind = def->kind;
                         }
                     }
@@ -1144,6 +1155,9 @@ namespace SkyrimPoE::Runtime
                     }
                     if (rootKind == Core::GemKind::Trigger) {
                         for (const auto& sp : s.gem.socketedGems) {
+                            if (!Core::GemForms::AllowsExecution(gemGeneration, sp.gemId)) {
+                                continue;
+                            }
                             const auto spName = DisplayGemName(sp.gemId);
                             jewArr.push_back(json{
                                 { "slotIndex", i },
@@ -1573,7 +1587,8 @@ namespace SkyrimPoE::Runtime
         }
 
         // ---- JS -> C++ 명령 처리(Prisma UI 스레드에서 호출될 수 있으므로 반드시 CommandQueue로 이연) ----
-        void ExecuteCommandOnMainThread(const std::string& rawJson, std::uint64_t mapRunId)
+        void ExecuteCommandOnMainThread(const std::string& rawJson, std::uint64_t mapRunId,
+            std::pair<bool, std::string>* gemResult = nullptr)
         {
             if (!g_dataPack || !g_config || !g_statEngine) {
                 return;
@@ -2140,7 +2155,8 @@ namespace SkyrimPoE::Runtime
                     if (op == "equip") {
                         const std::string gemId = cmd.contains("gemId") && cmd["gemId"].is_string() ? cmd["gemId"].get<std::string>() : "";
                         txRes = Core::GemTransaction::EquipSkillGem(
-                            st.slots, st.nextGemInstanceId, slot, readItemKey(), gemId, g_config->starterSockets, *g_dataPack, adapter);
+                            st.slots, st.nextGemInstanceId, slot, readItemKey(), gemId, g_config->starterSockets,
+                            *g_dataPack, adapter, SaveLoad::WorldGemGeneration());
                     } else if (op == "unequip") {
                         txRes = Core::GemTransaction::UnequipSkillGem(st.slots, slot, adapter);
                     } else if (op == "socket") {
@@ -2149,7 +2165,7 @@ namespace SkyrimPoE::Runtime
                         const std::string gemId = cmd.contains("gemId") && cmd["gemId"].is_string() ? cmd["gemId"].get<std::string>() : "";
                         txRes = Core::GemTransaction::SocketSubGem(
                             st.slots, st.nextGemInstanceId, slot, static_cast<std::int32_t>(spellIdx),
-                            readItemKey(), gemId, g_config->starterSockets, *g_dataPack, adapter);
+                            readItemKey(), gemId, g_config->starterSockets, *g_dataPack, adapter, SaveLoad::WorldGemGeneration());
                     } else if (op == "unsocket") {
                         std::int64_t spellIdx = -1;
                         std::int64_t socketIdx = 0;
@@ -2167,7 +2183,7 @@ namespace SkyrimPoE::Runtime
                             return;
                         }
                         txRes = Core::GemTransaction::LinkTriggerAttack(
-                            st.slots, slot, static_cast<std::int8_t>(atkSlot), *g_dataPack);
+                            st.slots, slot, static_cast<std::int8_t>(atkSlot), *g_dataPack, SaveLoad::WorldGemGeneration());
                     } else {
                         txRes = { false, "지원하지 않는 UI 명령입니다.", std::nullopt };
                     }
@@ -2193,6 +2209,9 @@ namespace SkyrimPoE::Runtime
                     SaveLoad::SyncStateToStatEngine();
                     (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
                     ProxySpellRuntime::SyncProxySpellsFromState();
+                }
+                if (gemResult) {
+                    *gemResult = { txRes.ok, txRes.message };
                 }
                 PushToastToJs(txRes.ok, txRes.message);
                 PushPanelStateToJs();
@@ -2644,6 +2663,13 @@ namespace SkyrimPoE::Runtime
     void UiBridge::ExecuteCommandForTestOnMainThread(std::string_view rawJson)
     {
         ExecuteCommandOnMainThread(std::string(rawJson), MapDeviceRuntime::GetActiveRunId());
+    }
+
+    std::pair<bool, std::string> UiBridge::ExecuteGemCommandForTestOnMainThread(std::string_view rawJson)
+    {
+        std::pair<bool, std::string> result;
+        ExecuteCommandOnMainThread(std::string(rawJson), MapDeviceRuntime::GetActiveRunId(), &result);
+        return result;
     }
 
     std::string UiBridge::BuildPanelJsonForTestOnMainThread()

@@ -9,6 +9,117 @@ using namespace SkyrimPoE::Core;
 using namespace SkyrimPoE::Core::SaveRecord;
 using SkyrimPoE::Runtime::AutoTestMarker::ParseMarker;
 
+POE_TEST("Gem hand retries send at most five requests two seconds apart")
+{
+    using SkyrimPoE::Runtime::AutoTestMarker::GemsRetry;
+    using Action = GemsRetry::Action;
+    GemsRetry retry(5);
+    for (unsigned attempt = 0; attempt < 5; ++attempt) {
+        const double now = 1.0 + attempt * 2.0;
+        POE_CHECK(retry.Poll(now) == Action::Request);
+        POE_CHECK(retry.Poll(now + 1.99) == Action::Wait);
+        POE_CHECK(retry.Attempts() == attempt + 1);
+    }
+    POE_CHECK(retry.Poll(11.0) == Action::Exhausted);
+    POE_CHECK(retry.Poll(90.0) == Action::Exhausted);
+    POE_CHECK(retry.Attempts() == 5);
+    POE_CHECK(retry.ExhaustionMessage("Right-hand proxy equip") ==
+        "Right-hand proxy equip did not complete after 5 requests.");
+}
+
+POE_TEST("Gem load and save retries have independent budgets and no catch-up burst")
+{
+    using SkyrimPoE::Runtime::AutoTestMarker::GemsRetry;
+    using Action = GemsRetry::Action;
+    GemsRetry load(3);
+    GemsRetry save(3);
+    POE_CHECK(load.Poll(0, 4) == Action::Request);
+    POE_CHECK(load.Poll(3, 4) == Action::Wait);
+    POE_CHECK(load.Poll(20, 4) == Action::Request);
+    POE_CHECK(load.Poll(20.1, 4) == Action::Wait);
+    POE_CHECK(save.Poll(20.1) == Action::Request);
+    POE_CHECK(load.Poll(24, 4) == Action::Request);
+    POE_CHECK(load.Poll(28, 4) == Action::Exhausted);
+    POE_CHECK(save.Attempts() == 1);
+}
+
+POE_TEST("Gem right-hand readiness accepts selection only when the process hand is empty")
+{
+    using SkyrimPoE::Runtime::AutoTestMarker::IsGemsProxyInHand;
+    POE_CHECK(IsGemsProxyInHand(true, true, false));
+    POE_CHECK(IsGemsProxyInHand(false, false, true));
+    POE_CHECK(!IsGemsProxyInHand(true, false, true));
+    POE_CHECK(!IsGemsProxyInHand(false, false, false));
+}
+
+POE_TEST("Gem test world selection survives cleanup matching and returns to the package catalog")
+{
+    using SkyrimPoE::Runtime::AutoTestMarker::GemTestWorld;
+    GemTestWorld world;
+    world.BeginLoad(0);
+    world.Select(0, true);
+    POE_CHECK(world.Generation() == 0);
+
+    world.Expect("Baseline");
+    world.BeginLoad(0);
+    POE_CHECK(world.Match("BASELINE.ess"));
+    world.Select(0, true);
+    world.ClearMatch();
+    POE_CHECK(world.Generation() == 1);
+    POE_CHECK(!world.Match("BASELINE.ess"));
+    POE_CHECK(world.Generation() == 1);
+
+    world.Expect("Probe_final");
+    world.BeginLoad(0);
+    POE_CHECK(world.Generation() == 0);
+    POE_CHECK(world.Match("Probe_final"));
+    world.Select(0, true);
+    POE_CHECK(world.Generation() == 1);
+
+    world.Expect("Probe_final");
+    world.BeginLoad(0);
+    POE_CHECK(!world.Match("Different.ess"));
+    POE_CHECK(!world.Match("Probe_final.ess"));
+    world.Select(0, true);
+    POE_CHECK(world.Generation() == 0);
+
+    world.Expect("Probe_final");
+    POE_CHECK(world.Match("Probe_final"));
+    world.Select(0, false);
+    POE_CHECK(world.Generation() == 0);
+    world.End(1);
+    POE_CHECK(world.Generation() == 1);
+}
+
+POE_TEST("Gem test autosave settings restore the original values once")
+{
+    SkyrimPoE::Runtime::AutoTestMarker::AutoSaveSettings settings;
+    bool saveOnRest = true;
+    bool saveOnWait = false;
+    bool disableAutosave = false;
+    settings.Set(saveOnRest, false);
+    settings.Set(saveOnRest, false);  // Two engine collections may share the same setting.
+    settings.Set(saveOnWait, false);
+    settings.Set(disableAutosave, true);
+    POE_CHECK(!saveOnRest && !saveOnWait && disableAutosave);
+    POE_CHECK(settings.Restore() == 3);
+    POE_CHECK(saveOnRest && !saveOnWait && !disableAutosave);
+    POE_CHECK(settings.Restore() == 0);
+}
+
+POE_TEST("Gems marker rejects overwritten save names, missing baselines and quit false")
+{
+    std::istringstream valid("only=gems\nsave=Baseline.ess\ntemp_save=Probe\nquit=true\n");
+    const auto parsed = ParseMarker(valid);
+    POE_CHECK(parsed && parsed->gemsOnly && !parsed->cleanupOnly);
+    for (const auto* stem : { "", "probe", "PROBE_FINAL.ess", "Probe_h_restore", "PROBE_H_RESTORE_2026_2.ess" }) {
+        std::istringstream conflict(std::string("only=gems\ntemp_save=Probe\nsave=") + stem + "\n");
+        POE_CHECK(!ParseMarker(conflict));
+    }
+    std::istringstream stay("only=gems\nsave=Baseline\nquit=false\n");
+    POE_CHECK(!ParseMarker(stay));
+}
+
 namespace
 {
     std::vector<std::uint8_t> EncodeMapRun(std::uint32_t version, const ActiveMapState& run)

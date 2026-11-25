@@ -24,7 +24,8 @@ namespace SkyrimPoE::Core::SaveRecord
     inline constexpr std::uint32_t kRecordAtlas = 'ATLS';
     inline constexpr std::uint32_t kRecordMaps = 'MAPS';
     inline constexpr std::uint32_t kCoreVersion = 3;
-    inline constexpr std::uint32_t kGemKeysVersion = 1;
+    inline constexpr std::uint32_t kLegacyGemKeysVersion = 1;
+    inline constexpr std::uint32_t kGemKeysVersion = 2;
     inline constexpr std::uint32_t kLegacyTreeVersion = 1;
     inline constexpr std::uint32_t kTreeVersion = 2;
     inline constexpr std::uint32_t kItemsVersion = 2;
@@ -93,7 +94,16 @@ namespace SkyrimPoE::Core::SaveRecord
         std::uint32_t jewelGeneration = 0;
     };
 
-    bool ReadGemInstance(std::span<const std::uint8_t>& bytes, GemInstance& out, std::uint32_t depth = 0);
+    struct GemKeyValidation
+    {
+        std::uint32_t generation;
+        bool valid = true;
+    };
+
+    bool ReadGemInstance(std::span<const std::uint8_t>& bytes, GemInstance& out);
+    // Legacy reads may recover a prefix. Version two requires the full payload.
+    bool ReadGemKeysRecord(const RawSaveRecord& record, std::vector<Runtime::TrackedGemEntry>& out,
+        GemKeyValidation* validation = nullptr);
     bool ReadLegacyCoreV2Front(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& out);
     bool ReadLegacyCoreV2Slots(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& out);
     bool ReadCoreV2(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& out);
@@ -110,5 +120,5 @@ namespace SkyrimPoE::Core::SaveRecord
     SaveDecision DecideSave(const SaveRecordBatch& batch, bool isNewGame, const SaveGeneration& pack,
         std::optional<std::uint32_t> activeTreeGeneration = std::nullopt);
     bool WriteSnapshot(const Snapshot& snapshot, const SaveGeneration& generation, const RecordSink& sink,
-        const Report& reportWarning = {});
+        const Report& reportWarning = {}, const Report& reportOmission = {});
 }

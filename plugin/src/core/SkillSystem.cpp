@@ -1,4 +1,5 @@
 #include "core/SkillSystem.h"
+#include "core/GemForms.h"
 
 #include <algorithm>
 #include <cmath>
@@ -88,7 +89,8 @@ namespace SkyrimPoE::Core
             if (!slot.occupied || slot.linkedAttackSlot != static_cast<std::int8_t>(attackSlotIndex)) {
                 continue;
             }
-            const auto* def = pack.FindGem(slot.gem.gemId);
+            if (!GemForms::AllowsExecution(snapshot.gemGeneration, slot.gem.gemId)) continue;
+            const auto* def = pack.FindGem(slot.gem.gemId, snapshot.gemGeneration);
             if (def && def->kind == GemKind::Trigger) {
                 triggerSlotIdx = i;
                 break;
@@ -112,6 +114,7 @@ namespace SkyrimPoE::Core
         for (std::size_t step = 0; step < maxSockets; ++step) {
             const std::size_t idx = (cursor + step) % maxSockets;
             const auto& spellInst = trigSlot.gem.socketedGems[idx];
+            if (!GemForms::AllowsExecution(snapshot.gemGeneration, spellInst.gemId)) continue;
             const auto statsIt = snapshot.triggeredSpellStats.find(spellInst.instanceId);
             if (statsIt == snapshot.triggeredSpellStats.end()) {
                 continue;
@@ -198,7 +201,10 @@ namespace SkyrimPoE::Core
             return std::nullopt;
         }
         const auto& stats = snapshot.slotStats[slotIndex];
-        if (stats.kind != GemKind::Spell || stats.gemId.empty()) {
+        if (!GemForms::AllowsExecution(snapshot.gemGeneration, slot.gem.gemId) ||
+            !GemForms::AllowsExecution(snapshot.gemGeneration, stats.gemId) ||
+            (snapshot.gemGeneration != 0 && stats.gemId != slot.gem.gemId) ||
+            stats.kind != GemKind::Spell || stats.gemId.empty()) {
             return std::nullopt;
         }
         if (config.enforceGemRequirements && !stats.requirementMet) {
@@ -274,6 +280,11 @@ namespace SkyrimPoE::Core
             return res;
         }
         const auto& stats = snapshot.slotStats[slotIndex];
+        if (!GemForms::AllowsExecution(snapshot.gemGeneration, slots[slotIndex].gem.gemId)) {
+            res.failReason = GemForms::UseReasonText(
+                GemForms::ClassifyUse(snapshot.gemGeneration, slots[slotIndex].gem.gemId).reason);
+            return res;
+        }
         if (stats.kind != GemKind::Guard) {
             res.failReason = "가드 스킬이 아닙니다.";
             return res;

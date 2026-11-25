@@ -12,15 +12,18 @@
 #include "core/Types.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <istream>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace RE { class Main; }
 
@@ -53,6 +56,7 @@ namespace SkyrimPoE::Runtime
             bool enemyEsOnly = false;
             bool saveOnly = false;
             bool cleanupOnly = false;
+            bool gemsOnly = false;
         };
 
         inline std::string Trim(std::string_view sv)
@@ -131,6 +135,117 @@ namespace SkyrimPoE::Runtime
             std::string expected_;
         };
 
+        // Load matching is one-shot. The selected catalog lasts until the next load.
+        // Request and selection writes are serialized with the co-save callbacks.
+        class GemTestWorld
+        {
+        public:
+            void Expect(std::string_view stem) { request_.Expect(stem); }
+            bool Match(std::string_view name) noexcept { return matched_ = request_.Match(name); }
+            [[nodiscard]] bool MatchedLoad() const noexcept { return matched_; }
+            void BeginLoad(std::uint32_t packageGeneration) noexcept
+            {
+                matched_ = false;
+                Select(packageGeneration, false);
+            }
+            void Select(std::uint32_t packageGeneration, bool acceptedLoad) noexcept
+            {
+                generation_.store(acceptedLoad && matched_ ? 1 : packageGeneration, std::memory_order_release);
+            }
+            void ClearMatch() noexcept { matched_ = false; }
+            void End(std::uint32_t packageGeneration) noexcept
+            {
+                request_.Clear();
+                BeginLoad(packageGeneration);
+            }
+            [[nodiscard]] std::uint32_t Generation() const noexcept
+            {
+                return generation_.load(std::memory_order_acquire);
+            }
+
+        private:
+            CleanupLoadRequest request_;
+            bool matched_ = false;
+            std::atomic<std::uint32_t> generation_{ 0 };
+        };
+
+        class AutoSaveSettings
+        {
+        public:
+            void Set(bool& value, bool temporary)
+            {
+                if (std::ranges::none_of(originals_, [&value](const auto& entry) { return entry.first == &value; })) {
+                    originals_.emplace_back(&value, value);
+                }
+                value = temporary;
+            }
+            [[nodiscard]] std::size_t Restore() noexcept
+            {
+                for (const auto& [setting, value] : originals_) {
+                    *setting = value;
+                }
+                const auto count = originals_.size();
+                originals_.clear();
+                return count;
+            }
+
+        private:
+            std::vector<std::pair<bool*, bool>> originals_;
+        };
+
+        class GemsRetry
+        {
+        public:
+            enum class Action { Wait, Request, Exhausted };
+
+            explicit GemsRetry(unsigned limit) noexcept : limit_(limit) {}
+
+            [[nodiscard]] Action Poll(double elapsed, double interval = 2.0) noexcept
+            {
+                if (elapsed < next_) return Action::Wait;
+                if (attempts_ == limit_) return Action::Exhausted;
+                ++attempts_;
+                next_ = elapsed + interval;
+                return Action::Request;
+            }
+
+            [[nodiscard]] unsigned Attempts() const noexcept { return attempts_; }
+            [[nodiscard]] std::string ExhaustionMessage(std::string_view action) const
+            {
+                return std::format("{} did not complete after {} requests.", action, attempts_);
+            }
+
+        private:
+            unsigned limit_;
+            unsigned attempts_ = 0;
+            double next_ = 0.0;
+        };
+
+        // The process slot may be empty while the game stores a spell in its
+        // selected-spell slot. A different right-hand object still blocks the cast.
+        [[nodiscard]] constexpr bool IsGemsProxyInHand(bool hasRightObject, bool rightObjectIsProxy,
+            bool rightSelectedIsProxy) noexcept
+        {
+            return hasRightObject ? rightObjectIsProxy : rightSelectedIsProxy;
+        }
+
+        inline bool IsCheckpointStem(std::string_view stem, std::string_view temporary)
+        {
+            const auto prefix = std::string(temporary) + kHCheckpointSuffix;
+            if (stem.size() < prefix.size() || !SameSaveStem(stem.substr(0, prefix.size()), prefix)) {
+                return false;
+            }
+            const auto suffix = stem.substr(prefix.size());
+            if (suffix.empty()) return true;
+            if (suffix.front() != '_') return false;
+            const auto split = suffix.find('_', 1);
+            if (split == std::string_view::npos) return false;
+            const auto digits = [](std::string_view value) {
+                return !value.empty() && value.find_first_not_of("0123456789") == std::string_view::npos;
+            };
+            return digits(suffix.substr(1, split - 1)) && digits(suffix.substr(split + 1));
+        }
+
         inline std::optional<AutoTestConfig> ParseMarker(std::istream& input)
         {
             AutoTestConfig out;
@@ -173,17 +288,18 @@ namespace SkyrimPoE::Runtime
                     if (mode.empty()) {
                         continue;
                     }
-                    if (mode != "h27" && mode != "es" && mode != "save" && mode != "cleanup") {
+                    if (mode != "h27" && mode != "es" && mode != "save" && mode != "cleanup" && mode != "gems") {
                         return std::nullopt;
                     }
-                    if ((out.cleanupOnly && mode != "cleanup") ||
-                        (mode == "cleanup" && (out.routeOnly || out.enemyEsOnly || out.saveOnly))) {
+                    if ((out.cleanupOnly && mode != "cleanup") || (out.gemsOnly && mode != "gems") ||
+                        ((mode == "cleanup" || mode == "gems") && (out.routeOnly || out.enemyEsOnly || out.saveOnly))) {
                         return std::nullopt;
                     }
                     out.routeOnly = mode == "h27";
                     out.enemyEsOnly = mode == "es";
                     out.saveOnly = mode == "save";
                     out.cleanupOnly = mode == "cleanup";
+                    out.gemsOnly = mode == "gems";
                 } else if (key == "timeout_sec") {
                     try {
                         const double sec = std::stod(val);
@@ -195,13 +311,14 @@ namespace SkyrimPoE::Runtime
                     }
                 }
             }
-            if (out.cleanupOnly) {
+            if (out.cleanupOnly || out.gemsOnly) {
                 if (!out.quitWhenDone) {
                     return std::nullopt;
                 }
                 try {
                     if (SameSaveStem(out.baselineSave, out.tempSave) ||
-                        SameSaveStem(out.baselineSave, out.tempSave + kCleanupFinalSuffix)) {
+                        SameSaveStem(out.baselineSave, out.tempSave + kCleanupFinalSuffix) ||
+                        (out.gemsOnly && (out.baselineSave.empty() || IsCheckpointStem(out.baselineSave, out.tempSave)))) {
                         return std::nullopt;
                     }
                 } catch (const std::exception&) {
@@ -230,7 +347,7 @@ namespace SkyrimPoE::Runtime
             Core::StatEngine* statEngine,
             Core::EnergyShieldPool* esPool,
             Core::KillTracker* killTracker,
-            const Core::DataPack* dataPack,
+            Core::DataPack* dataPack,
             const Core::PassiveTreeData* treeData,
             const Core::ItemData* itemData,
             Core::Config* config,
@@ -239,6 +356,7 @@ namespace SkyrimPoE::Runtime
 
         [[nodiscard]] static bool IsEnabled() noexcept;
         [[nodiscard]] static bool IsCleanupOnly() noexcept;
+        [[nodiscard]] static bool IsGemsOnly() noexcept;
 
         // 주 갱신 스레드 프레임 콜백에서 호출(비활성 시 즉시 반환)
         static void Tick(RE::Main* main, double deltaSec);

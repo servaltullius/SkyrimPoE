@@ -142,11 +142,31 @@ namespace SkyrimPoE::Runtime
             return value && value->GetType() == RE::Setting::Type::kFloat ? value->GetFloat() : 1.0;
         }
 
+        // 시험 진단용 시전 추적. AutoTest가 켜고 끈다(일반 플레이에서는 꺼져 있어 기록하지 않음).
+        std::atomic<bool> g_castTrace{ false };
+
         struct CheckCastHook
         {
             static constexpr std::size_t kIndex = 0x0A;
 
             static bool Thunk(
+                RE::MagicCaster* caster,
+                RE::MagicItem* spell,
+                bool dualCast,
+                float* alchStrength,
+                RE::MagicSystem::CannotCastReason* reason,
+                bool useBaseValueForCost)
+            {
+                const bool result = Decide(caster, spell, dualCast, alchStrength, reason, useBaseValueForCost);
+                if (g_castTrace.load(std::memory_order_relaxed) && IsPlayerCaster(caster)) {
+                    SKSE::log::info("ProxySpellRuntime trace: CheckCast spell=0x{:08X} dual={} result={} reason={}",
+                        spell ? spell->GetFormID() : 0u, dualCast, result,
+                        reason ? static_cast<std::uint32_t>(*reason) : 0xFFFFFFFFu);
+                }
+                return result;
+            }
+
+            static bool Decide(
                 RE::MagicCaster* caster,
                 RE::MagicItem* spell,
                 bool dualCast,
@@ -174,6 +194,21 @@ namespace SkyrimPoE::Runtime
                     return origOk;
                 }
                 const auto& slotStat = snap->slotStats[slotIdx];
+                const auto gemGeneration = SaveLoad::WorldGemGeneration();
+                if (snap->gemGeneration != gemGeneration) {
+                    if (reason) *reason = RE::MagicSystem::CannotCastReason::kPowerUsed;
+                    return false;
+                }
+                if (gemGeneration != 0) {
+                    const auto use = Core::GemForms::ClassifyUse(gemGeneration, slotStat.gemId);
+                    if (!use.execute || (!isPower && !ProjectileRuntime::HasSpellDelivery(gemGeneration, slotStat.gemId))) {
+                        if (reason) *reason = RE::MagicSystem::CannotCastReason::kPowerUsed;
+                        MaybeQueueCooldownNotice(generation, slotIdx, use.execute
+                            ? "이 젬의 실행기가 연결되지 않았습니다."
+                            : std::string(Core::GemForms::UseReasonText(use.reason)));
+                        return false;
+                    }
+                }
                 const bool slotActive = isPower
                     ? g_bindings[slotIdx].isPowerActive.load(std::memory_order_acquire)
                     : g_bindings[slotIdx].isSpellActive.load(std::memory_order_acquire);
@@ -215,7 +250,7 @@ namespace SkyrimPoE::Runtime
                     }
                 }
 
-                // Guard powers and generation-one proxies defer the full cost to the queued cast.
+                // Guard powers and PoE2 passive builds defer the cost to the queued cast.
                 if (av && (isPower || snap->poe2Passives || snap->bloodMagic)) {
                     const double maxHp = av->GetPermanentActorValue(RE::ActorValue::kHealth);
                     const double baseMaxMag = CombatHooks::GetBaseSkyrimMaxMagicka(player);
@@ -256,6 +291,10 @@ namespace SkyrimPoE::Runtime
             {
                 const auto generation = g_queue ? g_queue->CurrentGeneration() : 0;
                 original(caster, doCast, arg2, spell);
+                if (g_castTrace.load(std::memory_order_relaxed) && IsPlayerCaster(caster)) {
+                    SKSE::log::info("ProxySpellRuntime trace: SpellCast spell=0x{:08X} doCast={} arg2={}",
+                        spell ? spell->GetFormID() : 0u, doCast, arg2);
+                }
                 if (!doCast || !g_queue || MapDeviceRuntime::IsUninstallCleanupActive() || !IsPlayerCaster(caster)) {
                     return;
                 }
@@ -284,6 +323,9 @@ namespace SkyrimPoE::Runtime
                         g_pendingAuthByCaster.erase(it);
                     }
                 }
+                if (g_castTrace.load(std::memory_order_relaxed)) {
+                    SKSE::log::info("ProxySpellRuntime trace: SpellCast slot={} power={} authorized={}", slotIdx + 1, isPower, authorized);
+                }
                 if (!authorized) {
                     return;
                 }
@@ -303,7 +345,7 @@ namespace SkyrimPoE::Runtime
                     if (isPower) {
                         (void)ProxySpellRuntime::ExecuteGuardPowerSlot(slotIdx);
                     } else {
-                        // The queued cast checks the snapshot to select the generation-one cost path.
+                        // The queued cast checks the snapshot to select the passive tree's cost path.
                         (void)ProxySpellRuntime::ExecuteHandCastSlot(
                             slotIdx,
                             false,
@@ -323,6 +365,33 @@ namespace SkyrimPoE::Runtime
         static_assert(std::is_same_v<decltype(&SpellCastHook::Thunk), decltype(MemberFnToThunk(&RE::MagicCaster::SpellCast))>);
     }
 
+    // 대리 주문·파워에는 효과가 하나 있어야 한다. 2026-11-25까지의 ESP는 효과 항목(EFID)에 데이터(EFIT)가 없어 엔진이 그 효과를
+    // 버렸고, 그래서 MagicItem::GetCostliestEffectItem()이 null이었다(AE 1.6.1170 디컴파일: 효과 목록이 비면 null).
+    // 이 값을 확인하지 않고 읽는 다른 모드(DynamicMagicModificationFramework의 RequestCast 훅)는 손 시전 때 튕겼다.
+    // ESP에 EFIT(크기·범위·지속 0)를 넣어 고쳤고, 여기서는 그것이 실제로 불러와졌는지만 확인한다.
+    void ProxySpellRuntime::SetCastTraceForTest(bool enabled)
+    {
+        g_castTrace.store(enabled, std::memory_order_relaxed);
+        SKSE::log::info("ProxySpellRuntime trace: {}.", enabled ? "on" : "off");
+    }
+
+    void ProxySpellRuntime::EnsureProxyCostliestEffects()
+    {
+        std::size_t missing = 0;
+        for (std::size_t i = 0; i < Core::kSkillSlotCount; ++i) {
+            for (auto* spell : { g_bindings[i].proxySpell, g_bindings[i].proxyPower }) {
+                if (spell && !spell->GetCostliestEffectItem()) {
+                    ++missing;
+                }
+            }
+        }
+        if (missing > 0) {
+            SKSE::log::warn("ProxySpellRuntime: {} proxy spells/powers have no costliest effect (old ESP without EFIT?); "
+                "mods that read it without a null check (e.g. DynamicMagicModificationFramework) may crash on hand casts.", missing);
+        } else {
+            SKSE::log::info("ProxySpellRuntime: every proxy spell/power has a costliest effect.");
+        }
+    }
     bool ProxySpellRuntime::Install(
         Core::CommandQueue* queue,
         Core::StatEngine* statEngine,
@@ -340,6 +409,7 @@ namespace SkyrimPoE::Runtime
             g_bindings[i].proxySpell = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[i]);
             g_bindings[i].proxyPower = FormIds::Lookup<RE::SpellItem>(FormIds::kProxyPowers[i]);
         }
+        EnsureProxyCostliestEffects();
 
         if (!g_hooksInstalled) {
             REL::Relocation<std::uintptr_t> vtable{ RE::VTABLE_ActorMagicCaster[0] };
@@ -363,7 +433,7 @@ namespace SkyrimPoE::Runtime
 
         const auto st = SaveLoad::GetStateCopy();
         const auto snap = g_statEngine->GetSnapshot();
-        if (!snap) {
+        if (!snap || snap->gemGeneration != SaveLoad::WorldGemGeneration()) {
             return;
         }
         const double baseSkyrimMaxMagicka = CombatHooks::GetBaseSkyrimMaxMagicka(player);
@@ -372,7 +442,9 @@ namespace SkyrimPoE::Runtime
         std::unordered_map<std::string, int> spellNameCounts;
         for (std::size_t i = 0; i < Core::kSkillSlotCount; ++i) {
             if (!st.slots[i].occupied) continue;
-            const auto* def = g_dataPack->FindGem(st.slots[i].gem.gemId);
+            const auto& id = st.slots[i].gem.gemId;
+            if (!Core::GemForms::AllowsExecution(snap->gemGeneration, id)) continue;
+            const auto* def = g_dataPack->FindGem(id, snap->gemGeneration);
             if (!def) continue;
             if (def->kind == Core::GemKind::Spell || def->kind == Core::GemKind::Guard) {
                 ++spellNameCounts[def->id];
@@ -384,7 +456,8 @@ namespace SkyrimPoE::Runtime
             auto* sp = g_bindings[i].proxySpell;
             auto* pw = g_bindings[i].proxyPower;
             const auto& slot = st.slots[i];
-            const auto* def = slot.occupied ? g_dataPack->FindGem(slot.gem.gemId) : nullptr;
+            const auto* def = slot.occupied && Core::GemForms::AllowsExecution(snap->gemGeneration, slot.gem.gemId)
+                ? g_dataPack->FindGem(slot.gem.gemId, snap->gemGeneration) : nullptr;
             const auto& sstat = snap->slotStats[i];
 
             const bool wantSpell = def && (def->kind == Core::GemKind::Spell);
@@ -400,7 +473,7 @@ namespace SkyrimPoE::Runtime
                     sp->fullName = dispName.c_str();
 
                     std::int32_t skyrimCost = 0;
-                    // Generation-one prices are charged together after rechecking both resources.
+                    // PoE2 passive builds pay together after rechecking both resources.
                     if (!snap->poe2Passives && !snap->bloodMagic && sstat.poeManaCost > 0.0) {
                         const auto ms = Core::ComputeMagickaScaling(
                             baseSkyrimMaxMagicka, snap->poeMaxMana, sstat.poeManaCost, snap->expectedPoeMana);
@@ -468,6 +541,16 @@ namespace SkyrimPoE::Runtime
         const auto snap = g_statEngine->GetSnapshot();
         if (!snap) return false;
 
+        const auto gemGeneration = SaveLoad::WorldGemGeneration();
+        if (snap->gemGeneration != gemGeneration) return false;
+        if (gemGeneration != 0) {
+            if (slotIndex >= st.slots.size()) return false;
+            const auto& id = st.slots[slotIndex].gem.gemId;
+            if (!Core::GemForms::AllowsExecution(gemGeneration, id) || !ProjectileRuntime::HasSpellDelivery(gemGeneration, id)) {
+                return false;
+            }
+        }
+
         auto* av = player->AsActorValueOwner();
         if (!av) return false;
         const double curMag = static_cast<double>(av->GetActorValue(RE::ActorValue::kMagicka));
@@ -475,7 +558,7 @@ namespace SkyrimPoE::Runtime
         const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
         const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
 
-        // Legacy hands pay the engine price during charging. Generation one pays on successful validation.
+        // The legacy tree pays via engine charging. The PoE2 tree pays after validation.
         const bool payMagicka = chargeMagicka || snap->poe2Passives;
         const double checkMag = payMagicka ? curMag : std::numeric_limits<double>::max();
         const double manaMultiplier = ReadDualCastMagickaMultiplier(snap->poe2Passives && dualCast);
@@ -528,6 +611,13 @@ namespace SkyrimPoE::Runtime
         const auto st = SaveLoad::GetStateCopy();
         const auto snap = g_statEngine->GetSnapshot();
         if (!snap) return false;
+
+        const auto gemGeneration = SaveLoad::WorldGemGeneration();
+        if (snap->gemGeneration != gemGeneration) return false;
+        if (gemGeneration != 0 && (slotIndex >= st.slots.size() ||
+            !Core::GemForms::AllowsExecution(gemGeneration, st.slots[slotIndex].gem.gemId))) {
+            return false;
+        }
 
         auto* av = player->AsActorValueOwner();
         if (!av) return false;

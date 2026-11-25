@@ -24,6 +24,12 @@ endif()
 project(SkyrimPoE VERSION 0.1.0 LANGUAGES CXX)
 
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+add_custom_target(check_gem_tables
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/../tools/esp/gen_gem_tables.py" --check
+    VERBATIM
+)
 
 # 1. 엔진 비의존 순수 코어 정적 라이브러리 (DLL과 ctest가 공용)
 add_library(skyrimpoe_core STATIC
@@ -64,7 +70,8 @@ add_library(skyrimpoe_core STATIC
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
 target_compile_options(skyrimpoe_core PRIVATE /utf-8 /W4)
-target_link_libraries(skyrimpoe_core PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(skyrimpoe_core PUBLIC nlohmann_json::nlohmann_json PRIVATE bcrypt)
+add_dependencies(skyrimpoe_core check_gem_tables)
 
 # 2. SKSE 플러그인 DLL (CommonLibSSE-NG v16.4.0, SE+AE 겸용 틀 + AE 1.6.1170 우선)
 set(ENABLE_SKYRIM_SE ON CACHE BOOL "" FORCE)
@@ -113,7 +120,7 @@ target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX)
 target_compile_options(${PROJECT_NAME} PRIVATE /utf-8 /W4)
 target_include_directories(${PROJECT_NAME} PRIVATE src)
-target_link_libraries(${PROJECT_NAME} PRIVATE skyrimpoe_core bcrypt)
+target_link_libraries(${PROJECT_NAME} PRIVATE skyrimpoe_core)
 target_link_options(${PROJECT_NAME} PRIVATE /MAP)
 
 # 3. 엔진 비의존 단위 테스트 (ctest)
@@ -134,6 +141,7 @@ add_executable(skyrimpoe_tests
     tests/test_cyclone_coc.cpp
     tests/test_kill_tracker.cpp
     tests/test_gem_transaction.cpp
+    tests/test_gem_generation.cpp
     tests/test_passive_tree.cpp
     tests/test_passive_tree_poe2.cpp
     tests/test_passive_stats.cpp
@@ -163,7 +171,6 @@ target_link_libraries(skyrimpoe_tests PRIVATE skyrimpoe_core)
 add_test(NAME skyrimpoe_core_tests COMMAND skyrimpoe_tests)
 
 # 4. 모드 폴더 모양 패키징 (DLL + INI + ESP + 데이터/언어 팩 + Prisma UI + 사이클론 OAR)
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
 # 결정 169, R4: package_mod 실행 시점에 ESP·목록이 한 쌍인지 확인한다.
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/VerifyMapsPack.cmake" CONTENT [=[
 # esp·manifest: 검사할 ESP와 목록 파일 경로(원본 팩 폴더와 패키지 양쪽에 쓴다)
@@ -288,7 +295,7 @@ add_custom_target(package_mod
     COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
         manifest --package "${POE_PACKAGE_DIR}"
     COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
-        verify --package "${POE_PACKAGE_DIR}"
+        verify --release --package "${POE_PACKAGE_DIR}"
     DEPENDS SkyrimPoE
     VERBATIM
 )

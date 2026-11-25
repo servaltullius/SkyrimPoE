@@ -87,7 +87,8 @@ namespace SkyrimPoE::Core
             std::uint32_t currentExileLevel,
             const Config& config,
             bool fallbackExcluded = false,
-            std::uint32_t overrideEffectiveMonsterLevel = 0);
+            std::uint32_t overrideEffectiveMonsterLevel = 0,
+            std::uint32_t gemGeneration = 0);
 
         // TESResetEvent: 부활/리스폰된 액터의 새 삶 시작(결정 113).
         void OnActorReset(std::uint32_t actorFormId);
@@ -127,7 +128,7 @@ namespace SkyrimPoE::Core
 
         [[nodiscard]] static GemLevelUpSummary ApplyGemXpToSlots(
             std::array<SkillSlot, kSkillSlotCount>& slots,
-            std::uint64_t gemXp) noexcept;
+            std::uint64_t gemXp, std::uint32_t gemGeneration = 0) noexcept;
 
     private:
         struct ActorLifeRecord

@@ -39,9 +39,6 @@
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <nlohmann/json.hpp>
-#include <Windows.h>
-#include <bcrypt.h>
-#include <fstream>
 #include <limits>
 
 namespace
@@ -79,51 +76,9 @@ namespace
         Runtime::SaveLoad::SetContentCheck(std::nullopt, std::move(reason));
     }
 
-    std::string ReadContentFile(const fs::path& path)
-    {
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        const auto length = static_cast<std::streamoff>(file.tellg());
-        if (length < 0 || length > std::numeric_limits<ULONG>::max()) {
-            throw std::runtime_error("could not open file or determine a supported size");
-        }
-        std::string bytes(static_cast<std::size_t>(length), '\0');
-        if (!file.seekg(0).read(bytes.data(), static_cast<std::streamsize>(length)) ||
-            file.peek() != std::char_traits<char>::eof() || file.bad()) {
-            throw std::runtime_error("could not read the entire file");
-        }
-        return bytes;
-    }
-
-    std::string Sha256(std::string& bytes)
-    {
-        BCRYPT_ALG_HANDLE provider = nullptr;
-        if (BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
-            throw std::runtime_error("could not open SHA-256 provider");
-        }
-        const auto closeProvider = [](void* handle) { BCryptCloseAlgorithmProvider(handle, 0); };
-        const std::unique_ptr<void, decltype(closeProvider)> algorithm(provider, closeProvider);
-        BCRYPT_HASH_HANDLE handle = nullptr;
-        if (BCryptCreateHash(algorithm.get(), &handle, nullptr, 0, nullptr, 0, 0) != 0) {
-            throw std::runtime_error("could not initialize SHA-256");
-        }
-        const std::unique_ptr<void, decltype(&BCryptDestroyHash)> hash(handle, &BCryptDestroyHash);
-        std::array<UCHAR, 32> digest{};
-        if (BCryptHashData(hash.get(), reinterpret_cast<PUCHAR>(bytes.data()),
-                static_cast<ULONG>(bytes.size()), 0) != 0 ||
-            BCryptFinishHash(hash.get(), digest.data(), static_cast<ULONG>(digest.size()), 0) != 0) {
-            throw std::runtime_error("could not compute SHA-256");
-        }
-        std::string hex;
-        hex.reserve(digest.size() * 2);
-        for (const auto byte : digest) {
-            std::format_to(std::back_inserter(hex), "{:02x}", byte);
-        }
-        return hex;
-    }
-
     std::optional<std::uint32_t> ReadEspGeneration(std::vector<std::string>& reasons)
     {
-        constexpr RE::FormID localId = 0xC00;
+        constexpr auto localId = Core::GemForms::kGenerationGlobal;
         constexpr std::string_view editorId = "SPOE_ContentGeneration";
         auto* data = RE::TESDataHandler::GetSingleton();
         const auto* plugin = data ? data->LookupModByName(Runtime::FormIds::kPluginName) : nullptr;
@@ -131,11 +86,11 @@ namespace
             reasons.emplace_back("SkyrimPoE.esp is not loaded.");
             return std::nullopt;
         }
-        const auto* form = data->LookupForm(localId, Runtime::FormIds::kPluginName);
+        const auto* form = localId ? data->LookupForm(*localId, Runtime::FormIds::kPluginName) : nullptr;
         for (const auto* global : data->GetFormArray<RE::TESGlobal>()) {
             if (global && global != form && global->GetFile(0) == plugin &&
                 editorId == global->GetFormEditorID()) {
-                reasons.emplace_back("SkyrimPoE.esp: SPOE_ContentGeneration GLOB must use local FormID 0xC00.");
+                reasons.emplace_back("SkyrimPoE.esp: SPOE_ContentGeneration GLOB is not at the ledger FormID.");
                 break;
             }
         }
@@ -147,7 +102,7 @@ namespace
             editorId != marker->GetFormEditorID() || marker->type.get() != RE::TESGlobal::Type::kShort ||
             !std::isfinite(marker->value) || marker->value < 0 ||
             marker->value > std::numeric_limits<std::int16_t>::max() || std::trunc(marker->value) != marker->value) {
-            reasons.emplace_back("SkyrimPoE.esp: invalid SPOE_ContentGeneration GLOB at 0xC00.");
+            reasons.emplace_back("SkyrimPoE.esp: invalid SPOE_ContentGeneration GLOB at the ledger FormID.");
             return std::nullopt;
         }
         return static_cast<std::uint32_t>(marker->value);
@@ -163,9 +118,9 @@ namespace
             const auto path = kContentPaths[index];
             files[index].path = path;
             try {
-                auto bytes = ReadContentFile(fs::path("Data") / path);
+                auto bytes = Core::ReadContentFile(fs::path("Data") / path);
                 try {
-                    files[index].sha256 = Sha256(bytes);
+                    files[index].sha256 = Core::ContentSha256(bytes);
                 } catch (const std::exception& e) {
                     reasons.push_back(std::format("{}: {}", path, e.what()));
                 }
@@ -201,14 +156,14 @@ namespace
 
         files.back().path = kContentPaths.back();
         try {
-            auto bytes = ReadContentFile(fs::path("Data") / files.back().path);
-            files.back().sha256 = Sha256(bytes);
+            auto bytes = Core::ReadContentFile(fs::path("Data") / files.back().path);
+            files.back().sha256 = Core::ContentSha256(bytes);
         } catch (const std::exception& e) {
             reasons.push_back(std::format("{}: {}", files.back().path, e.what()));
         }
         nlohmann::json manifest;
         try {
-            manifest = nlohmann::json::parse(ReadContentFile(kManifestPath));
+            manifest = nlohmann::json::parse(Core::ReadContentFile(kManifestPath));
         } catch (const std::exception& e) {
             reasons.push_back(std::format("{}: {}", kManifestPath, e.what()));
         }
@@ -282,9 +237,10 @@ namespace
         for (const auto fid : kProxyPowers) {
             check(RE::SpellItem::FORMTYPE, "SPOE_ProxyPower", fid);
         }
-        for (const auto& entry : kStage2GemForms) {
-            check(RE::TESObjectMISC::FORMTYPE, entry.gemId, entry.localFormId);
-        }
+        Core::GemForms::ObservePhysicalForms([&](const auto& entry) {
+            const auto key = entry.legacyId.empty() ? entry.contentId : entry.legacyId;
+            check(RE::TESObjectMISC::FORMTYPE, key, entry.localFormId);
+        });
         check(RE::BGSExplosion::FORMTYPE, "SPOE_Vfx_IceNova", kVfxIceNova);
         check(RE::BGSExplosion::FORMTYPE, "SPOE_Vfx_ShockNova", kVfxShockNova);
 
@@ -447,7 +403,7 @@ namespace
                 OnDataLoaded();
                 break;
             case SKSE::MessagingInterface::kPreLoadGame: {
-                const bool notifyAutoTest = Runtime::ModState::AllowsGameplay() || Runtime::AutoTest::IsCleanupOnly();
+                const bool notifyAutoTest = Runtime::ModState::AllowsGameplay() || (Runtime::AutoTest::IsCleanupOnly() || Runtime::AutoTest::IsGemsOnly());
                 Runtime::SaveLoad::OnGameLoadStarted();
                 Runtime::MapDeviceRuntime::DisarmUninstallCleanup();
                 Runtime::UiBridge::ClosePanelOnMainThread();
@@ -462,7 +418,7 @@ namespace
                 Runtime::SaveLoad::SchedulePostLoadOrNewGameInit(true);
                 break;
             case SKSE::MessagingInterface::kPostLoadGame: {
-                const bool notifyAutoTest = std::exchange(g_autoTestLoadStarted, false) || Runtime::AutoTest::IsCleanupOnly();
+                const bool notifyAutoTest = std::exchange(g_autoTestLoadStarted, false) || (Runtime::AutoTest::IsCleanupOnly() || Runtime::AutoTest::IsGemsOnly());
                 Runtime::SaveLoad::OnGameLoadFinished(msg->data != nullptr);
                 if (notifyAutoTest) {
                     Runtime::AutoTest::OnPostLoadGame(msg->data != nullptr);
@@ -470,7 +426,7 @@ namespace
                 break;
             }
             case SKSE::MessagingInterface::kSaveGame:
-                if (Runtime::ModState::AllowsGameplay() || Runtime::AutoTest::IsCleanupOnly()) {
+                if (Runtime::ModState::AllowsGameplay() || (Runtime::AutoTest::IsCleanupOnly() || Runtime::AutoTest::IsGemsOnly())) {
                     Runtime::AutoTest::OnSaveGame(*msg);
                 }
                 break;

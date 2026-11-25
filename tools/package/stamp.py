@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "compiler"))
@@ -21,6 +22,10 @@ from formid_ledger import GENERATION_EDITOR_ID, read_esp
 PLUGIN_DIR = "SKSE/Plugins/SkyrimPoE"
 UI_DIR = "PrismaUI/views/SkyrimPoE"
 PACK_DIR = f"{PLUGIN_DIR}/packs"
+STAGED_GEMS = f"{PACK_DIR}/gen1/gems.json"
+STAGED_GEMS_SOURCE = ROOT / "data/packs/gen1/gems.json"
+# DLL의 kStagedGemsGameVersion(ContentCheck.h)과 같아야 한다.
+STAGED_GAME_VERSION = "0.5"
 TREE_PACK = f"{PACK_DIR}/tree_3_30.json"
 RULES_PACK = f"{PACK_DIR}/rules.json"
 PACK_PATHS = (f"{PACK_DIR}/core_3_30.json", TREE_PACK, f"{PACK_DIR}/items_3_30.json", RULES_PACK)
@@ -98,7 +103,7 @@ def read_packs(
     packs = {}
     for relative in sorted(files.keys() - set(PACK_PATHS)):
         path = PurePosixPath(relative)
-        if path.parent.as_posix().casefold() == PACK_DIR.casefold() and path.suffix.lower() == ".json":
+        if relative.casefold().startswith(f"{PACK_DIR.casefold()}/") and path.suffix.lower() == ".json":
             problems.append(f"{relative}: 허용되지 않은 추가 팩입니다")
     for relative in PACK_PATHS:
         try:
@@ -215,7 +220,7 @@ def write_manifest(package: Path) -> list[str]:
     return []
 
 
-def read_manifest(path: Path) -> tuple[dict, dict[str, dict], bytes]:
+def read_manifest(path: Path) -> tuple[dict, dict[str, dict], dict[str, str], bytes]:
     raw = path.read_bytes()
     manifest = json.loads(raw)
     if not isinstance(manifest, dict) or type(manifest.get("manifestVersion")) is not int:
@@ -233,6 +238,8 @@ def read_manifest(path: Path) -> tuple[dict, dict[str, dict], bytes]:
             raise ValueError(f"manifest 상대 경로가 잘못되었습니다: {relative!r}")
         if relative == MANIFEST or relative in entries:
             raise ValueError(f"manifest에 허용되지 않는 경로 또는 중복 경로: {relative}")
+        if relative.casefold() == STAGED_GEMS.casefold():
+            raise ValueError(f"{relative}: 준비 파일은 staged에만 기록할 수 있습니다")
         digest, size = entry.get("sha256"), entry.get("size")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"{relative}: manifest sha256이 잘못되었습니다")
@@ -242,7 +249,18 @@ def read_manifest(path: Path) -> tuple[dict, dict[str, dict], bytes]:
     for relative in PACK_PATHS:
         if relative not in entries:
             raise ValueError(f"{relative}: manifest에 필수 팩이 없습니다")
-    return common, entries, raw
+    staged_entries = manifest.get("staged", [])
+    if not isinstance(staged_entries, list) or len(staged_entries) > 1:
+        raise ValueError("manifest staged는 준비 파일을 최대 하나만 포함하는 목록이어야 합니다")
+    staged = {}
+    for entry in staged_entries:
+        if not isinstance(entry, dict) or set(entry) != {"path", "sha256"} or entry["path"] != STAGED_GEMS:
+            raise ValueError(f"manifest staged에 허용되지 않는 항목: {entry!r}")
+        digest = entry["sha256"]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"{STAGED_GEMS}: staged sha256이 잘못되었습니다")
+        staged[STAGED_GEMS] = digest
+    return common, entries, staged, raw
 
 
 def compare_files(entries: dict[str, dict], files: dict[str, Path], *, deployed: bool = False) -> list[str]:
@@ -267,27 +285,71 @@ def compare_files(entries: dict[str, dict], files: dict[str, Path], *, deployed:
     return problems
 
 
-def verify(package: Path) -> list[str]:
-    common, entries, _ = read_manifest(package / MANIFEST)
+def read_staged_gems(raw: bytes) -> dict:
+    data = json.loads(raw)
+    meta = data.get("meta") if isinstance(data, dict) else None
+    if not isinstance(meta, dict):
+        raise ValueError("meta 객체가 없습니다")
+    for field, expected in (("schema", "skyrimpoe.gems"), ("schemaVersion", 1), ("game", "poe2"),
+                            ("gameVersion", STAGED_GAME_VERSION), ("contentGeneration", 1)):
+        if type(meta.get(field)) is not type(expected) or meta[field] != expected:
+            raise ValueError(f"{field} 불일치 (실제 {meta.get(field)!r}, 기대 {expected!r})")
+    return data
+
+
+def verify_staged(
+    staged: dict[str, str], files: dict[str, Path], build_id: str, *, deployed: bool = False,
+) -> list[str]:
+    problems = []
+    if staged and deployed:
+        files = {os.path.normcase(relative): path for relative, path in files.items()}
+    for relative, digest in staged.items():
+        key = os.path.normcase(relative) if deployed else relative
+        if key not in files:
+            problems.append(f"누락 파일: {relative}")
+            continue
+        try:
+            path = files[key]
+            if path.is_symlink():
+                raise ValueError("준비 파일은 일반 파일이어야 합니다")
+            raw = path.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != digest:
+                raise ValueError("staged sha256 불일치")
+            if read_staged_gems(raw)["meta"].get("buildId") != build_id:
+                raise ValueError(f"buildId 불일치 (기대 {build_id!r})")
+        except (OSError, ValueError) as error:
+            problems.append(f"{relative}: {error}")
+    return problems
+
+
+def verify(package: Path, *, release: bool = False) -> list[str]:
+    common, entries, staged, _ = read_manifest(package / MANIFEST)
     files = list_files(package)
     problems = compare_files(entries, files)
-    problems.extend(f"목록 밖 파일: {relative}" for relative in sorted(files.keys() - entries.keys()))
-    read_packs(files, problems, stamped=True, expected=common)
+    has_staged_file = os.path.lexists(package / STAGED_GEMS) or any(
+        relative.casefold() == STAGED_GEMS.casefold() for relative in files
+    )
+    if release and (staged or has_staged_file):
+        problems.append(f"{STAGED_GEMS}: 릴리스 패키지에는 준비 파일을 넣을 수 없습니다")
+    problems.extend(verify_staged(staged, files, common["buildId"]))
+    problems.extend(f"목록 밖 파일: {relative}" for relative in sorted(files.keys() - entries.keys() - staged.keys()))
+    regular_files = {relative: path for relative, path in files.items() if relative not in staged}
+    read_packs(regular_files, problems, stamped=True, expected=common)
     if not problems:
-        print(f"패키지 검사 통과 ({len(entries)}개 파일, 빌드 ID {common['buildId']})")
+        print(f"패키지 검사 통과 ({len(entries)}개 파일, 준비 파일 {len(staged)}개, 빌드 ID {common['buildId']})")
     return problems
 
 
 def deploy_clean(package: Path, target: Path) -> list[str]:
     if not target.is_dir():
         return [f"배치 대상 폴더가 없습니다: {target}"]
-    _, entries, manifest_bytes = read_manifest(package / MANIFEST)
+    common, entries, staged, manifest_bytes = read_manifest(package / MANIFEST)
     target_manifest = target / MANIFEST
     if not target_manifest.is_file():
         return [f"배치 대상에 manifest가 없습니다: {target_manifest}"]
 
     files = list_files(target)
-    expected = {os.path.normcase(relative) for relative in entries}
+    expected = {os.path.normcase(relative) for relative in entries.keys() | staged.keys()}
     managed = tuple(os.path.normcase(f"{directory}/") for directory in (PLUGIN_DIR, UI_DIR))
     problems: list[str] = []
     for relative, path in files.items():
@@ -302,7 +364,11 @@ def deploy_clean(package: Path, target: Path) -> list[str]:
                 problems.append(f"삭제 실패: {relative}: {error}")
         else:
             print(f"남은 파일: {relative}")
-    problems.extend(compare_files(entries, list_files(target), deployed=True))
+    remaining = list_files(target)
+    problems.extend(compare_files(entries, remaining, deployed=True))
+    problems.extend(verify_staged(staged, remaining, common["buildId"], deployed=True))
+    if not staged and os.path.lexists(target / STAGED_GEMS):
+        problems.append(f"{STAGED_GEMS}: 일반 배치에 준비 파일이 남았습니다")
     if target_manifest.read_bytes() != manifest_bytes:
         problems.append("배치 대상의 manifest가 패키지의 manifest와 다릅니다")
     if not problems:
@@ -310,17 +376,65 @@ def deploy_clean(package: Path, target: Path) -> list[str]:
     return problems
 
 
+def write_atomic(path: Path, data: bytes) -> None:
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def stage_dev(package: Path, target: Path) -> list[str]:
+    target_root = target.resolve()
+    if target_root == package.resolve():
+        return ["준비 파일은 일반 패키지와 다른 배치 대상에만 복사할 수 있습니다"]
+    common, entries, staged, manifest_bytes = read_manifest(package / MANIFEST)
+    target_manifest = target / MANIFEST
+    destination = target / STAGED_GEMS
+    if any(path.resolve() != target_root / path.relative_to(target) for path in (target_manifest, destination)):
+        return ["배치 대상의 manifest와 준비 파일 경로는 링크를 포함할 수 없습니다"]
+    if staged or os.path.lexists(package / STAGED_GEMS) or target_manifest.read_bytes() != manifest_bytes:
+        return ["일반 패키지의 manifest와 일치하는 배치 대상이 필요합니다"]
+    problems = compare_files(entries, list_files(target), deployed=True)
+    if problems:
+        return problems
+
+    data = read_staged_gems(STAGED_GEMS_SOURCE.read_bytes())
+    data["meta"]["buildId"] = common["buildId"]
+    payload = pack_bytes(STAGED_GEMS, data)
+    manifest = json.loads(manifest_bytes)
+    manifest["staged"] = [{"path": STAGED_GEMS, "sha256": hashlib.sha256(payload).hexdigest()}]
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    previous = destination.read_bytes() if destination.exists() else None
+    write_atomic(destination, payload)
+    try:
+        write_atomic(target_manifest, (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    except OSError:
+        if previous is None:
+            destination.unlink()
+        else:
+            write_atomic(destination, previous)
+        raise
+    print(f"개발 배치 준비 파일 복사 완료 ({STAGED_GEMS}, 빌드 ID {common['buildId']})")
+    return []
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("stamp", "wrap-tree", "manifest", "verify", "deploy-clean"):
+    for name in ("stamp", "wrap-tree", "manifest", "verify", "deploy-clean", "stage-dev"):
         command = commands.add_parser(name)
         command.add_argument("--package", type=Path, required=True)
         if name == "stamp":
             command.add_argument("--esp-name", required=True)
-        elif name == "deploy-clean":
+        elif name == "verify":
+            command.add_argument("--release", action="store_true")
+        elif name in ("deploy-clean", "stage-dev"):
             command.add_argument("--target", type=Path, required=True)
     args = parser.parse_args()
 
@@ -332,7 +446,9 @@ def main() -> int:
         elif args.command == "manifest":
             problems = write_manifest(args.package)
         elif args.command == "verify":
-            problems = verify(args.package)
+            problems = verify(args.package, release=args.release)
+        elif args.command == "stage-dev":
+            problems = stage_dev(args.package, args.target)
         else:
             problems = deploy_clean(args.package, args.target)
     except (OSError, ValueError) as error:

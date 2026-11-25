@@ -24,6 +24,7 @@
 
 #include "core/AilmentSystem.h"
 #include "core/DamageConversion.h"
+#include "core/ContentCheck.h"
 #include "core/RulesPack.h"
 #include "core/ItemAffixParser.h"
 #include "core/ItemCrafting.h"
@@ -49,6 +50,7 @@
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <tuple>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -204,6 +206,7 @@ namespace SkyrimPoE::Runtime
             ScenarioH_UninstallPrepare,
             ScenarioH_UninstallVerifyWait,
             EnemyEsOnly,
+            GemsOnly,
             QuitDelay,
             Done,
             SaveOnlyContent,
@@ -324,6 +327,7 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioH_UninstallPrepare: return "ScenarioH_UninstallPrepare";
             case Phase::ScenarioH_UninstallVerifyWait: return "ScenarioH_UninstallVerifyWait";
             case Phase::EnemyEsOnly: return "EnemyEsOnly";
+            case Phase::GemsOnly: return "GemsOnly";
             case Phase::QuitDelay: return "QuitDelay";
             case Phase::Done: return "Done";
             default: return "Unknown";
@@ -334,7 +338,7 @@ namespace SkyrimPoE::Runtime
         Core::StatEngine* g_statEngine = nullptr;
         Core::EnergyShieldPool* g_esPool = nullptr;
         Core::KillTracker* g_killTracker = nullptr;
-        const Core::DataPack* g_dataPack = nullptr;
+        Core::DataPack* g_dataPack = nullptr;
         const Core::PassiveTreeData* g_treeData = nullptr;
         const Core::ItemData* g_itemData = nullptr;
         Core::Config* g_config = nullptr;
@@ -397,6 +401,75 @@ namespace SkyrimPoE::Runtime
             std::map<RE::FormID, std::int32_t> starterItemsBeforeSave;
         };
         CleanupTestState g_cleanupTest;
+
+        enum class GemsCheck : std::size_t {
+            Prepared, LegacyCast, Cleanup, CleanupSave, ChainReturns, NoDuplicate, LegacyRejected,
+            FrostboltRejected, FrostboltUi, SparkEquipped, Mana, Projectiles, Hit, SparkSave, SparkReload, Restore
+        };
+        constexpr std::array kGemsChecks{
+            "G0_PreparedCatalog", "G0_LegacySparkHandCast", "G1_CleanupCommitted", "G1_FinalSaveWritten",
+            "G2_ChainReturns", "G2_NoDuplicateReturn", "G2_LegacyRejected", "G3_FrostboltRejected",
+            "G3_FrostboltUi", "G4_SparkEquipped", "G4_ManaBilled","G4_FourProjectiles", "G4_LightningHit",
+            "G4_FinalSaveWritten", "G4_SparkReload", "G5_WorldRestored"
+        };
+        enum class GemsStep {
+            Prepare, Menu, LegacyLoad, EquipWait, CastResult, CleanupLoad, CleanupCommit,
+            Save, Reload, Reject, Target, RestoreLoad, CastSite
+        };
+        constexpr std::array kGemsStepNames{
+            "Prepare", "Menu", "LegacyLoad", "EquipWait", "CastResult", "CleanupLoad", "CleanupCommit",
+            "Save", "Reload", "Reject", "Target", "RestoreLoad", "CastSite"
+        };
+        static_assert(kGemsStepNames.size() == static_cast<std::size_t>(GemsStep::CastSite) + 1);
+        using AutoTestMarker::GemsRetry;
+
+        struct GemsTestState
+        {
+            GemsStep step = GemsStep::Prepare;
+            Clock::time_point since{};
+            Clock::time_point nextStatus{};
+            Clock::time_point nextDialogueClose{};
+            GemsRetry retry{ 3 };
+            GemsRetry clearHands{ 5 };
+            GemsRetry equipHand{ 5 };
+            GemsRetry drawHand{ 5 };
+            std::array<bool, kGemsChecks.size()> checked{};
+            AutoTestMarker::AutoSaveSettings autoSave;
+            std::size_t restoredSettings = 0;
+            std::optional<bool> engineSavingWasDisabled;
+            std::uint64_t saveGuardLoad = 0;
+            bool gen1Cast = false;
+            std::uint8_t slot = 0;
+            std::uint64_t instance = 0;
+            std::uint64_t castsBefore = 0;
+            std::uint64_t launchesBefore = 0;
+            std::uint64_t castQueueGeneration = 0;
+            float initialMana = 0;
+            float minimumMana = 0;
+            double expectedMana = 0;
+            double expectedMinHit = 0;
+            double expectedMaxHit = 0;
+            float destructionDelta = 0;
+            float regenDelta = 0;
+            float magickaDelta = 0;
+            std::optional<bool> godMode;
+            RE::ActorHandle target{};
+            int oldChain = 0;
+            int newChain = 0;
+            int oldChainAfter = 0;
+            int newChainAfter = 0;
+            std::optional<SaveFiles> files;
+            fs::file_time_type requestedAt{};
+            std::string buildId;
+            std::string finalSlot;
+        };
+        GemsTestState g_gems;
+        bool g_gemsSaveRequested = false;
+        bool g_gemsUnexpectedSave = false;
+        bool g_gemsUnexpectedLoad = false;
+        // 젬 시험 중 시작된 게임 로드 수. 저장 차단 플래그는 걸었던 같은 로드 안에서만 되돌린다
+        // (정리 커밋은 명령 큐 세대를 올리지만 플레이어 상태는 그대로라 큐 세대로는 구분할 수 없다).
+        std::uint64_t g_gemsLoadStarts = 0;
         constexpr double kEnemyEsWaitSec = 2.0;
         constexpr double kEnemyEsTestMaxEs = 300.0;
         // 결정 185의 유지 시간. 제품 상수(Core::kEnemyEsEngagedHoldSec)가 바뀌면 시험이 잡도록 따로 둔다.
@@ -1232,12 +1305,37 @@ namespace SkyrimPoE::Runtime
             return true;
         }
 
+        void CheckGems(GemsCheck check, bool passed, const std::string& detail)
+        {
+            const auto index = static_cast<std::size_t>(check);
+            if (!std::exchange(g_gems.checked[index], true)) {
+                Check(kGemsChecks[index], passed, detail);
+            }
+        }
+
+        void ReleaseGemsCastState();
+        void RestoreGemsSaveGuard();
+
         void FinishAndScheduleQuit(const std::string& reason)
         {
             if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
                 return;
             }
-            if (g_cfg.cleanupOnly) {
+            if (g_cfg.gemsOnly) {
+                ReleaseGemsCastState();
+                RestoreGemsSaveGuard();
+                SaveLoad::EndGemTestWorld();
+                g_gems.restoredSettings += g_gems.autoSave.Restore();
+                LogInfo(std::format("Gems exit: world generation={}, gen0 Spark={}, restored autosave settings={}.",
+                    SaveLoad::WorldGemGeneration(), g_dataPack && g_dataPack->FindGem("Spark", SaveLoad::WorldGemGeneration()),
+                    g_gems.restoredSettings));
+                if (g_config && std::exchange(g_hasSavedEnforceGemReq, false)) {
+                    g_config->enforceGemRequirements = g_savedEnforceGemReq;
+                }
+                for (std::size_t i = 0; i < kGemsChecks.size(); ++i) {
+                    CheckGems(static_cast<GemsCheck>(i), false, std::format("Skipped. {}", reason));
+                }
+            } else if (g_cfg.cleanupOnly) {
                 SaveLoad::SetCleanupTestTarget(false);
                 ReportCleanupCommitChecks(0);
                 for (std::size_t i = 0; i < kCleanupCheckNames.size(); ++i) {
@@ -1267,10 +1365,12 @@ namespace SkyrimPoE::Runtime
             }
             // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
             // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
-            const int expectedChecks = g_cfg.cleanupOnly ? static_cast<int>(kCleanupCheckNames.size()) :
+            const int expectedChecks = g_cfg.gemsOnly ? static_cast<int>(kGemsChecks.size()) :
+                g_cfg.cleanupOnly ? static_cast<int>(kCleanupCheckNames.size()) :
                 g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
                 g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks : kExpectedAutoTestChecks;
-            const char* modeDescription = g_cfg.cleanupOnly ? " (cleanup-only migration run)" :
+            const char* modeDescription = g_cfg.gemsOnly ? " (gems-only run)" :
+                g_cfg.cleanupOnly ? " (cleanup-only migration run)" :
                 g_cfg.saveOnly ? " (save-only round-trip run)" :
                 g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" : "";
             const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
@@ -2156,7 +2256,7 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        bool RequestLoadSave(const std::string& saveStem)
+        bool RequestLoadSave(const std::string& saveStem, bool gemsWorld = false)
         {
             auto* mgr = RE::BGSSaveLoadManager::GetSingleton();
             if (!mgr) {
@@ -2164,13 +2264,19 @@ namespace SkyrimPoE::Runtime
             }
             {
                 std::scoped_lock lock(g_msgMutex);
-                g_expectedLoadStem = g_cfg.cleanupOnly ? saveStem : ToLowerAscii(saveStem);
+                g_expectedLoadStem = (g_cfg.cleanupOnly || g_cfg.gemsOnly) ? saveStem : ToLowerAscii(saveStem);
                 g_preLoadMatched = false;
                 g_postLoadSignaled = false;
                 g_postLoadSucceeded = false;
             }
             if (g_cfg.cleanupOnly) {
                 SaveLoad::ExpectCleanupTestLoad(saveStem);
+            }
+            if (gemsWorld) {
+                SaveLoad::ExpectGemTestLoad(saveStem);
+            }
+            if (g_cfg.gemsOnly) {
+                RestoreGemsSaveGuard();
             }
             // 누락 모드 경고 모달로 멈추지 않도록 a_checkForMods=false로 로드한다.
             mgr->Load(saveStem.c_str(), false);
@@ -2180,6 +2286,814 @@ namespace SkyrimPoE::Runtime
         bool IsCleanupTarget(const Core::SaveGeneration& generation)
         {
             return generation.game == "poe2" && generation.contentGeneration == 1;
+        }
+
+
+        void CloseDialogueWhileAwaitingSave(RE::UI* ui);
+
+        void NextGems(GemsStep step)
+        {
+            g_gems.step = step;
+            g_gems.since = Clock::now();
+            g_gems.nextStatus = g_gems.since;
+            g_gems.retry = GemsRetry(3);
+            g_gems.clearHands = GemsRetry(5);
+            g_gems.equipHand = GemsRetry(5);
+            g_gems.drawHand = GemsRetry(5);
+        }
+
+        std::string DescribeGemsHandForm(const RE::TESForm* form)
+        {
+            return form ? std::format("{:08X}/{}", form->GetFormID(), RE::FormTypeToString(form->GetFormType())) : "empty";
+        }
+
+        std::string DescribeGemsWait(RE::PlayerCharacter* player, RE::UI* ui)
+        {
+            const auto* right = player ? player->GetEquippedObject(false) : nullptr;
+            const auto* left = player ? player->GetEquippedObject(true) : nullptr;
+            auto* spell = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
+            const auto* actorState = player ? player->AsActorState() : nullptr;
+            const auto* cell = player ? player->GetParentCell() : nullptr;
+            const auto* camera = RE::PlayerCamera::GetSingleton();
+            const auto* cameraState = camera ? camera->currentState.get() : nullptr;
+            const auto* controls = RE::ControlMap::GetSingleton();
+            const auto window = GetGameWindowState();
+            const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+            const auto target = g_gems.target.get();
+            auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+            constexpr std::array weaponNames{ "sheathed", "wantToDraw", "drawing", "drawn", "wantToSheathe", "sheathing" };
+            const auto weapon = actorState ? static_cast<unsigned>(actorState->GetWeaponState()) : weaponNames.size();
+            const auto* rightSelected = player ? player->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand] : nullptr;
+            const auto* leftSelected = player ? player->GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kLeftHand] : nullptr;
+            return std::format(
+                "right={}, left={}, selectedRight={}, selectedLeft={}, proxy={}, HasSpell={}, weaponState={}, weaponDrawn={}, "
+                "cameraState={}, firstPerson={}, thirdPerson={}, combat={}, cell={:08X}, cell3D={}, player3D={}, "
+                "menu(main={}, loading={}, fader={}, dialogue={}, console={}, messageBox={}, application={}, item={}, modal={}, paused={}), "
+                "mount={}, sitting={}, sitSleepState={}, fightControls={}, gameActive={}, foreground={}, "
+                "map(cell={}, unauthorized={}, travel={}, activeRun={}), saveLoadBusy={}, target={:08X}/3D={}, "
+                "requests(step={}, unequip={}, equip={}, draw={})",
+                DescribeGemsHandForm(right), DescribeGemsHandForm(left), DescribeGemsHandForm(rightSelected),
+                DescribeGemsHandForm(leftSelected), DescribeGemsHandForm(spell), player && spell && player->HasSpell(spell),
+                weapon < weaponNames.size() ? weaponNames[weapon] : "unknown", actorState && actorState->IsWeaponDrawn(),
+                cameraState ? static_cast<int>(cameraState->id) : -1, camera && camera->IsInFirstPerson(),
+                camera && camera->IsInThirdPerson(), player && player->IsInCombat(), cell ? cell->GetFormID() : 0,
+                cell && cell->IsAttached(), player && player->Is3DLoaded(),
+                ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME), ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME),
+                ui && ui->IsMenuOpen(RE::FaderMenu::MENU_NAME), ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME),
+                ui && ui->IsMenuOpen(RE::Console::MENU_NAME), ui && ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME),
+                ui && ui->IsApplicationMenuOpen(), ui && ui->IsItemMenuOpen(),
+                ui && ui->IsModalMenuOpen(), ui && ui->GameIsPaused(), player && player->IsOnMount(),
+                actorState && actorState->IsSitting(),
+                actorState ? static_cast<int>(actorState->GetSitSleepState()) : -1, controls && controls->IsFightingControlsEnabled(),
+                window.engineActive, window.foreground, travel.inPackCell, travel.unauthorized,
+                travel.kind ? static_cast<int>(*travel.kind) : -1, MapDeviceRuntime::GetActiveRunId(),
+                manager && manager->GetRuntimeData().thread.isBusy,
+                target ? target->GetFormID() : 0, target && target->Is3DLoaded(),
+                g_gems.retry.Attempts(), g_gems.clearHands.Attempts(), g_gems.equipHand.Attempts(), g_gems.drawHand.Attempts());
+        }
+
+        void CloseGemsDialogue(RE::UI* ui)
+        {
+            const auto now = Clock::now();
+            if (!ui || !ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || now < g_gems.nextDialogueClose) {
+                return;
+            }
+            if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
+                g_gems.nextDialogueClose = now + std::chrono::seconds(2);
+                queue->AddMessage(RE::DialogueMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                LogInfo("Gems requested Dialogue Menu close.");
+            }
+        }
+
+        using SaveDisableFlag = RE::PlayerCharacter::ByCharGenFlag;
+
+        void BlockGemsManualSaves(RE::PlayerCharacter& player)
+        {
+            auto& flags = player.GetGameStatsData().byCharGenFlag;
+            if (!g_gems.engineSavingWasDisabled) {
+                g_gems.engineSavingWasDisabled = flags.any(SaveDisableFlag::kDisableSaving);
+                g_gems.saveGuardLoad = g_gemsLoadStarts;
+            }
+            flags.set(SaveDisableFlag::kDisableSaving);
+        }
+
+        void RestoreGemsSaveGuard()
+        {
+            const auto original = std::exchange(g_gems.engineSavingWasDisabled, std::nullopt);
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (original && player && g_gemsLoadStarts == g_gems.saveGuardLoad) {
+                auto& flags = player->GetGameStatsData().byCharGenFlag;
+                if (*original) flags.set(SaveDisableFlag::kDisableSaving);
+                else flags.reset(SaveDisableFlag::kDisableSaving);
+                LogInfo(std::format("Gems engine save-disable flag restored to {}.", *original));
+            }
+        }
+
+        // 시험 진단: 오른손 장착물과 시전자 상태가 바뀔 때만 기록한다.
+        void TraceGemsHand(RE::PlayerCharacter* player, std::string_view label, double elapsed)
+        {
+            static std::tuple<RE::FormID, RE::FormID, std::uint32_t> last{ 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+            const auto* right = player ? player->GetEquippedObject(false) : nullptr;
+            auto* caster = player ? player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand) : nullptr;
+            const std::tuple<RE::FormID, RE::FormID, std::uint32_t> now{
+                right ? right->GetFormID() : 0u,
+                caster && caster->currentSpell ? caster->currentSpell->GetFormID() : 0u,
+                caster ? static_cast<std::uint32_t>(caster->state.underlying()) : 0xFFFFFFFEu };
+            if (now != last) {
+                last = now;
+                LogInfo(std::format("Gems hand trace [{} {:.2f}s]: right=0x{:08X}, casterSpell=0x{:08X}, casterState={}.",
+                    label, elapsed, std::get<0>(now), std::get<1>(now), std::get<2>(now)));
+            }
+        }
+
+        void ReleaseGemsCastState()
+        {
+            ProxySpellRuntime::SetCastTraceForTest(false);
+            if (const auto god = std::exchange(g_gems.godMode, std::nullopt)) {
+                SetPlayerGodModeFlag(*god);
+            }
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                if (auto* av = player->AsActorValueOwner();
+                    av && g_queue && g_queue->CurrentGeneration() == g_gems.castQueueGeneration) {
+                    using enum RE::ACTOR_VALUE_MODIFIER;
+                    if (const auto delta = std::exchange(g_gems.destructionDelta, 0.0f); delta != 0.0f)
+                        av->ModActorValue(kTemporary, RE::ActorValue::kDestruction, -delta);
+                    if (const auto delta = std::exchange(g_gems.regenDelta, 0.0f); delta != 0.0f)
+                        av->ModActorValue(kTemporary, RE::ActorValue::kMagickaRateMult, -delta);
+                    if (const auto delta = std::exchange(g_gems.magickaDelta, 0.0f); delta != 0.0f)
+                        av->ModActorValue(kPermanent, RE::ActorValue::kMagicka, -delta);
+                }
+            }
+            g_gems.destructionDelta = g_gems.regenDelta = g_gems.magickaDelta = 0;
+            if (const auto target = std::exchange(g_gems.target, {}).get()) {
+                target->Disable();
+            }
+            ProjectileRuntime::SetHitTargetForTest(0);
+        }
+
+        bool SuppressGemsAutoSaves()
+        {
+            constexpr std::array settings{
+                std::pair{ "bSaveOnRest", "bSaveOnRest:Main" },
+                std::pair{ "bSaveOnWait", "bSaveOnWait:Main" },
+                std::pair{ "bSaveOnTravel", "bSaveOnTravel:Main" },
+                std::pair{ "bSaveOnCharacterMenu", "bSaveOnCharacterMenu:Main" },
+                std::pair{ "bSaveOnPause", "bSaveOnPause:Main" },
+                std::pair{ "bAllowScriptedAutosave", "bAllowScriptedAutosave:SaveGame" },
+                std::pair{ "bAllowScriptedForceSave", "bAllowScriptedForceSave:SaveGame" },
+                std::pair{ "bAutoSaveOnUserStale", "bAutoSaveOnUserStale:SaveGame" },
+                std::pair{ "bDisableAutoSave", "bDisableAutoSave:SaveGame" }
+            };
+            bool masterFound = false;
+            auto* gameSettings = RE::GameSettingCollection::GetSingleton();
+            auto* preferences = RE::INIPrefSettingCollection::GetSingleton();
+            auto* iniSettings = RE::INISettingCollection::GetSingleton();
+            for (const auto& [gmst, ini] : settings) {
+                const bool master = std::string_view(gmst) == "bDisableAutoSave";
+                bool found = false;
+                for (auto* setting : { gameSettings ? gameSettings->GetSetting(gmst) : nullptr,
+                         preferences ? preferences->GetSetting(ini) : nullptr, iniSettings ? iniSettings->GetSetting(ini) : nullptr }) {
+                    if (setting && setting->GetType() == RE::Setting::Type::kBool) {
+                        g_gems.autoSave.Set(setting->data.b, master);
+                        found = true;
+                    }
+                }
+                masterFound |= master && found;
+                LogInfo(std::format("Autosave setting {} resolved={}, temporary={}.", gmst, found, master));
+            }
+            return masterFound;
+        }
+
+        std::pair<bool, std::string> RequestGemsUi(RE::PlayerCharacter* player,
+            std::string_view op, std::string_view id)
+        {
+            const auto key = FindCleanGemKeyInPlayerInventory(player, id);
+            const json cmd{ { "op", op }, { "slot", g_gems.slot }, { "spellIdx", -1 },
+                { "ownerFormId", key.ownerFormId }, { "uniqueId", key.uniqueId }, { "gemId", id },
+                { "buildId", g_gems.buildId }, { "uiProtocol", Core::UiBuildCheck::kUiProtocolVersion } };
+            return UiBridge::ExecuteGemCommandForTestOnMainThread(cmd.dump());
+        }
+
+        bool CheckGemsRejection(RE::PlayerCharacter* player, std::string_view op, std::string_view id,
+            RE::TESObjectMISC* form, std::string_view reason)
+        {
+            const auto count = player->GetItemCount(form);
+            const auto mana = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka);
+            const auto launches = ProjectileRuntime::TotalLaunchedCount();
+            const auto slotState = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread()).at("slots");
+            const auto [ok, message] = RequestGemsUi(player, op, id);
+            const bool unchanged = player->GetItemCount(form) == count &&
+                player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka) == mana &&
+                ProjectileRuntime::TotalLaunchedCount() == launches &&
+                json::parse(UiBridge::BuildPanelJsonForTestOnMainThread()).at("slots") == slotState;
+            LogInfo(std::format("{} {}: count={}, ok={}, reason='{}', unchanged={}.", op, id, count, ok, message, unchanged));
+            return count > 0 && !ok && message == reason && unchanged;
+        }
+
+        bool EquipGemsSpark(RE::PlayerCharacter* player, RE::TESObjectMISC* spark)
+        {
+            const auto generation = SaveLoad::WorldGemGeneration();
+            const auto id = generation == 1 ? "gem.Spark" : "Spark";
+            const auto* def = g_dataPack->FindGem(id, generation);
+            const auto* level = def ? def->GetLevel(1) : nullptr;
+            if (!level) return false;
+
+            const auto slots = SaveLoad::GetStateCopy().slots;
+            const auto freeSlot = std::ranges::find(slots, false, &Core::SkillSlot::occupied);
+            if (freeSlot == slots.end()) {
+                const auto [ok, detail] = RequestGemsUi(player, "unequip", "");
+                LogInfo(std::format("Freeing slot {} for the legacy cast: {}", g_gems.slot + 1, detail));
+                if (!ok) return false;
+            } else {
+                g_gems.slot = static_cast<std::uint8_t>(std::distance(slots.begin(), freeSlot));
+            }
+
+            const auto count = player->GetItemCount(spark);
+            player->AddObjectToContainer(spark, nullptr, 1, nullptr);
+            if (player->GetItemCount(spark) != count + 1) return false;
+            const auto [ok, detail] = RequestGemsUi(player, "equip", id);
+            if (!ok || player->GetItemCount(spark) != count) {
+                LogInfo(std::format("Spark equip: {}", detail));
+                return false;
+            }
+            const auto state = SaveLoad::GetStateCopy();
+            const auto& slot = state.slots[g_gems.slot];
+            const auto snap = g_statEngine->GetSnapshot();
+            if (!snap || snap->gemGeneration != generation || !slot.occupied || slot.gem.gemId != id ||
+                slot.gem.level != 1 || !slot.gem.socketedGems.empty()) return false;
+            if (!snap->slotStats[g_gems.slot].requirementMet) {
+                // Only the test Layer1 receives the extra PoE attributes. The saved tree and gear still come from CORE.
+                Core::Layer1Input test;
+                test.exileLevel = std::max<std::uint32_t>(state.exileLevel, level->levelRequirement);
+                test.className = state.className;
+                test.gemGeneration = generation;
+                test.slots = state.slots;
+                test.passives.flatStr = level->reqStr;
+                test.passives.flatDex = level->reqDex;
+                test.passives.flatInt = level->reqInt;
+                g_statEngine->SetLayer1(test);
+                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                LogInfo(std::format("Spark requirements prepared with test Layer1: level={}, +Str/Dex/Int={}/{}/{}.",
+                    test.exileLevel, level->reqStr, level->reqDex, level->reqInt));
+            } else {
+                LogInfo(std::format("Spark requirements met: level {}, Str/Dex/Int {}/{}/{}; requires {} and {}/{}/{}.",
+                    snap->exileLevel, snap->str, snap->dex, snap->intel, level->levelRequirement,
+                    level->reqStr, level->reqDex, level->reqInt));
+            }
+            g_gems.instance = slot.gem.instanceId;
+            return g_statEngine->GetSnapshot()->slotStats[g_gems.slot].requirementMet && g_config->enforceGemRequirements;
+        }
+
+        bool PrepareGemsHandCast(RE::PlayerCharacter* player)
+        {
+            auto* spell = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
+            auto* av = player->AsActorValueOwner();
+            if (!spell || !av) return false;
+
+            g_gems.godMode = RE::PlayerCharacter::IsGodMode();
+            g_gems.castQueueGeneration = g_queue->CurrentGeneration();
+            SetPlayerGodModeFlag(false);
+            g_gems.regenDelta = -av->GetActorValue(RE::ActorValue::kMagickaRateMult);
+            av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kMagickaRateMult, g_gems.regenDelta);
+            const auto snap = g_statEngine->GetSnapshot();
+            if (!snap || snap->poe2Passives || snap->bloodMagic || snap->expectedPoeMana <= 0) return false;
+            if (g_gems.gen1Cast) {
+                // Normalize only the test actor. The proxy is still billed by Skyrim's integral cost override.
+                const double base = CombatHooks::GetBaseSkyrimMaxMagicka(player);
+                const double converted = Core::ComputeMagickaScaling(base, snap->poeMaxMana, 5, snap->expectedPoeMana).skyrimSkillCost;
+                const double integral = std::max(1.0, std::round(converted));
+                const double testBase = integral * snap->expectedPoeMana / 5;
+                g_gems.magickaDelta = static_cast<float>(testBase - base);
+                av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kMagicka, g_gems.magickaDelta);
+                g_gems.destructionDelta = -av->GetActorValue(RE::ActorValue::kDestruction);
+                av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kDestruction, g_gems.destructionDelta);
+                g_gems.expectedMana = Core::ComputeMagickaScaling(
+                    CombatHooks::GetBaseSkyrimMaxMagicka(player), snap->poeMaxMana, 5, snap->expectedPoeMana).skyrimSkillCost;
+                ProxySpellRuntime::SyncProxySpellsFromState();
+                LogInfo(std::format("Spark test AV deltas: base Magicka {:+.3f}, Destruction {:+.3f}, regen {:+.3f}; "
+                    "poe2Passives={}, engine override={}, native cost={:.4f}, core(5)={:.4f}.",
+                    g_gems.magickaDelta, g_gems.destructionDelta, g_gems.regenDelta, snap->poe2Passives,
+                    spell->data.costOverride, spell->CalculateMagickaCost(player), g_gems.expectedMana));
+            }
+            NextGems(GemsStep::EquipWait);
+            return true;
+        }
+
+        bool PumpGemsHand(RE::PlayerCharacter& player, double elapsed, std::string& failure)
+        {
+            using Action = GemsRetry::Action;
+            auto* spell = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
+            auto* equip = RE::ActorEquipManager::GetSingleton();
+            const auto* rightSlot = RE::TESForm::LookupByID<RE::BGSEquipSlot>(0x013F42);
+            const auto* leftSlot = RE::TESForm::LookupByID<RE::BGSEquipSlot>(0x013F43);
+            auto* actorState = player.AsActorState();
+            if (!spell || !equip || !rightSlot || !leftSlot || !actorState) {
+                failure = "Missing proxy, equip manager, hand slot or ActorState.";
+                return false;
+            }
+
+            auto* right = player.GetEquippedObject(false);
+            auto* left = player.GetEquippedObject(true);
+            auto isTwoHanded = [](RE::TESForm* form) {
+                auto* weapon = form ? form->As<RE::TESObjectWEAP>() : nullptr;
+                return weapon && (weapon->IsTwoHandedSword() || weapon->IsTwoHandedAxe() ||
+                    weapon->IsBow() || weapon->IsCrossbow());
+            };
+            const bool clearRight = isTwoHanded(right);
+            if (clearRight || isTwoHanded(left)) {
+                switch (g_gems.clearHands.Poll(elapsed)) {
+                case Action::Request: {
+                    auto* weapon = (clearRight ? right : left)->As<RE::TESObjectWEAP>();
+                    const auto* hand = weapon->GetEquipSlot();
+                    if (!hand) hand = clearRight ? rightSlot : leftSlot;
+                    const bool changed = equip->UnequipObject(&player, weapon, nullptr, 1, hand, false, true, false, true);
+                    LogInfo(std::format("Gems two-handed weapon unequip request {}: {} hand={}, accepted={}.",
+                        g_gems.clearHands.Attempts(), clearRight ? "right" : "left", DescribeGemsHandForm(weapon), changed));
+                    break;
+                }
+                case Action::Exhausted: failure = g_gems.clearHands.ExhaustionMessage("Two-handed weapon unequip"); break;
+                case Action::Wait: break;
+                }
+                return false;
+            }
+
+            const auto* selected = player.GetActorRuntimeData().selectedSpells[RE::Actor::SlotTypes::kRightHand];
+            if (!player.HasSpell(spell) || !AutoTestMarker::IsGemsProxyInHand(right != nullptr, right == spell, selected == spell)) {
+                switch (g_gems.equipHand.Poll(elapsed)) {
+                case Action::Request:
+                    if (!player.HasSpell(spell)) {
+                        ProxySpellRuntime::SyncProxySpellsFromState();
+                    }
+                    equip->EquipSpell(&player, spell, rightSlot);
+                    LogInfo(std::format("Gems right-hand EquipSpell request {}: proxy={}, HasSpell={}.",
+                        g_gems.equipHand.Attempts(), DescribeGemsHandForm(spell), player.HasSpell(spell)));
+                    break;
+                case Action::Exhausted: failure = g_gems.equipHand.ExhaustionMessage("Right-hand proxy equip"); break;
+                case Action::Wait: break;
+                }
+                return false;
+            }
+
+            if (actorState->IsWeaponDrawn() && actorState->GetWeaponState() == RE::WEAPON_STATE::kDrawn) {
+                return true;
+            }
+            switch (g_gems.drawHand.Poll(elapsed)) {
+            case Action::Request:
+                player.DrawWeaponMagicHands(true);
+                LogInfo(std::format("Gems DrawWeaponMagicHands request {}.", g_gems.drawHand.Attempts()));
+                break;
+            case Action::Exhausted: failure = g_gems.drawHand.ExhaustionMessage("Magic hands draw"); break;
+            case Action::Wait: break;
+            }
+            return false;
+        }
+
+        void AimGemsAtTarget(RE::PlayerCharacter* player)
+        {
+            if (const auto target = g_gems.target.get()) {
+                const auto from = player->GetPosition();
+                const auto to = target->GetPosition();
+                const float height = (target->GetBoundMax().z + target->GetBoundMin().z) / 2;
+                const float pitch = -std::atan2(to.z + height - from.z - 110.0f, std::hypot(to.x - from.x, to.y - from.y));
+                player->SetAngle({ pitch, 0, std::atan2(to.x - from.x, to.y - from.y) });
+            }
+        }
+
+        void BeginGemsFinalSave()
+        {
+            std::scoped_lock lock(g_msgMutex);
+            g_expectedSaveStem = g_gems.finalSlot;
+            g_saveMatched = false;
+            g_gemsSaveRequested = false;
+            NextGems(GemsStep::Save);
+        }
+
+        bool RequestGemsFinalSave()
+        {
+            auto* mgr = RE::BGSSaveLoadManager::GetSingleton();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            g_gems.files = ObserveSaveFiles(g_gems.finalSlot);
+            if (!mgr || !player || !g_gems.files || !g_gems.engineSavingWasDisabled) return false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = g_gems.finalSlot;
+                g_saveMatched = false;
+                g_gemsSaveRequested = true;
+            }
+            g_gems.requestedAt = fs::file_time_type::clock::now();
+            // Only this request opens the engine's normal save gate. The SKSE
+            // callback independently checks its slot before writing SPOE records.
+            auto& flags = player->GetGameStatsData().byCharGenFlag;
+            flags.reset(SaveDisableFlag::kDisableSaving);
+            mgr->Save(g_gems.finalSlot.c_str());
+            flags.set(SaveDisableFlag::kDisableSaving);
+            LogInfo(std::format("Gems final save request {}.", g_gems.retry.Attempts()));
+            return true;
+        }
+
+        void BeginGemsLoad(GemsStep step)
+        {
+            std::scoped_lock lock(g_msgMutex);
+            g_expectedLoadStem.clear();
+            g_preLoadMatched = g_postLoadSignaled = g_postLoadSucceeded = false;
+            NextGems(step);
+        }
+
+        void TickGemsOnly()
+        {
+            using Step = GemsStep;
+            using CheckId = GemsCheck;
+            using Action = GemsRetry::Action;
+            bool loading, signaled, succeeded, saveMatched, unexpected;
+            std::uint64_t before;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                loading = g_preLoadMatched;
+                signaled = g_postLoadSignaled;
+                succeeded = g_postLoadSucceeded;
+                saveMatched = g_saveMatched;
+                before = g_saveSequenceAtMessage;
+                unexpected = g_gemsUnexpectedSave || g_gemsUnexpectedLoad;
+            }
+            const auto now = Clock::now();
+            const auto elapsed = std::chrono::duration<double>(now - g_gems.since).count();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* ui = RE::UI::GetSingleton();
+            const auto stepName = kGemsStepNames[static_cast<std::size_t>(g_gems.step)];
+            const auto describe = [&] {
+                return std::format("step={}, elapsed={:.1f}s, loadStarted={}, loadFinished={}, loadSucceeded={}, "
+                    "saveMatched={}, mode='{}', {}", stepName, elapsed, loading, signaled, succeeded, saveMatched,
+                    ModState::Get()->reason, DescribeGemsWait(player, ui));
+            };
+            const auto fail = [&](std::string_view detail) {
+                FinishAndScheduleQuit(std::format("{} {}", detail, describe()));
+            };
+            if (unexpected || (signaled && !succeeded) || elapsed > 90.0 ||
+                std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
+                fail(unexpected ? "Gems received an unexpected load/save request." :
+                    signaled && !succeeded ? "Gems load reported failure." : "Gems wait timed out.");
+                return;
+            }
+            if (now >= g_gems.nextStatus) {
+                g_gems.nextStatus = now + std::chrono::seconds(2);
+                LogInfo(std::format("Gems waiting: {}", describe()));
+            }
+            const bool ready = IsPlayerReadyInWorld() && ui && !ui->GameIsPaused() && player && !player->IsDead();
+            const bool mainMenu = ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME);
+            const bool dialogue = ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME);
+            const bool engineIdle = !loading && ui && !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) &&
+                (mainMenu ? !ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME) :
+                    !ui->IsModalMenuOpen() && !ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
+            const auto generation = SaveLoad::WorldGemGeneration();
+            auto* spark = FormIds::Lookup<RE::TESObjectMISC>(0x880);
+            auto* oldChain = FormIds::Lookup<RE::TESObjectMISC>(0x882);
+            auto* newChain = FormIds::Lookup<RE::TESObjectMISC>(0x8D2);
+            auto* shockNova = FormIds::Lookup<RE::TESObjectMISC>(0x817);
+            auto* frostbolt = FormIds::Lookup<RE::TESObjectMISC>(0x8C0);
+            if (!signaled && (g_gems.step == Step::LegacyLoad || g_gems.step == Step::CleanupLoad ||
+                    g_gems.step == Step::Reload || g_gems.step == Step::RestoreLoad)) {
+                CloseGemsDialogue(ui);
+                const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                if (!engineIdle || dialogue || !(mainMenu || ready) || (manager && manager->GetRuntimeData().thread.isBusy)) {
+                    return;
+                }
+                switch (g_gems.retry.Poll(elapsed, 4.0)) {
+                case Action::Request: {
+                    const bool finalSlot = g_gems.step == Step::Reload;
+                    const bool testWorld = finalSlot || g_gems.step == Step::CleanupLoad;
+                    const auto& stem = finalSlot ? g_gems.finalSlot : g_cfg.baselineSave;
+                    const bool sent = RequestLoadSave(stem, testWorld);
+                    LogInfo(std::format("Gems {} load request {} for '{}', sent={}.", stepName, g_gems.retry.Attempts(), stem, sent));
+                    break;
+                }
+                case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Load start")); break;
+                case Action::Wait: break;
+                }
+                return;
+            }
+
+            switch (g_gems.step) {
+            case Step::Prepare: {
+                const auto base = SaveLoad::GetContentGeneration();
+                std::string error;
+                bool staged = base && base->contentGeneration == 0 && g_dataPack &&
+                    Core::LoadStagedGems(*g_dataPack, "Data", base->buildId, error);
+                CheckGems(CheckId::Prepared, staged, staged ? "Staged catalog SHA-256 and identity validated." : error);
+                if (!staged || !spark || !oldChain || !newChain || !shockNova || !frostbolt || !SuppressGemsAutoSaves()) {
+                    fail("Could not prepare the gems run or resolve the master autosave setting.");
+                    break;
+                }
+                g_gems.buildId = base->buildId;
+                SaveLoad::SetGemTestTarget({ "poe2", 1, Core::kStagedGemsGameVersion, base->buildId, base->dllVersion }, g_gems.finalSlot);
+                NextGems(Step::Menu);
+                break;
+            }
+            case Step::Menu:
+                if (elapsed >= 2 && engineIdle && (mainMenu || ready)) {
+                    BeginGemsLoad(Step::LegacyLoad);
+                }
+                break;
+            case Step::LegacyLoad:
+                if (signaled && ready && elapsed >= 1) {
+                    BlockGemsManualSaves(*player);
+                    if (generation != 0 || !ModState::AllowsGameplay()) {
+                        fail("The baseline did not load into a playable generation-zero world.");
+                    } else {
+                        NextGems(Step::CastSite);
+                    }
+                }
+                break;
+            case Step::CastSite: {
+                CloseGemsDialogue(ui);
+                if (!ready || dialogue) break;
+                const auto travel = MapDeviceRuntime::GetTravelStatus(player);
+                if (travel.kind) break;
+                if (travel.inPackCell || travel.canRetryReturn) {
+                    switch (g_gems.retry.Poll(elapsed)) {
+                    case Action::Request: {
+                        // Use decision 176's monitored return path. A legacy cleanup load
+                        // still uses its own escape gate and reads the unmodified baseline.
+                        const auto result = travel.unauthorized ?
+                            MapDeviceRuntime::SafeEscape(player) : MapDeviceRuntime::ReturnPortal(player);
+                        LogInfo(std::format("Gems map {} request {}: ok={}, {}.",
+                            travel.unauthorized ? "safe escape" : "return portal", g_gems.retry.Attempts(), result.ok, result.message));
+                        break;
+                    }
+                    case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Map exit")); break;
+                    case Action::Wait: break;
+                    }
+                    break;
+                }
+                const auto* cell = player->GetParentCell();
+                if (!cell || !cell->IsAttached()) break;
+                LogInfo(std::format("Gems cast site ready: cell={:08X}, outside map pack, activeRun={}, mapExitRequests={}.",
+                    cell->GetFormID(), MapDeviceRuntime::GetActiveRunId(), g_gems.retry.Attempts()));
+                if (g_gems.gen1Cast) {
+                    NextGems(Step::Target);
+                } else if (!EquipGemsSpark(player, spark) || !PrepareGemsHandCast(player)) {
+                    fail("Generation-zero Spark setup failed.");
+                }
+                break;
+            }
+            case Step::EquipWait:
+                CloseGemsDialogue(ui);
+                if (ready && !dialogue && elapsed >= 0.5) {
+                    const auto* actorState = player->AsActorState();
+                    if (!actorState || actorState->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal || player->IsOnMount()) break;
+                    std::string failure;
+                    if (!PumpGemsHand(*player, elapsed, failure)) {
+                        if (!failure.empty()) fail(failure);
+                        break;
+                    }
+                    {
+                        // 손 시전 입력을 보내기 전에 대리 주문의 가장 비싼 효과가 있는지 본다. 없으면 다른 모드의
+                        // RequestCast 훅이 튕길 수 있으므로(ProxySpellRuntime::EnsureProxyCostliestEffects) 입력 없이 실패한다.
+                        auto* proxy = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
+                        const auto* costliest = proxy ? proxy->GetCostliestEffectItem() : nullptr;
+                        if (!costliest) {
+                            fail(std::format("Proxy spell has no costliest effect; hand input withheld. {}", describe()));
+                            break;
+                        }
+                        LogInfo(std::format("Gems proxy costliest effect: base=0x{:08X}, cost={:.3f}.",
+                            costliest->baseEffect ? costliest->baseEffect->GetFormID() : 0u, costliest->cost));
+                    }
+                    LogInfo(std::format("Gems hand ready: {}", describe()));
+                    AimGemsAtTarget(player);
+                    RestorePlayerVitals(player, true, false);
+                    g_gems.initialMana = g_gems.minimumMana = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka);
+                    g_gems.castsBefore = ProxySpellRuntime::HandCastCount();
+                    g_gems.launchesBefore = ProjectileRuntime::TotalLaunchedCount();
+                    ProxySpellRuntime::SetCastTraceForTest(true);
+                    TraceGemsHand(player, "press", elapsed);
+                    {
+                        // 결정 234: 엔진은 합성 버튼 입력의 누름 유지를 받아들이지 않는다(추적 기록). 오른손 시전자의
+                        // CheckCast·SpellCast(doCast=true)를 직접 불러 우리 시전 검사 훅과 대기열 실행기를 실제와 같은 경로로 지나게 한다.
+                        // 엔진의 실제 입력 경로는 2026-11-25 사용자 손 시전으로 확인했다.
+                        auto* caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand);
+                        auto* proxy = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
+                        float strength = 0.0f;
+                        auto reason = RE::MagicSystem::CannotCastReason::kOK;
+                        const bool allowed = caster && proxy && caster->CheckCast(proxy, false, &strength, &reason, false);
+                        LogInfo(std::format("Gems direct cast: CheckCast={}, reason={}.", allowed, static_cast<std::uint32_t>(reason)));
+                        if (!allowed) {
+                            fail(std::format("The proxy cast was refused by CheckCast (reason {}).", static_cast<std::uint32_t>(reason)));
+                            break;
+                        }
+                        caster->SpellCast(true, 0, proxy);
+                        NextGems(Step::CastResult);
+                    }
+                }
+                break;
+            case Step::CastResult: {
+                TraceGemsHand(player, "result", elapsed);
+                if (!ready) break;
+                g_gems.minimumMana = std::min(g_gems.minimumMana, player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka));
+                if (elapsed < 2.5) break;
+                const auto casts = ProxySpellRuntime::HandCastCount() - g_gems.castsBefore;
+                const auto launched = ProjectileRuntime::TotalLaunchedCount() - g_gems.launchesBefore;
+                const double paid = g_gems.initialMana - g_gems.minimumMana;
+                // 결정 234: SpellCast를 직접 부르면 엔진의 입력 시전 과정의 매지카 차감을 지나지 않는다(차감은 사용자 손 시전으로 확인).
+                // 그래서 우리 책임인 "엔진이 청구할 비용"(대리 주문의 비용 덮어쓰기 결과)을 본다.
+                auto* billedSpell = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
+                const double billed = billedSpell ? billedSpell->CalculateMagickaCost(player) : 0.0;
+                if (!g_gems.gen1Cast) {
+                    const bool passed = casts == 1 && launched == 4 && billed > 0;
+                    CheckGems(CheckId::LegacyCast, passed, std::format("hand casts={}, launches={}/4, engine-billed cost={:.4f}, observed magicka change={:.4f}.",
+                        casts, launched, billed, paid));
+                    ReleaseGemsCastState();
+                    if (!passed) fail("Legacy cast failed.");
+                    else BeginGemsLoad(Step::CleanupLoad);
+                    break;
+                }
+                const auto hit = ProjectileRuntime::GetHitForTest();
+                const bool billedOnce = casts == 1 && g_gems.expectedMana > 0 && std::abs(billed - g_gems.expectedMana) < 0.02;
+                CheckGems(CheckId::Mana, billedOnce,std::format("cast events={}, engine-billed cost={:.4f}, core mana(5)={:.4f}, observed magicka change={:.4f}.",
+                    casts, billed, g_gems.expectedMana, paid));
+                CheckGems(CheckId::Projectiles, hit.launched == 4 && launched == 4, std::format("Spark launches={}/4, total={}.", hit.launched, launched));
+                const bool hitOk = hit.hits > 0 && !hit.crit && hit.firstHpLost + 0.02 >= g_gems.expectedMinHit &&
+                    hit.firstHpLost <= g_gems.expectedMaxHit + 0.02;
+                CheckGems(CheckId::Hit, hitOk, std::format("designated hits={}, first HP loss={:.4f}, expected=[{:.4f}, {:.4f}], crit={}.",
+                    hit.hits, hit.firstHpLost, g_gems.expectedMinHit, g_gems.expectedMaxHit, hit.crit));
+                ReleaseGemsCastState();
+                SaveLoad::SyncStateToStatEngine();
+                BeginGemsFinalSave();
+                break;
+            }
+            case Step::CleanupLoad:
+                if (signaled && ready) {
+                    BlockGemsManualSaves(*player);
+                    if (generation != 1 || !SaveLoad::GetMigrationCandidate(player)) {
+                        fail("Matched baseline did not reach the real cleanup gate.");
+                        break;
+                    }
+                    g_gems.oldChain = player->GetItemCount(oldChain);
+                    g_gems.newChain = player->GetItemCount(newChain);
+                    SaveLoad::ReleaseForTest();
+                    NextGems(Step::CleanupCommit);
+                }
+                break;
+            case Step::CleanupCommit: {
+                const auto result = SaveLoad::GetLastMigrationDiagnostics();
+                if (ModState::Get()->mode == ModMode::Preserve) {
+                    fail("Cleanup entered preservation mode.");
+                } else if (ready && ModState::AllowsGameplay() && result) {
+                    const bool committed = result->step == Core::CleanupStep::Complete && generation == 1;
+                    CheckGems(CheckId::Cleanup, committed, result->Describe());
+                    g_gems.oldChainAfter = player->GetItemCount(oldChain);
+                    g_gems.newChainAfter = player->GetItemCount(newChain);
+                    const auto oldDelta = g_gems.oldChainAfter - g_gems.oldChain;
+                    const auto newDelta = g_gems.newChainAfter - g_gems.newChain;
+                    CheckGems(CheckId::ChainReturns, oldDelta == 1 && newDelta == 0,
+                        std::format("legacy 0x882 delta={}, Chain I 0x8D2 delta={}.", oldDelta, newDelta));
+                    if (!committed) fail("The cleanup did not commit in the generation-one test world.");
+                    else BeginGemsFinalSave();
+                }
+                break;
+            }
+            case Step::Save: {
+                CloseDialogueWhileAwaitingSave(ui);
+                const auto write = SaveLoad::GetLastSaveDiagnostics();
+                if (!saveMatched || write.sequence == before) {
+                    if (elapsed >= kScenarioASaveTimeoutSec) {
+                        fail("The final slot write did not reach the co-save callback.");
+                    } else if (!saveMatched && ready && engineIdle && !dialogue) {
+                        const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                        if (manager && manager->GetRuntimeData().thread.isBusy) break;
+                        switch (g_gems.retry.Poll(elapsed)) {
+                        case Action::Request:
+                            if (!RequestGemsFinalSave()) fail("Could not request the final slot write.");
+                            break;
+                        case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Final slot write")); break;
+                        case Action::Wait: break;
+                        }
+                    }
+                    break;
+                }
+                const auto& files = *g_gems.files;
+                const bool ess = SaveFileUpdated(files.ess, files.essBefore, g_gems.requestedAt);
+                const bool skse = SaveFileUpdated(files.cosave, files.cosaveBefore, g_gems.requestedAt);
+                const bool callback = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
+                    write.generation && IsCleanupTarget(*write.generation) && write.generation->buildId == g_gems.buildId &&
+                    std::ranges::find(write.recordTypes, Core::kRecordMigration) == write.recordTypes.end();
+                if (callback && !(ess && skse) && elapsed < kScenarioASaveTimeoutSec) break;
+                CheckGems(g_gems.gen1Cast ? CheckId::SparkSave : CheckId::CleanupSave, callback && ess && skse,
+                    std::format("callback={}, essUpdated={}, skseUpdated={}.", callback, ess, skse));
+                if (!callback || !ess || !skse) fail("Final slot write failed.");
+                else BeginGemsLoad(Step::Reload);
+                break;
+            }
+            case Step::Reload:
+                if (signaled && ready && elapsed >= 1) {
+                    BlockGemsManualSaves(*player);
+                    if (generation != 1 || !ModState::AllowsGameplay() || !SaveLoad::GetLastLoadDiagnostics().collectionComplete) {
+                        fail("Final slot did not load into the generation-one world.");
+                        break;
+                    }
+                    if (!g_gems.gen1Cast) {
+                        const auto oldDelta = player->GetItemCount(oldChain) - g_gems.oldChainAfter;
+                        const auto newDelta = player->GetItemCount(newChain) - g_gems.newChainAfter;
+                        CheckGems(CheckId::NoDuplicate, oldDelta == 0 && newDelta == 0 && !SaveLoad::GetLastMigrationDiagnostics(),
+                            std::format("reload deltas legacy={}, Chain I={}.", oldDelta, newDelta));
+                        NextGems(Step::Reject);
+                        break;
+                    }
+                    const auto slot = SaveLoad::GetStateCopy().slots[g_gems.slot];
+                    const auto snap = g_statEngine->GetSnapshot();
+                    const bool intact = slot.occupied && slot.gem.gemId == "gem.Spark" && slot.gem.level == 1 &&
+                        slot.gem.instanceId == g_gems.instance && snap && snap->gemGeneration == 1;
+                    CheckGems(CheckId::SparkReload, intact, std::format("slot={}, key={}, instance={}/{}.",
+                        g_gems.slot + 1, slot.gem.gemId, slot.gem.instanceId, g_gems.instance));
+                    BeginGemsLoad(Step::RestoreLoad);
+                }
+                break;
+            case Step::Reject: {
+                CloseGemsDialogue(ui);
+                if (!ready || dialogue) break;
+                constexpr auto legacy = "구판 PoE1 젬입니다."sv;
+                const bool chainOk = CheckGemsRejection(player, "socket", "SupportChain", oldChain, legacy);
+                const bool shockOk = CheckGemsRejection(player, "equip", "ShockNova", shockNova, legacy);
+                const auto mana = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka);
+                const auto launches = ProjectileRuntime::TotalLaunchedCount();
+                Core::TriggeredSpellCast retiredCast;
+                retiredCast.gemId = "ShockNova";
+                retiredCast.isHandCast = true;
+                RE::NiPoint3 origin, direction;
+                ProjectileRuntime::ComputePlayerAim(player, origin, direction);
+                const bool noDelivery = !ProjectileRuntime::LaunchSpellDelivery(retiredCast, origin, direction) &&
+                    player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka) == mana && ProjectileRuntime::TotalLaunchedCount() == launches;
+                CheckGems(CheckId::LegacyRejected, chainOk && shockOk && noDelivery,
+                    std::format("Chain socket={}, Shock Nova equip={}, Shock Nova delivery refused={}.", chainOk, shockOk, noDelivery));
+                const auto frostboltBefore = player->GetItemCount(frostbolt);
+                player->AddObjectToContainer(frostbolt, nullptr, 1, nullptr);
+                constexpr auto notReady = "PoE2 젬: 아직 구현 안 됨"sv;
+                const bool rejected = player->GetItemCount(frostbolt) == frostboltBefore + 1 &&
+                    CheckGemsRejection(player, "equip", "gem.FrostBolt", frostbolt, notReady);
+                CheckGems(CheckId::FrostboltRejected, rejected, std::string(notReady));
+                const auto inventory = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread()).at("inventory");
+                const bool visible = std::ranges::any_of(inventory, [notReady](const auto& entry) {
+                    return entry.value("gemId", "") == "gem.FrostBolt" && entry.value("reason", "") == notReady;
+                });
+                CheckGems(CheckId::FrostboltUi, visible, "Inventory payload includes gem.FrostBolt and its rejection reason.");
+
+                g_gems.gen1Cast = true;
+                const bool equipped = EquipGemsSpark(player, spark);
+                CheckGems(CheckId::SparkEquipped, equipped, std::format("slot={}, instance={}, expected CORE key gem.Spark.",
+                    g_gems.slot + 1, g_gems.instance));
+                if (!equipped) {
+                    fail("Generation-one Spark setup failed.");
+                    break;
+                }
+                NextGems(Step::CastSite);
+                break;
+            }
+            case Step::Target:
+                CloseGemsDialogue(ui);
+                if (!ready || dialogue) break;
+                if (!g_gems.target) {
+                    switch (g_gems.retry.Poll(elapsed)) {
+                    case Action::Request:
+                        g_gems.target = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 300.0f, 0.0f, 2500.0f, false);
+                        LogInfo(std::format("Gems target spawn request {}: handle={}.",
+                            g_gems.retry.Attempts(), static_cast<bool>(g_gems.target)));
+                        break;
+                    case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Target spawn")); break;
+                    case Action::Wait: break;
+                    }
+                    break;
+                }
+                if (const auto target = g_gems.target.get(); target && target->Is3DLoaded() && ready) {
+                    target->EnableAI(false);
+                    MonsterRuntime::ForcePromoteForTest(target.get(), Core::MonsterRarity::Normal, 0, -1.0);
+                    const auto profile = MonsterRuntime::GetProfileCopy(target->GetFormID());
+                    if (profile || MapDeviceRuntime::GetActiveRunId() != 0) {
+                        fail("Spark target must have normal rarity, zero ES and no map modifiers.");
+                        break;
+                    }
+                    ProjectileRuntime::SetHitTargetForTest(target->GetFormID());
+                    const auto snap = g_statEngine->GetSnapshot();
+                    const auto difficulty = SkillExecution::GetDifficultyMultiplier(false);
+                    g_gems.expectedMinHit = Core::ConvertOffenseHit(1, snap->exileLevel, *g_dataPack, *g_config) * difficulty;
+                    g_gems.expectedMaxHit = Core::ConvertOffenseHit(10, snap->exileLevel, *g_dataPack, *g_config) * difficulty;
+                    LogInfo(std::format("Target {:08X}: Normal, ES 0, PoE lightning resistance 0%, Skyrim ResistShock {:.2f} "
+                        "(direct damage), difficulty multiplier {:.3f}, test crit 0%.",
+                        target->GetFormID(), target->AsActorValueOwner()->GetActorValue(RE::ActorValue::kResistShock), difficulty));
+                    if (!PrepareGemsHandCast(player)) fail("Could not equip the Spark proxy in the right hand.");
+                }
+                break;
+            case Step::RestoreLoad:
+                if (signaled && ready && elapsed >= 1) {
+                    const auto snap = g_statEngine->GetSnapshot();
+                    const bool restored = generation == 0 && ModState::AllowsGameplay() &&
+                        snap && snap->gemGeneration == 0 && g_dataPack->FindGem("Spark", generation) &&
+                        !g_dataPack->FindGem("gem.Spark", generation);
+                    const auto settings = g_gems.autoSave.Restore();
+                    g_gems.restoredSettings += settings;
+                    CheckGems(CheckId::Restore, restored && settings > 0,
+                        std::format("baseline reloaded, generation={}, restored autosave settings={}.", generation, settings));
+                    FinishAndScheduleQuit("Gems AutoTest finished.");
+                }
+                break;
+            }
         }
 
         bool ObserveCleanupBaseline(RE::PlayerCharacter* player, bool succeeded)
@@ -4623,7 +5537,7 @@ namespace SkyrimPoE::Runtime
             g_esMaxForC = 0.0;
             g_esAfterHit = 0.0;
             if (g_statEngine && g_dataPack && g_config) {
-                Core::Layer1Input l1;
+                Core::Layer1Input l1{ .gemGeneration = SaveLoad::WorldGemGeneration() };
                 l1.exileLevel = st.exileLevel;
                 l1.className = st.className.empty() ? "Scion" : st.className;
                 l1.slots = st.slots;
@@ -4828,7 +5742,7 @@ namespace SkyrimPoE::Runtime
         Core::StatEngine* statEngine,
         Core::EnergyShieldPool* esPool,
         Core::KillTracker* killTracker,
-        const Core::DataPack* dataPack,
+        Core::DataPack* dataPack,
         const Core::PassiveTreeData* treeData,
         const Core::ItemData* itemData,
         Core::Config* config,
@@ -4880,6 +5794,9 @@ namespace SkyrimPoE::Runtime
         g_hChecksReported.fill(false);
         g_saveChecksReported.fill(false);
         g_cleanupTest = {};
+        g_gems = {};
+        g_gemsSaveRequested = g_gemsUnexpectedSave = g_gemsUnexpectedLoad = false;
+        g_gemsLoadStarts = 0;
         g_failCount = 0;
         g_warnCount = 0;
         g_startedAt = Clock::now();
@@ -4888,13 +5805,19 @@ namespace SkyrimPoE::Runtime
         if (g_config && !g_cfg.saveOnly && !g_cfg.cleanupOnly) {
             g_savedEnforceGemReq = g_config->enforceGemRequirements;
             g_hasSavedEnforceGemReq = true;
-            g_config->enforceGemRequirements = false;
+            g_config->enforceGemRequirements = g_cfg.gemsOnly;
         }
         g_enabled.store(true, std::memory_order_release);
 
         LogInfo(std::format("SkyrimPoE Stage 6 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
             g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
+        if (g_cfg.gemsOnly) {
+            g_gems.finalSlot = g_cfg.tempSave + kCleanupFinalSuffix;
+            g_gems.since = Clock::now();
+            EnterPhase(Phase::GemsOnly);
+            return;
+        }
         if (g_cfg.cleanupOnly) {
             SaveLoad::SetCleanupTestTarget(true);
             EnterPhase(Phase::CleanupContent);
@@ -4923,9 +5846,14 @@ namespace SkyrimPoE::Runtime
         return IsEnabled() && g_cfg.cleanupOnly;
     }
 
+    bool AutoTest::IsGemsOnly() noexcept
+    {
+        return IsEnabled() && g_cfg.gemsOnly;
+    }
+
     void AutoTest::TickSaveOnlyWhileSuspended(RE::Main* main)
     {
-        if (IsEnabled() && (g_cfg.saveOnly || g_cfg.cleanupOnly)) {
+        if (IsEnabled() && (g_cfg.saveOnly || g_cfg.cleanupOnly || g_cfg.gemsOnly)) {
             Tick(main, 0.0);
         }
     }
@@ -4933,6 +5861,16 @@ namespace SkyrimPoE::Runtime
     void AutoTest::OnPreLoadGame(std::string_view saveName)
     {
         if (!IsEnabled()) {
+            return;
+        }
+        if (g_cfg.gemsOnly) {
+            SaveLoad::MatchGemTestLoad(saveName);
+            ++g_gemsLoadStarts;
+            const auto stem = StripSaveStem(saveName);
+            std::scoped_lock lock(g_msgMutex);
+            g_preLoadMatched = !g_expectedLoadStem.empty() && SameSaveStem(stem, g_expectedLoadStem);
+            g_gemsUnexpectedLoad |= !g_preLoadMatched;
+            g_postLoadSignaled = g_postLoadSucceeded = false;
             return;
         }
         const bool cleanupMatch = g_cfg.cleanupOnly && SaveLoad::MatchCleanupTestLoad(saveName);
@@ -4966,6 +5904,22 @@ namespace SkyrimPoE::Runtime
             return;
         }
         const auto stem = StripSaveStem(saveName);
+        if (g_cfg.gemsOnly) {
+            const auto previous = SaveLoad::GetLastSaveDiagnostics();
+            bool requested = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                requested = g_gemsSaveRequested && SameSaveStem(stem, g_expectedSaveStem);
+                g_gemsSaveRequested = false;
+                g_gemsUnexpectedSave |= !requested;
+                if (requested) {
+                    g_saveSequenceAtMessage = previous.sequence;
+                    g_saveMatched = true;
+                }
+            }
+            SaveLoad::OnGemTestSave(stem, requested);
+            return;
+        }
         if (g_cfg.saveOnly || g_cfg.cleanupOnly) {
             // SKSE dispatches kSaveGame before it invokes the co-save writer.
             const auto previous = SaveLoad::GetLastSaveDiagnostics();
@@ -5009,6 +5963,17 @@ namespace SkyrimPoE::Runtime
                 if (auto* m = main ? main : RE::Main::GetSingleton()) {
                     m->GetRuntimeData().quitGame = true;
                 }
+            }
+            return;
+        }
+
+        if (g_cfg.gemsOnly) {
+            try {
+                TickGemsOnly();
+            } catch (const std::exception& e) {
+                FinishAndScheduleQuit(std::format("Gems AutoTest failed: {}", e.what()));
+            } catch (...) {
+                FinishAndScheduleQuit("Gems AutoTest failed with an unknown exception.");
             }
             return;
         }
@@ -5759,7 +6724,7 @@ namespace SkyrimPoE::Runtime
                 }
                 if (g_tempEsInjected && g_statEngine && g_dataPack && g_config) {
                     const auto stNow = SaveLoad::GetStateCopy();
-                    Core::Layer1Input l1;
+                    Core::Layer1Input l1{ .gemGeneration = SaveLoad::WorldGemGeneration() };
                     l1.exileLevel = stNow.exileLevel;
                     l1.className = stNow.className.empty() ? "Scion" : stNow.className;
                     l1.slots = stNow.slots;
@@ -5779,7 +6744,7 @@ namespace SkyrimPoE::Runtime
                     const auto curSnap = g_statEngine->GetSnapshot();
                     if (!curSnap || curSnap->poeMaxEnergyShield <= 0.0) {
                         const auto stNow = SaveLoad::GetStateCopy();
-                        Core::Layer1Input l1;
+                        Core::Layer1Input l1{ .gemGeneration = SaveLoad::WorldGemGeneration() };
                         l1.exileLevel = stNow.exileLevel;
                         l1.className = stNow.className.empty() ? "Scion" : stNow.className;
                         l1.slots = stNow.slots;
@@ -6131,7 +7096,7 @@ namespace SkyrimPoE::Runtime
                     m1Selected, dupRejected, m2Selected, bridgeId, bridgeKept, leafRefunded, autoRefundedM2));
 
             // D5 준비: Chaos Inoculation + 임시 ES 50 적용 후 주 갱신 TickPlayerPools가 안전 체력 하한·ES 풀을 반영하는지 확인
-            Core::Layer1Input ciL1;
+            Core::Layer1Input ciL1{ .gemGeneration = SaveLoad::WorldGemGeneration() };
             ciL1.exileLevel = 50;
             ciL1.className = "Marauder";
             ciL1.slots = stAuto.slots;
@@ -6165,7 +7130,7 @@ namespace SkyrimPoE::Runtime
                 chaosDmg == 0.0 && esIntactUnderCi && !player->IsDead() && ciPermHp >= 1.0 && ciPermHp <= 25.5;
 
             // 2) Blood Magic + MoM 상호작용: 체력 비용 환산 + 1 HP 자살 방지 가드 + Blood Magic 시 MoM 비활성(momRatio == 0)
-            Core::Layer1Input bmL1;
+            Core::Layer1Input bmL1{ .gemGeneration = SaveLoad::WorldGemGeneration() };
             bmL1.exileLevel = 50;
             bmL1.className = "Marauder";
             bmL1.slots = SaveLoad::GetStateCopy().slots;
@@ -6188,7 +7153,7 @@ namespace SkyrimPoE::Runtime
                 allowedAtFullHp.has_value() && allowedAtFullHp->usesHealthCost && allowedAtFullHp->skyrimHealthCost > 0.0;
 
             // 3) Mind Over Matter: StatEngine momRatio=0.40 스냅샷 + 실제 플레이어 매지카/인게임 난이도 배율 정렬 흡수
-            Core::Layer1Input momL1;
+            Core::Layer1Input momL1{ .gemGeneration = SaveLoad::WorldGemGeneration() };
             momL1.exileLevel = 50;
             momL1.className = "Marauder";
             momL1.slots = bmL1.slots;

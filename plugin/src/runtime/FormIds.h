@@ -2,6 +2,7 @@
 
 #include "core/ItemTypes.h"
 #include "core/Types.h"
+#include "core/GemForms.h"
 
 #include <array>
 #include <cstdint>
@@ -28,48 +29,11 @@ namespace SkyrimPoE::Runtime::FormIds
         0x000811, 0x000812, 0x000813
     };
 
-    struct GemFormEntry
-    {
-        std::string_view gemId;
-        RE::FormID localFormId;
-    };
-
-    // 2단계(9종) + 5단계(19종) = 총 28종 스킬·보조·발동·오라·전령·가드 젬 통합 테이블
-    inline constexpr std::array<GemFormEntry, 28> kAllGemForms = {{
-        { "Cyclone",                          0x000814 },
-        { "SupportCastOnCriticalStrike",      0x000815 },
-        { "IceNova",                          0x000816 },
-        { "ShockNova",                        0x000817 },
-        { "SupportIncreasedCriticalStrikes",  0x000818 },
-        { "SupportMeleePhysicalDamage",       0x000819 },
-        { "SupportBrutality",                 0x00081A },
-        { "SupportIncreasedAreaOfEffect",     0x00081B },
-        { "SupportConcentratedEffect",        0x00081C },
-        // 5단계 신규 19종 (0x00087D..0x00088F)
-        { "Fireball",                         0x00087D },
-        { "FreezingPulse",                    0x00087E },
-        { "Arc",                              0x00087F },
-        { "Spark",                            0x000880 },
-        { "SupportGreaterMultipleProjectiles",0x000881 },
-        { "SupportChain",                     0x000882 },
-        { "SupportFork",                      0x000883 },
-        { "SupportPierce",                    0x000884 },
-        { "SupportSpellEcho",                 0x000885 },
-        { "Determination",                    0x000886 },
-        { "Grace",                            0x000887 },
-        { "Discipline",                       0x000888 },
-        { "Hatred",                           0x000889 },
-        { "Wrath",                            0x00088A },
-        { "Anger",                            0x00088B },
-        { "PurityOfElements",                 0x00088C },
-        { "HeraldOfIce",                      0x00088D },
-        { "HeraldOfAsh",                      0x00088E },
-        { "MoltenShell",                      0x00088F },
-    }};
+    inline constexpr const auto& kAllGemForms = Core::GemForms::kLegacyKeys;
 
     // 2단계 호출부 호환 별칭 및 5단계 신규 젬 시작 인덱스(0-based, 총 19종)
     inline constexpr const auto& kStage2GemForms = kAllGemForms;
-    inline constexpr std::size_t kStage5GemStartIndex = 9;
+    inline constexpr std::size_t kStage5GemStartIndex = Core::GemForms::kStage5GemStartIndex;
     inline constexpr std::size_t kStage5GemCount = kAllGemForms.size() - kStage5GemStartIndex;
 
     inline constexpr RE::FormID kVfxIceNova = 0x00081D;

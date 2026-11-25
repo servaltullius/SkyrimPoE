@@ -31,7 +31,7 @@ namespace SkyrimPoE::Runtime
 
         RE::TESObjectMISC* LegacyGemReturnForm(std::string_view gemId)
         {
-            const auto local = FormIds::FindLocalFormIdForGem(gemId);
+            const auto local = Core::GemForms::LegacyReturnForm(gemId);
             return local ? FormIds::Lookup<RE::TESObjectMISC>(local) : nullptr;
         }
 

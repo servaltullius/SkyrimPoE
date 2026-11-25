@@ -50,7 +50,7 @@ namespace SkyrimPoE::Runtime
         // 주 갱신 스레드 전용: 탈착·보관된 데이터 젬을 ExtraUniqueID와 함께 플레이어 인벤토리에 넣는다.
         static std::optional<Core::InventoryItemKey> ReturnGemToPlayerInventory(
             RE::PlayerCharacter* player,
-            Core::GemInstance gem);
+            Core::GemInstance gem, bool recovering = false);
 
         // 주 갱신 스레드 전용: 플레이어 인벤토리에서 젬 1개를 꺼낸다(추적 젬이면 데이터 복원, 순정이면 신규 인스턴스).
         static std::optional<Core::GemInstance> TakeGemFromPlayerInventory(
@@ -62,7 +62,7 @@ namespace SkyrimPoE::Runtime
 
         // 코세이브 직렬화/복원 (메모리 전용, 엔진 호출 없음)
         [[nodiscard]] static std::vector<TrackedGemEntry> TakeSnapshotForSave();
-        static void RestoreFromSave(std::vector<TrackedGemEntry> entries);
+        static void RestoreFromSave(std::vector<TrackedGemEntry> entries, std::uint32_t generation);
         static void Clear();
         [[nodiscard]] static std::size_t CountTracked();
     };

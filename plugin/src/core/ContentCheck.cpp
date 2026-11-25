@@ -1,4 +1,5 @@
 #include "core/ContentCheck.h"
+#include "core/DataPack.h"
 
 #include <nlohmann/json.hpp>
 
@@ -6,9 +7,89 @@
 #include <format>
 #include <limits>
 #include <span>
+#include <Windows.h>
+#include <bcrypt.h>
+#include <fstream>
+#include <memory>
 
 namespace SkyrimPoE::Core
 {
+    std::string ReadContentFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        const auto length = static_cast<std::streamoff>(file.tellg());
+        if (length < 0 || length > std::numeric_limits<ULONG>::max()) {
+            throw std::runtime_error("could not open file or determine a supported size");
+        }
+        std::string bytes(static_cast<std::size_t>(length), '\0');
+        if (!file.seekg(0).read(bytes.data(), static_cast<std::streamsize>(length)) ||
+            file.peek() != std::char_traits<char>::eof() || file.bad()) {
+            throw std::runtime_error("could not read the entire file");
+        }
+        return bytes;
+    }
+
+    std::string ContentSha256(std::string_view bytes)
+    {
+        if (bytes.size() > std::numeric_limits<ULONG>::max()) {
+            throw std::runtime_error("content too large for SHA-256");
+        }
+        BCRYPT_ALG_HANDLE provider = nullptr;
+        if (BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+            throw std::runtime_error("could not open SHA-256 provider");
+        }
+        const auto closeProvider = [](void* handle) { BCryptCloseAlgorithmProvider(handle, 0); };
+        const std::unique_ptr<void, decltype(closeProvider)> algorithm(provider, closeProvider);
+        BCRYPT_HASH_HANDLE handle = nullptr;
+        if (BCryptCreateHash(algorithm.get(), &handle, nullptr, 0, nullptr, 0, 0) != 0) {
+            throw std::runtime_error("could not initialize SHA-256");
+        }
+        const std::unique_ptr<void, decltype(&BCryptDestroyHash)> hash(handle, &BCryptDestroyHash);
+        std::array<UCHAR, 32> digest{};
+        if (BCryptHashData(hash.get(), reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())),
+                static_cast<ULONG>(bytes.size()), 0) != 0 ||
+            BCryptFinishHash(hash.get(), digest.data(), static_cast<ULONG>(digest.size()), 0) != 0) {
+            throw std::runtime_error("could not compute SHA-256");
+        }
+        std::string hex;
+        hex.reserve(digest.size() * 2);
+        for (const auto byte : digest) {
+            std::format_to(std::back_inserter(hex), "{:02x}", byte);
+        }
+        return hex;
+    }
+
+    bool LoadStagedGems(DataPack& pack, const std::filesystem::path& dataRoot,
+        std::string_view buildId, std::string& error)
+    {
+        try {
+            const auto manifest = nlohmann::json::parse(ReadContentFile(dataRoot / kContentManifestPath));
+            const auto& version = manifest.at("manifestVersion");
+            if (!version.is_number_integer() || version != 1 || manifest.at("buildId").get<std::string>() != buildId) {
+                throw std::runtime_error("staged manifest buildId or version mismatch");
+            }
+            const auto& staged = manifest.at("staged");
+            if (!staged.is_array() || staged.size() != 1 || staged.front().at("path") != kStagedGemsPath) {
+                throw std::runtime_error("manifest must list exactly the staged gem catalog");
+            }
+            const auto bytes = ReadContentFile(dataRoot / kStagedGemsPath);
+            if (staged.front().at("sha256") != ContentSha256(bytes)) {
+                throw std::runtime_error("staged gem catalog SHA-256 mismatch");
+            }
+            const auto root = nlohmann::json::parse(bytes);
+            if (root.at("meta").at("buildId").get<std::string>() != buildId) {
+                throw std::runtime_error("staged gem catalog buildId mismatch");
+            }
+            if (root.at("meta").at("gameVersion") != kStagedGemsGameVersion) {
+                throw std::runtime_error("staged gem catalog gameVersion mismatch");
+            }
+            return pack.LoadGen1GemsFromJsonString(bytes, &error);
+        } catch (const std::exception& e) {
+            error = std::format("{}: {}", kStagedGemsPath, e.what());
+            return false;
+        }
+    }
+
     namespace
     {
         using nlohmann::json;

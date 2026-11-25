@@ -1,4 +1,5 @@
 #include "core/SaveRecordFormat.h"
+#include "core/GemForms.h"
 #include "core/Migration.h"
 #include "core/SaveCapPolicy.h"
 
@@ -51,9 +52,32 @@ namespace SkyrimPoE::Core::SaveRecord
                 [intfc](const void* data, std::uint32_t size) { return intfc->WriteRecordData(data, size); }, str);
         }
 
-        bool WriteGemInstance(RecordBuffer* intfc, const Core::GemInstance& gem, std::uint32_t depth = 0)
+        bool ValidGemKey(std::uint32_t generation, std::string_view key) noexcept
+        {
+            // Legacy cleanup reads raw keys, including keys unknown to the current catalog.
+            if (generation == 0) return !key.starts_with("gem.") && !key.starts_with("sup.");
+            return generation == 1 && GemForms::FindContent(key);
+        }
+
+        bool ContainsLegacyGemKey(const GemInstance& gem, std::uint32_t depth = 0) noexcept
         {
             if (depth > kMaxGemDepth) {
+                return false;
+            }
+            if (GemForms::FindLegacy(gem.gemId)) {
+                return true;
+            }
+            const auto children = std::span(gem.socketedGems).first(
+                std::min<std::size_t>(gem.socketedGems.size(), kMaxListLen));
+            return std::ranges::any_of(children, [depth](const GemInstance& child) {
+                return ContainsLegacyGemKey(child, depth + 1);
+            });
+        }
+
+        bool WriteGemInstance(RecordBuffer* intfc, const Core::GemInstance& gem, std::uint32_t generation,
+            std::uint32_t depth = 0)
+        {
+            if (depth > kMaxGemDepth || !ValidGemKey(generation, gem.gemId)) {
                 return false;
             }
             if (!intfc->WriteRecordData(&gem.instanceId, sizeof(gem.instanceId))) return false;
@@ -66,7 +90,7 @@ namespace SkyrimPoE::Core::SaveRecord
             const auto childCount = static_cast<std::uint32_t>(std::min<std::size_t>(gem.socketedGems.size(), kMaxListLen));
             if (!intfc->WriteRecordData(&childCount, sizeof(childCount))) return false;
             for (std::uint32_t i = 0; i < childCount; ++i) {
-                if (!WriteGemInstance(intfc, gem.socketedGems[i], depth + 1)) {
+                if (!WriteGemInstance(intfc, gem.socketedGems[i], generation, depth + 1)) {
                     return false;
                 }
             }
@@ -195,35 +219,77 @@ namespace SkyrimPoE::Core::SaveRecord
         return true;
     }
 
-    bool ReadGemInstance(std::span<const std::uint8_t>& bytes, Core::GemInstance& out, std::uint32_t depth)
+    namespace
     {
-        if (depth > kMaxGemDepth) {
-            return false;
-        }
-        if (!ReadPod(bytes, out.instanceId)) return false;
-        if (!ReadString(bytes, out.gemId)) return false;
-        if (!ReadPod(bytes, out.level)) return false;
-        if (!ReadPod(bytes, out.quality)) return false;
-        if (!ReadPod(bytes, out.xp)) return false;
-        if (!ReadPod(bytes, out.socketCount)) return false;
-
-        out.level = static_cast<std::uint8_t>(std::clamp<std::uint32_t>(out.level, 1, Core::kMaxGemLevel));
-        out.socketCount = static_cast<std::uint8_t>(std::min<std::uint32_t>(out.socketCount, Core::kMaxGemSockets));
-
-        std::uint32_t childCount = 0;
-        if (!ReadPod(bytes, childCount) || childCount > kMaxListLen) {
-            return false;
-        }
-        out.socketedGems.clear();
-        out.socketedGems.reserve(childCount);
-        for (std::uint32_t i = 0; i < childCount; ++i) {
-            Core::GemInstance child;
-            if (!ReadGemInstance(bytes, child, depth + 1)) {
+        bool ReadGemTree(std::span<const std::uint8_t>& bytes, GemInstance& out, GemKeyValidation* validation,
+            std::uint32_t depth = 0)
+        {
+            if (depth > kMaxGemDepth) {
                 return false;
             }
-            out.socketedGems.push_back(std::move(child));
+            if (!ReadPod(bytes, out.instanceId)) return false;
+            if (!ReadString(bytes, out.gemId)) return false;
+            if (validation && !ValidGemKey(validation->generation, out.gemId)) validation->valid = false;
+            if (!ReadPod(bytes, out.level)) return false;
+            if (!ReadPod(bytes, out.quality)) return false;
+            if (!ReadPod(bytes, out.xp)) return false;
+            if (!ReadPod(bytes, out.socketCount)) return false;
+
+            out.level = static_cast<std::uint8_t>(std::clamp<std::uint32_t>(out.level, 1, Core::kMaxGemLevel));
+            out.socketCount = static_cast<std::uint8_t>(std::min<std::uint32_t>(out.socketCount, Core::kMaxGemSockets));
+
+            std::uint32_t childCount = 0;
+            if (!ReadPod(bytes, childCount) || childCount > kMaxListLen) {
+                return false;
+            }
+            out.socketedGems.clear();
+            out.socketedGems.reserve(childCount);
+            for (std::uint32_t i = 0; i < childCount; ++i) {
+                Core::GemInstance child;
+                if (!ReadGemTree(bytes, child, validation, depth + 1)) {
+                    return false;
+                }
+                out.socketedGems.push_back(std::move(child));
+            }
+            return true;
         }
-        return true;
+    }
+
+    bool ReadGemInstance(std::span<const std::uint8_t>& bytes, GemInstance& out)
+    {
+        return ReadGemTree(bytes, out, nullptr);
+    }
+
+    bool ReadGemKeysRecord(const RawSaveRecord& record, std::vector<Runtime::TrackedGemEntry>& out,
+        GemKeyValidation* validation)
+    {
+        if (record.type != kRecordGemKeys ||
+            (record.version != kLegacyGemKeysVersion && record.version != kGemKeysVersion)) return false;
+        std::span<const std::uint8_t> bytes = record.bytes;
+        std::uint32_t count = 0;
+        if (!ReadPod(bytes, count) || count > kMaxListLen) return false;
+        std::vector<Runtime::TrackedGemEntry> entries;
+        entries.reserve(count);
+        bool complete = true;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            Runtime::TrackedGemEntry entry{};
+            std::uint8_t worldByte = 0;
+            if (!ReadPod(bytes, entry.key.ownerFormId) || !ReadPod(bytes, entry.key.uniqueId) ||
+                !ReadPod(bytes, worldByte) || !ReadGemTree(bytes, entry.gem, validation)) {
+                complete = false;
+                break;
+            }
+            if (record.version == kGemKeysVersion && worldByte > 1) {
+                // v2는 0(가방)·1(바닥)만 쓴다. 다른 값은 손상으로 보고 레코드 전체를 거절한다(정상화해 다시 쓰지 않음).
+                complete = false;
+                break;
+            }
+            entry.isWorld = worldByte != 0;
+            entries.push_back(std::move(entry));
+        }
+        if (record.version == kGemKeysVersion && (!complete || !bytes.empty())) return false;
+        out = std::move(entries);
+        return complete;
     }
 
     bool ReadLegacyCoreV2Front(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
@@ -239,34 +305,35 @@ namespace SkyrimPoE::Core::SaveRecord
         return true;
     }
 
-    bool ReadLegacyCoreV2Slots(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
-    {
-        std::uint32_t slotCount = 0;
-        if (!ReadPod(bytes, slotCount) || slotCount > kSkillSlotCount) {
-            return false;
-        }
-        for (std::uint32_t i = 0; i < slotCount; ++i) {
-            std::uint8_t occupiedByte = 0;
-            std::int8_t linked = -1;
-            if (!ReadPod(bytes, occupiedByte) || !ReadPod(bytes, linked)) {
-                return false;
-            }
-            auto& slot = tmp.slots[i];
-            slot.slotIndex = static_cast<std::uint8_t>(i);
-            slot.occupied = occupiedByte != 0;
-            slot.linkedAttackSlot = (linked >= 0 && linked < static_cast<std::int8_t>(kSkillSlotCount)) ? linked : -1;
-            if (slot.occupied && !ReadGemInstance(bytes, slot.gem)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     namespace
     {
+        bool ReadCoreSlots(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp,
+            GemKeyValidation* validation)
+        {
+            std::uint32_t slotCount = 0;
+            if (!ReadPod(bytes, slotCount) || slotCount > kSkillSlotCount) {
+                return false;
+            }
+            for (std::uint32_t i = 0; i < slotCount; ++i) {
+                std::uint8_t occupiedByte = 0;
+                std::int8_t linked = -1;
+                if (!ReadPod(bytes, occupiedByte) || !ReadPod(bytes, linked)) {
+                    return false;
+                }
+                auto& slot = tmp.slots[i];
+                slot.slotIndex = static_cast<std::uint8_t>(i);
+                slot.occupied = occupiedByte != 0;
+                slot.linkedAttackSlot = (linked >= 0 && linked < static_cast<std::int8_t>(kSkillSlotCount)) ? linked : -1;
+                if (slot.occupied && !ReadGemTree(bytes, slot.gem, validation)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         bool ReadCorePayload(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp, bool strict)
         {
-            if (!ReadLegacyCoreV2Front(bytes, tmp) || !ReadLegacyCoreV2Slots(bytes, tmp)) {
+            if (!ReadLegacyCoreV2Front(bytes, tmp) || !ReadCoreSlots(bytes, tmp, nullptr)) {
                 return false;
             }
             const bool finiteHealth = std::isfinite(tmp.appliedHealthDelta);
@@ -281,6 +348,11 @@ namespace SkyrimPoE::Core::SaveRecord
             if (!finiteMagicka) tmp.appliedMagickaDelta = 0.0;
             return true;
         }
+    }
+
+    bool ReadLegacyCoreV2Slots(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
+    {
+        return ReadCoreSlots(bytes, tmp, nullptr);
     }
 
     bool ReadCoreV2(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
@@ -442,6 +514,38 @@ namespace SkyrimPoE::Core::SaveRecord
         if (isNewGame) {
             return decision;
         }
+        if (decision.disposition != SaveDisposition::Preserve) {
+            const auto generation = input.generation.status == GenerationRecordStatus::Valid
+                ? input.generation.value.contentGeneration : 0;
+            GemKeyValidation keys{ generation };
+            const auto coreVersion = generation == 0 ? kLegacyCoreVersion : kCoreVersion;
+            const auto gkeyVersion = generation == 0 ? kLegacyGemKeysVersion : kGemKeysVersion;
+            bool sawGemKeys = false;
+            for (const auto& record : batch.records) {
+                if (record.type == kRecordGemKeys) {
+                    if (record.version != gkeyVersion || (generation != 0 && sawGemKeys)) {
+                        return { SaveDisposition::Preserve, "세이브 세대와 GKEY 레코드 판 또는 개수가 맞지 않습니다." };
+                    }
+                    sawGemKeys = true;
+                    std::vector<Runtime::TrackedGemEntry> entries;
+                    if (!ReadGemKeysRecord(record, entries, &keys) && generation != 0) {
+                        return { SaveDisposition::Preserve, "세대 1 GKEY 레코드를 온전히 읽지 못했습니다." };
+                    }
+                } else if (record.type == kRecordCore && record.version == coreVersion) {
+                    std::span<const std::uint8_t> bytes = record.bytes;
+                    Runtime::PersistentState state;
+                    if (ReadLegacyCoreV2Front(bytes, state)) {
+                        (void)ReadCoreSlots(bytes, state, &keys);
+                    }
+                }
+            }
+            if (!keys.valid) {
+                return { SaveDisposition::Preserve, "CORE 또는 GKEY의 젬 키가 세이브 세대와 맞지 않습니다." };
+            }
+            if (generation == 1 && !sawGemKeys) {
+                return { SaveDisposition::Preserve, "세대 1 세이브에 필수 GKEY v2 레코드가 없습니다." };
+            }
+        }
         const bool normal = decision.disposition == SaveDisposition::Normal;
         const bool legacyCleanup = decision.disposition == SaveDisposition::CleanupFromLegacy;
         const bool needsGenerationRecords = normal && pack.contentGeneration != 0;
@@ -494,7 +598,7 @@ namespace SkyrimPoE::Core::SaveRecord
     }
 
     bool WriteSnapshot(const Snapshot& snapshot, const SaveGeneration& generation, const RecordSink& sink,
-        const Report& reportWarning)
+        const Report& reportWarning, const Report& reportOmission)
     {
         const auto& [state, tracked, trackedItems, savedWorldDrops, savedMapState, savedSpeedMods] = snapshot;
         bool allWritten = true;
@@ -537,7 +641,7 @@ namespace SkyrimPoE::Core::SaveRecord
                 ok = ok && intfc->WriteRecordData(&occupiedByte, sizeof(occupiedByte));
                 ok = ok && intfc->WriteRecordData(&slot.linkedAttackSlot, sizeof(slot.linkedAttackSlot));
                 if (slot.occupied) {
-                    ok = ok && WriteGemInstance(intfc, slot.gem);
+                    ok = ok && WriteGemInstance(intfc, slot.gem, generation.contentGeneration);
                 }
             }
             return ok;
@@ -549,12 +653,40 @@ namespace SkyrimPoE::Core::SaveRecord
                 intfc->WriteRecordData(&deltas.magickaRateMult, sizeof(deltas.magickaRateMult));
         });
 
-        encode(kRecordGemKeys, kGemKeysVersion, [&](RecordBuffer* intfc) {
+        const auto gemKeysVersion = generation.contentGeneration == 0 ? kLegacyGemKeysVersion : kGemKeysVersion;
+        encode(kRecordGemKeys, gemKeysVersion, [&](RecordBuffer* intfc) {
+            std::size_t candidateCount = tracked.size();
             // C-4, 재검수 R-3: 상한 초과 시 플레이어 소지품 → 바닥 → 그 밖 순으로 남긴다.
-            const auto keep = SelectForSave(tracked, kMaxListLen);
-            if (reportWarning && keep.size() < tracked.size()) {
+            const auto keep = [&] {
+                if (generation.contentGeneration != 1) {
+                    return SelectForSave(tracked, kMaxListLen);
+                }
+                // GKEY tracks forms already in the game save. CORE owns equipped gems and remains strict.
+                std::vector<Core::SaveCapCandidate> candidates;
+                std::vector<std::size_t> sourceIndices;
+                candidates.reserve(tracked.size());
+                sourceIndices.reserve(tracked.size());
+                for (std::size_t i = 0; i < tracked.size(); ++i) {
+                    const auto& entry = tracked[i];
+                    if (!ContainsLegacyGemKey(entry.gem)) {
+                        candidates.push_back({ entry.key.ownerFormId, entry.isWorld });
+                        sourceIndices.push_back(i);
+                    }
+                }
+                candidateCount = candidates.size();
+                if (reportOmission && candidateCount < tracked.size()) {
+                    reportOmission(std::format("GKEY omitted {} tracked gem entries containing legacy keys; physical forms remain.",
+                        tracked.size() - candidateCount));
+                }
+                auto selected = Core::SelectEntriesWithinSaveCap(candidates, kMaxListLen, kPlayerRefFormId);
+                for (auto& index : selected) {
+                    index = sourceIndices[index];
+                }
+                return selected;
+            }();
+            if (reportWarning && keep.size() < candidateCount) {
                 reportWarning(std::format("SaveLoad: GKEY count {} exceeded cap {}; dropped {} entries not held by the player first.",
-                    tracked.size(), kMaxListLen, tracked.size() - keep.size()));
+                    candidateCount, kMaxListLen, candidateCount - keep.size()));
             }
             const auto trackedCount = static_cast<std::uint32_t>(keep.size());
             bool gkeyOk = intfc->WriteRecordData(&trackedCount, sizeof(trackedCount));
@@ -564,7 +696,7 @@ namespace SkyrimPoE::Core::SaveRecord
                 gkeyOk = gkeyOk && intfc->WriteRecordData(&entry.key.ownerFormId, sizeof(entry.key.ownerFormId));
                 gkeyOk = gkeyOk && intfc->WriteRecordData(&entry.key.uniqueId, sizeof(entry.key.uniqueId));
                 gkeyOk = gkeyOk && intfc->WriteRecordData(&worldByte, sizeof(worldByte));
-                gkeyOk = gkeyOk && WriteGemInstance(intfc, entry.gem);
+                gkeyOk = gkeyOk && WriteGemInstance(intfc, entry.gem, generation.contentGeneration);
             }
             return gkeyOk;
         });

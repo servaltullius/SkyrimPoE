@@ -1074,7 +1074,13 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
             }
-            const auto* def = g_dataPack->FindGem(targetGem->gemId);
+            const auto gemGeneration = SaveLoad::WorldGemGeneration();
+            if (!Core::GemForms::AllowsExecution(gemGeneration, targetGem->gemId)) {
+                res.message = std::string(Core::GemForms::UseReasonText(
+                    Core::GemForms::ClassifyUse(gemGeneration, targetGem->gemId).reason));
+                return;
+            }
+            const auto* def = g_dataPack->FindGem(targetGem->gemId, gemGeneration);
             const auto kind = def ? def->kind : Core::GemKind::Unknown;
             const auto out = Core::ItemCrafting::ApplyJewellerToGem(*targetGem, kind);
             if (!out.IsOk()) {
@@ -1667,7 +1673,13 @@ namespace SkyrimPoE::Runtime
                 res.message = "해당 슬롯에 장착된 젬이 없습니다.";
                 return;
             }
-            const auto* def = g_dataPack->FindGem(slot.gem.gemId);
+            const auto gemGeneration = SaveLoad::WorldGemGeneration();
+            if (!Core::GemForms::AllowsExecution(gemGeneration, slot.gem.gemId)) {
+                res.message = std::string(Core::GemForms::UseReasonText(
+                    Core::GemForms::ClassifyUse(gemGeneration, slot.gem.gemId).reason));
+                return;
+            }
+            const auto* def = g_dataPack->FindGem(slot.gem.gemId, gemGeneration);
             if (!def) {
                 res.message = "정신력 예약 스킬을 찾지 못했습니다.";
                 return;

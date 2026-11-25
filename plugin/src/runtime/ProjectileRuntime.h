@@ -25,7 +25,9 @@ namespace SkyrimPoE::Runtime
             const Core::DataPack* dataPack,
             const Core::Config* config);
 
-        // 주 갱신 스레드 전용: 6종 주문(Fireball/FreezingPulse/Arc/Spark/IceNova/ShockNova) 실행
+        [[nodiscard]] static bool HasSpellDelivery(std::uint32_t generation, std::string_view gemId) noexcept;
+
+        // Main thread: launch the projectile, nova or chain delivery for a ready spell.
         static bool LaunchSpellDelivery(
             const Core::TriggeredSpellCast& cast,
             const RE::NiPoint3& aimOrigin,
@@ -48,6 +50,17 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static std::uint64_t TotalLaunchedCount() noexcept;
         [[nodiscard]] static std::uint64_t TotalImpactCount() noexcept;
         [[nodiscard]] static std::uint64_t TotalRelaunchCount() noexcept;
+
+        // Main-thread diagnostics for the generation-one Spark game test.
+        struct TestHitResult
+        {
+            unsigned launched = 0;
+            unsigned hits = 0;
+            double firstHpLost = 0.0;
+            bool crit = false;
+        };
+        static void SetHitTargetForTest(RE::FormID actorId);
+        [[nodiscard]] static TestHitResult GetHitForTest();
         static void ResetOnRevert();
     };
 }

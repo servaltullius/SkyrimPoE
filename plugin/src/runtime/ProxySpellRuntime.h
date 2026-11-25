@@ -18,6 +18,12 @@ namespace SkyrimPoE::Runtime
     class ProxySpellRuntime
     {
     public:
+        // 시험 진단용: 플레이어의 CheckCast·SpellCast 판정을 기록한다(AutoTest만 켬).
+        static void SetCastTraceForTest(bool enabled);
+
+        // 대리 주문·파워 가운데 GetCostliestEffectItem()이 null인 수를 기록한다(다른 모드 호환 진단).
+        static void EnsureProxyCostliestEffects();
+
         static bool Install(
             Core::CommandQueue* queue,
             Core::StatEngine* statEngine,

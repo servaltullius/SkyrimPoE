@@ -52,9 +52,28 @@ namespace SkyrimPoE::Runtime
         std::optional<Core::SaveGeneration> g_currentGeneration;
         std::optional<Core::SaveGeneration> g_testGeneration;
         std::optional<Core::SaveGeneration> g_worldGeneration;
+        std::optional<Core::SaveGeneration> g_gemTestGeneration;
+        AutoTestMarker::GemTestWorld g_gemWorld;
+        std::string g_gemFinalSlot;
+        bool g_gemSaveAllowed = false;
+        bool g_thisLoadUsesTest = false;
+
+        // The co-save write identity also supports cleanup-only probes. The gameplay
+        // catalog is selected independently when the load decision accepts a world.
+        std::uint32_t PackageGemGeneration()
+        {
+            return g_currentGeneration ? g_currentGeneration->contentGeneration : 0;
+        }
+
+        const Core::SaveGeneration* SelectLoadTarget()
+        {
+            if (g_gemTestGeneration && g_gemWorld.MatchedLoad()) {
+                return &*g_gemTestGeneration;
+            }
+            return Core::SelectSaveTarget(g_currentGeneration, g_testGeneration, g_thisLoadUsesTest);
+        }
         std::optional<Core::SaveGeneration> g_pendingLoadGeneration;
         AutoTestMarker::CleanupLoadRequest g_cleanupLoadRequest;
-        bool g_thisLoadUsesTest = false;
         Core::SaveRecordTransition g_cosave;
         MigrationRuntime g_migration;
         std::shared_ptr<const MigrationDiagnostics> g_lastMigration;
@@ -302,6 +321,7 @@ namespace SkyrimPoE::Runtime
         Core::Layer1Input BuildLayer1FromState(const PersistentState& state)
         {
             Core::Layer1Input l1;
+            l1.gemGeneration = SaveLoad::WorldGemGeneration();
             l1.passives.poe2 = g_treeData && g_treeData->IsLoaded() && g_treeData->Generation() == 1;
             l1.exileLevel = std::clamp<std::uint32_t>(state.exileLevel, 1, Core::kMaxExileLevel);
             if (state.tree.classSelected && g_treeData && state.tree.generation == g_treeData->Generation()) {
@@ -382,7 +402,7 @@ namespace SkyrimPoE::Runtime
                 g_speedRevertRetryAccumSec = 0.0;
             }
             if (g_statEngine) {
-                g_statEngine->SetLayer1(Core::Layer1Input{});
+                g_statEngine->SetLayer1(Core::Layer1Input{ .gemGeneration = SaveLoad::WorldGemGeneration() });
                 g_statEngine->SetLayer2(Core::Layer2Input{});
             }
             std::vector<std::function<void()>> cbs;
@@ -410,14 +430,15 @@ namespace SkyrimPoE::Runtime
             if (!g_currentGeneration) {
                 return;
             }
-            ResetMemoryState();
             if (!g_cosave.IsLoading()) {
                 g_worldGeneration = g_currentGeneration;
+                g_gemWorld.End(PackageGemGeneration());
                 g_pendingLoadGeneration.reset();
                 g_thisLoadUsesTest = false;
                 g_notifyOnLoad = false;
                 ModState::Set(ModMode::Normal, "새 세계에서 모드 상태를 초기화했습니다.");
             }
+            ResetMemoryState();
             SKSE::log::info("SaveLoad: OnRevert cleared persistent state, gem keys, and command queue.");
         }
 
@@ -483,6 +504,10 @@ namespace SkyrimPoE::Runtime
             bool replay = false;
             {
                 std::scoped_lock lock(g_cosaveMutex);
+                if (g_gemTestGeneration && !std::exchange(g_gemSaveAllowed, false)) {
+                    SKSE::log::error("SaveLoad: refused a co-save outside the gems test save request.");
+                    return;
+                }
                 replay = g_cosave.IsLoading() || !ModState::AllowsGameplay() || !g_worldGeneration;
                 SaveLoad::SaveDiagnostics diagnostics{ .sequence = g_lastSave.sequence + 1 };
                 diagnostics.threadId = REX::W32::GetCurrentThreadId();
@@ -521,7 +546,7 @@ namespace SkyrimPoE::Runtime
                             [&](std::string_view warning) {
                                 ++diagnostics.failedRecords;
                                 ReportWriteWarning(warning);
-                            });
+                            }, ReportWriteWarning);
                         // WriteSnapshot reports each failed record through the warning sink, except for the final GENR emit.
                         if (!complete && diagnostics.failedRecords == 0) {
                             ++diagnostics.failedRecords;
@@ -601,49 +626,25 @@ namespace SkyrimPoE::Runtime
                     }
                 } else if (type == kRecordGemKeys) {
                     sawGemKeysRecord = true;
-                    if (version != kGemKeysVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported GKEY record version {} (expected {}).", version, kGemKeysVersion);
-                        continue;
-                    }
-                    std::uint32_t count = 0;
-                    if (!ReadExactPod(intfc, count) || count > kMaxListLen) {
-                        SKSE::log::error("SaveLoad: invalid GKEY count.");
-                        continue;
-                    }
                     std::vector<TrackedGemEntry> tmp;
-                    tmp.reserve(count);
-                    bool ok = true;
-                    for (std::uint32_t i = 0; i < count && ok; ++i) {
-                        RE::FormID rawOwner = 0;
-                        std::uint16_t uid = 0;
-                        std::uint8_t worldByte = 0;
-                        Core::GemInstance gem;
-                        ok = ok && ReadExactPod(intfc, rawOwner);
-                        ok = ok && ReadExactPod(intfc, uid);
-                        ok = ok && ReadExactPod(intfc, worldByte);
-                        ok = ok && ReadGemInstance(intfc->remaining, gem);
-                        if (!ok) {
-                            break;
-                        }
+                    const auto complete = ReadGemKeysRecord(record, tmp);
+                    auto resolvedEntries = std::vector<TrackedGemEntry>{};
+                    resolvedEntries.reserve(tmp.size());
+                    for (auto& entry : tmp) {
                         RE::FormID resolvedOwner = 0;
-                        if (intfc->ResolveFormID(rawOwner, resolvedOwner) && resolvedOwner != 0) {
-                            tmp.push_back(TrackedGemEntry{
-                                Core::InventoryItemKey{ resolvedOwner, uid },
-                                worldByte != 0,
-                                std::move(gem)
-                            });
+                        if (intfc->ResolveFormID(entry.key.ownerFormId, resolvedOwner) && resolvedOwner != 0) {
+                            entry.key.ownerFormId = resolvedOwner;
+                            resolvedEntries.push_back(std::move(entry));
                         } else {
                             SKSE::log::warn("SaveLoad: skipping tracked gem '{}' with unresolvable owner FormID 0x{:08X}.",
-                                gem.gemId, rawOwner);
+                                entry.gem.gemId, entry.key.ownerFormId);
                         }
                     }
-                    if (ok) {
-                        loadedGems = std::move(tmp);
-                    } else {
-                        // C-3: GKEY 뒷부분이 잘렸더라도 앞선 완전 파싱 항목은 살려 C-1 고아화를 최소화한다.
-                        if (!tmp.empty()) {
-                            loadedGems = std::move(tmp);
-                        }
+                    if (complete || !resolvedEntries.empty()) {
+                        loadedGems = std::move(resolvedEntries);
+                    }
+                    if (!complete) {
+                        // C-3: GKEY v1의 정상 항목은 뒷부분이 잘려도 유지한다.
                         SKSE::log::error("SaveLoad: failed to parse full GKEY record (truncated or corrupt; recovered {} entries).",
                             loadedGems.size());
                     }
@@ -993,7 +994,7 @@ namespace SkyrimPoE::Runtime
             if (g_charmSystem) {
                 g_charmSystem->SetSlots(loadedState.charmSlots, 0);
             }
-            GemInventory::RestoreFromSave(std::move(loadedGems));
+            GemInventory::RestoreFromSave(std::move(loadedGems), SaveLoad::WorldGemGeneration());
             ItemTracker::RestoreFromSave(std::move(loadedItems));
             WorldDropTracker::RestoreFromSave(std::move(loadedWorldDrops));
             if (sawAtlasRecord || mapsRecord) {
@@ -1086,6 +1087,7 @@ namespace SkyrimPoE::Runtime
             if (!g_cosave.IsLoading() && g_currentGeneration) {
                 ++g_loadWorld;
                 g_thisLoadUsesTest = false;
+                g_gemWorld.End(PackageGemGeneration());
                 ModState::Set(ModMode::Preserve, "불러오는 중");
             }
             g_cosave.receivedLoad = true;
@@ -1096,7 +1098,7 @@ namespace SkyrimPoE::Runtime
                 SKSE::log::warn("SaveLoad: co-save collection incomplete, retaining {} complete record(s).",
                     g_cosave.current.records.size());
             }
-            const auto* target = Core::SelectSaveTarget(g_currentGeneration, g_testGeneration, g_thisLoadUsesTest);
+            const auto* target = SelectLoadTarget();
             if (!target) {
                 return;
             }
@@ -1108,6 +1110,7 @@ namespace SkyrimPoE::Runtime
                     auto reason = g_migration.Prepare(g_cosave.current, *target,
                         [intfc](auto raw, auto& resolved) { return intfc->ResolveFormID(raw, resolved); }, g_loadWorld);
                     if (reason.empty()) {
+                        g_gemWorld.Select(PackageGemGeneration(), true);
                         g_pendingLoadGeneration = *target;
                         RecordLoadDiagnostics(decision);
                         g_notifyOnLoad = false;
@@ -1119,8 +1122,9 @@ namespace SkyrimPoE::Runtime
                 }
                 const bool playable = IsPlayable(decision.disposition);
                 if (playable) {
+                    g_gemWorld.Select(PackageGemGeneration(), true);
                     RestoreLoadedRecords(intfc);
-                    g_pendingLoadGeneration = *target;
+                    g_worldGeneration = *target;
                 }
                 SetSaveDecision(decision);
                 if (playable) {
@@ -1129,6 +1133,8 @@ namespace SkyrimPoE::Runtime
             } catch (...) {
                 g_migration.Reset();
                 g_pendingLoadGeneration.reset();
+                g_gemWorld.BeginLoad(PackageGemGeneration());
+                ResetMemoryState();
                 SKSE::log::error("SaveLoad: failed to read or restore the entire co-save.");
                 SetSaveDecision({ Core::SaveDisposition::Preserve, "코세이브를 끝까지 읽거나 복원하지 못했습니다." });
             }
@@ -1177,6 +1183,7 @@ namespace SkyrimPoE::Runtime
             g_worldGeneration = generation;
         }
         g_currentGeneration = std::move(generation);
+        g_gemWorld.BeginLoad(PackageGemGeneration());
         g_notifyOnLoad = !g_currentGeneration;
         ModState::Set(g_currentGeneration ? ModMode::Normal : ModMode::Preserve, std::move(reason));
     }
@@ -1196,6 +1203,64 @@ namespace SkyrimPoE::Runtime
                 ModState::Set(ModMode::Preserve, "AutoTest가 정리를 마치기 전에 종료되었습니다.");
             }
             g_thisLoadUsesTest = false;
+        }
+    }
+
+    void SaveLoad::SetGemTestTarget(Core::SaveGeneration generation, std::string finalSlot)
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        g_gemTestGeneration = std::move(generation);
+        g_gemFinalSlot = std::move(finalSlot);
+    }
+
+    void SaveLoad::ExpectGemTestLoad(std::string_view stem)
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        if (g_gemTestGeneration) {
+            g_gemWorld.Expect(stem);
+        }
+    }
+
+    void SaveLoad::MatchGemTestLoad(std::string_view name) noexcept
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        if (g_gemTestGeneration && g_cosave.IsLoading() && g_gemWorld.Match(name)) {
+            // Keep the real cleanup commit gated until the test captures the baseline.
+            g_thisLoadUsesTest = true;
+        }
+    }
+
+    void SaveLoad::OnGemTestSave(std::string_view stem, bool requested)
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        g_gemSaveAllowed = g_gemTestGeneration && requested &&
+            !g_cosave.IsLoading() && ModState::AllowsGameplay() &&
+            g_gemWorld.Generation() == 1 && AutoTestMarker::SameSaveStem(stem, g_gemFinalSlot);
+    }
+
+    void SaveLoad::EndGemTestWorld()
+    {
+        std::scoped_lock lock(g_cosaveMutex);
+        const auto base = PackageGemGeneration();
+        const bool wasTestWorld = g_gemWorld.Generation() != base;
+        g_gemWorld.End(base);
+        g_gemTestGeneration.reset();
+        g_gemFinalSlot.clear();
+        g_gemSaveAllowed = false;
+        if (wasTestWorld) {
+            g_migration.Reset();
+            g_pendingLoadGeneration.reset();
+            g_thisLoadUsesTest = false;
+            g_worldGeneration = g_currentGeneration;
+            ModState::Set(ModMode::Preserve, "젬 시험 세계를 종료했습니다. 기준 세이브를 다시 불러오세요.");
+            ResetMemoryState();
+        }
+        // The ordinary update loop is suspended on failure, so publish the
+        // package catalog snapshot here before reporting restoration.
+        if (g_statEngine && g_dataPack && g_config &&
+            g_statEngine->GetSnapshot()->gemGeneration != base) {
+            UpdateStatLayerFromState();
+            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
         }
     }
 
@@ -1274,8 +1339,9 @@ namespace SkyrimPoE::Runtime
                             ResetMemoryState(true);
                             original = std::exchange(g_cosave.current, {});
                         });
-                        ModState::Set(ModMode::Normal, "PoE1 세이브 정리를 마쳤습니다.");
                         g_worldGeneration = std::move(g_pendingLoadGeneration);
+                        UpdateStatLayerFromState();
+                        ModState::Set(ModMode::Normal, "PoE1 세이브 정리를 마쳤습니다.");
                         completed = g_lastMigration = std::move(result);
                         initGeneration = g_queue ? g_queue->CurrentGeneration() : 0;
                     } catch (...) {
@@ -1290,7 +1356,9 @@ namespace SkyrimPoE::Runtime
             g_migration.Reset();
             g_pendingLoadGeneration.reset();
             g_thisLoadUsesTest = false;
+            g_gemWorld.ClearMatch();
             if (!initGeneration) {
+                g_gemWorld.BeginLoad(PackageGemGeneration());
                 ModState::Set(ModMode::Preserve, std::string(reason));
             }
         }
@@ -1344,7 +1412,9 @@ namespace SkyrimPoE::Runtime
         std::scoped_lock lock(g_cosaveMutex);
         g_thisLoadUsesTest = false;
         g_pendingLoadGeneration.reset();
+        g_gemSaveAllowed = false;
         if (g_cosave.IsLoading()) {
+            g_gemWorld.BeginLoad(PackageGemGeneration());
             ++g_loadWorld;
             g_migration.Reset();
             g_lastMigration.reset();
@@ -1367,7 +1437,7 @@ namespace SkyrimPoE::Runtime
                     [&](Core::RawSaveRecord&& record) {
                         snapshot.records.push_back(std::move(record));
                         return true;
-                    }, ReportWriteWarning);
+                    }, ReportWriteWarning, ReportWriteWarning);
             } else {
                 snapshot = g_cosave.current;
             }
@@ -1379,6 +1449,7 @@ namespace SkyrimPoE::Runtime
                 snapshot.records.size());
         }
         g_cosave.BeginLoad(std::move(snapshot));
+        g_gemWorld.BeginLoad(PackageGemGeneration());
         ++g_loadWorld;
         g_migration.Reset();
         g_lastMigration.reset();
@@ -1392,11 +1463,12 @@ namespace SkyrimPoE::Runtime
             std::scoped_lock lock(g_cosaveMutex);
             world = g_loadWorld;
             g_cosave.FinishLoad(succeeded);
-            if (succeeded) {
-                if (ModState::AllowsGameplay() && g_pendingLoadGeneration) {
-                    g_worldGeneration = std::exchange(g_pendingLoadGeneration, std::nullopt);
+            if (!succeeded) {
+                g_gemWorld.End(PackageGemGeneration());
+                if (g_gemTestGeneration) {
+                    g_worldGeneration = g_currentGeneration;
+                    ResetMemoryState();
                 }
-            } else {
                 g_migration.Reset();
                 g_lastMigration.reset();
                 g_pendingLoadGeneration.reset();
@@ -1443,17 +1515,20 @@ namespace SkyrimPoE::Runtime
                 g_pendingLoadGeneration.reset();
                 g_thisLoadUsesTest = false;
                 g_cleanupLoadRequest.Clear();
+                g_gemWorld.End(PackageGemGeneration());
             }
             if (isNewGame || !g_cosave.receivedLoad) {
                 // A new game can arrive without OnLoad. SKSE also skips OnLoad if the .skse file cannot be opened.
                 g_cosave.Revert();
-                if (const auto* target = Core::SelectSaveTarget(g_currentGeneration, g_testGeneration, g_thisLoadUsesTest)) {
+                if (const auto* target = SelectLoadTarget()) {
                     if (isNewGame) {
                         ResetMemoryState();
                     }
                     const auto decision = DecideSave(g_cosave.current, isNewGame, *target);
                     if (IsPlayable(decision.disposition)) {
-                        g_pendingLoadGeneration = *target;
+                        g_gemWorld.Select(PackageGemGeneration(), true);
+                        g_worldGeneration = *target;
+                        UpdateStatLayerFromState();
                     }
                     SetSaveDecision(decision);
                 }
@@ -1464,11 +1539,9 @@ namespace SkyrimPoE::Runtime
             if (status->mode == ModMode::CleanupPending) {
                 g_migration.Confirm(g_loadWorld, RE::PlayerCharacter::GetSingleton());
             } else {
-                if (playable && g_pendingLoadGeneration) {
-                    g_worldGeneration = std::move(g_pendingLoadGeneration);
-                }
                 g_pendingLoadGeneration.reset();
                 g_thisLoadUsesTest = false;
+                g_gemWorld.ClearMatch();
             }
             incomplete = !g_cosave.current.complete;
             if (std::exchange(g_notifyOnLoad, false)) {
@@ -1661,6 +1734,11 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lock(g_cosaveMutex);
         return g_currentGeneration;
+    }
+
+    std::uint32_t SaveLoad::WorldGemGeneration() noexcept
+    {
+        return g_gemWorld.Generation();
     }
 
     SaveLoad::LoadDiagnostics SaveLoad::GetLastLoadDiagnostics()

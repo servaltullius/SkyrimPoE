@@ -353,7 +353,7 @@ namespace SkyrimPoE::Runtime
         } else {
             rollDamage(cast);
         }
-        const auto* gem = g_dataPack->FindGem(cast.gemId);
+        const auto* gem = g_dataPack->FindGem(cast.gemId, SaveLoad::WorldGemGeneration());
         hit.poeDamage.fireSpell = gem && gem->kind == Core::GemKind::Spell && gem->skillTypes.contains("Fire");
         hit.poeDamage.projectileAilmentChanceIncPct = cast.projectileAilmentChanceIncPct;
         hit.igniteChancePct = cast.igniteChancePct;

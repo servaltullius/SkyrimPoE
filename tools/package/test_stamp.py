@@ -15,6 +15,8 @@ PLUGIN = Path("SKSE/Plugins/SkyrimPoE")
 PACKS = PLUGIN / "packs"
 UI = Path("PrismaUI/views/SkyrimPoE")
 MANIFEST = PLUGIN / "manifest.json"
+STAGED_GEMS = PACKS / "gen1/gems.json"
+STAGED_GEMS_SOURCE = ROOT / "data/packs/gen1/gems.json"
 ESP = "SkyrimPoE.esp"
 PACK_NAMES = ("core_3_30.json", "tree_3_30.json", "items_3_30.json", "rules.json")
 
@@ -109,6 +111,105 @@ class TestStamp(unittest.TestCase):
         target = self.temp / "배치 대상"
         shutil.copytree(self.package, target)
         return target
+
+    def staged_copy(self) -> Path:
+        target = self.deployed_copy()
+        self.assert_success(self.run_cli("stage-dev", "--target", str(target)))
+        return target
+
+    def test_release_package_has_no_staged_files(self) -> None:
+        self.completed()
+        self.assertFalse((self.package / STAGED_GEMS.parent).exists())
+        self.assertNotIn("staged", read_json(self.package / MANIFEST))
+        self.assert_success(self.run_cli("verify", "--release"))
+
+    def test_development_deploy_stamps_only_gems(self) -> None:
+        target = self.staged_copy()
+        source_manifest = read_json(self.package / MANIFEST)
+        source_gems = read_json(STAGED_GEMS_SOURCE)
+        self.assertNotIn("staged", source_manifest)
+        self.assertFalse((self.package / STAGED_GEMS).exists())
+        self.assertEqual({entry.name for entry in (target / STAGED_GEMS.parent).iterdir()}, {"gems.json"})
+        staged_bytes = (target / STAGED_GEMS).read_bytes()
+        source_gems["meta"]["buildId"] = source_manifest["buildId"]
+        self.assertEqual(json.loads(staged_bytes), source_gems)
+        target_manifest = read_json(target / MANIFEST)
+        self.assertEqual(target_manifest.pop("staged"), [
+            {"path": STAGED_GEMS.as_posix(), "sha256": hashlib.sha256(staged_bytes).hexdigest()},
+        ])
+        self.assertEqual(target_manifest, source_manifest)
+        self.assert_success(self.run_cli("verify", package=target))
+        self.assert_failure(self.run_cli("verify", "--release", package=target), "릴리스 패키지")
+
+    def test_deploy_clean_preserves_listed_staged_files(self) -> None:
+        staged = self.staged_copy()
+        target = self.temp / "개발 배치 복사본"
+        shutil.copytree(staged, target)
+        extra = target / STAGED_GEMS.with_name("tree.json")
+        extra.touch()
+        self.assert_success(self.run_cli("deploy-clean", "--target", str(target), package=staged))
+        self.assertTrue((target / STAGED_GEMS).is_file())
+        self.assertFalse(extra.exists())
+        self.assert_success(self.run_cli("verify", package=target))
+
+    def test_regular_redeploy_removes_staged_gems(self) -> None:
+        target = self.staged_copy()
+        shutil.copytree(self.package, target, dirs_exist_ok=True)
+        self.assert_success(self.run_cli("deploy-clean", "--target", str(target)))
+        self.assertFalse((target / STAGED_GEMS).exists())
+        self.assert_success(self.run_cli("verify", "--release", package=target))
+
+    def test_release_rejects_unlisted_staged_gems(self) -> None:
+        target = self.deployed_copy()
+        (target / STAGED_GEMS.parent).mkdir()
+        shutil.copyfile(STAGED_GEMS_SOURCE, target / STAGED_GEMS)
+        self.assert_failure(self.run_cli("verify", "--release", package=target), "릴리스 패키지", "목록 밖 파일")
+
+    def test_manifest_rejects_nested_preparation_tree(self) -> None:
+        self.completed()
+        (self.package / STAGED_GEMS.parent).mkdir()
+        (self.package / STAGED_GEMS.with_name("tree.json")).write_bytes(b"{}")
+        self.assert_failure(self.run_cli("manifest"), "gen1/tree.json", "허용되지 않은 추가 팩")
+
+    def test_verify_rejects_tampered_staged_file(self) -> None:
+        target = self.staged_copy()
+        with (target / STAGED_GEMS).open("ab") as stream:
+            stream.write(b"\n")
+        self.assert_failure(self.run_cli("verify", package=target), "staged sha256 불일치")
+
+    def test_verify_rejects_missing_staged_file(self) -> None:
+        target = self.staged_copy()
+        (target / STAGED_GEMS).unlink()
+        self.assert_failure(self.run_cli("verify", package=target), f"누락 파일: {STAGED_GEMS.as_posix()}")
+
+    def test_verify_rejects_staged_file_from_other_build_even_with_matching_hash(self) -> None:
+        target = self.staged_copy()
+        pack_path = target / STAGED_GEMS
+        pack = read_json(pack_path)
+        pack["meta"]["buildId"] = "0" * 16
+        payload = json.dumps(pack).encode("utf-8")
+        pack_path.write_bytes(payload)
+        manifest_path = target / MANIFEST
+        manifest = read_json(manifest_path)
+        manifest["staged"][0]["sha256"] = hashlib.sha256(payload).hexdigest()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assert_failure(self.run_cli("verify", package=target), "buildId 불일치")
+
+    def test_verify_rejects_staged_identity_the_dll_would_refuse(self) -> None:
+        for field, value in (("schemaVersion", 2), ("schemaVersion", True), ("gameVersion", "0.6")):
+            with self.subTest(field=field, value=value):
+                target = self.staged_copy()
+                pack_path = target / STAGED_GEMS
+                pack = read_json(pack_path)
+                pack["meta"][field] = value
+                payload = json.dumps(pack).encode("utf-8")
+                pack_path.write_bytes(payload)
+                manifest_path = target / MANIFEST
+                manifest = read_json(manifest_path)
+                manifest["staged"][0]["sha256"] = hashlib.sha256(payload).hexdigest()
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                self.assert_failure(self.run_cli("verify", package=target), f"{field} 불일치")
+                shutil.rmtree(target)
 
     def test_fifth_json_pack_is_rejected(self) -> None:
         extra = self.package / PACKS / "old.json"

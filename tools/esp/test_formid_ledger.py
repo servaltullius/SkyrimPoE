@@ -160,7 +160,6 @@ class TestFormIdLedger(unittest.TestCase):
     def add_generation_marker(
         self, value: float = 1, value_type: bytes = b"s", form_id: int = 0xC00,
     ) -> None:
-        self.ledger["ranges"]["marker"]["status"] = "approved"
         self.add_form(form_id, GENERATION_EDITOR_ID, "GLOB", "marker", "Global",
                       field(b"FNAM", value_type) + field(b"FLTV", struct.pack("<f", value)))
 
@@ -171,10 +170,10 @@ class TestFormIdLedger(unittest.TestCase):
                 record, b"FULL", lambda name: "(구판) ".encode("utf-8") + name,
             ))
 
-    def add_new_gem(self) -> None:
-        self.add_form(0x900, "SPOE_Gem_NewGem", "MISC", "gem", "MiscItem",
-                      field(b"OBND", bytes(12)) + field(b"FULL", zstring("신규 젬"))
-                      + field(b"DATA", struct.pack("<If", 1, 0.0)), content_id="gem.NewGem")
+    def add_new_currency(self) -> None:
+        self.add_form(0x8E2, "SPOE_Orb_NewCurrency", "MISC", "currency", "MiscItem",
+                      field(b"OBND", bytes(12)) + field(b"FULL", zstring("신규 화폐"))
+                      + field(b"DATA", struct.pack("<If", 1, 0.0)), content_id="currency.NewCurrency")
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -198,14 +197,15 @@ class TestFormIdLedger(unittest.TestCase):
 
     def test_ledger_counts_by_category(self) -> None:
         counts = Counter(entry["category"] for entry in self.ledger["entries"])
-        self.assertEqual(sum(counts.values()), 192)
+        self.assertEqual(sum(counts.values()), 226)
         self.assertEqual(counts, {
-            "gem": 28, "currency": 12, "token": 91, "map": 16, "proxy": 20, "effect": 10,
+            "gem": 62, "currency": 12, "token": 91, "map": 16, "proxy": 20, "effect": 10,
             "belt": 5, "jewel": 3, "charm": 6, "tribute": 1,
         })
 
     def test_generation_zero_plan_and_keys(self) -> None:
-        counts = Counter(entry["firstPlan"] for entry in self.ledger["entries"])
+        counts = Counter(entry["firstPlan"] for entry in self.ledger["entries"]
+                         if entry["introducedGeneration"] == 0)
         self.assertEqual(counts, {"keep": 20, "keep-candidate": 26, "retire-candidate": 11, "undecided": 135})
         examples = {
             0x800: (None, "keep", ""),
@@ -234,12 +234,14 @@ class TestFormIdLedger(unittest.TestCase):
                 entry = self.entry(form_id)
                 self.assertEqual((entry["legacyKey"], entry["firstPlan"], entry["decidedIn"]), expected)
 
-    def test_create_reproduces_repository_ledger_and_published_header(self) -> None:
+    def test_create_reproduces_published_gen0_and_ignores_new_forms(self) -> None:
         result = self.run_cli("create", "--out", str(self.ledger_path))
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
         created = self.ledger_path.read_bytes()
-        self.assertEqual(created, formid_ledger.DEFAULT_LEDGER.read_bytes())
         self.assertEqual(created, (formid_ledger.DEFAULT_PUBLISHED / "gen0.json").read_bytes())
+        self.assertEqual(len(json.loads(created)["entries"]), 192)
+        self.assertEqual(len(formid_ledger.read_esp(formid_ledger.DEFAULT_ESP).records), 226)
 
     def test_swapping_two_form_ids_in_esp_and_ledger_breaks_published_baseline(self) -> None:
         first, second = 0x802, 0x803
@@ -289,7 +291,7 @@ class TestFormIdLedger(unittest.TestCase):
         problems = self.check_copy()
         self.assertIn("ESP에 로컬 FormID 중복: 0x000802", problems)
         self.assertIn("ESP에 EditorID 중복: SPOE_ProxySpell_1", problems)
-        self.assertEqual(len(formid_ledger.read_esp(self.esp_path).records), 193)
+        self.assertEqual(len(formid_ledger.read_esp(self.esp_path).records), 227)
 
     def test_rejects_duplicate_records_json_editor_id(self) -> None:
         self.records.append(self.records[0].copy())
@@ -300,7 +302,8 @@ class TestFormIdLedger(unittest.TestCase):
         self.assert_problem("EditorID 다름")
 
     def test_rejects_removing_a_published_entry(self) -> None:
-        removed = self.ledger["entries"].pop()
+        removed = self.entry(0x8BF)
+        self.ledger["entries"].remove(removed)
         problems = self.check_copy()
         self.assertTrue(any("장부 밖 ESP 폼" in problem and removed["editorId"] in problem for problem in problems))
         self.assertTrue(any("배포 기준선 위반" in problem and "항목 삭제" in problem for problem in problems))
@@ -314,6 +317,96 @@ class TestFormIdLedger(unittest.TestCase):
         self.assertTrue(any("legacyKey·EditorID 검산" in problem and "SPOE_Tok_T3_Rare_Helmet" in problem
                             for problem in problems), problems)
         self.assertTrue(any("배포 기준선 위반" in problem and "legacyKey 변경" in problem for problem in problems))
+
+    def test_legacy_gem_keys_round_trip_with_gen0_catalog(self) -> None:
+        baseline = formid_ledger.read_json(formid_ledger.DEFAULT_PUBLISHED / "gen0.json")
+        problems = []
+        entries = formid_ledger.index_entries(baseline, "gen0", problems)
+        self.assertEqual(problems, [])
+        gem_ids = formid_ledger.read_gem_ids(entries)
+        form_ids = {gem_id: form_id for form_id, gem_id in gem_ids.items()}
+        catalog = formid_ledger.read_json(formid_ledger.GEN0_CORE)["gems"]
+        self.assertEqual(len(gem_ids), 28)
+        self.assertEqual(form_ids.keys(), catalog.keys())
+        for gem_id, gem in catalog.items():
+            with self.subTest(gem_id=gem_id):
+                form_id = form_ids[gem["id"]]
+                self.assertEqual(gem_ids[form_id], gem_id)
+                self.assertEqual(self.entry(form_id)["legacyKey"], f"gem:{gem_id}")
+
+    def test_accepts_34_staged_forms_at_generation_zero(self) -> None:
+        self.assertEqual(self.ledger["contentGeneration"], 0)
+        staged = [entry for entry in self.ledger["entries"] if entry["introducedGeneration"] == 1]
+        self.assertEqual(len(staged), 34)
+        self.assertEqual(self.check_copy(), [])
+
+    def test_rejects_staged_form_present_in_gen0_baseline(self) -> None:
+        self.add_new_currency()
+        staged = self.entry(0x8E2)
+        staged["introducedGeneration"] = 1
+        baseline = formid_ledger.read_json(formid_ledger.DEFAULT_PUBLISHED / "gen0.json")
+        baseline["entries"].append(staged.copy())
+        baseline_dir = self.temp_path / "published"
+        baseline_dir.mkdir()
+        write_json(baseline_dir / "gen0.json", baseline)
+        self.assertEqual(self.check_copy(baseline_dir), ["도입 세대 오류: SPOE_Orb_NewCurrency 1"])
+
+    def test_rejects_staged_form_with_legacy_key(self) -> None:
+        self.entry(0x8C0)["legacyKey"] = "gem:FrostBolt"
+        self.assert_problem("도입 세대 오류: SPOE_Gem_FrostBolt 1")
+
+    def test_rejects_staged_form_with_retired_status(self) -> None:
+        self.entry(0x8C0).update(status="retired", retiredGeneration=1)
+        self.assert_problem("도입 세대 오류: SPOE_Gem_FrostBolt 1")
+
+    def test_rejects_introduced_generation_two_ahead(self) -> None:
+        self.entry(0x8C0)["introducedGeneration"] = 2
+        self.assert_problem("도입 세대 오류: SPOE_Gem_FrostBolt 2")
+
+    def test_rejects_stage7_form_declared_as_generation_zero(self) -> None:
+        self.entry(0x8C0)["introducedGeneration"] = 0
+        self.assert_problem("도입 세대 오류: SPOE_Gem_FrostBolt 0")
+
+    def test_rejects_changing_published_introduced_generation(self) -> None:
+        self.ledger["contentGeneration"] = 1
+        self.add_generation_marker(form_id=0x8E2)
+        self.entry(0x880)["introducedGeneration"] = 1
+        self.assertEqual(self.check_copy(), [
+            "배포 기준선 위반 (gen0.json): 0x000880 introducedGeneration 변경 0 → 1",
+        ])
+
+    def test_rejects_duplicate_content_id(self) -> None:
+        self.entry(0x8C0)["contentId"] = "gem.Spark"
+        self.assert_problem("장부 contentId 중복: gem.Spark")
+
+    def test_rejects_multiple_content_ids_for_one_form(self) -> None:
+        duplicate = {**self.entry(0x8C0), "contentId": "gem.Other"}
+        self.ledger["entries"].append(duplicate)
+        self.assert_problem("장부 FormID 중복: 0x0008C0")
+
+    def test_rejects_missing_content_id(self) -> None:
+        self.entry(0x8C0)["contentId"] = None
+        self.assert_problem("젬 묶음과 장부 contentId·EditorID 불일치: 0x0008C0 gem.FrostBolt")
+
+    def test_rejects_invalid_content_id_prefix_characters_or_length(self) -> None:
+        for content_id in ("skill.FrostBolt", "gem.서리", "gem.Frost-Bolt", "gem." + "a" * 61):
+            with self.subTest(content_id=content_id):
+                self.entry(0x8C0)["contentId"] = content_id
+                self.assert_problem("장부 젬 contentId 문법 오류: SPOE_Gem_FrostBolt")
+
+    def test_rejects_content_id_on_unbundled_gem(self) -> None:
+        self.entry(0x882)["contentId"] = "sup.Chain"
+        self.assert_problem("젬 묶음 밖 장부 contentId: 0x000882 sup.Chain")
+
+    def test_rejects_mismatched_gem_bundle_form_and_ledger(self) -> None:
+        bundle = formid_ledger.read_json(formid_ledger.DEFAULT_GEM_BUNDLE)
+        bundle[0]["form"]["editorId"] = "SPOE_Gem_Wrong"
+        path = self.temp_path / "gem-bundle.json"
+        write_json(path, bundle)
+        self.persist()
+        self.assertEqual(formid_ledger.check(
+            self.ledger_path, self.esp_path, self.records_path, gem_bundle_path=path,
+        ), ["젬 묶음과 장부 contentId·EditorID 불일치: 0x000880 gem.Spark"])
 
     def test_rejects_token_editor_id_inconsistent_with_decoded_slot(self) -> None:
         entry = self.entry(0x856)
@@ -369,22 +462,16 @@ class TestFormIdLedger(unittest.TestCase):
         self.assertEqual(problems, ["배포 기준선 위반 (gen1.json): retired → active 0x000816 SPOE_Gem_IceNova"])
 
     def test_rejects_altered_range_bounds(self) -> None:
-        self.ledger["ranges"]["gem"]["end"] = "0x000A00"
-        self.assert_problem("장부 범위 경계가 계약 표와 다름: gem")
+        self.ledger["ranges"]["stage7"]["start"] = "0x0008C1"
+        self.assert_problem("장부 범위 경계가 계약 표와 다름: stage7")
 
     def test_rejects_new_form_in_proposed_range(self) -> None:
-        self.ledger["contentGeneration"] = 1
-        self.add_generation_marker()
-        self.add_new_gem()
-        self.assert_problem("승인되지 않은 범위 gem: 0x000900")
+        self.ledger["ranges"]["stage7"]["status"] = "proposed"
+        self.assert_problem("승인되지 않은 범위 stage7: 0x0008C0")
 
-    def test_rejects_new_form_in_wrong_approved_range(self) -> None:
-        self.ledger["contentGeneration"] = 1
-        self.add_generation_marker()
-        self.ledger["ranges"]["gem"]["status"] = "approved"
-        self.add_new_gem()
-        self.entry(0x900)["category"] = "currency"
-        self.assert_problem("분류에 맞지 않는 범위 gem: 0x000900")
+    def test_rejects_stage7_category_in_legacy_range(self) -> None:
+        self.entry(0x800)["category"] = "marker"
+        self.assert_problem("분류에 맞지 않는 범위 legacy: 0x000800")
 
     def test_rejects_marker_at_generation_zero(self) -> None:
         self.add_generation_marker()
@@ -396,8 +483,14 @@ class TestFormIdLedger(unittest.TestCase):
 
     def test_rejects_wrong_generation_marker_id(self) -> None:
         self.ledger["contentGeneration"] = 1
-        self.add_generation_marker(form_id=0xC01)
-        self.assert_problem("로컬 0xC00의 GLOB이어야 함")
+        self.add_generation_marker(form_id=0x8E2)
+        self.edit_esp_record(0x8E2, lambda record: change_word(record, 12, 0x010008E3))
+        self.assert_problem("SPOE_ContentGeneration FormID가 장부와 다름: ESP 0x0008E3 / 장부 0x0008E2")
+
+    def test_accepts_generation_marker_with_ledger_id_other_than_c00(self) -> None:
+        self.ledger["contentGeneration"] = 1
+        self.add_generation_marker(form_id=0x8E2)
+        self.assertEqual(self.check_copy(), [])
 
     def test_rejects_wrong_generation_global_value(self) -> None:
         self.ledger["contentGeneration"] = 1
@@ -423,10 +516,8 @@ class TestFormIdLedger(unittest.TestCase):
 
     def test_accepts_new_form_in_approved_matching_range(self) -> None:
         self.ledger["contentGeneration"] = 1
-        self.add_generation_marker()
-        self.retire_gem()
-        self.ledger["ranges"]["gem"]["status"] = "approved"
-        self.add_new_gem()
+        self.add_generation_marker(form_id=0x8E3)
+        self.add_new_currency()
         self.assertEqual(self.check_copy(), [])
 
     def test_create_refuses_to_overwrite(self) -> None:

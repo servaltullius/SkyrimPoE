@@ -185,6 +185,13 @@
     return `마나 비용 ${stats.manaCost}`;
   }
 
+  function displayGemReason(element, gem) {
+    if (gem.reason) {
+      element.style.opacity = "0.6";
+      element.appendChild(el("span", "section-sub", gem.reason));
+    }
+  }
+
   function renderSlots(data) {
     slotsList.textContent = "";
     if (skillsSpiritBadge && data && data.stats) {
@@ -223,6 +230,7 @@
       const kb = kindBadge(gem.kind);
       top.appendChild(el("span", `badge ${kb.cls}`, kb.text));
       top.appendChild(el("span", "gem-name", `${gem.name} Lv.${gem.level}`));
+      displayGemReason(top, gem);
       if (gem.kind !== "aura" && gem.kind !== "herald") {
         top.appendChild(el("span", "section-sub", `소켓 ${(gem.socketedGems || []).length}/${gem.socketCount}`));
       }
@@ -336,6 +344,7 @@
             const ckb = kindBadge(child.kind);
             spTop.appendChild(el("span", `badge ${ckb.cls}`, ckb.text));
             spTop.appendChild(el("span", "gem-name", `${child.name} Lv.${child.level}`));
+            displayGemReason(spTop, child);
             spTop.appendChild(el("span", "section-sub", `보조 ${(child.socketedGems || []).length}/${child.socketCount}`));
 
             const spAct = el("div", "slot-actions");
@@ -381,6 +390,7 @@
                 const skb = kindBadge(sup.kind);
                 sRow.appendChild(el("span", `badge ${skb.cls}`, skb.text));
                 sRow.appendChild(el("span", "", `${sup.name} Lv.${sup.level}`));
+                displayGemReason(sRow, sup);
                 const sAct = el("div", "slot-actions");
                 const btnRemSup = el("button", "btn btn-danger", "빼기");
                 btnRemSup.type = "button";
@@ -403,6 +413,7 @@
             const ckb = kindBadge(child.kind);
             row.appendChild(el("span", `badge ${ckb.cls}`, ckb.text));
             row.appendChild(el("span", "", `${child.name} Lv.${child.level}`));
+            displayGemReason(row, child);
             const rAct = el("div", "slot-actions");
             const btnRem = el("button", "btn btn-danger", "빼기");
             btnRem.type = "button";
@@ -444,6 +455,7 @@
         btn.appendChild(el("span", "badge badge-tracked", "보관"));
       }
       btn.appendChild(el("span", "gem-name", item.name));
+      displayGemReason(btn, item);
       const detail = item.tracked
         ? (item.socketCount > 0
             ? `Lv.${item.level} · 소켓 ${item.socketedCount}/${item.socketCount}`

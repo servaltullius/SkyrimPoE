@@ -67,6 +67,11 @@ namespace SkyrimPoE::Runtime
 
         static void SetContentCheck(std::optional<Core::SaveGeneration> generation, std::string reason);
         static void SetCleanupTestTarget(bool enabled);
+        static void SetGemTestTarget(Core::SaveGeneration generation, std::string finalSlot);
+        static void ExpectGemTestLoad(std::string_view stem);
+        static void MatchGemTestLoad(std::string_view name) noexcept;
+        static void OnGemTestSave(std::string_view stem, bool requested);
+        static void EndGemTestWorld();
         [[nodiscard]] static std::optional<Core::SaveGeneration> GetCleanupTestTarget();
         static void ExpectCleanupTestLoad(std::string_view stem);
         [[nodiscard]] static bool MatchCleanupTestLoad(std::string_view name) noexcept;
@@ -82,6 +87,7 @@ namespace SkyrimPoE::Runtime
 
         [[nodiscard]] static PersistentState GetStateCopy();
         [[nodiscard]] static std::optional<Core::SaveGeneration> GetContentGeneration();
+        [[nodiscard]] static std::uint32_t WorldGemGeneration() noexcept;
         [[nodiscard]] static LoadDiagnostics GetLastLoadDiagnostics();
         [[nodiscard]] static SaveDiagnostics GetLastSaveDiagnostics();
         [[nodiscard]] static std::size_t GetPreservedRecordCount();

@@ -25,48 +25,43 @@ namespace SkyrimPoE::Runtime
         std::vector<TrackedGemEntry> g_entries;
         std::uint16_t g_nextWorldStamp = kWorldStampMin;
 
-        // C-35: Install(kDataLoaded)에서 1회 구축하는 읽기 전용 젬 폼 ID 캐시(싱크·뮤텍스 내 엔진 조회 차단)
-        std::unordered_map<std::string, RE::FormID> g_gemIdToFormId;
-        std::unordered_map<RE::FormID, std::string_view> g_formIdToGemId;
+        // kDataLoaded에 구축한 뒤 세이브 로드와 이벤트에서 읽기만 한다.
+        using GemFormCache = std::unordered_map<RE::FormID, const Core::GemForms::GemForm*>;
+        const GemFormCache* g_physicalForms = nullptr;
 
         Core::CommandQueue* g_queue = nullptr;
         bool g_installed = false;
 
-        void BuildGemFormCache()
+        [[nodiscard]] const GemFormCache& BuildGemFormCache()
         {
-            g_gemIdToFormId.clear();
-            g_formIdToGemId.clear();
-            for (const auto& entry : FormIds::kAllGemForms) {
-                if (auto* misc = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId)) {
-                    const RE::FormID fid = misc->GetFormID();
-                    if (fid != 0) {
-                        g_gemIdToFormId[std::string(entry.gemId)] = fid;
-                        g_formIdToGemId[fid] = entry.gemId;
+            static const auto forms = [] {
+                GemFormCache cache;
+                for (const auto& entry : Core::GemForms::kPhysicalForms) {
+                    if (auto* misc = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId); misc && misc->GetFormID() != 0) {
+                        cache.emplace(misc->GetFormID(), &entry);
                     }
                 }
-            }
+                return cache;
+            }();
+            return forms;
         }
 
-        [[nodiscard]] RE::FormID CachedFormIdForGem(std::string_view gemId) noexcept
+        [[nodiscard]] RE::FormID CachedFormIdForGem(std::uint32_t generation, std::string_view gemId) noexcept
         {
-            if (gemId.empty()) {
-                return 0;
-            }
-            if (const auto it = g_gemIdToFormId.find(std::string(gemId)); it != g_gemIdToFormId.end()) {
-                return it->second;
+            const auto localId = Core::GemForms::RecoveryForm(generation, gemId);
+            if (localId == 0 || !g_physicalForms) return 0;
+            for (const auto& [fullId, entry] : *g_physicalForms) {
+                if (entry->localFormId == localId) return fullId;
             }
             return 0;
         }
 
         [[nodiscard]] std::string_view GemIdForForm(RE::FormID fullFormId) noexcept
         {
-            if (fullFormId == 0) {
-                return {};
-            }
-            if (const auto it = g_formIdToGemId.find(fullFormId); it != g_formIdToGemId.end()) {
-                return it->second;
-            }
-            return {};
+            if (!g_physicalForms) return {};
+            const auto it = g_physicalForms->find(fullFormId);
+            if (it == g_physicalForms->end()) return {};
+            return Core::GemForms::InventoryId(SaveLoad::WorldGemGeneration(), *it->second);
         }
 
         [[nodiscard]] RE::ExtraDataList* CreateGameExtraDataList()
@@ -587,7 +582,7 @@ namespace SkyrimPoE::Runtime
             return true;
         }
         g_queue = queue;
-        BuildGemFormCache();
+        g_physicalForms = &BuildGemFormCache();
 
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
         if (!holder) {
@@ -615,7 +610,7 @@ namespace SkyrimPoE::Runtime
         });
         g_installed = true;
         SKSE::log::info("GemInventory: TESUniqueIDChangeEvent + TESContainerChangedEvent sinks registered (cached {} gem forms).",
-            g_gemIdToFormId.size());
+            g_physicalForms->size());
         return true;
     }
 
@@ -625,7 +620,8 @@ namespace SkyrimPoE::Runtime
             return 0;
         }
         std::size_t added = 0;
-        for (const auto& entry : FormIds::kAllGemForms) {
+        const auto forms = Core::GemForms::StarterForms(SaveLoad::WorldGemGeneration());
+        for (const auto& entry : forms) {
             auto* misc = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId);
             if (!misc) {
                 SKSE::log::warn("GemInventory: starter gem form '{}' (0x{:06X}) missing from {}.",
@@ -635,7 +631,7 @@ namespace SkyrimPoE::Runtime
             player->AddObjectToContainer(misc, nullptr, 1, nullptr);
             ++added;
         }
-        SKSE::log::info("GemInventory: gave {}/{} starter gems to player.", added, FormIds::kAllGemForms.size());
+        SKSE::log::info("GemInventory: gave {}/{} starter gems to player.", added, forms.size());
         return added;
     }
 
@@ -645,8 +641,8 @@ namespace SkyrimPoE::Runtime
             return 0;
         }
         std::size_t added = 0;
-        for (std::size_t i = FormIds::kStage5GemStartIndex; i < FormIds::kAllGemForms.size(); ++i) {
-            const auto& entry = FormIds::kAllGemForms[i];
+        const auto forms = Core::GemForms::StarterForms(SaveLoad::WorldGemGeneration(), true);
+        for (const auto& entry : forms) {
             auto* misc = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId);
             if (!misc) {
                 SKSE::log::warn("GemInventory: stage5 gem form '{}' (0x{:06X}) missing from {}.",
@@ -656,7 +652,7 @@ namespace SkyrimPoE::Runtime
             player->AddObjectToContainer(misc, nullptr, 1, nullptr);
             ++added;
         }
-        SKSE::log::info("GemInventory: gave {}/{} stage5 starter gems to player.", added, FormIds::kStage5GemCount);
+        SKSE::log::info("GemInventory: gave {}/{} stage5 starter gems to player.", added, forms.size());
         return added;
     }
 
@@ -673,6 +669,7 @@ namespace SkyrimPoE::Runtime
         }
         const auto playerId = player->GetFormID();
 
+        const auto gemGeneration = SaveLoad::WorldGemGeneration();
         // 1. 플레이어 인벤토리에 실제로 존재하는 추적 데이터 젬 수집
         std::vector<TrackedGemEntry> candidates;
         {
@@ -684,7 +681,7 @@ namespace SkyrimPoE::Runtime
             }
         }
         for (auto& cand : candidates) {
-            const auto localId = FormIds::FindLocalFormIdForGem(cand.gem.gemId);
+            const auto localId = Core::GemForms::RecoveryForm(gemGeneration, cand.gem.gemId);
             auto* misc = localId ? FormIds::Lookup<RE::TESObjectMISC>(localId) : nullptr;
             if (misc && FindExtraListByUniqueId(player, misc, cand.key) != nullptr) {
                 snap.trackedGems.push_back(std::move(cand));
@@ -692,7 +689,9 @@ namespace SkyrimPoE::Runtime
         }
 
         // 2. 순정 젬(ExtraUniqueID 없는 겹침 아이템) 수량 집계
-        for (const auto& entry : FormIds::kStage2GemForms) {
+        for (const auto& entry : Core::GemForms::kPhysicalForms) {
+            const auto id = Core::GemForms::InventoryId(gemGeneration, entry);
+            if (id.empty()) continue;
             auto* misc = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId);
             if (!misc) {
                 continue;
@@ -700,7 +699,7 @@ namespace SkyrimPoE::Runtime
             const auto count = CountPlainItems(player, misc);
             if (count > 0) {
                 snap.plainStacks.push_back(PlayerGemInventorySnapshot::PlainStack{
-                    std::string(entry.gemId),
+                    std::string(id),
                     count
                 });
             }
@@ -710,12 +709,15 @@ namespace SkyrimPoE::Runtime
 
     std::optional<Core::InventoryItemKey> GemInventory::ReturnGemToPlayerInventory(
         RE::PlayerCharacter* player,
-        Core::GemInstance gem)
+        Core::GemInstance gem,
+        bool recovering)
     {
         if (!player) {
             return std::nullopt;
         }
-        const auto localId = FormIds::FindLocalFormIdForGem(gem.gemId);
+        const auto gemGeneration = SaveLoad::WorldGemGeneration();
+        const auto localId = recovering ? Core::GemForms::RecoveryForm(gemGeneration, gem.gemId)
+                                        : Core::GemForms::ActiveForm(gemGeneration, gem.gemId);
         if (localId == 0) {
             SKSE::log::error("GemInventory: unknown gemId '{}'.", gem.gemId);
             return std::nullopt;
@@ -785,6 +787,7 @@ namespace SkyrimPoE::Runtime
             return std::nullopt;
         }
 
+        const auto gemGeneration = SaveLoad::WorldGemGeneration();
         // 1. 추적 중인 데이터 젬 회수 시도
         if (key.IsValid()) {
             std::optional<TrackedGemEntry> found;
@@ -798,7 +801,8 @@ namespace SkyrimPoE::Runtime
                 }
             }
             if (found) {
-                const auto localId = FormIds::FindLocalFormIdForGem(found->gem.gemId);
+                if (gemGeneration != 0 && found->gem.gemId != fallbackGemId) return std::nullopt;
+                const auto localId = Core::GemForms::ActiveForm(gemGeneration, found->gem.gemId);
                 auto* misc = localId ? FormIds::Lookup<RE::TESObjectMISC>(localId) : nullptr;
                 auto* extra = FindExtraListByUniqueId(player, misc, key);
                 if (misc && extra) {
@@ -818,7 +822,7 @@ namespace SkyrimPoE::Runtime
 
         // 2. 순정 젬(미장착 겹침 아이템) 1개 소비 후 새 인스턴스 부여(결정 105)
         if (!fallbackGemId.empty()) {
-            const auto localId = FormIds::FindLocalFormIdForGem(fallbackGemId);
+            const auto localId = Core::GemForms::ActiveForm(gemGeneration, fallbackGemId);
             auto* misc = localId ? FormIds::Lookup<RE::TESObjectMISC>(localId) : nullptr;
             if (misc && CountPlainItems(player, misc) > 0) {
                 // Q-6: 동일 베이스 추적 젬과 순정 젬이 공존할 때 RemoveItem(nullptr)이 추적 젬을 먹는 엔진 동작 차단
@@ -845,12 +849,12 @@ namespace SkyrimPoE::Runtime
         return g_entries;
     }
 
-    void GemInventory::RestoreFromSave(std::vector<TrackedGemEntry> entries)
+    void GemInventory::RestoreFromSave(std::vector<TrackedGemEntry> entries, std::uint32_t generation)
     {
         // C-35: OnLoad(엔진 호출 금지)에서도 읽기 전용 폼 캐시만으로 baseFormId를 채운다.
         for (auto& entry : entries) {
             if (entry.baseFormId == 0) {
-                entry.baseFormId = CachedFormIdForGem(entry.gem.gemId);
+                entry.baseFormId = CachedFormIdForGem(generation, entry.gem.gemId);
             }
         }
 

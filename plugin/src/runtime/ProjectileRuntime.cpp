@@ -82,6 +82,8 @@ namespace SkyrimPoE::Runtime
         std::atomic<std::uint64_t> g_totalLaunched{ 0 };
         std::atomic<std::uint64_t> g_totalImpacts{ 0 };
         std::atomic<std::uint64_t> g_totalRelaunches{ 0 };
+        RE::FormID g_testHitTarget = 0;
+        ProjectileRuntime::TestHitResult g_testHitResult;
         bool g_hookInstalled = false;
 
         std::mt19937_64& ProjRng()
@@ -146,8 +148,9 @@ namespace SkyrimPoE::Runtime
             return best;
         }
 
-        RE::FormID ProjectileLocalIdForGem(std::string_view gemId) noexcept
+        RE::FormID ProjectileLocalIdForGem(std::uint32_t generation, std::string_view gemId) noexcept
         {
+            if (generation != 0) return generation == 1 && gemId == "gem.Spark" ? FormIds::kProjSpark : 0;
             if (gemId == "Fireball") return FormIds::kProjFireball;
             if (gemId == "FreezingPulse") return FormIds::kProjFreezingPulse;
             if (gemId == "Spark") return FormIds::kProjSpark;
@@ -217,6 +220,12 @@ namespace SkyrimPoE::Runtime
                 std::scoped_lock lk(g_shotMutex);
                 shot.shotId = g_nextShotId++;
                 g_handleToShotId[handle.native_handle()] = shot.shotId;
+                if (g_testHitTarget && cast.gemId == "gem.Spark") {
+                    shot.cast.effectiveCritChancePct = 0.0;
+                    if (generation == 0 && allyPassHops == 0) {
+                        ++g_testHitResult.launched;
+                    }
+                }
                 g_shots[shot.shotId] = std::move(shot);
             }
             g_totalLaunched.fetch_add(1, std::memory_order_relaxed);
@@ -350,6 +359,7 @@ namespace SkyrimPoE::Runtime
             RE::NiPoint3 backwardVel)
         {
             TrackedShot shot{};
+            RE::FormID testHitTarget = 0;
             {
                 std::scoped_lock lk(g_shotMutex);
                 const auto it = g_shots.find(shotId);
@@ -359,6 +369,7 @@ namespace SkyrimPoE::Runtime
                 shot = std::move(it->second);
                 g_handleToShotId.erase(shot.handle.native_handle());
                 g_shots.erase(it);
+                testHitTarget = g_testHitTarget;
             }
 
             if (!g_dataPack || !g_config) {
@@ -428,8 +439,22 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            if (DealSpellHit(hitActor, hit, domType, shot.generation == 0 && shot.isAimedPrimary, targetHit) &&
-                elementalCrit) {
+            const auto* watchedValues = testHitTarget == hitActor->GetFormID() && shot.cast.gemId == "gem.Spark"
+                ? hitActor->AsActorValueOwner() : nullptr;
+            const double hpBefore = watchedValues ? watchedValues->GetActorValue(RE::ActorValue::kHealth) : 0.0;
+            const bool dealt = DealSpellHit(hitActor, hit, domType, shot.generation == 0 && shot.isAimedPrimary, targetHit);
+            if (dealt && watchedValues) {
+                const double hpLost = hpBefore - watchedValues->GetActorValue(RE::ActorValue::kHealth);
+                std::scoped_lock lock(g_shotMutex);
+                if (g_testHitTarget == testHitTarget) {
+                    if (g_testHitResult.hits == 0) {
+                        g_testHitResult.firstHpLost = hpLost;
+                    }
+                    ++g_testHitResult.hits;
+                    g_testHitResult.crit |= hit.isCrit;
+                }
+            }
+            if (dealt && elementalCrit) {
                 anyElemCritHit = true;
             }
             if (anyElemCritHit) {
@@ -604,6 +629,12 @@ namespace SkyrimPoE::Runtime
         outOrigin = outOrigin + outDir * 48.0f;
     }
 
+    bool ProjectileRuntime::HasSpellDelivery(std::uint32_t generation, std::string_view gemId) noexcept
+    {
+        return ProjectileLocalIdForGem(generation, gemId) != 0 ||
+            (generation == 0 && (gemId == "IceNova" || gemId == "ShockNova" || gemId == "Arc"));
+    }
+
     bool ProjectileRuntime::LaunchSpellDelivery(
         const Core::TriggeredSpellCast& cast,
         const RE::NiPoint3& aimOrigin,
@@ -611,6 +642,12 @@ namespace SkyrimPoE::Runtime
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || player->IsDead() || !g_dataPack || !g_config) {
+            return false;
+        }
+
+        const auto generation = SaveLoad::WorldGemGeneration();
+        if (generation != 0 &&
+            (!Core::GemForms::AllowsExecution(generation, cast.gemId) || !HasSpellDelivery(generation, cast.gemId))) {
             return false;
         }
 
@@ -647,7 +684,7 @@ namespace SkyrimPoE::Runtime
         }
 
         // 3) 투사체 주문(Fireball / FreezingPulse / Spark): 부채꼴 다중 발사
-        const RE::FormID projLocalId = ProjectileLocalIdForGem(cast.gemId);
+        const RE::FormID projLocalId = ProjectileLocalIdForGem(generation, cast.gemId);
         if (projLocalId == 0) {
             SKSE::log::warn("ProjectileRuntime: unsupported projectile gemId '{}' — skipping launch.", cast.gemId);
             return false;
@@ -657,7 +694,7 @@ namespace SkyrimPoE::Runtime
         const auto count = Core::RollCastProjectileCount(cast.projectileCount, cast.additionalProjectileChancePct,
             cast.additionalSpellProjectilesChancePct, roll);
         const auto chains = Core::RollCastChainCount(cast.chainCount, cast.additionalChainChancePct, roll);
-        const float spreadStepRad = (cast.gemId == "Spark") ? 0.24f : 0.12f;
+        const float spreadStepRad = (projLocalId == FormIds::kProjSpark) ? 0.24f : 0.12f;
         // 결정 111(C-21, 재검수 R-8): 첫 발(i == 0)은 언제나 조준선 그대로 날아가는 조준탄이고, 나머지는 그 양옆으로
         // 0, -s, +s, -2s, +2s ... 순서로 벌린다. 홀수 발수는 예전과 같은 대칭 부채꼴이 되고, 짝수 발수도
         // 조준탄이 정확히 하나 있게 된다(예전 판정 |yaw| < 0.08은 Spark 짝수 발수에서 조준탄 0개, 간격 0.12 짝수에서 2개였음).
@@ -779,6 +816,19 @@ namespace SkyrimPoE::Runtime
         return g_totalRelaunches.load(std::memory_order_relaxed);
     }
 
+    void ProjectileRuntime::SetHitTargetForTest(RE::FormID actorId)
+    {
+        std::scoped_lock lock(g_shotMutex);
+        g_testHitTarget = actorId;
+        g_testHitResult = {};
+    }
+
+    ProjectileRuntime::TestHitResult ProjectileRuntime::GetHitForTest()
+    {
+        std::scoped_lock lock(g_shotMutex);
+        return g_testHitResult;
+    }
+
     void ProjectileRuntime::ResetOnRevert()
     {
         std::scoped_lock lk(g_shotMutex);
@@ -786,5 +836,7 @@ namespace SkyrimPoE::Runtime
         g_shots.clear();
         g_pendingRepeats.clear();
         g_nextShotId = 1;
+        g_testHitTarget = 0;
+        g_testHitResult = {};
     }
 }
