@@ -13,6 +13,14 @@
 
 namespace SkyrimPoE::Runtime
 {
+    bool ResolveTargetAilmentHit(RE::Actor* target, Core::DamagePacket& packet,
+        const Core::TargetAilmentHitDamage& modifiers, Core::DamagePacket& ailmentDamage);
+    AilmentRuntime::SpellHit RollSpellHit(const Core::TriggeredSpellCast& cast,
+        double damageRoll01, double critRoll01, double damageMultiplier,
+        Core::TargetAilmentHitDamage& targetHit) noexcept;
+    std::size_t ExecuteSpellNova(const RE::NiPoint3& origin, float radius, const AilmentRuntime::SpellHit& hit,
+        RE::FormID vfxId, Core::DamageType dominantType, const Core::TargetAilmentHitDamage& targetHit);
+
     namespace
     {
         using Clock = std::chrono::steady_clock;
@@ -270,42 +278,15 @@ namespace SkyrimPoE::Runtime
             return std::nullopt;
         }
 
-        [[nodiscard]] double ComputeCycleResourceCost(
+        [[nodiscard]] Core::SkillResourceCost ComputeCycleResourceCost(
             RE::PlayerCharacter* player,
             const Core::StatSnapshot& snap,
             std::uint8_t cycloneSlotIdx)
         {
-            if (!g_dataPack || !g_config || cycloneSlotIdx >= Core::kSkillSlotCount) {
-                return 0.0;
-            }
             const auto& stats = snap.slotStats[cycloneSlotIdx];
-            if (snap.bloodMagic) {
-                auto* avOwner = player ? player->AsActorValueOwner() : nullptr;
-                const double maxHealth = avOwner
-                    ? std::max(1.0, static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kHealth)))
-                    : 100.0;
-                return Core::ComputeBloodMagicLifeCost(maxHealth, snap.poeMaxLife, stats.poeManaCost);
-            }
-            const double baseMaxMagicka = CombatHooks::GetBaseSkyrimMaxMagicka(player);
-            const auto scaled = Core::ComputeMagickaScaling(
-                baseMaxMagicka, snap.poeMaxMana, stats.poeManaCost, snap.expectedPoeMana);
-            return scaled.skyrimSkillCost;
-        }
-
-        [[nodiscard]] double ReadAvailableCycleResource(
-            RE::PlayerCharacter* player,
-            const Core::StatSnapshot& snap) noexcept
-        {
-            auto* avOwner = player ? player->AsActorValueOwner() : nullptr;
-            if (!avOwner) {
-                return 0.0;
-            }
-            if (snap.bloodMagic) {
-                // 3단계 Blood Magic 자살 방지 가드: curHealth - cost >= 1.0 보장
-                const double curHealth = static_cast<double>(avOwner->GetActorValue(RE::ActorValue::kHealth));
-                return std::max(0.0, curHealth - 1.0);
-            }
-            return std::max(0.0, static_cast<double>(avOwner->GetActorValue(RE::ActorValue::kMagicka)));
+            const auto* avOwner = player->AsActorValueOwner();
+            const double maxHealth = avOwner ? avOwner->GetPermanentActorValue(RE::ActorValue::kHealth) : 100.0;
+            return Core::ComputeSkillResourceCost(stats, snap, CombatHooks::GetBaseSkyrimMaxMagicka(player), maxHealth);
         }
 
         [[nodiscard]] float GetSkyrimCritWithPerks(RE::PlayerCharacter* player, RE::Actor* target)
@@ -327,25 +308,24 @@ namespace SkyrimPoE::Runtime
             return critPct;
         }
 
-        [[nodiscard]] Core::DamagePacket RollPoePacketDamage(const Core::DamagePacket& pkt, double multiplier)
+        void RollPoePacketDamage(Core::DamagePacket& hit, Core::DamagePacket& ailments, double multiplier)
         {
-            Core::DamagePacket rolled;
-            for (std::size_t i = 0; i < pkt.byType.size(); ++i) {
-                const auto& range = pkt.byType[i];
-                if (range.max <= 0.0 && range.min <= 0.0) {
-                    continue;
-                }
+            std::uniform_real_distribution<double> unitDist(0.0, 1.0);
+            const auto rollRange = [multiplier](const Core::DamageRange& range, double roll) {
                 const double low = std::max(0.0, std::min(range.min, range.max));
                 const double high = std::max(low, std::max(range.min, range.max));
-                double damage = low;
-                if (high - low > 1e-6) {
-                    std::uniform_real_distribution<double> dist(low, high);
-                    damage = dist(t_rng);
-                }
-                damage *= multiplier;
-                rolled.byType[i] = { damage, damage };
+                const double damage = (low + (high - low) * roll) * multiplier;
+                return Core::DamageRange{ damage, damage };
+            };
+            for (std::size_t i = 0; i < hit.byType.size(); ++i) {
+                auto& hitRange = hit.byType[i];
+                auto& ailmentRange = ailments.byType[i];
+                const bool variable = std::abs(hitRange.max - hitRange.min) > 1e-6 ||
+                    std::abs(ailmentRange.max - ailmentRange.min) > 1e-6;
+                const double roll = variable ? unitDist(t_rng) : 0.0;
+                hitRange = rollRange(hitRange, roll);
+                ailmentRange = rollRange(ailmentRange, roll);
             }
-            return rolled;
         }
 
         [[nodiscard]] RE::FormID VfxLocalIdForGem(std::string_view gemId) noexcept
@@ -394,7 +374,16 @@ namespace SkyrimPoE::Runtime
                 }
 
                 const double critMultiplier = isCrit ? std::max(1.0, cycStats.critMultiplierPct / 100.0) : 1.0;
-                const auto poeHit = RollPoePacketDamage(cycStats.baseHitDamage, critMultiplier);
+                auto poeHit = cycStats.baseHitDamage;
+                auto targetHit = cycStats.targetAilmentHitDamage;
+                if (Core::HasRandomElementExtra(poeHit) || Core::HasRandomElementExtra(targetHit.basis)) {
+                    const auto chosen = std::uniform_int_distribution<std::size_t>(0, 2)(t_rng);
+                    poeHit = Core::ResolveRandomElementExtra(poeHit, chosen);
+                    targetHit.basis = Core::ResolveRandomElementExtra(targetHit.basis, chosen);
+                }
+                Core::DamagePacket ailmentDamage;
+                (void)ResolveTargetAilmentHit(target.get(), poeHit, targetHit, ailmentDamage);
+                RollPoePacketDamage(poeHit, ailmentDamage, critMultiplier);
                 const double convertedSkyrimDmg = Core::ConvertOffenseHit(
                     poeHit.TotalAverage(), snap.exileLevel, *g_dataPack, *g_config);
 
@@ -402,7 +391,7 @@ namespace SkyrimPoE::Runtime
                 bool absorbedByMonsterEs = false;
                 {
                     const ScopedCycloneHitContext hitCtx(convertedSkyrimDmg, Core::PhysicalDamageFraction(poeHit),
-                        isCrit, target->GetFormID(), &absorbedByMonsterEs);
+                        isCrit, target->GetFormID(), &absorbedByMonsterEs, &poeHit, &snap);
                     CallDealDamage(player, target.get(), nullptr, false);
                 }
                 const float healthAfter = targetAv->GetActorValue(RE::ActorValue::kHealth);
@@ -417,7 +406,7 @@ namespace SkyrimPoE::Runtime
                     }
                     // 5단계(결정 163): 사이클론 타격 시 원소·출혈·중독 상태이상 적용
                     (void)AilmentRuntime::ApplyPlayerHitAilments(
-                        target.get(), poeHit,
+                        target.get(), ailmentDamage,
                         isCrit, AilmentRuntime::HitKind::Attack,
                         cycStats.igniteChancePct, snap.starforgeShock);
                 }
@@ -432,15 +421,15 @@ namespace SkyrimPoE::Runtime
                         curHealth, maxHealth);
                     if (cast) {
                         g_telCocTriggers.fetch_add(1, std::memory_order_relaxed);
-                        if (cast->usesHealthCost && cast->skyrimHealthCost > 0.0) {
-                            const double safeDrain = std::min(cast->skyrimHealthCost, std::max(0.0, curHealth - 1.0));
-                            if (safeDrain > 0.0) {
-                                playerAv->ModActorValue(
-                                    RE::ACTOR_VALUE_MODIFIER::kDamage,
-                                    RE::ActorValue::kHealth,
-                                    -static_cast<float>(safeDrain));
-                            }
-                        } else if (cast->skyrimMagickaCost > 0.0) {
+                        const double healthCost = std::min(cast->skyrimHealthCost, std::max(0.0,
+                            static_cast<double>(playerAv->GetActorValue(RE::ActorValue::kHealth)) - 1.0));
+                        if (healthCost > 0.0) {
+                            playerAv->ModActorValue(
+                                RE::ACTOR_VALUE_MODIFIER::kDamage,
+                                RE::ActorValue::kHealth,
+                                -static_cast<float>(healthCost));
+                        }
+                        if (cast->skyrimMagickaCost > 0.0) {
                             playerAv->ModActorValue(
                                 RE::ACTOR_VALUE_MODIFIER::kDamage,
                                 RE::ActorValue::kMagicka,
@@ -483,7 +472,8 @@ namespace SkyrimPoE::Runtime
                             });
                         } else {
                             // 발동 노바 주문(IceNova/ShockNova): 발동 시점에 피해 롤·치명타를 고정하고 대상 좌표에서 폭발+상태이상 적용
-                            const auto spellHit = AilmentRuntime::RollSpellHit(*cast, unitDist(t_rng), unitDist(t_rng));
+                            Core::TargetAilmentHitDamage spellTargetHit;
+                            const auto spellHit = RollSpellHit(*cast, unitDist(t_rng), unitDist(t_rng), 1.0, spellTargetHit);
 
                             const RE::NiPoint3 origin = target->GetPosition();
                             const float spellRadius = static_cast<float>(kNovaBaseRadius * std::max(0.25, cast->areaMult));
@@ -492,7 +482,7 @@ namespace SkyrimPoE::Runtime
                                 ? Core::DamageType::Lightning : Core::DamageType::Cold;
 
                             g_queue->EnqueueForGeneration(generation,
-                                [origin, spellRadius, spellHit, vfxId, domType]() {
+                                [origin, spellRadius, spellHit, vfxId, domType, spellTargetHit]() {
                                 if (MapDeviceRuntime::IsUninstallCleanupActive()) {
                                     return;
                                 }
@@ -500,8 +490,8 @@ namespace SkyrimPoE::Runtime
                                     g_skillSystem->EnterTriggerDepth();
                                 }
                                 try {
-                                    const auto hits = AilmentRuntime::ExecuteSpellNova(
-                                        origin, spellRadius, spellHit, vfxId, domType);
+                                    const auto hits = ExecuteSpellNova(
+                                        origin, spellRadius, spellHit, vfxId, domType, spellTargetHit);
                                     g_telCocExecutions.fetch_add(1, std::memory_order_relaxed);
                                     g_telCocTargetsHit.fetch_add(hits, std::memory_order_relaxed);
                                     // 검수 M3: Elemental Overload는 원소 피해 주문이 실제로 1명 이상 적중했을 때만 발동
@@ -602,17 +592,20 @@ namespace SkyrimPoE::Runtime
                         matchedInput = PowerInputAcceptsHandLocked(Clock::now());
                     }
 
-                    if (player && cycSlot && snap && matchedInput) {
+                    const auto* values = player ? player->AsActorValueOwner() : nullptr;
+                    if (values && cycSlot && snap && matchedInput) {
                         const bool gemReqOk = !(g_config && g_config->enforceGemRequirements) ||
                             snap->slotStats[*cycSlot].requirementMet;
                         const bool allowed = gemReqOk && IsPlayerAllowedForCyclone(player);
-                        const double curResource = ReadAvailableCycleResource(player, *snap);
-                        const double firstCost = ComputeCycleResourceCost(player, *snap, *cycSlot);
+                        const double currentMagicka = values->GetActorValue(RE::ActorValue::kMagicka);
+                        const double currentHealth = values->GetActorValue(RE::ActorValue::kHealth);
+                        const auto costs = ComputeCycleResourceCost(player, *snap, *cycSlot);
 
                         bool accepted = false;
                         {
                             std::scoped_lock lock(g_mutex);
-                            accepted = g_machine.TryBeginFromPowerAttack(true, false, allowed, curResource, firstCost);
+                            accepted = g_machine.TryBeginFromPowerAttack(
+                                true, false, allowed, currentMagicka, costs.magicka, currentHealth, costs.health);
                         }
                         if (accepted) {
                             return false;  // 강공격 모션 대신 첫 주 갱신에서 사이클론 시작(결정 128)
@@ -875,8 +868,7 @@ namespace SkyrimPoE::Runtime
         const bool allowed = !yielding && !weaponSwitched && gemReqOk && IsPlayerAllowedForCyclone(player);
 
         auto* avOwner = player->AsActorValueOwner();
-        const double curResource = ReadAvailableCycleResource(player, *snap);
-        const double cycleCost = ComputeCycleResourceCost(player, *snap, *cycSlot);
+        const auto costs = ComputeCycleResourceCost(player, *snap, *cycSlot);
 
         // C-13: 마무리 시간은 0.15초 고정이 아니라 현재 회전 주기의 남은 바퀴(최대 약 1/3초)로 산출
         const double effectiveRate = std::max(0.25, weaponSpeed * snap->slotStats[*cycSlot].attackSpeedMult);
@@ -887,11 +879,13 @@ namespace SkyrimPoE::Runtime
         in.deltaSec = deltaSec;
         in.gamePaused = gamePaused;
         in.buttonHeld = held;
-        in.playerAllowed = allowed;
+        in.playerAllowed = allowed && avOwner;
         in.weaponSpeed = weaponSpeed;
         in.poeAttackSpeedMult = snap->slotStats[*cycSlot].attackSpeedMult;
-        in.currentMagicka = curResource;
-        in.cycleMagickaCost = cycleCost;
+        in.currentMagicka = avOwner ? avOwner->GetActorValue(RE::ActorValue::kMagicka) : 0.0;
+        in.cycleMagickaCost = costs.magicka;
+        in.currentHealth = avOwner ? avOwner->GetActorValue(RE::ActorValue::kHealth) : 0.0;
+        in.cycleHealthCost = costs.health;
         in.minChannelSec = g_config->minChannelSeconds;
         in.outroSec = computedOutroSec;
 
@@ -899,6 +893,15 @@ namespace SkyrimPoE::Runtime
         {
             std::scoped_lock lock(g_mutex);
             out = g_machine.Tick(in);
+        }
+
+        if (avOwner && out.healthToConsume > 0.0) {
+            avOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth,
+                -static_cast<float>(out.healthToConsume));
+        }
+        if (avOwner && out.consumeMagicka && out.magickaToConsume > 0.0) {
+            avOwner->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka,
+                -static_cast<float>(out.magickaToConsume));
         }
 
         if (out.startOar) {
@@ -916,24 +919,6 @@ namespace SkyrimPoE::Runtime
                 g_spinAngle = 0.0f;
                 g_spinActive = true;
                 g_spinRestorePending = false;
-            }
-        }
-
-        if (out.consumeMagicka && out.magickaToConsume > 0.0 && avOwner) {
-            if (snap->bloodMagic) {
-                const double curHp = static_cast<double>(avOwner->GetActorValue(RE::ActorValue::kHealth));
-                const double safeDrain = std::min(out.magickaToConsume, std::max(0.0, curHp - 1.0));
-                if (safeDrain > 0.0) {
-                    avOwner->ModActorValue(
-                        RE::ACTOR_VALUE_MODIFIER::kDamage,
-                        RE::ActorValue::kHealth,
-                        -static_cast<float>(safeDrain));
-                }
-            } else {
-                avOwner->ModActorValue(
-                    RE::ACTOR_VALUE_MODIFIER::kDamage,
-                    RE::ActorValue::kMagicka,
-                    -static_cast<float>(out.magickaToConsume));
             }
         }
 

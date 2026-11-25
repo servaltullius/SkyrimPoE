@@ -31,6 +31,8 @@ namespace SkyrimPoE::Core
         double cycleMagickaCost = 0.0;
         double minChannelSec = 0.6;
         double outroSec = 0.15;
+        double currentHealth = 1.0;
+        double cycleHealthCost = 0.0;
     };
 
     struct CycloneTickOutput
@@ -43,6 +45,7 @@ namespace SkyrimPoE::Core
         double spinRadiansDelta = 0.0;
         bool ended = false;
         std::string_view endReason;
+        double healthToConsume = 0.0;
     };
 
     // 결정 49, 50, 54, 56, 97~99, 122, 128, 150을 구현하는 순수 사이클론 상태기계.
@@ -59,7 +62,9 @@ namespace SkyrimPoE::Core
             bool yieldingToFrenzy,
             bool playerAllowed,
             double currentMagicka,
-            double firstCycleCost);
+            double firstCycleCost,
+            double currentHealth = 1.0,
+            double firstCycleHealthCost = 0.0);
 
         // staggerStart 이벤트에서 호출(결정 56, 150 ③): 한도 이하면 삼키고, 초과면 즉시 종료 후 통과.
         [[nodiscard]] CycloneStaggerDecision OnStaggerStart(double magnitude, double ignoreThreshold);

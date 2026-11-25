@@ -905,12 +905,15 @@ namespace SkyrimPoE::Runtime
             compare("classSelected", before.tree.classSelected, state.tree.classSelected);
             compare("classId", before.tree.classId, state.tree.classId);
             compare("allocatedNodes.size", before.tree.allocatedNodes.size(), state.tree.allocatedNodes.size());
+            compare("attributeSelections match", true, before.tree.attributeSelections == state.tree.attributeSelections);
             compare("trackedGems", g_saveOnlyBefore.trackedGems, after.trackedGems);
             compare("trackedItems", g_saveOnlyBefore.trackedItems, after.trackedItems);
             compare("atlas.completedTierMask", before.atlas.completedTierMask, state.atlas.completedTierMask);
             compare("atlas.totalMapsCleared", before.atlas.totalMapsCleared, state.atlas.totalMapsCleared);
             compare("appliedHealthDelta", before.appliedHealthDelta, state.appliedHealthDelta);
             compare("appliedMagickaDelta", before.appliedMagickaDelta, state.appliedMagickaDelta);
+            compare("appliedSpeedMultDelta", before.appliedSpeedMultDelta, state.appliedSpeedMultDelta);
+            compare("appliedMagickaRateMultDelta", before.appliedMagickaRateMultDelta, state.appliedMagickaRateMultDelta);
             compare("activeAuraMask", before.activeAuraMask, state.activeAuraMask);
             for (std::size_t i = 0; i < state.slots.size(); ++i) {
                 const auto& original = before.slots[i];

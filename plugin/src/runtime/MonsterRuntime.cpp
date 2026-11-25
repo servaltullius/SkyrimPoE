@@ -363,15 +363,32 @@ namespace SkyrimPoE::Runtime
         bool bypassesEs,
         RE::Actor* targetActor,
         double engineDiffMult,
-        std::optional<std::uint64_t> generation)
+        std::optional<std::uint64_t> generation,
+        const Core::DamagePacket* hitTypes,
+        bool isDamageOverTime,
+        bool isAttack,
+        const Core::StatSnapshot* hitSnapshot)
     {
         double adjustedDmg = std::max(0.0, std::isfinite(rawSkyrimDamage) ? rawSkyrimDamage : 0.0);
+        const auto current = !hitSnapshot && g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+        const auto* snap = hitSnapshot ? hitSnapshot : current.get();
+        Core::MonsterHitResistance resistance;
+        resistance.poe2 = snap && snap->poe2Passives;
+        resistance.isDamageOverTime = isDamageOverTime;
+        if (resistance.poe2 && !isDamageOverTime) {
+            resistance.hitTypes = hitTypes;
+            resistance.penetrationPct = snap->penetrationPct;
+            if (isAttack) {
+                for (const auto type : { Core::DamageType::Fire, Core::DamageType::Cold, Core::DamageType::Lightning }) {
+                    resistance.penetrationPct[static_cast<std::size_t>(type)] += snap->attackElementalPenetrationPct;
+                }
+            }
+        }
 
         // 결정 170: 회차 소유 액터는 ES 흡수와 희귀도 피해 보정 전에 생명 배율과 지도 어픽스를 적용한다.
         Core::MapModSummary mods{};
         const auto scaling = MapDeviceRuntime::GetMapActorScaling(actorId, &mods);
         if (adjustedDmg > 0.0 && scaling.runId != 0) {
-            const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
             const auto* values = targetActor ? targetActor->AsActorValueOwner() : nullptr;
             const double health = values ? values->GetPermanentActorValue(RE::ActorValue::kHealth) : 0.0;
             if (!snap || !g_dataPack || !g_config || !std::isfinite(health) || health < 1.0) {
@@ -385,7 +402,10 @@ namespace SkyrimPoE::Runtime
             if (mods.monsterReducedTakenPct > 0.0) {
                 adjustedDmg *= std::max(0.25, 1.0 - mods.monsterReducedTakenPct / 100.0);
             }
-            if ((dominantType == Core::DamageType::Fire ||
+            if (resistance.poe2) {
+                resistance.mapElementalPct = mods.monsterElemResPct;
+                resistance.mapChaosPct = mods.monsterChaosResPct;
+            } else if ((dominantType == Core::DamageType::Fire ||
                  dominantType == Core::DamageType::Cold ||
                  dominantType == Core::DamageType::Lightning) &&
                 mods.monsterElemResPct > 0.0) {
@@ -405,10 +425,10 @@ namespace SkyrimPoE::Runtime
             }
             const auto it = g_profiles.find(actorId);
             if (it == g_profiles.end()) {
-                res.remainingHealthDamage = adjustedDmg;
-                res.hadAnyImpact = res.remainingHealthDamage > 0.0;
+                Core::MonsterProfile unpromoted;
+                res = Core::MonsterModSystem::ApplyPlayerHitToMonster(unpromoted, adjustedDmg, dominantType, bypassesEs, resistance);
             } else {
-                res = Core::MonsterModSystem::ApplyPlayerHitToMonster(it->second, adjustedDmg, dominantType, bypassesEs);
+                res = Core::MonsterModSystem::ApplyPlayerHitToMonster(it->second, adjustedDmg, dominantType, bypassesEs, resistance);
             }
         }
 

@@ -15,6 +15,7 @@
 #include "runtime/WorldDropTracker.h"
 
 #include "core/ItemAffixParser.h"
+#include "core/EnergyShield.h"
 #include "core/MapSave.h"
 #include "core/PassiveStatParser.h"
 #include "core/PassiveTree.h"
@@ -301,29 +302,39 @@ namespace SkyrimPoE::Runtime
         Core::Layer1Input BuildLayer1FromState(const PersistentState& state)
         {
             Core::Layer1Input l1;
+            l1.passives.poe2 = g_treeData && g_treeData->IsLoaded() && g_treeData->Generation() == 1;
             l1.exileLevel = std::clamp<std::uint32_t>(state.exileLevel, 1, Core::kMaxExileLevel);
-            if (state.tree.classSelected && g_treeData && g_treeData->IsLoaded()) {
-                if (const auto* cls = g_treeData->FindClass(state.tree.classId)) {
-                    l1.className = cls->name;
-                } else {
-                    l1.className = state.className.empty() ? "Scion" : state.className;
+            if (state.tree.classSelected && g_treeData && state.tree.generation == g_treeData->Generation()) {
+                if (const auto* cls = g_treeData->FindClassByContentId(state.tree.classContentId)) {
+                    l1.treeClass = Core::ClassBase{ cls->name, cls->baseStr, cls->baseDex, cls->baseInt };
+                    l1.passives = Core::PassiveStatParser::AggregateTree(*g_treeData, state.tree);
                 }
-                l1.passives = Core::PassiveStatParser::AggregateTree(*g_treeData, state.tree);
-            } else {
-                l1.className = state.className.empty() ? "Scion" : state.className;
             }
             l1.slots = state.slots;
             // 검수 C5: 단일 Layer1 조합 지점 — 장비 스냅샷을 항상 병합해 레벨업/패시브/젬 변경 시 덮어쓰기를 방지
             l1.equippedGear = EquipmentSync::GetCurrentGearSnapshot();
+            if (l1.passives.poe2) {
+                l1.mainWeaponTag = EquipmentSync::GetCurrentGearMeta()[static_cast<std::size_t>(Core::EquipSlot::MainHand)].weaponTag;
+            }
 
             // 오라 토글, 정신력 보상 이정표 비트(결정 203), 패시브 주얼 소켓 선합산
             l1.activeAuraMask = state.activeAuraMask;
             l1.achievementMask = state.tree.ascendancyMilestonesBitmask;
+            if (l1.passives.poe2 && Core::PassiveTree::IsAllocatedJewelSocket(
+                *g_treeData, state.tree, Core::PassiveTree::kPhylacteryNodeId)) {
+                l1.phylacteryEnergyShield = &Core::GetPlayerEnergyShield();
+            }
             if (g_itemData && g_itemData->IsLoaded() && !state.socketedJewels.empty()) {
                 l1.socketedJewelStats.reserve(state.socketedJewels.size());
                 for (const auto& [nodeId, rec] : state.socketedJewels) {
                     if (state.tree.IsAllocated(nodeId)) {
-                        l1.socketedJewelStats.push_back(Core::ItemAffixParser::ParseItem(rec, *g_itemData));
+                        const auto copies = l1.passives.poe2
+                            ? Core::PassiveTree::JewelEffectCopies(*g_treeData, state.tree, nodeId) : 1;
+                        if (copies == 0 || (copies > 1 && rec.rarity == Core::ItemRarity::Unique)) {
+                            continue;
+                        }
+                        const auto stats = Core::ItemAffixParser::ParseItem(rec, *g_itemData);
+                        l1.socketedJewelStats.insert(l1.socketedJewelStats.end(), copies, stats);
                     }
                 }
             }
@@ -345,6 +356,9 @@ namespace SkyrimPoE::Runtime
             {
                 std::scoped_lock lock(g_stateMutex);
                 g_state = PersistentState{};
+                if (g_treeData && g_treeData->IsLoaded()) {
+                    g_state.tree.generation = g_treeData->Generation();
+                }
                 g_state.starterGemsGiven = afterCleanup;
                 g_state.starterStage5GemsGiven = afterCleanup;
                 g_state.starterCurrencyGiven = afterCleanup;
@@ -535,9 +549,11 @@ namespace SkyrimPoE::Runtime
         // 세대 판정을 통과한 뒤 기존 판별 순서대로 메모리를 복원한다.
         void RestoreLoadedRecords(SKSE::SerializationInterface* serialization)
         {
+            const auto playerRates = ReadPlayerRates(g_cosave.current).value();
             PersistentState loadedState;
             bool hasCore = false;
             bool sawGemKeysRecord = false;  // Codex 지적 16: CORE만 손상되고 GKEY만 남은 세이브도 "이미 지급받은 세이브"로 본다
+            bool sawPlayerRatesRecord = false;
             Core::PassiveTreeState loadedTree;
             bool hasTree = false;
             bool hasItems = false;
@@ -571,12 +587,13 @@ namespace SkyrimPoE::Runtime
                 RecordReader reader{ serialization, bytes };
                 auto* intfc = &reader;
                 if (type == kRecordCore) {
-                    if (version != kCoreVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported CORE record version {} (expected {}).", version, kCoreVersion);
+                    if (version != Core::kLegacyCoreVersion && version != kCoreVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported CORE record version {} (expected {} or {}).",
+                            version, Core::kLegacyCoreVersion, kCoreVersion);
                         continue;
                     }
                     PersistentState tmp;
-                    if (ReadCoreV2(intfc->remaining, tmp)) {
+                    if (ReadCoreRecord(record, tmp)) {
                         loadedState = std::move(tmp);
                         hasCore = true;
                     } else {
@@ -631,51 +648,14 @@ namespace SkyrimPoE::Runtime
                             loadedGems.size());
                     }
                 } else if (type == kRecordTree) {
-                    if (version != kTreeVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported TREE record version {} (expected {}).", version, kTreeVersion);
+                    if (version != kTreeVersion && version != kLegacyTreeVersion) {
+                        SKSE::log::warn("SaveLoad: unsupported TREE record version {}.", version);
                         continue;
                     }
-                    Core::PassiveTreeState tmpTree;
-                    std::uint8_t clsSelByte = 0;
-                    std::uint32_t nodeCount = 0;
-                    std::uint32_t masteryCount = 0;
-                    bool ok = true;
-                    ok = ok && ReadExactPod(intfc, clsSelByte);
-                    ok = ok && ReadExactPod(intfc, tmpTree.classId);
-                    ok = ok && ReadString(intfc, tmpTree.ascendancyId);
-                    ok = ok && ReadExactPod(intfc, nodeCount);
-                    if (ok && nodeCount <= kMaxTreeNodes) {
-                        tmpTree.allocatedNodes.resize(nodeCount);
-                        for (std::uint32_t i = 0; i < nodeCount && ok; ++i) {
-                            ok = ok && ReadExactPod(intfc, tmpTree.allocatedNodes[i]);
-                        }
-                    } else {
-                        ok = false;
-                    }
-                    ok = ok && ReadExactPod(intfc, masteryCount);
-                    if (ok && masteryCount <= kMaxListLen) {
-                        for (std::uint32_t i = 0; i < masteryCount && ok; ++i) {
-                            std::uint32_t mNode = 0;
-                            std::uint32_t mEff = 0;
-                            ok = ok && ReadExactPod(intfc, mNode);
-                            ok = ok && ReadExactPod(intfc, mEff);
-                            if (ok) {
-                                tmpTree.masterySelections[mNode] = mEff;
-                            }
-                        }
-                    } else {
-                        ok = false;
-                    }
-                    ok = ok && ReadExactPod(intfc, tmpTree.bossKillCount);
-                    ok = ok && ReadExactPod(intfc, tmpTree.dragonKillCount);
-                    ok = ok && ReadExactPod(intfc, tmpTree.ascendancyMilestonesBitmask);
-                    if (ok) {
-                        tmpTree.classSelected = (clsSelByte != 0);
-                        tmpTree.ascendancyMilestonesBitmask &= 0xFu;
-                        loadedTree = std::move(tmpTree);
+                    if (ReadTreeRecord(record, loadedTree)) {
                         hasTree = true;
                     } else {
-                        SKSE::log::error("SaveLoad: failed to parse TREE record (truncated or corrupt); falling back to empty tree.");
+                        SKSE::log::error("SaveLoad: failed to parse TREE record (truncated or corrupt).");
                     }
                 } else if (type == kRecordItems) {
                     sawItemsRecord = true;
@@ -796,84 +776,58 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse SPRT record.");
                     }
                 } else if (type == kRecordGear) {
-                    if (version != kGearVersion) {
-                        SKSE::log::warn("SaveLoad: unsupported GEAR record version {} (expected {}).", version, kGearVersion);
+                    GearHeader gear;
+                    if (!ReadGearHeader(version, intfc->remaining, gear)) {
+                        SKSE::log::error("SaveLoad: failed to parse GEAR v{} header.", version);
                         continue;
                     }
-                    RE::FormID rawR2Owner = 0, rawR2Base = 0;
-                    std::uint16_t r2Uid = 0;
-                    RE::FormID rawBeltOwner = 0, rawBeltBase = 0;
-                    std::uint16_t beltUid = 0;
-                    std::uint32_t charmCount = 0;
-                    std::uint32_t jewelCount = 0;
-                    bool ok = true;
-                    ok = ok && ReadExactPod(intfc, rawR2Owner);
-                    ok = ok && ReadExactPod(intfc, r2Uid);
-                    ok = ok && ReadExactPod(intfc, rawR2Base);
-                    ok = ok && ReadExactPod(intfc, rawBeltOwner);
-                    ok = ok && ReadExactPod(intfc, beltUid);
-                    ok = ok && ReadExactPod(intfc, rawBeltBase);
-                    ok = ok && ReadExactPod(intfc, charmCount);
 
                     std::array<Core::CharmSlotState, Core::kMaxCharmSlots> tmpCharms{};
-                    if (ok && charmCount <= Core::kMaxCharmSlots) {
-                        for (std::uint32_t c = 0; c < charmCount && ok; ++c) {
-                            std::uint8_t occ = 0;
-                            std::uint8_t kindByte = 0;
-                            double charges = 0.0;
-                            ok = ok && ReadExactPod(intfc, occ);
-                            ok = ok && ReadExactPod(intfc, kindByte);
-                            ok = ok && ReadExactPod(intfc, charges);
-                            if (ok) {
-                                tmpCharms[c].occupied = (occ != 0) && (kindByte < Core::kCharmKindCount);
-                                tmpCharms[c].kind = (kindByte < Core::kCharmKindCount)
-                                    ? static_cast<Core::CharmKind>(kindByte)
-                                    : Core::CharmKind::Ruby;
-                                tmpCharms[c].charges = std::isfinite(charges)
-                                    ? std::clamp(charges, 0.0, Core::CharmSystem::kMaxCharges)
-                                    : 0.0;
-                            }
-                        }
-                    } else {
-                        ok = false;
+                    for (std::uint32_t c = 0; c < gear.charmCount; ++c) {
+                        const auto& [occupied, kind, charges] = gear.charms[c];
+                        const bool validKind = kind < Core::kCharmKindCount;
+                        tmpCharms[c].occupied = occupied != 0 && validKind;
+                        tmpCharms[c].kind = validKind ? static_cast<Core::CharmKind>(kind) : Core::CharmKind::Ruby;
+                        tmpCharms[c].charges = std::isfinite(charges)
+                            ? std::clamp(charges, 0.0, Core::CharmSystem::kMaxCharges) : 0.0;
                     }
 
                     std::unordered_map<std::uint32_t, Core::PoEItemRecord> tmpJewels;
-                    ok = ok && ReadExactPod(intfc, jewelCount);
-                    if (ok && jewelCount <= kMaxSocketedJewels) {
-                        for (std::uint32_t j = 0; j < jewelCount && ok; ++j) {
-                            std::uint32_t nodeId = 0;
-                            ok = ok && ReadExactPod(intfc, nodeId);
-                            if (!ok) break;
-                            Core::PoEItemRecord jRec;
-                            const auto rr = ReadPoEItemRecord(intfc, jRec, 2);
-                            if (!rr.streamOk) {
-                                ok = false;
-                                break;
-                            }
-                            if (nodeId != 0 && rr.baseResolved) {
-                                tmpJewels[nodeId] = std::move(jRec);
-                            }
+                    bool ok = true;
+                    for (std::uint32_t j = 0; j < gear.jewelCount; ++j) {
+                        std::uint32_t nodeId = 0;
+                        Core::PoEItemRecord jRec;
+                        if (!ReadExactPod(intfc, nodeId)) {
+                            ok = false;
+                            break;
                         }
-                    } else {
-                        ok = false;
+                        const auto rr = ReadPoEItemRecord(intfc, jRec, kGearItemVersion);
+                        if (!rr.streamOk) {
+                            ok = false;
+                            break;
+                        }
+                        if (nodeId != 0 && rr.baseResolved) {
+                            tmpJewels[nodeId] = std::move(jRec);
+                        }
                     }
 
                     if (ok) {
                         RE::FormID resR2Base = 0;
-                        if (rawR2Base != 0 && intfc->ResolveFormID(rawR2Base, resR2Base) && resR2Base != 0) {
+                        if (gear.ring2BaseFormId != 0 && intfc->ResolveFormID(gear.ring2BaseFormId, resR2Base) && resR2Base != 0) {
                             RE::FormID resR2Owner = 0;
-                            if (rawR2Owner == 0 || (intfc->ResolveFormID(rawR2Owner, resR2Owner) && resR2Owner != 0)) {
+                            const auto rawOwner = gear.ring2Key.ownerFormId;
+                            if (rawOwner == 0 || (intfc->ResolveFormID(rawOwner, resR2Owner) && resR2Owner != 0)) {
                                 loadedRing2Base = resR2Base;
-                                loadedRing2Key = Core::InventoryItemKey{ resR2Owner, r2Uid };
+                                loadedRing2Key = Core::InventoryItemKey{ resR2Owner, gear.ring2Key.uniqueId };
                             }
                         }
                         RE::FormID resBeltBase = 0;
-                        if (rawBeltBase != 0 && intfc->ResolveFormID(rawBeltBase, resBeltBase) && resBeltBase != 0) {
+                        if (gear.beltBaseFormId != 0 && intfc->ResolveFormID(gear.beltBaseFormId, resBeltBase) && resBeltBase != 0) {
                             RE::FormID resBeltOwner = 0;
-                            if (rawBeltOwner == 0 || (intfc->ResolveFormID(rawBeltOwner, resBeltOwner) && resBeltOwner != 0)) {
+                            const auto rawOwner = gear.beltKey.ownerFormId;
+                            if (rawOwner == 0 || (intfc->ResolveFormID(rawOwner, resBeltOwner) && resBeltOwner != 0)) {
                                 loadedBeltBase = resBeltBase;
-                                loadedBeltKey = Core::InventoryItemKey{ resBeltOwner, beltUid };
+                                loadedBeltKey = Core::InventoryItemKey{ resBeltOwner, gear.beltKey.uniqueId };
                             }
                         }
                         loadedCharms = tmpCharms;
@@ -944,11 +898,15 @@ namespace SkyrimPoE::Runtime
                         SKSE::log::error("SaveLoad: failed to parse MAPS v{} run ({} bytes).", version, length);
                     }
                     Core::KeepLatestMapSave(mapsRecord, std::move(candidate));
+                } else if (type == kRecordPlayerRates) {
+                    sawPlayerRatesRecord = true;
                 } else if (type != kRecordGeneration) {
                     SKSE::log::warn("SaveLoad: ignoring unknown record type 0x{:08X}.", type);
                 }
             }
 
+            loadedState.appliedSpeedMultDelta = playerRates.speedMult;
+            loadedState.appliedMagickaRateMultDelta = playerRates.magickaRateMult;
             const auto [loadedAtlas, atlasDamaged, runDamaged] = Core::GetMapSaveStatus(sawAtlasRecord, atlasRecord, mapsRecord);
             loadedState.atlas = loadedAtlas;
             if (atlasDamaged) {
@@ -957,21 +915,20 @@ namespace SkyrimPoE::Runtime
             if (sawAtlasRecord && !mapsRecord) {
                 SKSE::log::error("SaveLoad: MAPS run record missing from map save.");
             }
-            if (hasTree) {
-                if (g_treeData && g_treeData->IsLoaded()) {
-                    Core::PassiveTree::SanitizeLoadedState(*g_treeData, loadedTree);
-                }
-                loadedState.tree = std::move(loadedTree);
-                if (loadedState.tree.classSelected && g_treeData && g_treeData->IsLoaded()) {
-                    if (const auto* cls = g_treeData->FindClass(loadedState.tree.classId)) {
+            loadedState.className.clear();  // CORE의 표시용 사본은 TREE로 복원한다.
+            if (g_treeData && g_treeData->IsLoaded()) {
+                loadedState.tree.generation = g_treeData->Generation();
+                if (hasTree && Core::PassiveTree::SanitizeLoadedState(*g_treeData, loadedTree)) {
+                    loadedState.tree = std::move(loadedTree);
+                    if (const auto* cls = g_treeData->FindClassByContentId(loadedState.tree.classContentId)) {
                         loadedState.className = cls->name;
                     }
-                }
-                if (g_treeData && g_treeData->IsLoaded() && g_config) {
-                    const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
-                        *g_treeData, loadedState.tree, loadedState.exileLevel, *g_config,
-                        loadedState.atlas.completedTierMask);
-                    loadedState.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
+                    if (g_config) {
+                        const auto avail = Core::PassiveTree::ComputeAvailableNormalPoints(
+                            *g_treeData, loadedState.tree, loadedState.exileLevel, *g_config,
+                            loadedState.atlas.completedTierMask);
+                        loadedState.unallocatedPassivePoints = static_cast<std::uint32_t>(std::max<std::int32_t>(0, avail));
+                    }
                 }
             }
 
@@ -1014,7 +971,7 @@ namespace SkyrimPoE::Runtime
                 loadedState.socketedJewels = std::move(loadedJewels);
             }
             if (hasCore || hasTree || hasItems || hasSpirit || hasGear || sawAtlasRecord || mapsRecord ||
-                sawItemsRecord || sawSpiritRecord || sawGemKeysRecord) {
+                sawItemsRecord || sawSpiritRecord || sawGemKeysRecord || sawPlayerRatesRecord) {
                 // C-3: CORE만 손상되고 다른 SPOE 레코드가 살아 있는 세이브에서 시작 젬·화폐 중복 지급을 막는다.
                 if (!hasCore) {
                     loadedState.starterGemsGiven = true;
@@ -1144,7 +1101,9 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             try {
-                const auto decision = DecideSave(g_cosave.current, false, *target);
+                const auto treeGeneration = g_treeData && g_treeData->IsLoaded()
+                    ? std::optional{ g_treeData->Generation() } : std::nullopt;
+                const auto decision = DecideSave(g_cosave.current, false, *target, treeGeneration);
                 if (decision.disposition == Core::SaveDisposition::CleanupFromLegacy) {
                     auto reason = g_migration.Prepare(g_cosave.current, *target,
                         [intfc](auto raw, auto& resolved) { return intfc->ResolveFormID(raw, resolved); }, g_loadWorld);
@@ -1623,9 +1582,8 @@ namespace SkyrimPoE::Runtime
                     PersistentState working = SaveLoad::GetStateCopy();
                     bool changed = false;
                     for (auto it = working.socketedJewels.begin(); it != working.socketedJewels.end(); ) {
-                        const auto* node = g_treeData->FindNode(it->first);
-                        const bool validSocket = node && node->kind == Core::PassiveNodeKind::Socket &&
-                            working.tree.IsAllocated(it->first);
+                        const bool validSocket = Core::PassiveTree::IsAllocatedJewelSocket(
+                            *g_treeData, working.tree, it->first);
                         if (validSocket) {
                             ++it;
                             continue;

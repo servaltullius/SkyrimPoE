@@ -134,6 +134,14 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        double ReadDualCastMagickaMultiplier(bool dualCast)
+        {
+            if (!dualCast) return 1.0;
+            auto* settings = RE::GameSettingCollection::GetSingleton();
+            const auto* value = settings ? settings->GetSetting("fMagicDualCastingCostMult") : nullptr;
+            return value && value->GetType() == RE::Setting::Type::kFloat ? value->GetFloat() : 1.0;
+        }
+
         struct CheckCastHook
         {
             static constexpr std::size_t kIndex = 0x0A;
@@ -197,29 +205,6 @@ namespace SkyrimPoE::Runtime
                             std::format("SkyrimPoE: 용암 방패 재사용 대기 ({:.1f}초)", gs.cooldownRemainingSec));
                         return false;
                     }
-                    // 검수 M2: costOverride=0 파워도 시전 전 자원(매지카/혈마법) 부족을 선차단
-                    if (av && slotStat.poeManaCost > 0.0 && g_dataPack && g_dataPack->IsLoaded()) {
-                        if (snap->bloodMagic) {
-                            const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
-                            const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
-                            const double hpCost = Core::ComputeBloodMagicLifeCost(maxHp, snap->poeMaxLife, slotStat.poeManaCost);
-                            if ((curHp - hpCost) < (1.0 - 1e-6)) {
-                                if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
-                                MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 혈마법 생명력이 부족합니다.");
-                                return false;
-                            }
-                        } else {
-                            const double curMag = static_cast<double>(av->GetActorValue(RE::ActorValue::kMagicka));
-                            const double baseMaxMag = CombatHooks::GetBaseSkyrimMaxMagicka(player);
-                            const auto ms = Core::ComputeMagickaScaling(
-                                baseMaxMag, snap->poeMaxMana, slotStat.poeManaCost, snap->expectedPoeMana);
-                            if (curMag + 1e-6 < ms.skyrimSkillCost) {
-                                if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
-                                MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 매지카가 부족합니다.");
-                                return false;
-                            }
-                        }
-                    }
                 } else {
                     const double remCd = g_skillSystem->RemainingCooldown(slotStat.gemInstanceId);
                     if (remCd > 0.0) {
@@ -228,15 +213,23 @@ namespace SkyrimPoE::Runtime
                             std::format("SkyrimPoE: 스킬 재사용 대기 ({:.1f}초)", remCd));
                         return false;
                     }
-                    if (snap->bloodMagic && slotStat.poeManaCost > 0.0 && av) {
-                        const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
-                        const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
-                        const double hpCost = Core::ComputeBloodMagicLifeCost(maxHp, snap->poeMaxLife, slotStat.poeManaCost);
-                        if ((curHp - hpCost) < (1.0 - 1e-6)) {
-                            if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
-                            MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 혈마법 생명력이 부족합니다.");
-                            return false;
-                        }
+                }
+
+                // Guard powers and generation-one proxies defer the full cost to the queued cast.
+                if (av && (isPower || snap->poe2Passives || snap->bloodMagic)) {
+                    const double maxHp = av->GetPermanentActorValue(RE::ActorValue::kHealth);
+                    const double baseMaxMag = CombatHooks::GetBaseSkyrimMaxMagicka(player);
+                    const auto costs = Core::ComputeSkillResourceCost(slotStat, *snap, baseMaxMag, maxHp,
+                        ReadDualCastMagickaMultiplier(dualCast && !isPower));
+                    if (!costs.CanPayHealth(av->GetActorValue(RE::ActorValue::kHealth))) {
+                        if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
+                        MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 생명력이 부족합니다.");
+                        return false;
+                    }
+                    if (!costs.CanPayMagicka(av->GetActorValue(RE::ActorValue::kMagicka))) {
+                        if (reason) *reason = RE::MagicSystem::CannotCastReason::kMagicka;
+                        MaybeQueueCooldownNotice(generation, slotIdx, "SkyrimPoE: 매지카가 부족합니다.");
+                        return false;
                     }
                 }
 
@@ -310,7 +303,7 @@ namespace SkyrimPoE::Runtime
                     if (isPower) {
                         (void)ProxySpellRuntime::ExecuteGuardPowerSlot(slotIdx);
                     } else {
-                        // 일반 손 시전은 엔진이 이미 costOverride 매지카를 차감했으므로 chargeMagicka=false
+                        // The queued cast checks the snapshot to select the generation-one cost path.
                         (void)ProxySpellRuntime::ExecuteHandCastSlot(
                             slotIdx,
                             false,
@@ -407,7 +400,8 @@ namespace SkyrimPoE::Runtime
                     sp->fullName = dispName.c_str();
 
                     std::int32_t skyrimCost = 0;
-                    if (!snap->bloodMagic && sstat.poeManaCost > 0.0) {
+                    // Generation-one prices are charged together after rechecking both resources.
+                    if (!snap->poe2Passives && !snap->bloodMagic && sstat.poeManaCost > 0.0) {
                         const auto ms = Core::ComputeMagickaScaling(
                             baseSkyrimMaxMagicka, snap->poeMaxMana, sstat.poeManaCost, snap->expectedPoeMana);
                         skyrimCost = static_cast<std::int32_t>(std::max<long long>(0LL, std::llround(ms.skyrimSkillCost)));
@@ -481,10 +475,12 @@ namespace SkyrimPoE::Runtime
         const double curHp = static_cast<double>(av->GetActorValue(RE::ActorValue::kHealth));
         const double maxHp = std::max(1.0, static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)));
 
-        // 검수 M2: 엔진이 이미 costOverride 매지카를 차감한 직후(!chargeMagicka)에는 이중 매지카 검사로 불발시키지 않는다.
-        const double checkMag = chargeMagicka ? curMag : std::numeric_limits<double>::max();
+        // Legacy hands pay the engine price during charging. Generation one pays on successful validation.
+        const bool payMagicka = chargeMagicka || snap->poe2Passives;
+        const double checkMag = payMagicka ? curMag : std::numeric_limits<double>::max();
+        const double manaMultiplier = ReadDualCastMagickaMultiplier(snap->poe2Passives && dualCast);
         auto castOpt = g_skillSystem->TryBuildHandCastSpell(
-            slotIndex, *snap, st.slots, checkMag, baseMaxMag, *g_dataPack, *g_config, curHp, maxHp);
+            slotIndex, *snap, st.slots, checkMag, baseMaxMag, *g_dataPack, *g_config, curHp, maxHp, manaMultiplier);
         if (!castOpt.has_value()) {
             return false;
         }
@@ -492,17 +488,18 @@ namespace SkyrimPoE::Runtime
         // C-24: 이중 시전(양손 합동 시전) 시 엔진 매지카 이중 소모에 대응해 피해 1.5배·범위 1.15배 반영
         if (dualCast) {
             constexpr double kDualCastDamageMult = 1.5;
-            for (auto& r : castOpt->poeBaseHitDamage.byType) {
-                r.min *= kDualCastDamageMult;
-                r.max *= kDualCastDamageMult;
-            }
+            Core::DamageTypeValues multipliers;
+            multipliers.fill(kDualCastDamageMult);
+            Core::ScaleDamagePacket(castOpt->poeBaseHitDamage, multipliers);
+            Core::ScaleDamagePacket(castOpt->targetAilmentHitDamage.basis, multipliers);
             castOpt->areaMult *= 1.15;
         }
 
-        if (castOpt->usesHealthCost && castOpt->skyrimHealthCost > 0.0) {
+        if (castOpt->skyrimHealthCost > 0.0) {
             av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth,
                 -static_cast<float>(castOpt->skyrimHealthCost));
-        } else if (chargeMagicka && castOpt->skyrimMagickaCost > 0.0) {
+        }
+        if (payMagicka && castOpt->skyrimMagickaCost > 0.0) {
             av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka,
                 -static_cast<float>(castOpt->skyrimMagickaCost));
         }
@@ -546,10 +543,11 @@ namespace SkyrimPoE::Runtime
             return false;
         }
 
-        if (act.usesHealthCost && act.skyrimHealthCost > 0.0) {
+        if (act.skyrimHealthCost > 0.0) {
             av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth,
                 -static_cast<float>(act.skyrimHealthCost));
-        } else if (act.skyrimMagickaCost > 0.0) {
+        }
+        if (act.skyrimMagickaCost > 0.0) {
             av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka,
                 -static_cast<float>(act.skyrimMagickaCost));
         }

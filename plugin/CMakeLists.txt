@@ -135,7 +135,10 @@ add_executable(skyrimpoe_tests
     tests/test_kill_tracker.cpp
     tests/test_gem_transaction.cpp
     tests/test_passive_tree.cpp
+    tests/test_passive_tree_poe2.cpp
     tests/test_passive_stats.cpp
+    tests/test_passive_parse_report.cpp
+    tests/test_projectile_stats.cpp
     tests/test_spirit_breakdown.cpp
     tests/test_items.cpp
     tests/test_stage5.cpp

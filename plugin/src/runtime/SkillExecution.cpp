@@ -252,7 +252,8 @@ namespace SkyrimPoE::Runtime
         bool isDirectHit,
         bool bypassesMonsterEs,
         bool isDamageOverTime,
-        std::optional<double> physicalHitFraction)
+        std::optional<double> physicalHitFraction,
+        const Core::DamagePacket* hitTypes)
     {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player || player->IsDead() || !CanDamageTarget(player, target, isDirectHit)) {
@@ -263,16 +264,24 @@ namespace SkyrimPoE::Runtime
         }
 
         const auto targetId = target->GetFormID();
+        const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+        if (!hitTypes && snap && snap->passiveAilments.dealOnlyFire && dominantType != Core::DamageType::Fire) {
+            return false;
+        }
         const double physicalFraction = physicalHitFraction.value_or(dominantType == Core::DamageType::Physical ? 1.0 : 0.0);
-        double scaledDmg = CombatHooks::DamageWithEnemyArmourBreak(target,
-            rawSkyrimDamage * AilmentRuntime::ShockDamageMultiplier(targetId), physicalFraction, isDamageOverTime);
+        const double beforeArmourBreak = rawSkyrimDamage * AilmentRuntime::ShockDamageMultiplier(targetId);
+        double scaledDmg = CombatHooks::DamageWithEnemyArmourBreak(
+            target, beforeArmourBreak, physicalFraction, isDamageOverTime);
+        std::optional<Core::DamagePacket> adjustedHitTypes;
+        if (hitTypes && snap && snap->poe2Passives && scaledDmg != beforeArmourBreak) {
+            adjustedHitTypes = Core::MonsterModSystem::AdjustPhysicalHitDamage(*hitTypes, beforeArmourBreak, scaledDmg);
+            hitTypes = &*adjustedHitTypes;
+        }
         // 검수 m2: 헤드헌터 등 레어 대상 추가 피해를 주문/투사체/노바/전령 폭발에도 동일 적용
-        if (g_statEngine) {
-            if (const auto snap = g_statEngine->GetSnapshot(); snap && snap->incDamageVsRarePct > 0.0) {
-                if (const auto prof = MonsterRuntime::GetProfileCopy(targetId);
-                    prof && prof->rarity == Core::MonsterRarity::Rare) {
-                    scaledDmg *= (1.0 + snap->incDamageVsRarePct / 100.0);
-                }
+        if (snap && snap->incDamageVsRarePct > 0.0) {
+            if (const auto prof = MonsterRuntime::GetProfileCopy(targetId);
+                prof && prof->rarity == Core::MonsterRarity::Rare) {
+                scaledDmg *= (1.0 + snap->incDamageVsRarePct / 100.0);
             }
         }
         // 결정 53: 우리 스킬 피해도 스카이림 난이도 배율을 그대로 받는다. Actor::DoDamage(37335)는 셋째 인자가 참이어도
@@ -280,7 +289,8 @@ namespace SkyrimPoE::Runtime
         // 엔진이 곱할 배율을 결투장 하한 같은 우리 계산에 그대로 넘긴다.
         const double engineDiffMult = GetDifficultyMultiplier(false);
         const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(
-            targetId, scaledDmg, dominantType, bypassesMonsterEs, target, engineDiffMult);
+            targetId, scaledDmg, dominantType, bypassesMonsterEs, target, engineDiffMult,
+            std::nullopt, hitTypes, isDamageOverTime, false, snap.get());
         if (!hitRes.hadAnyImpact) {
             return false;
         }
@@ -322,19 +332,37 @@ namespace SkyrimPoE::Runtime
         return confirmedLoss > 0.0;
     }
 
-    bool AilmentRuntime::DealSpellHit(
-        RE::Actor* target, const SpellHit& hit, Core::DamageType dominantType, bool isDirectHit)
+    bool ResolveTargetAilmentHit(RE::Actor* target, Core::DamagePacket& packet,
+        const Core::TargetAilmentHitDamage& modifiers, Core::DamagePacket& ailmentDamage);
+
+    bool DealSpellHit(RE::Actor* target, const AilmentRuntime::SpellHit& hit,
+        Core::DamageType dominantType, bool isDirectHit, const Core::TargetAilmentHitDamage& targetHit)
     {
+        dominantType = hit.resolvedDominantType.value_or(dominantType);
+        auto damage = hit.poeDamage;
+        auto ailmentDamage = hit.poeDamage;
+        double skyrimDamage = hit.skyrimDamage;
+        if (ResolveTargetAilmentHit(target, damage, targetHit, ailmentDamage)) {
+            skyrimDamage = damage.TotalAverage() * hit.skyrimDamagePerPoe;
+            const auto strongest = std::ranges::max_element(damage.byType, {}, &Core::DamageRange::Average);
+            dominantType = static_cast<Core::DamageType>(strongest - damage.byType.begin());
+        }
         if (!SkillExecution::DealDirectSkillDamage(
-                target, hit.skyrimDamage, dominantType, isDirectHit, dominantType == Core::DamageType::Chaos,
-                false, Core::PhysicalDamageFraction(hit.poeDamage))) {
+                target, skyrimDamage, dominantType, isDirectHit, false,
+                false, Core::PhysicalDamageFraction(damage), &damage)) {
             return false;
         }
         // DoDamage can emit TESDeathEvent synchronously. The listener reads the
         // result in its queued work, after this confirmed hit has been recorded.
-        (void)ApplyPlayerHitAilments(target, hit.poeDamage, hit.isCrit, HitKind::Spell,
+        (void)AilmentRuntime::ApplyPlayerHitAilments(target, ailmentDamage, hit.isCrit, AilmentRuntime::HitKind::Spell,
             hit.igniteChancePct, hit.starforgeShock);
         return true;
+    }
+
+    bool AilmentRuntime::DealSpellHit(
+        RE::Actor* target, const SpellHit& hit, Core::DamageType dominantType, bool isDirectHit)
+    {
+        return Runtime::DealSpellHit(target, hit, dominantType, isDirectHit, {});
     }
 
     namespace
@@ -345,7 +373,7 @@ namespace SkyrimPoE::Runtime
             double skyrimDamage,
             RE::FormID vfxExplosionLocalId,
             Core::DamageType dominantType,
-            const AilmentRuntime::SpellHit* spellHit)
+            const AilmentRuntime::SpellHit* spellHit, const Core::TargetAilmentHitDamage& targetHit)
         {
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player || !player->Is3DLoaded() || player->IsDead()) {
@@ -354,7 +382,9 @@ namespace SkyrimPoE::Runtime
 
             // 무해 시각·음향 EXPL 연출은 피해가 0이어도 제공한다.
             SpawnHarmlessExplosionAt(player, origin, vfxExplosionLocalId);
-            if (!std::isfinite(skyrimDamage) || skyrimDamage <= 0.0 || radius <= 0.0f) {
+            const bool canGainTargetDamage = spellHit && (targetHit.HasModifiers() ||
+                std::ranges::any_of(spellHit->poeDamage.targetAilmentExtra, [](const auto& range) { return range.max > 0.0; }));
+            if (!std::isfinite(skyrimDamage) || (skyrimDamage <= 0.0 && !canGainTargetDamage) || radius <= 0.0f) {
                 return 0;
             }
 
@@ -362,9 +392,9 @@ namespace SkyrimPoE::Runtime
             std::size_t hitCount = 0;
             for (const auto& victim : targets) {
                 const bool landed = spellHit
-                    ? AilmentRuntime::DealSpellHit(victim.get(), *spellHit, dominantType, false)
+                    ? DealSpellHit(victim.get(), *spellHit, dominantType, false, targetHit)
                     : SkillExecution::DealDirectSkillDamage(
-                        victim.get(), skyrimDamage, dominantType, false, dominantType == Core::DamageType::Chaos);
+                        victim.get(), skyrimDamage, dominantType, false, false);
                 if (landed) {
                     ++hitCount;
                 }
@@ -380,13 +410,19 @@ namespace SkyrimPoE::Runtime
         RE::FormID vfxExplosionLocalId,
         Core::DamageType dominantType)
     {
-        return ExecuteAreaDamage(origin, radius, skyrimDamage, vfxExplosionLocalId, dominantType, nullptr);
+        return ExecuteAreaDamage(origin, radius, skyrimDamage, vfxExplosionLocalId, dominantType, nullptr, {});
     }
 
     std::size_t AilmentRuntime::ExecuteSpellNova(
         const RE::NiPoint3& origin, float radius, const SpellHit& hit,
         RE::FormID vfxId, Core::DamageType dominantType)
     {
-        return ExecuteAreaDamage(origin, radius, hit.skyrimDamage, vfxId, dominantType, &hit);
+        return ExecuteAreaDamage(origin, radius, hit.skyrimDamage, vfxId, dominantType, &hit, {});
+    }
+
+    std::size_t ExecuteSpellNova(const RE::NiPoint3& origin, float radius, const AilmentRuntime::SpellHit& hit,
+        RE::FormID vfxId, Core::DamageType dominantType, const Core::TargetAilmentHitDamage& targetHit)
+    {
+        return ExecuteAreaDamage(origin, radius, hit.skyrimDamage, vfxId, dominantType, &hit, targetHit);
     }
 }

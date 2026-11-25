@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Types.h"
+#include "core/PassiveStatParser.h"
 
 #include <algorithm>
 #include <array>
@@ -10,17 +11,20 @@
 
 namespace SkyrimPoE::Core
 {
+    struct TargetAilmentHitDamage;
     struct AilmentInstance
     {
         double magnitude = 0.0;  // DPS for damaging ailments, effect ratio otherwise
         double remaining = 0.0;
         bool aggravated = false;
+        bool chaosIgnite = false;
     };
 
     class Flammability
     {
     public:
-        void AddHit(double fireDamage, double ailmentThreshold, double duration, double baseChancePct = 0.0);
+        void AddHit(double fireDamage, double ailmentThreshold, double duration, double baseChancePct = 0.0,
+            double increasedPct = 0.0);
         void Tick(double deltaSec);
         [[nodiscard]] double ChancePercent() const noexcept;
         [[nodiscard]] bool IsEmpty() const noexcept { return stacks_.empty(); }
@@ -38,6 +42,7 @@ namespace SkyrimPoE::Core
         double base = 0.0, double increased = 0.0, double more = 1.0) noexcept;
     [[nodiscard]] double RawChillPercent(double coldDamage, double ailmentThreshold) noexcept;
     [[nodiscard]] DamagePacket RollSpellDamagePacket(const DamagePacket& packet, double roll01, double multiplier) noexcept;
+    [[nodiscard]] bool ResolveTargetAilmentExtra(DamagePacket& packet, bool frozen, bool shocked, bool chilled) noexcept;
     [[nodiscard]] bool HasElementalHitDamage(const DamagePacket& packet) noexcept;
 
     enum class PoiseKind : std::uint8_t { Freeze, Electrocute, HeavyStun, Pin, Count };
@@ -59,6 +64,7 @@ namespace SkyrimPoE::Core
     {
         double igniteDps = 0.0;
         double igniteRemaining = 0.0;
+        bool igniteDealsChaos = false;
 
         double chillRatio = 0.0;
         double chillRemaining = 0.0;
@@ -75,6 +81,9 @@ namespace SkyrimPoE::Core
         Flammability flammability;
         std::array<PoiseBuildup, static_cast<std::size_t>(PoiseKind::Count)> poise{};
     };
+
+    bool ResolveTargetAilmentHit(DamagePacket& packet, const TargetAilmentHitDamage& modifiers,
+        const ActorAilmentState* state, DamagePacket& ailmentDamage) noexcept;
 
     struct HitAilmentInput
     {
@@ -98,6 +107,15 @@ namespace SkyrimPoE::Core
         bool targetBleedImmune = false;      // 정화의 참
 
         bool aggravatesBleed = false;
+        bool chaosContributesToIgnite = false;
+        bool igniteDealsChaos = false;
+        double flammabilityIncPct = 0.0;
+        double freezeBuildupIncPct = 0.0;
+        double ailmentChanceIncPct = 0.0;
+        double ailmentMagnitudeIncPct = 0.0;
+        double bleedBaseDuration = 0.0;
+        double bleedMagnitudeMult = 1.0;
+        std::array<PassiveAilmentStats, static_cast<std::size_t>(AilmentKind::Count)> modifiers{};
 
         double igniteChancePct = 0.0;
         double shockChancePct = 0.0;
@@ -132,8 +150,12 @@ namespace SkyrimPoE::Core
         double firePoeDamage = 0.0;
         double physPoeDamage = 0.0;
         double chaosPoeDamage = 0.0;
+        double chaosIgnitePoeDamage = 0.0;
 
-        [[nodiscard]] double TotalPoe() const noexcept { return firePoeDamage + physPoeDamage + chaosPoeDamage; }
+        [[nodiscard]] double TotalPoe() const noexcept
+        {
+            return firePoeDamage + physPoeDamage + chaosPoeDamage + chaosIgnitePoeDamage;
+        }
     };
 
     class AilmentSystem
@@ -152,7 +174,7 @@ namespace SkyrimPoE::Core
             double igniteRemaining,
             double shockRatio,
             double shockRemaining,
-            bool targetElementalImmune, double now = 0.0, bool isMoving = false);
+            bool targetElementalImmune, double now = 0.0, bool isMoving = false, bool chaosIgnite = false);
 
         // 단일 액터 시간 진행 및 DoT 피해 산출(만료 시 자동 정리)
         AilmentTickDamage TickActor(std::uint32_t actorId, double deltaSec, bool isMoving);

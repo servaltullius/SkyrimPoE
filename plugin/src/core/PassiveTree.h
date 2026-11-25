@@ -4,6 +4,7 @@
 #include "core/Types.h"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,6 +17,13 @@ namespace SkyrimPoE::Core
         std::string message;
         std::size_t autoRefundedMasteries = 0;
         std::uint32_t regretOrbsConsumed = 0;  // 4단계(결정 152, 158): FreePassiveRefund=false 시 소비할 후회의 오브 수
+    };
+
+    struct PassiveNodeView
+    {
+        std::string_view name;
+        std::span<const std::string> stats;
+        std::string_view ascendancyId;
     };
 
     // 결정 8, 10, 151~153:
@@ -68,11 +76,24 @@ namespace SkyrimPoE::Core
             const PassiveTreeState& state,
             std::uint32_t masteryNodeId) noexcept;
 
+        [[nodiscard]] static PassiveNodeView ResolveNode(
+            const PassiveNodeDef& node, const PassiveTreeState& state) noexcept;
+        [[nodiscard]] static bool IsAllocatedJewelSocket(
+            const PassiveTreeData& data, const PassiveTreeState& state, std::uint32_t nodeId) noexcept;
+        static constexpr std::uint32_t kPhylacteryNodeId = 17788;
+        [[nodiscard]] static bool IsPhylactery(std::uint32_t generation, std::uint32_t nodeId) noexcept;
+        [[nodiscard]] static unsigned JewelEffectCopies(
+            const PassiveTreeData& data, const PassiveTreeState& state, std::uint32_t nodeId) noexcept;
+        [[nodiscard]] static std::vector<std::uint32_t> RefundDependents(
+            const PassiveTreeData& data, const PassiveTreeState& state, std::uint32_t nodeId);
+
         // 클래스 선택/재선택 (미선택이거나 소비 노드 0개일 때만 허용, 전직 함께 초기화)
         static PassiveTreeOpResult SelectClass(
             const PassiveTreeData& data,
             PassiveTreeState& state,
             std::uint8_t classId);
+        static PassiveTreeOpResult SelectClass(
+            const PassiveTreeData& data, PassiveTreeState& state, std::string_view classContentId);
 
         // 전직 선택 (클래스 선택됨, 전직 포인트 >= 2, 소속 전직, 기존 전직 소비 노드 0개)
         static PassiveTreeOpResult SelectAscendancy(
@@ -93,7 +114,12 @@ namespace SkyrimPoE::Core
             const std::vector<std::uint32_t>& nodeIds,
             std::uint32_t exileLevel,
             const Config& config,
-            std::uint16_t atlasCompletedTierMask = 0);
+            std::uint16_t atlasCompletedTierMask = 0,
+            const std::unordered_map<std::uint32_t, std::uint32_t>& attributeChoices = {});
+
+        static PassiveTreeOpResult ChangeAttribute(
+            const PassiveTreeData& data, PassiveTreeState& state, std::uint32_t nodeId,
+            std::uint32_t optionId, const Config& config, std::uint32_t availableRegretOrbs = 0);
 
         // 4단계(결정 152, 158): 후회의 오브 필요 비용 조회(FreePassiveRefund=true면 0)
         [[nodiscard]] static std::uint32_t GetRefundNodeCost(
@@ -146,7 +172,7 @@ namespace SkyrimPoE::Core
             std::uint16_t atlasCompletedTierMask = 0);
 
         // 코세이브 로드 후 미존재 노드·중복 마스터리·단절 노드 정리
-        static void SanitizeLoadedState(
+        static bool SanitizeLoadedState(
             const PassiveTreeData& data,
             PassiveTreeState& state);
     };

@@ -166,6 +166,7 @@ def read_reference_values(pob, game_tables):
         "shock": {"chanceMultiplier": game["ShockChanceMultiplier"], "effectPercent": game["BaseShockMagnitude"],
                   "enemyDurationSeconds": game["BaseShockDuration"], "playerDurationSeconds": game["BaseShockDurationPlayer"]},
         "chill": chill, "poise": poise,
+        "lowLifeFraction": coefficient(DATA, 237, r"LowPoolThreshold = <n>,"),
         "freeze": {"damageScale": game["FreezeDamageScale"], "enemyDurationSeconds": game["FreezeDuration"]},
         "life": {"perLevel": player["life_per_level"], "base": coefficient(SETUP, 671, r"base = <n>"),
                  "perAttribute": coefficient(PERFORM, 504, r"output.Str \* <n>")},
@@ -600,9 +601,46 @@ def game_cases(rules):
     return cases
 
 
+def p3_pob_cases(rules):
+    life_threshold = 100 * rules["lowLifeFraction"]
+    mana_base, attack_efficiency, life_share = 100, 0.15, 0.18
+    base_life_cost = math.floor(mana_base * life_share + 0.5)
+    conversion_to_fire, conversion_to_chaos = 75, 100
+    fire_damage = 100 * conversion_to_fire / (conversion_to_fire + conversion_to_chaos)
+    chill = rules["chill"]
+    return [
+        pob_case("p3-low-life-threshold", {"maximumLife": 100, "currentLife": [35, 40]},
+                 {"thresholdLife": life_threshold, "lowLife": [35 <= life_threshold, 40 <= life_threshold]},
+                 (DATA, 237, 237), (DEFENCE, 79, 80)),
+        pob_case("p3-price-of-freedom", {"attackManaBase": mana_base, "efficiencyPercent": 15, "lifeSharePercent": 18},
+                 {"lifeCost": base_life_cost / (1 + attack_efficiency),
+                  "manaCost": math.floor(mana_base / (1 + attack_efficiency) * (1 - life_share))},
+                 (OFFENCE, 2092, 2103), (OFFENCE, 2132, 2160), tolerance=1e-9),
+        pob_case("p3-fire-chaos-global-conversion", {"originalFire": 100, "toFirePercent": 75, "fireSpellToChaosPercent": 100},
+                 {"rawFireDamage": fire_damage, "roundedFireDamage": math.floor(fire_damage + 0.5), "chaosDamage": 0},
+                 (OFFENCE, 72, 81), (OFFENCE, 2256, 2285), (OFFENCE, 2362, 2374), tolerance=1e-9),
+        pob_case("p3-monster-chaos-energy-shield", {"energyShield": 100, "chaosDamage": 30},
+                 split_damage(100, 30, rules["energyShield"]["chaosConsumptionMultiplier"]),
+                 (DEFENCE, 590, 612), ("Data/Spectres.lua", 13591, 13591)),
+        pob_case("p3-energy-shield-converted-to-mana", {"baseEnergyShield": 100, "increasedEnergyShieldPercent": 100,
+                 "increasedManaPercent": [0, 50]}, {"additionalMana": [100, 150], "remainingEnergyShield": 0},
+                 (DEFENCE, 1354, 1405)),
+        pob_case("p3-evasion-gained-as-armour", {"baseEvasion": 100, "evasionIncreasePercent": 100,
+                 "armourIncreasePercent": 50, "gainedAsArmourPercent": 8}, {"additionalArmour": 12, "evasion": 200},
+                 (DEFENCE, 1354, 1405), ("Data/ModCache.lua", 5575, 5575)),
+        pob_case("p3-flat-deflection", {"baseRating": 100, "defenceContribution": 20, "increasedPercent": 50},
+                 {"rating": 100 + 20 * 1.5}, (DEFENCE, 1516, 1516)),
+        pob_case("p3-chill-magnitude-order", {"rawChillPercent": [25, 50], "increasedEffectPercent": 40},
+                 {"chillPercent": [min(25 * 1.4, chill["maxPercent"]), min(50 * 1.4, chill["maxPercent"])]},
+                 (OFFENCE, 5509, 5509), (OFFENCE, 5566, 5580), tolerance=1e-9),
+        pob_case("p3-partial-block", {"unblockedDamage": 100, "damageTakenOnBlockPercent": 20},
+                 {"blockedHitDamage": 20}, (DEFENCE, 1068, 1072), ("Modules/ModParser.lua", 2505, 2505)),
+    ]
+
+
 def generate_answers(pob, game_tables, ini=ROOT / INI_PATH):
     rules = read_reference_values(pob, game_tables)
-    return {"pob": pob_cases(rules), "project": project_cases(rules, ini),
+    return {"pob": pob_cases(rules) + p3_pob_cases(rules), "project": project_cases(rules, ini),
             "conversion": conversion_cases(rules, ini), "gameRule": game_cases(rules)}
 
 

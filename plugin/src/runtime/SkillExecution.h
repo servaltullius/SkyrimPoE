@@ -70,6 +70,7 @@ namespace SkyrimPoE::Runtime
             bool isDirectHit,
             bool bypassesMonsterEs = false,
             bool isDamageOverTime = false,
-            std::optional<double> physicalHitFraction = std::nullopt);  // 혼합 타격은 실제 물리 비중을 전달한다.
+            std::optional<double> physicalHitFraction = std::nullopt,
+            const Core::DamagePacket* hitTypes = nullptr);
     };
 }

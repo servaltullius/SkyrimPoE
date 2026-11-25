@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "core/RulesPack.h"
+#include "core/SaveRecordFormat.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/Addresses.h"
 #include "runtime/AilmentRuntime.h"
@@ -59,7 +60,19 @@ namespace SkyrimPoE::Runtime
         std::uint64_t g_lastSyncedSnapVersion = 0;
         double g_lastObservedPermHealth = -1.0;
         double g_lastObservedPermMagicka = -1.0;
+        struct PlayerRateObservation
+        {
+            double speedMult = 0.0;
+            double magickaRateMult = 0.0;
+            double movementFactor = 1.0;
+            double recoveryFactor = 1.0;
+        };
+        std::optional<PlayerRateObservation> g_lastPlayerRates;
         bool g_lastLowLife = false;
+        bool g_lastFullLife = false;
+        bool g_lastMainHandOneHandedMartial = false;
+        bool g_lastOffHandOccupied = false;
+        bool g_lastMoving = false;
         bool g_lastEoActive = false;
         double g_eoRemainingSec = 0.0;
         std::atomic_bool g_eoTriggered{ false };
@@ -82,7 +95,7 @@ namespace SkyrimPoE::Runtime
 
         void QueueVanillaHitAilments(Core::VanillaHitSource source, RE::Actor* target, double rawHitDmg,
             bool isHitCrit, const Core::StatSnapshot* snap, const Core::MonsterIncomingResult& result,
-            std::uint64_t generation)
+            std::uint64_t generation, const Core::DamagePacket* convertedHit = nullptr)
         {
             if (!Core::CanInflictPoEAilments(source) || !g_queue || !snap ||
                 (result.remainingHealthDamage <= 0.0 && result.absorbedByEs <= 0.0) ||
@@ -94,7 +107,8 @@ namespace SkyrimPoE::Runtime
             const RE::ActorHandle targetHandle = target->GetHandle();
             const std::uint32_t exileLevel = snap->exileLevel;
             const auto runId = MapDeviceRuntime::GetMapActorScaling(target->GetFormID()).runId;
-            g_queue->EnqueueForGeneration(generation, [targetHandle, rawHitDmg, isHitCrit, exileLevel, runId]() {
+            const auto hit = convertedHit ? std::optional{ *convertedHit } : std::nullopt;
+            g_queue->EnqueueForGeneration(generation, [targetHandle, rawHitDmg, isHitCrit, exileLevel, runId, hit]() {
                 if (MapDeviceRuntime::IsUninstallCleanupActive() ||
                     (runId != 0 && !MapDeviceRuntime::IsRunRewardable(runId))) {
                     return;
@@ -104,9 +118,17 @@ namespace SkyrimPoE::Runtime
                 if (!tgt || !g_dataPack) {
                     return;
                 }
-                const double estPoePhys = Core::MapSystem::EstimateVanillaHitPoe(rawHitDmg, exileLevel, *g_dataPack);
+                const double estPoeDamage = Core::MapSystem::EstimateVanillaHitPoe(rawHitDmg, exileLevel, *g_dataPack);
                 Core::DamagePacket pkt{};
-                pkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { estPoePhys, estPoePhys };
+                if (hit) {
+                    const double perPoint = estPoeDamage / rawHitDmg;
+                    for (std::size_t i = 0; i < pkt.byType.size(); ++i) {
+                        const double amount = hit->byType[i].Average() * perPoint;
+                        pkt.byType[i] = { amount, amount };
+                    }
+                } else {
+                    pkt.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { estPoeDamage, estPoeDamage };
+                }
                 (void)AilmentRuntime::ApplyPlayerHitAilments(tgt, pkt, isHitCrit, AilmentRuntime::HitKind::Attack);
             });
         }
@@ -365,11 +387,32 @@ namespace SkyrimPoE::Runtime
                 if (siteIdx < 7 && isRealHit && hit->totalDamage > 0.0f) {
                     // 상태이상 역산의 입력은 대상 쪽 증폭(감전·희귀 대상 추가 피해) 전 값이다.
                     // 지속 피해 틱이 DealDirectSkillDamage에서 같은 증폭을 다시 받으므로, 여기서 넣으면 두 번 곱해진다.
-                    const double baseHitDmg = static_cast<double>(hit->totalDamage);
-                    const double physicalFraction = isCycloneHit ? t_cycloneCtx.physicalDamageFraction : 1.0;
-                    double dmg = CombatHooks::DamageWithEnemyArmourBreak(target,
-                        baseHitDmg * AilmentRuntime::ShockDamageMultiplier(target->GetFormID()), physicalFraction, false, generation);
-                    const auto snap = g_statEngine->GetSnapshot();
+                    const auto current = g_statEngine->GetSnapshot();
+                    const auto* snap = isCycloneHit && t_cycloneCtx.snapshot ? t_cycloneCtx.snapshot : current.get();
+                    double baseHitDmg = static_cast<double>(hit->totalDamage);
+                    double physicalFraction = isCycloneHit ? t_cycloneCtx.physicalDamageFraction : 1.0;
+                    const auto* hitTypes = isCycloneHit ? t_cycloneCtx.hitTypes : nullptr;
+                    std::optional<Core::DamagePacket> convertedVanillaHit;
+                    if (!isCycloneHit && snap && snap->poe2Passives &&
+                        (snap->passiveAilments.convertToFirePct > 0.0 || snap->passiveAilments.dealOnlyFire)) {
+                        convertedVanillaHit.emplace();
+                        convertedVanillaHit->byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { baseHitDmg, baseHitDmg };
+                        Core::ConvertGlobalHitDamage(*convertedVanillaHit, snap->passiveAilments, false);
+                        if (snap->passiveAilments.dealOnlyFire) {
+                            Core::RestrictToFire(*convertedVanillaHit);
+                        }
+                        baseHitDmg = convertedVanillaHit->TotalAverage();
+                        physicalFraction = Core::PhysicalDamageFraction(*convertedVanillaHit);
+                        hitTypes = &*convertedVanillaHit;
+                    }
+                    const double beforeArmourBreak = baseHitDmg * AilmentRuntime::ShockDamageMultiplier(target->GetFormID());
+                    double dmg = CombatHooks::DamageWithEnemyArmourBreak(
+                        target, beforeArmourBreak, physicalFraction, false, generation);
+                    std::optional<Core::DamagePacket> adjustedHitTypes;
+                    if (hitTypes && snap && snap->poe2Passives && dmg != beforeArmourBreak) {
+                        adjustedHitTypes = Core::MonsterModSystem::AdjustPhysicalHitDamage(*hitTypes, beforeArmourBreak, dmg);
+                        hitTypes = &*adjustedHitTypes;
+                    }
                     if (snap && snap->incDamageVsRarePct > 0.0) {
                         if (const auto prof = MonsterRuntime::GetProfileCopy(target->GetFormID());
                             prof && prof->rarity == Core::MonsterRarity::Rare) {
@@ -378,7 +421,8 @@ namespace SkyrimPoE::Runtime
                     }
                     const auto monRes = MonsterRuntime::ApplyPlayerHitToMonster(
                         target->GetFormID(), dmg, Core::DamageType::Physical, false,
-                        target, SkillExecution::GetDifficultyMultiplier(false), generation);
+                        target, SkillExecution::GetDifficultyMultiplier(false), generation,
+                        hitTypes, false, true, snap);
                     hit->totalDamage = static_cast<float>(std::max(0.0, monRes.remainingHealthDamage));
                     if (monRes.absorbedByEs > 1e-4) {
                         // 검수 M3: 적 ES가 사이클론 타격을 100% 흡수해도 CoC·상태이상 발동 경로에 적중 전달
@@ -394,7 +438,8 @@ namespace SkyrimPoE::Runtime
                     // N-1: 바닐라 근접·활 타격(사이클론 제외)의 상태 이상 경로.
                     if (!t_cycloneCtx.active) {
                         QueueVanillaHitAilments(Core::VanillaHitSource::Attack, target, baseHitDmg,
-                            hit->flags.any(RE::HitData::Flag::kCritical), snap.get(), monRes, generation);
+                            hit->flags.any(RE::HitData::Flag::kCritical), snap, monRes, generation,
+                            convertedVanillaHit ? &*convertedVanillaHit : nullptr);
                     }
                 }
                 return;
@@ -453,7 +498,13 @@ namespace SkyrimPoE::Runtime
                           std::clamp(1.0 - static_cast<double>(hit->percentBlocked), 0.0, 1.0)
                     : static_cast<double>(hit->totalDamage);
 
+                const auto snap = g_statEngine->GetSnapshot();
+                if (!snap) {
+                    return;
+                }
+                const double criticalBonusFactor = std::max(0.0, 1.0 - snap->passiveAilments.reducedIncomingCritBonusPct / 100.0);
                 Core::MonsterOutgoingModifier monOut{};
+                bool critical = hit->flags.any(RE::HitData::Flag::kCritical);
                 if (aggressor && !aggressor->IsPlayerRef()) {
                     monOut = MonsterRuntime::GetOutgoingModifier(aggressor->GetFormID());
                     preBlock *= monOut.damageMultiplier;
@@ -461,7 +512,8 @@ namespace SkyrimPoE::Runtime
                     if (monOut.isDeadly) {
                         const double critProb = std::clamp(0.20 * (1.0 + monOut.critChanceIncPct / 100.0), 0.20, 0.50);
                         if (RollUnit() < critProb) {
-                            preBlock *= 1.0 + Core::ActiveRuleValues().critical.monsterBonusPercent / 100.0;
+                            preBlock *= 1.0 + Core::ActiveRuleValues().critical.monsterBonusPercent / 100.0 * criticalBonusFactor;
+                            critical = true;
                         }
                     }
                 }
@@ -472,16 +524,11 @@ namespace SkyrimPoE::Runtime
                     return;
                 }
 
-                const auto snap = g_statEngine->GetSnapshot();
-                if (!snap) {
-                    return;
-                }
-
                 // 1) PoE 회피 판정(결정 72, 170: 유배자 레벨 기준)
                 const double acc = g_dataPack->MonsterAccuracy(snap->exileLevel);
                 if (snap->evasion > 0.0) {
-                    const double hitChance = Core::EvasionHitChance(snap->evasion, acc);
-                    if (RollUnit() >= hitChance) {
+                    const double hitChance = std::max(Core::EvasionHitChance(snap->evasion, acc), 1.0 - snap->maximumEvadePct / 100.0);
+                    if (RollUnit() >= hitChance && (!snap->unluckyEvade || RollUnit() >= hitChance)) {
                         hit->totalDamage = 0.0f;
                         PostHudNotice(generation, "회피");
                         return;
@@ -489,10 +536,14 @@ namespace SkyrimPoE::Runtime
                 }
 
                 // 2) PoE 공격 막기 판정(결정 73)
-                if (snap->attackBlockChance > 0.0 && RollUnit() * 100.0 < snap->attackBlockChance) {
-                    hit->totalDamage = 0.0f;
+                const bool blocked = snap->attackBlockChance > 0.0 && RollUnit() * 100.0 < snap->attackBlockChance;
+                const double blockPass = blocked ? Core::BlockedHitDamageFraction(*snap) : 1.0;
+                if (blocked) {
                     PostHudNotice(generation, "막음");
-                    return;
+                    if (blockPass == 0.0) {
+                        hit->totalDamage = 0.0f;
+                        return;
+                    }
                 }
 
                 // 결정 185: 회피·막음을 지난 실제 피격만 적 ES 표시의 마지막 교전 적으로 기록한다(아군의 오발 제외).
@@ -530,16 +581,19 @@ namespace SkyrimPoE::Runtime
                 }
                 // 4) 편향 → 가드 → 에너지 실드 → MoM → 저체력 수호의 참
                 const double diffMult = SkillExecution::GetDifficultyMultiplier(true);
-                double remainingRaw = postDefense;
-                if (const double chance = Core::DeflectionChance(snap->deflectionRating, acc);
-                    chance > 0.0 && RollUnit() < chance) {
-                    remainingRaw *= 1.0 - Core::ActiveRuleValues().deflect.baseReductionPercent / 100.0;
+                double remainingRaw = postDefense * blockPass;
+                const double deflectChance = Core::DeflectionChance(snap->deflectionRating, acc);
+                const bool deflected = !blocked && deflectChance > 0.0 &&
+                    (RollUnit() < deflectChance || (snap->luckyDeflect && RollUnit() < deflectChance));
+                if (deflected) {
+                    remainingRaw *= 1.0 - Core::DeflectionReduction(*snap, critical);
                 }
 
                 // C-22, N-3: 방어와 편향을 지난 타격이 최대 체력의 5% 이상이면 출혈을 판정한다.
-                if (remainingRaw > 0.0) {
+                if (!blocked && remainingRaw > 0.0 && !(deflected && snap->passiveAilments.deflectPreventsBleed)) {
                     const auto* pav = player->AsActorValueOwner();
-                    const double pMaxHp = pav ? static_cast<double>(pav->GetPermanentActorValue(RE::ActorValue::kHealth)) : 100.0;
+                    const double pMaxHp = snap->poe2Passives ? player->GetActorValueMax(RE::ActorValue::kHealth) :
+                        (pav ? pav->GetPermanentActorValue(RE::ActorValue::kHealth) : 100.0);
                     if (Core::PlayerHitMeetsAilmentThreshold(remainingRaw, pMaxHp) && RollUnit() < 0.20) {
                         const auto ailOut = AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Bleed, remainingRaw);
                         if (ailOut.purifyingCharmTriggered) {
@@ -555,8 +609,9 @@ namespace SkyrimPoE::Runtime
                     }
                 }
                 if (g_esPool && CanApplyCombatEffects(generation)) {
-                    const auto absorb = g_esPool->AbsorbDamage(remainingRaw, diffMult, false);
-                    remainingRaw = absorb.remainingRawDamage;
+                    const double bypass = Core::PlayerDamageBypassingEnergyShield(remainingRaw, effectiveSnap);
+                    const auto absorb = g_esPool->AbsorbDamage(remainingRaw - bypass, diffMult, false);
+                    remainingRaw = bypass + absorb.remainingRawDamage;
                 }
                 remainingRaw = ApplyMindOverMatterIfActive(remainingRaw, diffMult, effectiveSnap, player, generation);
                 TryTriggerBastionOnProjectedLowLife(generation, player, remainingRaw, diffMult);
@@ -767,21 +822,53 @@ namespace SkyrimPoE::Runtime
                         }
                         const auto mapping = ClassifyMagicDamage(baseEffect);
                         double magDmg = static_cast<double>(-value);
+                        // 검수 Minor 8: 저항 변수가 없는 마법은 평소에는 특정 원소로 취급하지 않는다.
+                        auto monDmgType = mapping.useAverageElemental ? Core::DamageType::Count : mapping.type;
+                        const auto* spell = self->spell;
+                        const bool dot = self->effect->effectItem.duration > 0 &&
+                            (!spell || spell->GetCastingType() != RE::MagicSystem::CastingType::kConcentration);
+                        const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+                        std::optional<Core::DamagePacket> convertedHit;
+                        bool bypassEs = false;
+                        if (snap && snap->poe2Passives) {
+                            const auto& passives = snap->passiveAilments;
+                            const auto spellType = spell ? std::optional{ spell->GetSpellType() } : std::nullopt;
+                            const bool poison = spellType == RE::MagicSystem::SpellType::kPoison ||
+                                baseEffect->data.resistVariable == RE::ActorValue::kPoisonResist;
+                            if (poison) {
+                                monDmgType = Core::DamageType::Chaos;
+                                bypassEs = Core::ActiveRuleValues().energyShield.poisonBypasses;
+                            }
+                            if (passives.dealOnlyFire && (dot || poison) && monDmgType != Core::DamageType::Fire) {
+                                return 0.0f;
+                            }
+                            const bool isFireSpell = monDmgType == Core::DamageType::Fire &&
+                                spellType == RE::MagicSystem::SpellType::kSpell;
+                            if (!dot && !poison && (passives.convertToFirePct > 0.0 || passives.dealOnlyFire ||
+                                (isFireSpell && passives.convertFireSpellToChaosPct > 0.0))) {
+                                convertedHit.emplace();
+                                const auto sourceType = monDmgType == Core::DamageType::Count
+                                    ? Core::DamageType::Physical : monDmgType;
+                                convertedHit->byType[static_cast<std::size_t>(sourceType)] = { magDmg, magDmg };
+                                Core::ConvertGlobalHitDamage(*convertedHit, passives, isFireSpell);
+                                if (passives.dealOnlyFire) {
+                                    Core::RestrictToFire(*convertedHit);
+                                }
+                                magDmg = convertedHit->TotalAverage();
+                            }
+                        }
                         const double shockMult = AilmentRuntime::ShockDamageMultiplier(targetId);
                         magDmg *= shockMult;
-                        const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
                         if (snap && snap->incDamageVsRarePct > 0.0) {
                             if (const auto prof = MonsterRuntime::GetProfileCopy(targetId);
                                 prof && prof->rarity == Core::MonsterRarity::Rare) {
                                 magDmg *= (1.0 + snap->incDamageVsRarePct / 100.0);
                             }
                         }
-                        const bool bypassEs = (mapping.type == Core::DamageType::Chaos);
-                        // 검수 Minor 8: 저항 변수 없는 무속성 마법(체력 흡수 등)은 FireResistant 오적용 방지를 위해 DamageType::Count 전달
-                        const auto monDmgType = mapping.useAverageElemental ? Core::DamageType::Count : mapping.type;
                         const auto hitRes = MonsterRuntime::ApplyPlayerHitToMonster(
                             targetId, magDmg, monDmgType, bypassEs,
-                            actor, SkillExecution::GetDifficultyMultiplier(false), generation);
+                            actor, SkillExecution::GetDifficultyMultiplier(false), generation,
+                            convertedHit ? &*convertedHit : nullptr, dot || bypassEs, false, snap.get());
                         if (hitRes.absorbedByEs > 0.0 && g_killTracker) {
                             g_killTracker->ConfirmDamageContribution(targetId, hitRes.absorbedByEs);
                         }
@@ -876,13 +963,16 @@ namespace SkyrimPoE::Runtime
                 preResistD /= static_cast<double>(skyrimRes);
             }
             const auto caster = self->GetCasterActor();
+            bool critical = false;
             if (caster && !caster->IsPlayerRef()) {
                 const auto monOut = MonsterRuntime::GetOutgoingModifier(caster->GetFormID());
                 preResistD *= monOut.damageMultiplier;
                 if (monOut.isDeadly) {
                     const double critProb = std::clamp(0.20 * (1.0 + monOut.critChanceIncPct / 100.0), 0.20, 0.50);
                     if (RollUnit() < critProb) {
-                        preResistD *= 1.0 + Core::ActiveRuleValues().critical.monsterBonusPercent / 100.0;
+                        const double criticalBonusFactor = std::max(0.0, 1.0 - snap->passiveAilments.reducedIncomingCritBonusPct / 100.0);
+                        preResistD *= 1.0 + Core::ActiveRuleValues().critical.monsterBonusPercent / 100.0 * criticalBonusFactor;
+                        critical = true;
                     }
                 }
             }
@@ -895,10 +985,11 @@ namespace SkyrimPoE::Runtime
             const bool isHit = (self->effect->effectItem.duration == 0) || isConcentration;
 
             double deflectPass = 1.0;
+            bool blocked = false;
             if (isHit) {
                 const double accuracy = g_dataPack->MonsterAccuracy(snap->exileLevel);
                 const double hitChance = caster && !caster->IsPlayerRef() && snap->evasion > 0.0
-                    ? Core::EvasionHitChance(snap->evasion, accuracy) : 1.0;
+                    ? std::max(Core::EvasionHitChance(snap->evasion, accuracy), 1.0 - snap->maximumEvadePct / 100.0) : 1.0;
                 // Skyrim의 주문 발사도 AV 효과의 projectileBase를 사용한다.
                 const auto* projectile = baseEffect->data.projectileBase;
                 if (!projectile) {
@@ -910,14 +1001,16 @@ namespace SkyrimPoE::Runtime
                     (projectile->IsMissile() || projectile->IsGrenade() || projectile->IsArrow());
                 const double blockChance = Core::SpellHitBlockChance(*snap, isProjectile);
                 const double deflectChance = Core::DeflectionChance(snap->deflectionRating, accuracy);
-                const double deflectReduction = Core::ActiveRuleValues().deflect.baseReductionPercent / 100.0;
+                const double deflectReduction = Core::DeflectionReduction(*snap, critical);
                 if (isConcentration) {
                     // 연속 시전은 기존 막기·편향과 같이 기대 통과율로 반영한다.
-                    preResistD *= hitChance * (1.0 - blockChance / 100.0);
-                    deflectPass -= deflectChance * deflectReduction;
+                    preResistD *= Core::ApplyRollBias(hitChance, snap->unluckyEvade, false);
+                    deflectPass -= Core::ApplyRollBias(deflectChance, snap->luckyDeflect, false) * deflectReduction;
+                    const double blockProbability = blockChance / 100.0;
+                    deflectPass = (1.0 - blockProbability) * deflectPass +
+                        blockProbability * Core::BlockedHitDamageFraction(*snap);
                 } else {
                     bool evaded = false;
-                    bool blocked = false;
                     bool deflected = false;
                     bool firstRoll = false;
                     {
@@ -934,11 +1027,13 @@ namespace SkyrimPoE::Runtime
                         }
                         if (!entry.hasHitRoll) {
                             entry.hasHitRoll = true;
-                            entry.spellEvaded = hitChance < 1.0 && RollUnit() >= hitChance;
+                            entry.spellEvaded = hitChance < 1.0 && RollUnit() >= hitChance &&
+                                (!snap->unluckyEvade || RollUnit() >= hitChance);
                             entry.spellBlocked = !entry.spellEvaded && blockChance > 0.0 &&
                                 RollUnit() * 100.0 < blockChance;
                             entry.spellDeflected = !entry.spellEvaded && !entry.spellBlocked &&
-                                deflectChance > 0.0 && RollUnit() < deflectChance;
+                                deflectChance > 0.0 &&
+                                (RollUnit() < deflectChance || (snap->luckyDeflect && RollUnit() < deflectChance));
                             firstRoll = true;
                         }
                         evaded = entry.spellEvaded;
@@ -949,7 +1044,9 @@ namespace SkyrimPoE::Runtime
                         if (firstRoll) {
                             PostHudNotice(generation, evaded ? "회피" : "막음");
                         }
-                        return 0.0f;
+                        if (evaded) return 0.0f;
+                        deflectPass = Core::BlockedHitDamageFraction(*snap);
+                        if (deflectPass == 0.0) return 0.0f;
                     }
                     if (deflected) {
                         deflectPass -= deflectReduction;
@@ -998,11 +1095,15 @@ namespace SkyrimPoE::Runtime
                 Core::StatSnapshot avgSnap = effectiveSnap;
                 avgSnap.fireResist = (effectiveSnap.fireResist + effectiveSnap.coldResist + effectiveSnap.lightningResist) / 3.0;
                 avgSnap.maxFireResist = (effectiveSnap.maxFireResist + effectiveSnap.maxColdResist + effectiveSnap.maxLightningResist) / 3.0;
+                avgSnap.armourAppliesPct[static_cast<std::size_t>(Core::DamageType::Fire)] =
+                    (effectiveSnap.armourAppliesPct[static_cast<std::size_t>(Core::DamageType::Fire)] +
+                     effectiveSnap.armourAppliesPct[static_cast<std::size_t>(Core::DamageType::Cold)] +
+                     effectiveSnap.armourAppliesPct[static_cast<std::size_t>(Core::DamageType::Lightning)]) / 3.0;
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, Core::DamageType::Fire, effectiveSnap.exileLevel, avgSnap, *g_dataPack, *g_config);
+                    preResistD, Core::DamageType::Fire, effectiveSnap.exileLevel, avgSnap, *g_dataPack, *g_config, isHit);
             } else {
                 postDefense = Core::ConvertDefenseResistDamage(
-                    preResistD, mapping.type, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config);
+                    preResistD, mapping.type, effectiveSnap.exileLevel, effectiveSnap, *g_dataPack, *g_config, isHit);
             }
 
             // 4) 편향 → 가드 → 에너지 실드 → MoM → 저체력 수호의 참
@@ -1013,10 +1114,12 @@ namespace SkyrimPoE::Runtime
             double finalRaw = postDefense * deflectPass;
             // C-22, N-3: 유효 원소 마법 타격(최대 체력의 5% 이상) 시 적->플레이어 상태이상(점화·냉각/빙결·감전) 적용
             // (정화의 참은 실제 동결/냉각이 발생할 유효 냉기 타격에서만 발동하여 충전 낭비 방지)
-            if (isHit && !mapping.useAverageElemental && finalRaw > 0.0) {
+            if (isHit && !blocked && !mapping.useAverageElemental && finalRaw > 0.0) {
                 const auto* pav = player->AsActorValueOwner();
-                const double pMaxHp = pav ? static_cast<double>(pav->GetPermanentActorValue(RE::ActorValue::kHealth)) : 100.0;
-                if (Core::PlayerHitMeetsAilmentThreshold(finalRaw, pMaxHp)) {
+                const double pMaxHp = snap->poe2Passives ? player->GetActorValueMax(RE::ActorValue::kHealth) :
+                    (pav ? pav->GetPermanentActorValue(RE::ActorValue::kHealth) : 100.0);
+                const double maxEs = g_esPool ? g_esPool->Snapshot().max : 0.0;
+                if (Core::PlayerHitMeetsAilmentThreshold(finalRaw, pMaxHp, effectiveSnap, mapping.type, maxEs)) {
                     if (mapping.type == Core::DamageType::Cold) {
                         const auto ailOut = AilmentRuntime::TryApplyEnemyAilmentToPlayer(Core::AilmentKind::Freeze, finalRaw);
                         if (ailOut.purifyingCharmTriggered) {
@@ -1040,9 +1143,10 @@ namespace SkyrimPoE::Runtime
             if (g_esPool && CanApplyCombatEffects(generation)) {
                 const auto ailment = !isHit && baseEffect->data.resistVariable == RE::ActorValue::kPoisonResist
                     ? Core::AilmentKind::Poison : Core::AilmentKind::Count;
-                const auto absorb = g_esPool->AbsorbDamage(finalRaw, diffMult, isChaos,
+                const double bypass = Core::PlayerDamageBypassingEnergyShield(finalRaw, effectiveSnap);
+                const auto absorb = g_esPool->AbsorbDamage(finalRaw - bypass, diffMult, isChaos,
                     Core::EnergyShieldBypassAilment(ailment, effectiveSnap.shavronneChaosEs));
-                finalRaw = absorb.remainingRawDamage;
+                finalRaw = bypass + absorb.remainingRawDamage;
             }
             finalRaw = ApplyMindOverMatterIfActive(finalRaw, diffMult, effectiveSnap, player, generation);
             TryTriggerBastionOnProjectedLowLife(generation, player, finalRaw, diffMult);
@@ -1222,7 +1326,9 @@ namespace SkyrimPoE::Runtime
         double physicalDamageFraction,
         bool isCrit,
         RE::FormID targetId,
-        bool* outAbsorbedByMonsterEs) noexcept
+        bool* outAbsorbedByMonsterEs,
+        const Core::DamagePacket* hitTypes,
+        const Core::StatSnapshot* snapshot) noexcept
         : previous_(t_cycloneCtx)
     {
         t_cycloneCtx.active = true;
@@ -1231,6 +1337,8 @@ namespace SkyrimPoE::Runtime
         t_cycloneCtx.isCrit = isCrit;
         t_cycloneCtx.expectedTargetId = targetId;
         t_cycloneCtx.outAbsorbedByMonsterEs = outAbsorbedByMonsterEs;
+        t_cycloneCtx.hitTypes = hitTypes;
+        t_cycloneCtx.snapshot = snapshot;
     }
 
     ScopedCycloneHitContext::~ScopedCycloneHitContext() noexcept
@@ -1315,7 +1423,12 @@ namespace SkyrimPoE::Runtime
             g_lastSyncedSnapVersion = 0;
             g_lastObservedPermHealth = -1.0;
             g_lastObservedPermMagicka = -1.0;
+            g_lastPlayerRates.reset();
             g_lastLowLife = false;
+            g_lastFullLife = false;
+            g_lastMainHandOneHandedMartial = false;
+            g_lastOffHandOccupied = false;
+            g_lastMoving = false;
             g_lastEoActive = false;
             g_eoRemainingSec = 0.0;
             g_eoTriggered.store(false, std::memory_order_release);
@@ -1343,6 +1456,20 @@ namespace SkyrimPoE::Runtime
         return g_allHooksInstalled.load(std::memory_order_acquire);
     }
 
+    void CombatHooks::ModifyPlayerRateValues(RE::ActorValueOwner& values, float speedDelta, float magickaRateDelta)
+    {
+        using enum RE::ActorValue;
+        constexpr auto temporary = RE::ACTOR_VALUE_MODIFIER::kTemporary;
+        if (speedDelta != 0.0f) {
+            values.ModActorValue(temporary, kSpeedMult, speedDelta);
+            values.ModActorValue(temporary, kCarryWeight, 0.01f);
+            values.ModActorValue(temporary, kCarryWeight, -0.01f);
+        }
+        if (magickaRateDelta != 0.0f) {
+            values.ModActorValue(temporary, kMagickaRateMult, magickaRateDelta);
+        }
+    }
+
     void CombatHooks::TickPlayerPools(double deltaSec, bool gamePaused)
     {
         if (MapDeviceRuntime::IsUninstallCleanupActive()) {
@@ -1350,9 +1477,6 @@ namespace SkyrimPoE::Runtime
         }
         Core::ActiveEnemyArmourBreaks().Advance(gamePaused ? 0.0 : deltaSec,
             g_queue ? g_queue->CurrentGeneration() : 0);
-        if (g_esPool) {
-            g_esPool->Tick(deltaSec, gamePaused);
-        }
         if (g_charmSystem && g_charmSystem->Tick(deltaSec, gamePaused)) {
             if (g_statEngine) {
                 const auto bonuses = g_charmSystem->ComputeActiveBonuses();
@@ -1379,6 +1503,64 @@ namespace SkyrimPoE::Runtime
             return;
         }
 
+        if (g_esPool) {
+            if (snap->version != g_lastSyncedSnapVersion) {
+                g_esPool->Configure(snap->esRechargeDelayMult, snap->esRechargeRateMult, !snap->esCannotRecharge);
+            }
+            g_esPool->Tick(deltaSec, gamePaused);
+        }
+
+        const auto syncPlayerRates = [&]() {
+            constexpr double tolerance = 0.0001;
+            double movementFactor = 1.0;
+            double recoveryFactor = 1.0;
+            if (snap->poe2Passives) {
+                double movementSpeed = snap->incMovementSpeedPct;
+                if (snap->incSprintingMovementSpeedPct != 0.0) {
+                    if (const auto* state = player->AsActorState(); state && state->IsSprinting()) {
+                        movementSpeed += snap->incSprintingMovementSpeedPct;
+                    }
+                }
+                if (snap->incEsMovementSpeedPct != 0.0 && g_esPool && g_esPool->Snapshot().current > 0.0) {
+                    movementSpeed += snap->incEsMovementSpeedPct;
+                }
+                movementFactor = std::max(0.0, 1.0 + movementSpeed / 100.0);
+                recoveryFactor = snap->nativeManaRegenMult;
+            } else if (g_lastPlayerRates && g_lastPlayerRates->movementFactor == 1.0 &&
+                g_lastPlayerRates->recoveryFactor == 1.0) {
+                return;
+            }
+
+            using enum RE::ActorValue;
+            const double speed = avOwner->GetActorValue(kSpeedMult);
+            const double magickaRate = avOwner->GetActorValue(kMagickaRateMult);
+            if (!std::isfinite(speed) || !std::isfinite(magickaRate) ||
+                (g_lastPlayerRates && movementFactor == g_lastPlayerRates->movementFactor &&
+                 recoveryFactor == g_lastPlayerRates->recoveryFactor &&
+                 std::abs(speed - g_lastPlayerRates->speedMult) <= tolerance &&
+                 std::abs(magickaRate - g_lastPlayerRates->magickaRateMult) <= tolerance)) {
+                return;
+            }
+
+            SaveLoad::RunSerializedTransaction([&]() {
+                const auto saved = SaveLoad::GetStateCopy();
+                const auto result = Core::SaveRecord::ReconcilePlayerRates(speed, magickaRate,
+                    { saved.appliedSpeedMultDelta, saved.appliedMagickaRateMultDelta }, movementFactor, recoveryFactor);
+                if (result.changeSpeedMult != 0.0f || result.changeMagickaRateMult != 0.0f) {
+                    ModifyPlayerRateValues(*avOwner, result.changeSpeedMult, result.changeMagickaRateMult);
+                    SaveLoad::UpdateState([&](PersistentState& state) {
+                        state.appliedSpeedMultDelta = result.applied.speedMult;
+                        state.appliedMagickaRateMultDelta = result.applied.magickaRateMult;
+                    });
+                }
+                // The loaded engine values already include the saved deltas. Reconcile only our difference.
+                g_lastPlayerRates = PlayerRateObservation{
+                    avOwner->GetActorValue(kSpeedMult), avOwner->GetActorValue(kMagickaRateMult),
+                    movementFactor, recoveryFactor
+                };
+            });
+        };
+
         // 3단계 Mind Over Matter: 피해 훅에서 누적한 매지카 흡수분을 주 갱신 스레드에서 안전하게 일괄 차감(결정 119)
         const double pendingMom = g_pendingMomDrain.exchange(0.0, std::memory_order_acq_rel);
         if (std::isfinite(pendingMom) && pendingMom > 0.0) {
@@ -1392,21 +1574,59 @@ namespace SkyrimPoE::Runtime
         const double currentPermHealth = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kHealth));
         const double currentPermMagicka = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kMagicka));
 
-        // 3단계 Pain Attunement (Low Life <= 50%, CI 제외) 및 Elemental Overload (최근 8초 치명타) 감시:
-        // 상태가 실제로 변할 때만 Layer2Input을 갱신해 유휴 프레임 재빌드 비용 0 유지.
         const double curHealth = static_cast<double>(avOwner->GetActorValue(RE::ActorValue::kHealth));
-        const bool nowLowLife = !snap->chaosInoculation && currentPermHealth > 0.0 && (curHealth <= currentPermHealth * 0.50);
+        const double currentMaxHealth = player->GetActorValueMax(RE::ActorValue::kHealth);
+        const auto lifeConditions = Core::GetPlayerLifeConditions(curHealth, currentPermHealth, currentMaxHealth, *snap);
+        bool mainHandOneHandedMartial = false;
+        bool offHandOccupied = false;
+        bool moving = false;
+        if (snap->poe2Passives) {
+            const auto* mainHand = player->GetEquippedObject(false);
+            const auto* weapon = mainHand ? mainHand->As<RE::TESObjectWEAP>() : nullptr;
+            if (weapon) {
+                const auto type = weapon->GetWeaponType();
+                using enum RE::WEAPON_TYPE;
+                mainHandOneHandedMartial = type == kOneHandSword || type == kOneHandDagger ||
+                    type == kOneHandAxe || type == kOneHandMace;
+            }
+            offHandOccupied = player->GetEquippedObject(true) != nullptr;
+            if (const auto* state = player->AsActorState()) {
+                moving = state->IsSprinting() || state->IsRunning() || state->IsWalking();
+            }
+        }
+        const auto applyLifeRegeneration = [&]() {
+            if (!snap->poe2Passives || !std::isfinite(deltaSec) || deltaSec <= 0.0 || snap->lifeRegenPerSec <= 0.0) return;
+            const double maxEs = g_esPool && snap->excessLifeRegenToEs ? g_esPool->Snapshot().max : 0.0;
+            const auto recovery = Core::ConvertLifeRegeneration(snap->lifeRegenPerSec * deltaSec,
+                avOwner->GetActorValue(RE::ActorValue::kHealth), player->GetActorValueMax(RE::ActorValue::kHealth), maxEs, *snap);
+            if (recovery.life > 0.0) {
+                avOwner->RestoreActorValue(RE::ActorValue::kHealth, static_cast<float>(recovery.life));
+            }
+            if (g_esPool && recovery.energyShield > 0.0) {
+                g_esPool->Recover(recovery.energyShield);
+            }
+        };
         if (g_eoTriggered.exchange(false, std::memory_order_acq_rel)) {
             g_eoRemainingSec = 8.0;
         } else if (g_eoRemainingSec > 0.0 && std::isfinite(deltaSec) && deltaSec > 0.0) {
             g_eoRemainingSec = std::max(0.0, g_eoRemainingSec - deltaSec);
         }
         const bool nowEoActive = (g_eoRemainingSec > 0.0);
-        if (nowLowLife != g_lastLowLife || nowEoActive != g_lastEoActive) {
-            g_lastLowLife = nowLowLife;
+        if (lifeConditions.lowLife != g_lastLowLife || lifeConditions.fullLife != g_lastFullLife ||
+            mainHandOneHandedMartial != g_lastMainHandOneHandedMartial || offHandOccupied != g_lastOffHandOccupied ||
+            moving != g_lastMoving || nowEoActive != g_lastEoActive) {
+            g_lastLowLife = lifeConditions.lowLife;
+            g_lastFullLife = lifeConditions.fullLife;
+            g_lastMainHandOneHandedMartial = mainHandOneHandedMartial;
+            g_lastOffHandOccupied = offHandOccupied;
+            g_lastMoving = moving;
             g_lastEoActive = nowEoActive;
-            g_statEngine->UpdateLayer2([nowLowLife, nowEoActive](Core::Layer2Input& l2) {
-                l2.lowLife = nowLowLife;
+            g_statEngine->UpdateLayer2([=](Core::Layer2Input& l2) {
+                l2.lowLife = lifeConditions.lowLife;
+                l2.fullLife = lifeConditions.fullLife;
+                l2.mainHandOneHandedMartial = mainHandOneHandedMartial;
+                l2.offHandOccupied = offHandOccupied;
+                l2.moving = moving;
                 l2.elementalOverloadActive = nowEoActive;
             });
         }
@@ -1418,11 +1638,9 @@ namespace SkyrimPoE::Runtime
             (std::abs(currentPermMagicka - g_lastObservedPermMagicka) > 0.25);
 
         if (!snapChanged && !permChanged) {
+            applyLifeRegeneration();
+            syncPlayerRates();
             return;
-        }
-
-        if (snapChanged && g_esPool) {
-            g_esPool->Configure(snap->esRechargeDelayMult, snap->esRechargeRateMult);
         }
 
         const auto stateCopy = SaveLoad::GetStateCopy();
@@ -1481,6 +1699,8 @@ namespace SkyrimPoE::Runtime
         g_lastSyncedSnapVersion = snap->version;
         g_lastObservedPermHealth = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kHealth));
         g_lastObservedPermMagicka = static_cast<double>(avOwner->GetPermanentActorValue(RE::ActorValue::kMagicka));
+        applyLifeRegeneration();
+        syncPlayerRates();
     }
 
     void CombatHooks::NotifyPlayerElementalCrit() noexcept

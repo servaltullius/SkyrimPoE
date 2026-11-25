@@ -1,6 +1,7 @@
 #include "core/StatEngine.h"
 #include "core/Config.h"
 #include "core/DamageConversion.h"
+#include "core/EnergyShield.h"
 #include "core/RulesPack.h"
 
 #include <algorithm>
@@ -9,6 +10,36 @@
 
 namespace SkyrimPoE::Core
 {
+    PoeSkillCosts ComputePoe2SkillCosts(double baseManaCost, double flatManaCostDelta,
+        const PassiveStatTotals& passives, bool isAttack, bool isSpell, bool bloodMagic,
+        bool phylacteryWithoutEnergyShield) noexcept
+    {
+        const double baseMana = std::floor(std::max(0.0, baseManaCost));
+        const double lifeShare = bloodMagic ? 1.0 : std::clamp((passives.manaAsLifeCostPct +
+            (isSpell ? passives.spellManaAsLifeCostPct : 0.0)) / 100.0, 0.0, 1.0);
+        const double baseLife = std::round(baseMana * lifeShare) + (passives.matchingBaseLifeCost ? baseMana : 0.0);
+        const double commonEfficiency = passives.costEfficiencyPct +
+            (isAttack ? passives.attackCostEfficiencyPct : 0.0) + (isSpell ? passives.spellCostEfficiencyPct : 0.0);
+        const double manaEfficiency = commonEfficiency + passives.manaCostEfficiencyPct +
+            (isAttack ? passives.manaAttackCostEfficiencyPct : 0.0) + (isSpell ? passives.manaSpellCostEfficiencyPct : 0.0);
+        const double lifeEfficiency = commonEfficiency + passives.lifeCostEfficiencyPct;
+        // PoB rounds each cost modifier toward the pre-modifier cost, then divides by cost efficiency.
+        const auto applyCostModifier = [](double value, double multiplier) {
+            if (multiplier < 1.0) return std::max(0.0, std::ceil(value * multiplier));
+            return std::floor(value * multiplier);
+        };
+        const double increasedMana = applyCostModifier(baseMana, 1.0 - passives.reducedManaCostPct / 100.0);
+        const double moreMana = applyCostModifier(increasedMana,
+            passives.moreManaCostMult * (phylacteryWithoutEnergyShield ? 1.5 : 1.0));
+        const double manaBeforeSplit = baseMana > 0.0
+            ? std::max(0.0, moreMana / std::max(0.1, 1.0 + manaEfficiency / 100.0) + flatManaCostDelta) : 0.0;
+        const double scaledLife = applyCostModifier(baseLife, 1.0 + passives.incLifeCostPct / 100.0);
+        return {
+            lifeShare > 0.0 ? std::floor(manaBeforeSplit * (1.0 - lifeShare)) : manaBeforeSplit,
+            scaledLife / std::max(0.1, 1.0 + lifeEfficiency / 100.0)
+        };
+    }
+
     namespace
     {
         // PoE 3.30(PoB 2.68.1 Data/Misc.lua) 기본 충전 보너스:
@@ -279,9 +310,14 @@ namespace SkyrimPoE::Core
                    snap.intel >= lv.reqInt;
         }
 
-        std::uint32_t SpiritCost(const SkillEffectDefinition& def, const GemLevelData& level) noexcept
+        std::uint32_t SpiritCost(const SkillEffectDefinition& def, const GemLevelData& level,
+            const PassiveStatTotals& p) noexcept
         {
-            return level.spiritCost.value_or(def.spiritCost);
+            const auto base = level.spiritCost.value_or(def.spiritCost);
+            if (def.kind != GemKind::Herald || p.heraldReservationEfficiencyPct == 0.0) return base;
+            const double div = std::max(0.1, 1.0 + p.heraldReservationEfficiencyPct / 100.0);
+            return static_cast<std::uint32_t>(std::min(std::round(base / div),
+                static_cast<double>(std::numeric_limits<std::uint32_t>::max())));
         }
 
         bool CanReserveSpirit(const SkillEffectDefinition& def) noexcept
@@ -322,11 +358,11 @@ namespace SkyrimPoE::Core
             if (!lv) {
                 return out;
             }
+            const auto& p = l1.passives;
             out.requirementMet = MeetsGemRequirements(*lv, snap);
-            out.spiritCost = SpiritCost(*def, *lv);
+            out.spiritCost = SpiritCost(*def, *lv, p);
             out.auraActive = auraIsActive;
 
-            const auto& p = l1.passives;
             const double baseCritMultiplier = 100.0 + ActiveRuleValues().critical.playerBonusPercent;
             const std::uint8_t clampedFrenzy = std::min(l2.frenzyCharges, snap.maxFrenzyCharges);
             const std::uint8_t clampedPower = std::min(l2.powerCharges, snap.maxPowerCharges);
@@ -346,7 +382,7 @@ namespace SkyrimPoE::Core
             double moreCastSpeedMult = 1.0;
             double incAreaPct = p.incAreaOfEffectPct + gear.incAreaOfEffectPct;
             double moreAreaMult = 1.0;
-            double addBaseCritPct = 0.0;
+            double addBaseCritPct = p.baseGlobalCritPct;
             double incCritPct = l1.incCritChancePct + p.incGlobalCritChancePct +
                 gear.incGlobalCritChancePct + aura.incGlobalCritChancePct + clampedPower * kPowerCritInc;
             bool noElemental = gear.dealNoElemental;
@@ -477,14 +513,79 @@ namespace SkyrimPoE::Core
                 lv->GetStat("base_is_projectile", 0.0) > 0.0;
             const double areaDmgFactor = isArea ? moreAreaDmgMult : 1.0;
             const double projDmgFactor = isProj ? moreProjDmgMult : 1.0;
-            const double areaIncPct = isArea ? (p.incAreaDamagePct + gear.incAreaDamagePct) : 0.0;
-            const double projIncPct = isProj ? gear.incProjectileDamagePct : 0.0;
+            const bool isAttack = def->kind == GemKind::AttackChannel;
+            const bool isSpell = def->kind == GemKind::Spell;
+            const bool isChannelling = isAttack || def->skillTypes.contains("Channelling");
+            const bool isFireSpell = isSpell && def->skillTypes.contains("Fire");
+            const bool isLightningSkill = def->skillTypes.contains("Lightning") || extraSkillTypes.contains("Lightning");
+            const bool isColdSkill = def->skillTypes.contains("Cold") || extraSkillTypes.contains("Cold");
+            const bool isElementalSkill = isLightningSkill || isColdSkill || def->skillTypes.contains("Fire") ||
+                extraSkillTypes.contains("Fire");
+            const double elementalSkillSpeed = (isElementalSkill ? p.elementalSkillSpeedIncPct : 0.0) +
+                (isLightningSkill ? p.lightningSkillSpeedIncPct : 0.0);
+            const double areaIncPct = isArea ? (p.incAreaDamagePct + gear.incAreaDamagePct +
+                (isAttack ? p.attackAreaDamageIncPct : p.spellAreaDamageIncPct)) : 0.0;
+            const double projIncPct = isProj ? gear.incProjectileDamagePct + p.projectileDamageIncPct : 0.0;
+            const double channelInc = isChannelling ? p.channellingDamageIncPct : 0.0;
+            const auto& mainHand = l1.equippedGear[static_cast<std::size_t>(EquipSlot::MainHand)];
+            const auto& offHand = l1.equippedGear[static_cast<std::size_t>(EquipSlot::OffHand)];
+            const bool danceWithDeath = l2.mainHandOneHandedMartial && !l2.offHandOccupied;
+            const bool holdingShield = offHand.occupied && !offHand.isWeapon;
+            const bool meleeWeapon = mainHand.isWeapon &&
+                l1.mainWeaponTag != "Bow" && l1.mainWeaponTag != "Crossbow" && l1.mainWeaponTag != "Staff";
+            const bool lowLife = !snap.chaosInoculation && l2.lowLife;
+            PassiveWeaponStats weaponPassives;
+            if (mainHand.isWeapon && isAttack) {
+                const auto hand = mainHand.isTwoHanded ? PassiveWeapon::TwoHand : PassiveWeapon::OneHand;
+                weaponPassives = p.weapons[static_cast<std::size_t>(hand)];
+                const auto& tag = l1.mainWeaponTag;
+                const auto type = tag.ends_with("Sword") ? PassiveWeapon::Sword :
+                    tag.ends_with("Axe") ? PassiveWeapon::Axe :
+                    tag.ends_with("Mace") ? PassiveWeapon::Mace :
+                    tag == "Dagger" ? PassiveWeapon::Dagger : PassiveWeapon::Count;
+                if (type != PassiveWeapon::Count) {
+                    const auto& specific = p.weapons[static_cast<std::size_t>(type)];
+                    weaponPassives.damageIncPct += specific.damageIncPct;
+                    weaponPassives.speedIncPct += specific.speedIncPct;
+                    weaponPassives.critChanceIncPct += specific.critChanceIncPct;
+                    weaponPassives.critBonusIncPct += specific.critBonusIncPct;
+                }
+            }
+            const double moreSkillSpeed = danceWithDeath ? 1.0 + p.moreOneHandEmptyOffHandSpeedPct / 100.0 : 1.0;
+            const double channelSpeedInc = isChannelling ? p.channellingSpeedIncPct : 0.0;
 
-            double totalCostEffPct = p.costEfficiencyPct;
+            const double baseManaCost = lv->manaCost * manaMult;
+            if (p.poe2) {
+                const bool spellCost = isSpell || def->skillTypes.contains("Spell");
+                const bool phylacteryWithoutEnergyShield = l1.phylacteryEnergyShield &&
+                    (!l2.phylacteryHasEnergyShield || snap.poeMaxEnergyShield <= 0.0);
+                const auto costs = ComputePoe2SkillCosts(baseManaCost, snap.flatManaCostDelta, p,
+                    isAttack, spellCost, snap.bloodMagic, phylacteryWithoutEnergyShield);
+                out.poeManaCost = costs.mana;
+                out.poeLifeCost = costs.life;
+            } else {
+                const double totalCostEffPct = p.costEfficiencyPct +
+                    (isAttack ? p.attackCostEfficiencyPct : isSpell ? p.spellCostEfficiencyPct : 0.0);
+                const double reducedCostFactor = std::clamp(1.0 - p.reducedManaCostPct / 100.0, 0.0, 10.0);
+                const double costEffDiv = std::max(0.1, 1.0 + totalCostEffPct / 100.0);
+                out.poeManaCost = lv->manaCost > 0.0
+                    ? std::max(0.0, baseManaCost * reducedCostFactor / costEffDiv + snap.flatManaCostDelta) : 0.0;
+            }
             const double eoElemMoreMult = (p.elementalOverload && l2.elementalOverloadActive) ? 1.40 : 1.0;
+            DamageTypeValues typeIncreasedPct{};
+            DamageTypeValues typeMoreMultipliers{};
+            auto extraDamage = p.extraDamage;
+            const auto storePoe2Base = [&](DamageType type, double minimum, double maximum, double increasedPct, double more,
+                double physicalGainPct) {
+                const auto i = static_cast<std::size_t>(type);
+                out.baseHitDamage.byType[i] = { minimum, maximum };
+                typeIncreasedPct[i] = increasedPct;
+                typeMoreMultipliers[i] = more;
+                extraDamage.gain[static_cast<std::size_t>(DamageType::Physical)][i] += physicalGainPct;
+            };
 
             if (def->kind == GemKind::AttackChannel) {
-                incAreaPct += gear.incAttackAreaOfEffectPct;
+                incAreaPct += gear.incAttackAreaOfEffectPct + p.attackAreaIncPct;
                 // 검수 m1: 4~5단계 무기 로컬 + 글로벌/오라 추가 5속성 공격 피해 통합 + 물리→원소 추가(Hatred/HeraldOfAsh/Headhunter)
                 const double basePhysMin = gear.hasActiveWeapon ? gear.weaponPhysMin : l1.baseWeaponPhysicalMin;
                 const double basePhysMax = gear.hasActiveWeapon ? gear.weaponPhysMax : l1.baseWeaponPhysicalMax;
@@ -497,7 +598,12 @@ namespace SkyrimPoE::Core
                 const double lowLifeDmgPenalty = (!snap.chaosInoculation && l2.lowLife) ? gear.reducedDamageOnLowLifePct : 0.0;
                 const double commonAtkInc = p.incGlobalDamagePct + gear.incGenericDamagePct - lowLifeDmgPenalty +
                     p.incMeleeDamagePct + gear.incMeleeDamagePct +
-                    p.incAttackDamagePct + areaIncPct + projIncPct;
+                    p.incAttackDamagePct + areaIncPct + projIncPct + channelInc + weaponPassives.damageIncPct +
+                    (holdingShield ? p.shieldAttackDamageIncPct : 0.0) +
+                    (gear.isDualWielding ? p.dualWieldAttackDamageIncPct : 0.0) +
+                    (lowLife ? p.lowLifeAttackDamageIncPct : 0.0) +
+                    (l2.fullLife ? p.fullLifeAttackDamageIncPct : 0.0) +
+                    (l2.moving ? p.movingAttackDamageIncPct : 0.0);
                 const double commonElemAtkInc = commonAtkInc + p.incElementalDamagePct + gear.incElementalDamagePct +
                     p.incElementalAttackDamagePct + gear.incElementalAttackDamagePct;
                 const double atkCommonMore = areaDmgFactor * projDmgFactor * moreHitDmgMult * moreAllDmgMult;
@@ -511,6 +617,10 @@ namespace SkyrimPoE::Core
                                                      double gainedPctOfPhys, double elemTotalInc, double elemMore) {
                     const double directIncMult = std::max(0.0, 1.0 + elemTotalInc / 100.0);
                     const double directFactor = directIncMult * elemMore * atkCommonMore;
+                    if (p.poe2) {
+                        storePoe2Base(dt, directMin, directMax, elemTotalInc, elemMore * atkCommonMore, gainedPctOfPhys);
+                        return;
+                    }
                     double outMin = directMin * directFactor;
                     double outMax = directMax * directFactor;
                     if (gainedPctOfPhys > 0.0 && (rawPhysMin > 0.0 || rawPhysMax > 0.0)) {
@@ -537,11 +647,13 @@ namespace SkyrimPoE::Core
                     gear.weaponColdMin * lv->baseMultiplier + (gear.addedAttackColdMin + aura.addedAttackColdMin) * lv->damageEffectiveness,
                     gear.weaponColdMax * lv->baseMultiplier + (gear.addedAttackColdMax + aura.addedAttackColdMax) * lv->damageEffectiveness,
                     aura.physAddedAsColdPct,
-                    commonElemAtkInc + p.incColdDamagePct + gear.incColdDamagePct, eoElemMoreMult);
+                    commonElemAtkInc + p.incColdDamagePct + gear.incColdDamagePct + p.attackColdDamageIncPct, eoElemMoreMult);
 
                 computeAtkDirectAndGained(DamageType::Lightning,
-                    gear.weaponLightningMin * lv->baseMultiplier + (gear.addedAttackLightningMin + aura.addedAttackLightMin) * lv->damageEffectiveness,
-                    gear.weaponLightningMax * lv->baseMultiplier + (gear.addedAttackLightningMax + aura.addedAttackLightMax) * lv->damageEffectiveness,
+                    gear.weaponLightningMin * lv->baseMultiplier +
+                        (gear.addedAttackLightningMin + aura.addedAttackLightMin + p.addedAttackLightningMin) * lv->damageEffectiveness,
+                    gear.weaponLightningMax * lv->baseMultiplier +
+                        (gear.addedAttackLightningMax + aura.addedAttackLightMax + p.addedAttackLightningMax) * lv->damageEffectiveness,
                     aura.physAddedAsLightPct,
                     commonElemAtkInc + p.incLightningDamagePct + gear.incLightningDamagePct, eoElemMoreMult);
 
@@ -555,21 +667,27 @@ namespace SkyrimPoE::Core
                 const double dualWieldMoreSpd = gear.isDualWielding ? 1.10 : 1.0;
                 const double incSpeed = std::max(0.1,
                     1.0 + (l1.incAttackSpeedPct + p.incAttackSpeedPct + p.incMeleeAttackSpeedPct +
-                           gear.incAttackSpeedPct + aura.incAttackSpeedPct + clampedFrenzy * kFrenzySpeedAndMore) / 100.0);
-                out.attackSpeedMult = std::max(0.1, skillSpeedBase * localSpdMult * dualWieldMoreSpd * incSpeed * moreAtkSpeedMult);
-                incCritPct += p.incAttackCritChancePct + p.incMeleeCritChancePct;
+                           gear.incAttackSpeedPct + aura.incAttackSpeedPct + clampedFrenzy * kFrenzySpeedAndMore +
+                           channelSpeedInc + elementalSkillSpeed + weaponPassives.speedIncPct +
+                           (gear.isDualWielding ? p.dualWieldAttackSpeedIncPct : 0.0)) / 100.0);
+                out.attackSpeedMult = std::max(0.1, skillSpeedBase * localSpdMult * dualWieldMoreSpd * incSpeed *
+                    moreAtkSpeedMult * moreSkillSpeed);
+                incCritPct += p.incAttackCritChancePct + p.incMeleeCritChancePct + weaponPassives.critChanceIncPct;
                 // Resolute Technique: PoE 3.30 원작 규칙(공격·주문 모두 치명타 불가)
-                out.baseCritChancePct = snap.resoluteTechnique ? 0.0 : (baseCrit + addBaseCritPct);
+                out.baseCritChancePct = snap.resoluteTechnique ? 0.0 : (baseCrit + addBaseCritPct + p.baseAttackCritPct);
                 out.critMultiplierPct = p.elementalOverload
                     ? 100.0
                     : std::max(100.0, baseCritMultiplier + p.globalCritMultiplierPct +
                                       p.meleeCritMultiplierPct + gear.meleeCritMultiplierPct +
                                       gear.globalCritMultiplierPct + aura.globalCritMultiplierPct);
-                totalCostEffPct += p.attackCostEfficiencyPct;
             } else if (def->kind == GemKind::Spell) {
+                incAreaPct += p.spellAreaIncPct;
                 const double lowLifeDmgPenalty = (!snap.chaosInoculation && l2.lowLife) ? gear.reducedDamageOnLowLifePct : 0.0;
                 const double commonSpellInc = p.incGlobalDamagePct + gear.incGenericDamagePct - lowLifeDmgPenalty +
-                    p.incSpellDamagePct + gear.incSpellDamagePct + areaIncPct + projIncPct;
+                    p.incSpellDamagePct + gear.incSpellDamagePct + areaIncPct + projIncPct + channelInc +
+                    (isTriggered ? p.triggeredSpellDamageIncPct : 0.0) +
+                    (meleeWeapon ? p.meleeWeaponSpellDamageIncPct : 0.0) +
+                    (out.poeLifeCost > 0.0 ? p.lifeCostSpellDamageIncPct : 0.0);
                 const double spellScale = moreSpellDmgMult * areaDmgFactor * projDmgFactor * moreHitDmgMult * moreAllDmgMult;
 
                 const double baseSpellPhysMin = lv->GetStat("spell_minimum_base_physical_damage", 0.0);
@@ -579,6 +697,10 @@ namespace SkyrimPoE::Core
                 auto applySpellType = [&](DamageType dt, double directMin, double directMax,
                                           double gainedPctOfPhys, double typeMore, double typeInc) {
                     const double directIncMult = std::max(0.0, 1.0 + (commonSpellInc + typeInc) / 100.0);
+                    if (p.poe2) {
+                        storePoe2Base(dt, directMin, directMax, commonSpellInc + typeInc, spellScale * typeMore, gainedPctOfPhys);
+                        return;
+                    }
                     double outMin = directMin * spellScale * typeMore * directIncMult;
                     double outMax = directMax * spellScale * typeMore * directIncMult;
                     if (gainedPctOfPhys > 0.0 && (baseSpellPhysMin > 0.0 || baseSpellPhysMax > 0.0)) {
@@ -620,7 +742,10 @@ namespace SkyrimPoE::Core
 
                 out.castSpeedMult = std::max(0.1,
                     (1.0 + (p.incCastSpeedPct + gear.incCastSpeedPct + aura.incCastSpeedPct +
-                            clampedFrenzy * kFrenzySpeedAndMore) / 100.0) * moreCastSpeedMult);
+                            clampedFrenzy * kFrenzySpeedAndMore + channelSpeedInc + elementalSkillSpeed +
+                            (isColdSkill ? p.coldCastSpeedIncPct : 0.0) +
+                            (l2.fullLife ? p.fullLifeCastSpeedIncPct : 0.0) +
+                            (lowLife ? p.lowLifeCastSpeedIncPct : 0.0)) / 100.0) * moreCastSpeedMult * moreSkillSpeed);
                 incCritPct += p.incSpellCritChancePct + gear.incSpellCritChancePct;
                 out.baseCritChancePct = snap.resoluteTechnique ? 0.0 : (lv->critChance + addBaseCritPct);
                 const bool isElemSpell = def->skillTypes.contains("Fire") || def->skillTypes.contains("Cold") || def->skillTypes.contains("Lightning");
@@ -630,7 +755,6 @@ namespace SkyrimPoE::Core
                                       p.spellCritMultiplierPct + gear.globalCritMultiplierPct +
                                       gear.spellCritMultiPct + (isElemSpell ? gear.elementalCritMultiPct : 0.0) +
                                       aura.globalCritMultiplierPct);
-                totalCostEffPct += p.spellCostEfficiencyPct;
             } else if (def->kind == GemKind::Guard) {
                 // 5단계(결정 163, 검수 M3): Molten Shell 가드 버프 — 자체 고정 방어도에도 방어도 %inc·Determination MORE 적용
                 out.moltenShellFlatArmour = lv->GetStat("base_physical_damage_reduction_rating", 115.0);
@@ -639,25 +763,56 @@ namespace SkyrimPoE::Core
                 const double maxCap = lv->GetStat("molten_shell_max_damage_absorbed", 5000.0);
                 const double armourForShell = std::max(0.0, snap.armour + (out.moltenShellFlatArmour - l2.moltenShellBonusArmour) * armourScaleMult);
                 out.moltenShellAbsorbCapPoe = std::clamp(armourForShell * (pctOfArmour / 100.0), 1.0, maxCap);
-                out.moltenShellDurationSec = std::max(0.5, lv->GetStat("base_skill_effect_duration", 3000.0) / 1000.0);
+                out.moltenShellDurationSec = std::max(0.5, lv->GetStat("base_skill_effect_duration", 3000.0) / 1000.0 *
+                    (1.0 + p.skillDurationIncPct / 100.0));
                 out.moltenShellReflectPct = lv->GetStat("molten_shell_%_of_absorbed_damage_dealt_as_reflected_fire", 100.0);
                 out.critMultiplierPct = baseCritMultiplier + gear.globalCritMultiplierPct;
             } else {
                 out.critMultiplierPct = baseCritMultiplier + gear.globalCritMultiplierPct;
             }
 
-            if (noElemental) {
-                out.baseHitDamage.byType[static_cast<std::size_t>(DamageType::Fire)] = {};
-                out.baseHitDamage.byType[static_cast<std::size_t>(DamageType::Cold)] = {};
-                out.baseHitDamage.byType[static_cast<std::size_t>(DamageType::Lightning)] = {};
+            if (isAttack || isSpell) {
+                const double critInc = p.globalCritBonusIncPct +
+                    (isAttack ? p.attackCritBonusIncPct + weaponPassives.critBonusIncPct : p.spellCritBonusIncPct);
+                const double lifeFactor = l2.fullLife ? p.fullLifeCritBonusMult :
+                    (!snap.chaosInoculation && l2.lowLife ? p.lowLifeCritBonusMult : 1.0);
+                out.critMultiplierPct = 100.0 + (out.critMultiplierPct - 100.0) *
+                    std::max(0.0, 1.0 + critInc / 100.0) * lifeFactor;
+                if (p.poe2) {
+                    ConvertPassiveHitDamage(out.baseHitDamage, p, isFireSpell, extraDamage, typeIncreasedPct,
+                        typeMoreMultipliers, isAttack, &out.targetAilmentHitDamage);
+                }
             }
-            if (noChaos) {
-                out.baseHitDamage.byType[static_cast<std::size_t>(DamageType::Chaos)] = {};
+
+            for (auto* damage : { &out.baseHitDamage, &out.targetAilmentHitDamage.basis }) {
+                if (noElemental) {
+                    damage->randomElementExtra = {};
+                    damage->targetAilmentExtra = {};
+                    damage->byType[static_cast<std::size_t>(DamageType::Fire)] = {};
+                    damage->byType[static_cast<std::size_t>(DamageType::Cold)] = {};
+                    damage->byType[static_cast<std::size_t>(DamageType::Lightning)] = {};
+                }
+                if (noChaos) {
+                    damage->byType[static_cast<std::size_t>(DamageType::Chaos)] = {};
+                }
             }
 
             out.dealNoElemental = noElemental;
             out.dealNoChaos = noChaos;
             out.critChanceIncPct = incCritPct;
+            if (isProj) {
+                projCount += static_cast<std::int32_t>(std::clamp(p.additionalProjectiles, 0.0, 15.0));
+                out.projectilePierceChancePct = p.projectilePierceChancePct;
+                out.additionalProjectileChancePct = p.additionalProjectileChancePct;
+                out.additionalForkProjectileChancePct = p.additionalForkProjectileChancePct;
+                out.projectileSpeedMult = std::max(0.01, 1.0 + (p.projectileSpeedIncPct +
+                    (isSpell ? p.spellProjectileSpeedIncPct : 0.0)) / 100.0);
+                out.projectileAilmentChanceIncPct = p.projectileAilmentChanceIncPct;
+                if (isSpell) out.additionalSpellProjectilesChancePct = p.additionalSpellProjectilesChancePct;
+            }
+            if (def->skillTypes.contains("Lightning") || extraSkillTypes.contains("Lightning")) {
+                out.additionalChainChancePct = p.additionalChainChancePct;
+            }
             out.projectileCount = static_cast<std::uint8_t>(std::clamp<std::int32_t>(projCount, 1, 16));
             out.chainCount = static_cast<std::uint8_t>(std::clamp<std::int32_t>(chainCount, 0, 16));
             out.forkEnabled = forkEnabled;
@@ -669,14 +824,9 @@ namespace SkyrimPoE::Core
 
             const double totalAreaFactor = std::max(0.05, (1.0 + incAreaPct / 100.0) * moreAreaMult);
             out.areaMult = std::sqrt(totalAreaFactor);
-            const double reducedCostFactor = std::clamp(1.0 - p.reducedManaCostPct / 100.0, 0.0, 10.0);
-            const double costEffDiv = std::max(0.1, 1.0 + totalCostEffPct / 100.0);
-            const double rawManaCost = lv->manaCost * manaMult * reducedCostFactor / costEffDiv;
-            out.poeManaCost = (lv->manaCost > 0.0)
-                ? std::max(0.0, rawManaCost + snap.flatManaCostDelta)
-                : 0.0;
             const double baseCd = (def->kind == GemKind::Guard) ? std::max(lv->cooldown, 4.0) : lv->cooldown;
-            out.cooldownSec = std::max(baseCd, triggerMinCooldown);
+            out.cooldownSec = std::max(baseCd, triggerMinCooldown) /
+                std::max(0.1, 1.0 + p.cooldownRecoveryIncPct / 100.0);
             return out;
         }
     }
@@ -723,14 +873,17 @@ namespace SkyrimPoE::Core
 
     bool StatEngine::RebuildIfDirty(const DataPack& pack, const Config& config)
     {
-        if (!dirty_.exchange(false, std::memory_order_acq_rel)) {
-            return false;
-        }
-
         Layer1Input l1;
         Layer2Input l2;
         {
             std::scoped_lock lock(inputMutex_);
+            const bool hasEnergyShield = layer1_.phylacteryEnergyShield &&
+                layer1_.phylacteryEnergyShield->Snapshot().current > 0.0;
+            const bool dirty = dirty_.exchange(false, std::memory_order_acq_rel);
+            if (!dirty && hasEnergyShield == layer2_.phylacteryHasEnergyShield) {
+                return false;
+            }
+            layer2_.phylacteryHasEnergyShield = hasEnergyShield;
             l1 = layer1_;
             l2 = layer2_;
         }
@@ -783,7 +936,8 @@ namespace SkyrimPoE::Core
         snap.exileLevel = std::clamp<std::uint32_t>(l1.exileLevel, 1, kMaxExileLevel);
 
         const auto& p = l1.passives;
-        const auto* cls = pack.FindClass(l1.className);
+        const auto* cls = l1.treeClass ? &*l1.treeClass
+            : l1.className.empty() ? nullptr : pack.FindClass(l1.className);
         const double baseStr = cls ? static_cast<double>(cls->baseStr) : 20.0;
         const double baseDex = cls ? static_cast<double>(cls->baseDex) : 20.0;
         const double baseInt = cls ? static_cast<double>(cls->baseInt) : 20.0;
@@ -907,9 +1061,20 @@ namespace SkyrimPoE::Core
             } else if (g.isWeapon && i == static_cast<std::size_t>(EquipSlot::OffHand)) {
                 ohEval = evalWeapon(g);
             } else if (!g.isWeapon) {
-                gear.armour += std::max(0.0, (g.baseArmour + s.localFlatArmour) * std::max(0.0, 1.0 + s.localIncArmourPct / 100.0));
-                gear.evasion += std::max(0.0, (g.baseEvasion + s.localFlatEvasion) * std::max(0.0, 1.0 + s.localIncEvasionPct / 100.0));
-                gear.energyShield += std::max(0.0, (g.baseEnergyShield + s.localFlatEnergyShield) * std::max(0.0, 1.0 + s.localIncEnergyShieldPct / 100.0));
+                const bool isShield = i == static_cast<std::size_t>(EquipSlot::OffHand);
+                const bool isBody = i == static_cast<std::size_t>(EquipSlot::Body);
+                const bool isHelmet = i == static_cast<std::size_t>(EquipSlot::Helmet);
+                const double shieldFactor = isShield ? std::max(0.0, 1.0 + p.shieldDefencesIncPct / 100.0) : 1.0;
+                const double armourFactor = isBody ? std::max(0.0, 1.0 + p.bodyArmourIncPct / 100.0) : shieldFactor;
+                const double evasionFactor = isBody ? std::max(0.0, 1.0 + p.bodyEvasionIncPct / 100.0) : shieldFactor;
+                const double esFactor = isBody ? std::max(0.0, 1.0 + p.bodyEsIncPct / 100.0) :
+                    isHelmet ? std::max(0.0, 1.0 + p.helmetEsIncPct / 100.0) : shieldFactor;
+                gear.armour += std::max(0.0, (g.baseArmour + s.localFlatArmour) * std::max(0.0, 1.0 + s.localIncArmourPct / 100.0)) * armourFactor;
+                gear.evasion += std::max(0.0, (g.baseEvasion + s.localFlatEvasion) * std::max(0.0, 1.0 + s.localIncEvasionPct / 100.0)) * evasionFactor;
+                gear.energyShield += std::max(0.0, (g.baseEnergyShield + s.localFlatEnergyShield) * std::max(0.0, 1.0 + s.localIncEnergyShieldPct / 100.0)) * esFactor;
+                if (isHelmet || i == static_cast<std::size_t>(EquipSlot::Boots) || i == static_cast<std::size_t>(EquipSlot::Gloves)) {
+                    gear.armour += g.reqStr * p.armourFromStrRequirementsPct / 100.0;
+                }
                 gear.attackBlock += std::max(0.0, g.baseBlockChance * std::max(0.0, 1.0 + s.localIncBlockPct / 100.0));
             }
 
@@ -956,9 +1121,11 @@ namespace SkyrimPoE::Core
 
         // 결정 203: 이정표별 정신력과 장비 정신력, 활성 예약 스킬 중복 제거
         snap.baseMaxSpirit = ComputeSpirit(l1.achievementMask, rules);
-        const double spirit = ComputeSpirit(l1.achievementMask, rules, &config) +
-            std::max(0.0, std::floor(gear.flatSpirit + 1e-6));
-        snap.maxSpirit = static_cast<std::uint32_t>(std::min<double>(spirit, std::numeric_limits<std::uint32_t>::max()));
+        const double spirit = (ComputeSpirit(l1.achievementMask, rules, &config) +
+            std::max(0.0, std::floor(gear.flatSpirit + p.flatSpirit + 1e-6))) *
+            std::max(0.0, 1.0 + p.incSpiritPct / 100.0);
+        snap.maxSpirit = p.noSpirit ? 0u :
+            static_cast<std::uint32_t>(std::min<double>(spirit, std::numeric_limits<std::uint32_t>::max()));
 
         struct ActiveAuraPick
         {
@@ -978,7 +1145,7 @@ namespace SkyrimPoE::Core
             const auto* lv = def->GetLevel(slot.gem.level);
             if (!lv || !CanReserveSpirit(*def)) continue;
             if (config.enforceGemRequirements && !MeetsGemRequirements(*lv, snap)) continue;
-            const std::uint32_t cost = SpiritCost(*def, *lv);
+            const std::uint32_t cost = SpiritCost(*def, *lv, p);
             auto it = bestByGemId.find(def->id);
             if (it == bestByGemId.end() || slot.gem.level > it->second.level) {
                 bestByGemId[def->id] = ActiveAuraPick{ i, def->id, slot.gem.level, cost, lv };
@@ -1007,34 +1174,38 @@ namespace SkyrimPoE::Core
         for (const auto& a : activeAuras) {
             snap.effectiveActiveAuraMask |= static_cast<std::uint16_t>(1u << a.slotIdx);
             const auto& lv = *a.lv;
+            const double auraMagnitude = std::max(0.0, 1.0 + p.auraMagnitudeIncPct / 100.0);
+            const auto auraStat = [&](const std::string& stat, double fallback) {
+                return lv.GetStat(stat, fallback) * auraMagnitude;
+            };
             if (a.gemId == "Determination") {
-                aura.flatArmour += lv.GetStat("base_physical_damage_reduction_rating", 0.0);
-                if (const double v = lv.GetStat("determination_aura_armour_+%_final", 0.0); v != 0.0) {
+                aura.flatArmour += auraStat("base_physical_damage_reduction_rating", 0.0);
+                if (const double v = auraStat("determination_aura_armour_+%_final", 0.0); v != 0.0) {
                     aura.moreArmourMult *= (1.0 + v / 100.0);
                 }
             } else if (a.gemId == "Grace") {
-                aura.flatEvasion += lv.GetStat("base_evasion_rating", 0.0);
-                if (const double v = lv.GetStat("grace_aura_evasion_rating_+%_final", 0.0); v != 0.0) {
+                aura.flatEvasion += auraStat("base_evasion_rating", 0.0);
+                if (const double v = auraStat("grace_aura_evasion_rating_+%_final", 0.0); v != 0.0) {
                     aura.moreEvasionMult *= (1.0 + v / 100.0);
                 }
             } else if (a.gemId == "Discipline") {
-                aura.flatEs += lv.GetStat("base_maximum_energy_shield", 0.0);
-                aura.incEsRechargeRatePct += lv.GetStat("energy_shield_recharge_rate_+%", 0.0);
+                aura.flatEs += auraStat("base_maximum_energy_shield", 0.0);
+                aura.incEsRechargeRatePct += auraStat("energy_shield_recharge_rate_+%", 0.0);
             } else if (a.gemId == "Hatred") {
-                aura.physAddedAsColdPct += lv.GetStat("physical_damage_%_to_add_as_cold", 0.0);
+                aura.physAddedAsColdPct += auraStat("physical_damage_%_to_add_as_cold", 0.0);
             } else if (a.gemId == "Wrath") {
-                aura.addedAttackLightMin += lv.GetStat("attack_minimum_added_lightning_damage", 0.0);
-                aura.addedAttackLightMax += lv.GetStat("attack_maximum_added_lightning_damage", 0.0);
-                if (const double v = lv.GetStat("wrath_aura_spell_lightning_damage_+%_final", 0.0); v != 0.0) {
+                aura.addedAttackLightMin += auraStat("attack_minimum_added_lightning_damage", 0.0);
+                aura.addedAttackLightMax += auraStat("attack_maximum_added_lightning_damage", 0.0);
+                if (const double v = auraStat("wrath_aura_spell_lightning_damage_+%_final", 0.0); v != 0.0) {
                     aura.moreSpellLightMult *= (1.0 + v / 100.0);
                 }
             } else if (a.gemId == "Anger") {
-                aura.addedAttackFireMin += lv.GetStat("attack_minimum_added_fire_damage", 0.0);
-                aura.addedAttackFireMax += lv.GetStat("attack_maximum_added_fire_damage", 0.0);
-                aura.addedSpellFireMin += lv.GetStat("spell_minimum_added_fire_damage", 0.0);
-                aura.addedSpellFireMax += lv.GetStat("spell_maximum_added_fire_damage", 0.0);
+                aura.addedAttackFireMin += auraStat("attack_minimum_added_fire_damage", 0.0);
+                aura.addedAttackFireMax += auraStat("attack_maximum_added_fire_damage", 0.0);
+                aura.addedSpellFireMin += auraStat("spell_minimum_added_fire_damage", 0.0);
+                aura.addedSpellFireMax += auraStat("spell_maximum_added_fire_damage", 0.0);
             } else if (a.gemId == "PurityOfElements") {
-                aura.allElemResist += lv.GetStat("base_resist_all_elements_%", 0.0);
+                aura.allElemResist += auraStat("base_resist_all_elements_%", 0.0);
                 if (lv.GetStat("immune_to_status_ailments", 0.0) > 0.0) {
                     aura.elementalAilmentImmune = true;
                 }
@@ -1090,7 +1261,7 @@ namespace SkyrimPoE::Core
         const auto& cb = l2.charmBonuses;
         snap.elementalAilmentImmune = aura.elementalAilmentImmune;
         snap.cannotBeFrozen = gear.cannotBeFrozen || cb.freezeImmune || aura.elementalAilmentImmune;
-        snap.bleedImmune = cb.bleedImmune;
+        snap.bleedImmune = cb.bleedImmune || p.chaosAndBleedImmune;
         snap.activeCharmMask = cb.activeMask;
         snap.shavronneChaosEs = gear.shavronneChaosEs;
         snap.starforgeShock = gear.starforgeShock;
@@ -1098,7 +1269,6 @@ namespace SkyrimPoE::Core
         snap.berekProlif = gear.berekProlif;
         snap.headhunter = gear.headhunter;
         snap.flatManaCostDelta = gear.flatManaCostDelta;
-        snap.manaRegenPerSec = std::max(0.0, gear.manaRegenPerSec);
         snap.esRecoupPct = std::max(0.0, gear.esRecoupPct);
         snap.incDamageVsRarePct = gear.incDamageVsRarePct;
         snap.itemRarityPct = gear.itemRarityPct;
@@ -1108,13 +1278,23 @@ namespace SkyrimPoE::Core
         snap.maxEnduranceCharges = static_cast<std::uint8_t>(std::clamp<std::int32_t>(3 + p.maxEnduranceBonus, 0, 15));
         snap.maxFrenzyCharges = static_cast<std::uint8_t>(std::clamp<std::int32_t>(3 + p.maxFrenzyBonus, 0, 15));
         snap.maxPowerCharges = static_cast<std::uint8_t>(std::clamp<std::int32_t>(3 + p.maxPowerBonus, 0, 15));
+        snap.chargeGain = p.chargeGain;
 
         // 키스톤 플래그
         snap.bloodMagic = l1.bloodMagic || p.bloodMagic;
         snap.chaosInoculation = p.chaosInoculation;
-        snap.chaosImmune = p.chaosInoculation;
+        snap.chaosImmune = p.chaosInoculation || p.chaosAndBleedImmune;
         snap.resoluteTechnique = p.resoluteTechnique;
         snap.unwaveringStance = p.unwaveringStance;
+        snap.poe2Passives = p.poe2;
+        snap.unluckyEvade = p.unluckyEvade;
+        snap.maximumEvadePct = std::clamp(p.maximumEvadePct, 0.0, 100.0);
+        snap.luckyDeflect = p.luckyDeflect;
+        snap.excessLifeRegenToEs = p.excessLifeRegenToEs;
+        snap.esCannotRecharge = p.esCannotRecharge;
+        snap.chaosFireSpellIgniteMagnitude = p.chaosFireSpellIgniteMagnitude;
+        snap.fireSpellIgniteDealsChaos = p.fireSpellIgniteDealsChaos;
+        snap.passiveAilments = p;
 
         // PoB CalcSetup.lua:678, CalcPerform.lua:492–517. 결정 207에 따라 명중은 판정에 사용하지 않는다.
         snap.accuracy = rules.hit.accuracyPerLevel * (snap.exileLevel - 1) + rules.hit.accuracyPerDexterity * snap.dex;
@@ -1130,10 +1310,12 @@ namespace SkyrimPoE::Core
             snap.poeMaxLife = rules.life.Total(snap.exileLevel, snap.str, flatLife, totalIncLife, p.moreLifeMult);
         }
 
+        const double totalFlatEs = l1.flatEnergyShield + p.flatEnergyShield + gear.energyShield + gear.flatEnergyShield + aura.flatEs;
+        const double baseEsToMana = totalFlatEs * std::clamp(p.convertEsToManaPct / 100.0, 0.0, 1.0);
         if (snap.bloodMagic) {
             snap.poeMaxMana = 0.0;
         } else {
-            const double flatMana = l1.flatMana + p.flatMana + gear.flatMana;
+            const double flatMana = l1.flatMana + p.flatMana + gear.flatMana + baseEsToMana;
             const double totalIncMana = l1.incManaPct + p.incManaPct + gear.incManaPct;
             snap.poeMaxMana = rules.mana.Total(snap.exileLevel, snap.intel, flatMana, totalIncMana, p.moreManaMult);
         }
@@ -1146,9 +1328,8 @@ namespace SkyrimPoE::Core
         const double mapLessEvasion = snap.inActiveMap ? sanitizePenalty(snap.activeMapMods.playerLessEvasionPct, 75.0) : 0.0;
         const double mapResPen = snap.inActiveMap ? sanitizePenalty(snap.activeMapMods.playerMaxResPenalty, 25.0) : 0.0;
 
-        const double totalFlatEs = l1.flatEnergyShield + p.flatEnergyShield + gear.energyShield + gear.flatEnergyShield + aura.flatEs;
         const double totalIncEs = l1.incEnergyShieldPct + p.incEnergyShieldPct + gear.incEnergyShieldPct + aura.incEsPct;
-        snap.poeMaxEnergyShield = std::max(0.0, totalFlatEs * std::max(0.0, 1.0 + totalIncEs / 100.0));
+        snap.poeMaxEnergyShield = std::max(0.0, (totalFlatEs - baseEsToMana) * std::max(0.0, 1.0 + totalIncEs / 100.0));
         const double mapEsRechargeFactor = std::max(0.1, 1.0 - mapLessEsRecharge / 100.0);
         snap.esRechargeRateMult = std::max(0.1,
             (1.0 + (p.incEsRechargeRatePct + gear.incEsRechargeRatePct + aura.incEsRechargeRatePct) / 100.0) * mapEsRechargeFactor);
@@ -1160,12 +1341,21 @@ namespace SkyrimPoE::Core
         const double totalFlatArmour = l1.armour + p.flatArmour + gear.armour + gear.flatArmour +
             aura.flatArmour + cb.flatArmour + l2.moltenShellBonusArmour;
         const double totalFlatEvasion = rules.hit.baseEvasion + l1.evasion + p.flatEvasion + gear.evasion + gear.flatEvasion + aura.flatEvasion;
+        const bool onLowLife = !snap.chaosInoculation && l2.lowLife;
+        const double lowLifeArmourAndEvasionInc = onLowLife ? p.lowLifeArmourAndEvasionIncPct : 0.0;
         const double totalArmourIncPct = p.incArmourPct + p.incArmourAndEvasionPct +
-            gear.incArmourPct + gear.incArmourAndEvasionPct + aura.incArmourPct;
+            gear.incArmourPct + gear.incArmourAndEvasionPct + aura.incArmourPct +
+            lowLifeArmourAndEvasionInc + (l2.moving ? 0.0 : p.stationaryArmourIncPct);
         const double armourScaleMult = std::max(0.0, 1.0 + totalArmourIncPct / 100.0) * aura.moreArmourMult * mapArmourFactor;
-        const double rawArmour = totalFlatArmour * std::max(0.0, 1.0 + totalArmourIncPct / 100.0);
-        const double lowLifeEvasionInc = (!snap.chaosInoculation && l2.lowLife) ? gear.incEvasionOnLowLifePct : 0.0;
-        if (p.ironReflexes) {
+        // PoB's EvasionGainAsArmour uses the source base and the destination scaling,
+        // alongside EvasionConvertToArmour in the same resource pass.
+        const double baseExtraArmour = p.poe2 ? totalFlatEvasion * p.evasionAsExtraArmourPct / 100.0 : 0.0;
+        const double rawArmour = (totalFlatArmour + baseExtraArmour) * std::max(0.0, 1.0 + totalArmourIncPct / 100.0);
+        const double lowLifeEvasionInc = onLowLife ? gear.incEvasionOnLowLifePct : 0.0;
+        if (p.ironReflexes && p.poe2) {
+            snap.armour = (totalFlatArmour + totalFlatEvasion + baseExtraArmour) * armourScaleMult;
+            snap.evasion = 0.0;
+        } else if (p.ironReflexes) {
             const double convIncPct = p.incArmourPct + p.incEvasionPct + p.incArmourAndEvasionPct +
                 gear.incArmourPct + gear.incEvasionPct + gear.incArmourAndEvasionPct + aura.incArmourPct + lowLifeEvasionInc;
             const double convertedEvasion = std::max(0.0, totalFlatEvasion * std::max(0.0, 1.0 + convIncPct / 100.0));
@@ -1174,7 +1364,8 @@ namespace SkyrimPoE::Core
             snap.evasion = 0.0;
         } else {
             const double totalEvasionIncPct = p.incEvasionPct + p.incArmourAndEvasionPct +
-                gear.incEvasionPct + gear.incArmourAndEvasionPct + lowLifeEvasionInc;
+                gear.incEvasionPct + gear.incArmourAndEvasionPct + lowLifeEvasionInc + lowLifeArmourAndEvasionInc +
+                (l2.fullLife ? p.fullLifeEvasionIncPct : 0.0) + (l2.moving ? p.movingEvasionIncPct : 0.0);
             const double rawEvasion = std::max(0.0, totalFlatEvasion * std::max(0.0, 1.0 + totalEvasionIncPct / 100.0));
             snap.armour = rawArmour * aura.moreArmourMult * mapArmourFactor;
             snap.evasion = p.cannotEvade ? 0.0 : (rawEvasion * aura.moreEvasionMult * mapEvasionFactor);
@@ -1208,19 +1399,50 @@ namespace SkyrimPoE::Core
             l1.physDamageReduction + p.physDamageReduction + gear.physDamageReduction + aura.physDamageReduction + cb.physDamageReduction + endDR,
             0.0, rules.armour.physicalReductionCapPercent);
         snap.elementalDamageReduction = std::clamp(l1.elementalDamageReduction + endDR, 0.0, 90.0);
-        snap.attackBlockChance = std::clamp(l1.attackBlockChance + p.attackBlockChance + gear.attackBlock + gear.attackBlockChance,
-            0.0, BlockChanceLimit(l1.attackBlockMaxBonusPct + p.attackBlockMaxBonusPct + gear.attackBlockMaxBonusPct));
-        snap.spellBlockChance = std::clamp(l1.spellBlockChance + p.spellBlockChance + gear.spellBlockChance,
-            0.0, BlockChanceLimit(l1.spellBlockMaxBonusPct + p.spellBlockMaxBonusPct + gear.spellBlockMaxBonusPct));
-        snap.deflectionRating = std::max(0.0, l1.deflectionRating);
+        const double incBlock = std::max(0.0, 1.0 + p.incBlockChancePct / 100.0);
+        const auto blockCap = [&](double bonus) {
+            return p.baseBlockCapOverridePct > 0.0
+                ? std::min(p.baseBlockCapOverridePct, BlockChanceLimit(100.0)) : BlockChanceLimit(bonus);
+        };
+        snap.attackBlockChance = std::clamp((l1.attackBlockChance + p.attackBlockChance + gear.attackBlock + gear.attackBlockChance) * incBlock,
+            0.0, blockCap(l1.attackBlockMaxBonusPct + p.attackBlockMaxBonusPct + gear.attackBlockMaxBonusPct));
+        snap.spellBlockChance = std::clamp((l1.spellBlockChance + p.spellBlockChance + gear.spellBlockChance) * incBlock,
+            0.0, blockCap(l1.spellBlockMaxBonusPct + p.spellBlockMaxBonusPct + gear.spellBlockMaxBonusPct));
+        const double defenceAsDeflection = (snap.armour * p.armourAsDeflectionPct +
+            snap.evasion * p.evasionAsDeflectionPct) / 100.0;
+        const double deflectionInc = p.incDeflectionPct + (l2.moving ? p.movingDeflectionIncPct : 0.0);
+        snap.deflectionRating = std::max(0.0, l1.deflectionRating + p.flatDeflection +
+            defenceAsDeflection * std::max(0.0, 1.0 + deflectionInc / 100.0));
+        snap.deflectReductionBonusPct = p.deflectReductionBonusPct;
+        snap.armourAppliesPct = p.armourAppliesPct;
 
         // Mind Over Matter: Blood Magic/마나 0 빌드에서는 비활성(검수 C4)
         snap.momRatio = (!snap.bloodMagic && snap.poeMaxMana > 0.0)
             ? std::clamp(p.mindOverMatterRatio, 0.0, 1.0)
             : 0.0;
-        snap.lifeRegenPerSec = std::max(0.0, gear.lifeRegenPerSec);
-        snap.incManaRegenPct = gear.incManaRegenPct;
-        snap.incMovementSpeedPct = gear.incMovementSpeedPct + aura.incMovementSpeedPct;
+        const double lifeRegenInc = p.incLifeRegenPct + (onLowLife ? p.lowLifeLifeRegenIncPct : 0.0) +
+            (l2.moving ? p.movingLifeRegenIncPct : p.stationaryLifeRegenIncPct);
+        const double percentLifeRegen = p.percentLifeRegen + (onLowLife ? p.lowLifePercentLifeRegen : 0.0) +
+            (l2.moving ? 0.0 : p.stationaryPercentLifeRegen);
+        snap.lifeRegenPerSec = std::max(0.0, gear.lifeRegenPerSec + p.flatLifeRegen + snap.poeMaxLife * percentLifeRegen / 100.0) *
+            std::max(0.0, 1.0 + lifeRegenInc / 100.0) * std::max(0.0, 1.0 + p.incLifeRecoveryPct / 100.0);
+        snap.incManaRegenPct = gear.incManaRegenPct + p.incManaRegenPct +
+            (l2.fullLife ? p.fullLifeManaRegenIncPct : 0.0) + (l2.moving ? p.movingManaRegenIncPct : p.stationaryManaRegenIncPct);
+        snap.manaRecoveryMult = std::max(0.0, 1.0 + p.incManaRecoveryPct / 100.0) * p.manaRecoveryMult;
+        if (p.poe2) {
+            snap.nativeManaRegenMult = p.noInherentManaRegen ? 0.0 :
+                std::max(0.0, 1.0 + snap.incManaRegenPct / 100.0) * snap.manaRecoveryMult;
+        } else {
+            snap.manaRegenPerSec = std::max(0.0, gear.manaRegenPerSec + p.flatManaRegen +
+                snap.poeMaxMana * p.percentManaRegen / 100.0);
+        }
+        snap.incMovementSpeedPct = gear.incMovementSpeedPct + aura.incMovementSpeedPct + p.incMovementSpeedPct +
+            (gear.isDualWielding ? p.incDualWieldMovementSpeedPct : 0.0) +
+            (cb.activeMask != 0 ? p.incCharmMovementSpeedPct : 0.0);
+        snap.incSprintingMovementSpeedPct = p.incSprintingMovementSpeedPct;
+        snap.incEsMovementSpeedPct = p.incEsMovementSpeedPct;
+        snap.penetrationPct = p.penetrationPct;
+        snap.attackElementalPenetrationPct = p.attackElementalPenetrationPct;
 
         // 5단계(N-1): 패시브 상태이상 유발 확률 집계
         snap.igniteChancePct = std::clamp(p.igniteChancePct, 0.0, 100.0);
@@ -1276,7 +1498,7 @@ namespace SkyrimPoE::Core
                 snap.slotStats[i].level = slot.gem.level;
                 if (const auto* trigLv = def->GetLevel(slot.gem.level)) {
                     snap.slotStats[i].requirementMet = MeetsGemRequirements(*trigLv, snap);
-                    snap.slotStats[i].spiritCost = SpiritCost(*def, *trigLv);
+                    snap.slotStats[i].spiritCost = SpiritCost(*def, *trigLv, p);
                     snap.slotStats[i].auraActive = (snap.effectiveActiveAuraMask & (1u << i)) != 0;
                 }
                 if (!triggerLinkAccepted[i]) {

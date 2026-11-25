@@ -88,6 +88,9 @@
     "accuracyPerLevel": 6,
     "accuracyPerDexterity": 6
   },
+  "lifeState": {
+    "lowLifeFraction": 0.35
+  },
   "block": {
     "baseMaxPercent": 50,
     "capPercent": 90
@@ -2047,6 +2050,15 @@
         {
           "file": "Data/Misc.lua",
           "line": 155
+        }
+      ]
+    },
+    "lifeState.lowLifeFraction": {
+      "grade": "pob",
+      "references": [
+        {
+          "file": "Modules/Data.lua",
+          "line": 237
         }
       ]
     },

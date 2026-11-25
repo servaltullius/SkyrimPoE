@@ -10,7 +10,8 @@
 namespace SkyrimPoE::Core
 {
     inline constexpr std::uint32_t kRecordMigration = 'MIGR';
-    inline constexpr std::uint32_t kMigrationVersion = 1;
+    inline constexpr std::uint32_t kPreviousMigrationVersion = 1;
+    inline constexpr std::uint32_t kMigrationVersion = 2;
     inline constexpr std::uint32_t kLegacyCoreVersion = 2;
     inline constexpr std::uint8_t kMaxReturnAttempts = 5;
     inline constexpr double kLegacyDeltaTolerance = 0.01;
@@ -126,6 +127,8 @@ namespace SkyrimPoE::Core
         CleanupStep step = CleanupStep::Begin;
         double healthDelta = 0.0;
         double magickaDelta = 0.0;
+        double speedMultDelta = 0.0;
+        double magickaRateMultDelta = 0.0;
         bool deltasReverted = false;
         MigrationMapRun mapRun;
         bool mapRunClosed = false;
@@ -147,7 +150,7 @@ namespace SkyrimPoE::Core
         std::uint32_t unresolvedCount = 0; // Affected entries, counted once each.
     };
 
-    // v1 stores little-endian scalars, u32-prefixed strings/lists and a final GENR-style CRC.
+    // v2 adds the two player rate deltas before the final CRC and still reads v1.
     // Writing over the format's bounds throws std::length_error. No resolver means identity.
     [[nodiscard]] std::vector<std::uint8_t> WriteMigrationRecord(const MigrationState& state);
     [[nodiscard]] MigrationReadResult ReadMigrationRecord(std::uint32_t version,
@@ -158,6 +161,7 @@ namespace SkyrimPoE::Core
     struct LegacyReadReport
     {
         LegacyRecordStatus coreFront = LegacyRecordStatus::Missing;
+        LegacyRecordStatus playerRates = LegacyRecordStatus::Missing;
         bool slotsDamaged = false;
         LegacyRecordStatus gemKeys = LegacyRecordStatus::Missing;
         LegacyRecordStatus tree = LegacyRecordStatus::Missing;
@@ -180,7 +184,10 @@ namespace SkyrimPoE::Core
         std::uint32_t unresolvedCount = 0;
         std::string_view failureReason;
 
-        [[nodiscard]] bool Succeeded() const noexcept { return coreFront == LegacyRecordStatus::Valid; }
+        [[nodiscard]] bool Succeeded() const noexcept
+        {
+            return coreFront == LegacyRecordStatus::Valid && playerRates != LegacyRecordStatus::Damaged;
+        }
     };
 
     struct LegacyMigrationResult
@@ -199,7 +206,9 @@ namespace SkyrimPoE::Core
         const std::optional<SaveGeneration>& test, bool matchedCleanupLoad) noexcept;
 
     enum class DeltaTrust { Trusted, Untrusted };
-    [[nodiscard]] DeltaTrust JudgeLegacyDelta(double delta, double currentPermanentModifier) noexcept;
+    [[nodiscard]] DeltaTrust JudgeLegacyDelta(double delta, double modifier) noexcept;
+    [[nodiscard]] std::string_view CheckLegacyActorDeltas(const MigrationState& state, double permanentHealth,
+        double permanentMagicka, double temporarySpeedMult, double temporaryMagickaRateMult) noexcept;
 
     enum class StepOutcome { Done, Retry, Waiting };
 

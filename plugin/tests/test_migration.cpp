@@ -56,15 +56,20 @@ namespace
         return save;
     }
 
-    SaveRecordBatch EncodeLegacy(const Snapshot& snapshot)
+    SaveRecordBatch Encode(const Snapshot& snapshot, const SaveGeneration& pack)
     {
         SaveRecordBatch batch;
-        batch.complete = WriteSnapshot(snapshot, kPoE1Pack, [&](RawSaveRecord&& record) {
+        batch.complete = WriteSnapshot(snapshot, pack, [&](RawSaveRecord&& record) {
             batch.records.push_back(std::move(record));
             return true;
         });
         POE_CHECK(batch.complete);
         return batch;
+    }
+
+    SaveRecordBatch EncodeLegacy(const Snapshot& snapshot)
+    {
+        return Encode(snapshot, kPoE1Pack);
     }
 
     RawSaveRecord& FindRecord(SaveRecordBatch& batch, std::uint32_t type)
@@ -114,9 +119,11 @@ namespace
     }
 }
 
-POE_TEST("MIGR v1 round trips every field and preserves the original MAPS bytes")
+POE_TEST("MIGR v2 round trips every field and preserves the original MAPS bytes")
 {
-    const auto state = FullMigration();
+    auto state = FullMigration();
+    state.speedMultDelta = 17.5;
+    state.magickaRateMultDelta = -30.25;
     const auto bytes = WriteMigrationRecord(state);
     const auto parsed = ReadMigrationRecord(kMigrationVersion, bytes);
     POE_CHECK(parsed.status == MigrationRecordStatus::Valid);
@@ -130,7 +137,7 @@ POE_TEST("MIGR v1 round trips every field and preserves the original MAPS bytes"
     POE_CHECK(std::ranges::equal(std::span(bytes).first(prefix.size()), prefix));
 }
 
-POE_TEST("MIGR v1 rejects every truncated prefix, bad CRC, extra bytes and unsupported versions")
+POE_TEST("MIGR v2 rejects every truncated prefix, bad CRC, extra bytes and unsupported versions")
 {
     const auto bytes = WriteMigrationRecord(FullMigration());
     for (std::size_t size = 0; size < bytes.size(); ++size) {
@@ -147,7 +154,7 @@ POE_TEST("MIGR v1 rejects every truncated prefix, bad CRC, extra bytes and unsup
     CheckDamaged(corrupted);
 }
 
-POE_TEST("MIGR v1 enforces sizes and enum ranges even with a valid CRC")
+POE_TEST("MIGR v2 enforces sizes and enum ranges even with a valid CRC")
 {
     auto state = FullMigration();
     auto bytes = WriteMigrationRecord(state);
@@ -186,7 +193,7 @@ POE_TEST("MIGR v1 enforces sizes and enum ranges even with a valid CRC")
     CheckDamaged(WriteMigrationRecord(state));
 }
 
-POE_TEST("MIGR v1 remaps FormIDs, isolates losses and keeps the jewel color fallback")
+POE_TEST("MIGR v2 remaps FormIDs, isolates losses and keeps the jewel color fallback")
 {
     const auto state = FullMigration();
     const auto result = ReadMigrationRecord(kMigrationVersion, WriteMigrationRecord(state),
@@ -261,6 +268,129 @@ POE_TEST("Legacy migration collects deepest gems first and carries GKEY GEAR SPR
     POE_CHECK(state.worldDrops == expectedDrops);
     auto& map = FindRecord(batch, kRecordMaps);
     POE_CHECK(state.mapRun.active && state.mapRun.version == map.version && state.mapRun.bytes == map.bytes);
+}
+
+POE_TEST("GEAR v1 and v2 keep the same generation-zero socket, virtual gear and cleanup returns")
+{
+    const auto snapshot = LegacySnapshot();
+    auto batch = EncodeLegacy(snapshot);
+    const auto& v2 = FindRecord(batch, kRecordGear);
+    POE_CHECK(v2.version == kGearVersion);
+    std::span<const std::uint8_t> v2Body = v2.bytes;
+    GearHeader header;
+    POE_CHECK(ReadGearHeader(v2.version, v2Body, header));
+    POE_CHECK(header.jewelGeneration == 0 && header.jewelCount == 1);
+    POE_CHECK(header.ring2Key == snapshot.state.virtualRing2Key && header.beltKey == snapshot.state.virtualBeltKey);
+    POE_CHECK(header.charms[1].occupied && header.charms[1].charges == 30.0);
+    POE_CHECK(v2Body.size() >= sizeof(std::uint32_t));
+    std::uint32_t nodeId = 0;
+    std::memcpy(&nodeId, v2Body.data(), sizeof(nodeId));
+    POE_CHECK(nodeId == 42);
+    const auto v2Cleanup = Build(batch);
+    POE_CHECK(v2Cleanup.report.gear == LegacyRecordStatus::Valid && v2Cleanup.report.Succeeded());
+
+    auto old = batch;
+    auto& v1 = FindRecord(old, kRecordGear);
+    v1.version = kLegacyGearVersion;
+    const auto bodyOffset = v2Body.data() - v2.bytes.data();
+    v1.bytes.erase(v1.bytes.begin() + bodyOffset - sizeof(std::uint32_t), v1.bytes.begin() + bodyOffset);
+    std::span<const std::uint8_t> v1Body = v1.bytes;
+    header.jewelGeneration = 99;
+    POE_CHECK(ReadGearHeader(v1.version, v1Body, header));
+    POE_CHECK(header.jewelGeneration == 0 && header.jewelCount == 1 && std::ranges::equal(v1Body, v2Body));
+    POE_CHECK(DecideSave(old, false, kPoE1Pack).disposition == SaveDisposition::Normal);
+    POE_CHECK(DecideSave(batch, false, kPoE1Pack).disposition == SaveDisposition::Normal);
+    const auto v1Cleanup = Build(old);
+    POE_CHECK(v1Cleanup.report.gear == LegacyRecordStatus::Valid && v1Cleanup.report.Succeeded());
+    POE_CHECK(v1Cleanup.state == v2Cleanup.state);
+    POE_CHECK(v1Cleanup.state.returns.back().kind == ReturnKind::Jewel &&
+        v1Cleanup.state.returns.back().baseFormId == kJewel);
+}
+
+POE_TEST("GEAR sockets from another tree generation preserve the original records")
+{
+    auto snapshot = LegacySnapshot();
+    auto gen0 = EncodeLegacy(snapshot);
+    snapshot.state.tree.generation = kPoE2Pack.contentGeneration;
+    auto gen1 = Encode(snapshot, kPoE2Pack);
+    auto& gear = FindRecord(gen1, kRecordGear);
+    std::span<const std::uint8_t> body = gear.bytes;
+    GearHeader header;
+    POE_CHECK(ReadGearHeader(gear.version, body, header));
+    POE_CHECK(header.jewelGeneration == 1 && header.jewelCount == 1);
+    POE_CHECK(DecideSave(gen1, false, kPoE2Pack).disposition == SaveDisposition::Normal);
+
+    auto& oldGear = FindRecord(gen0, kRecordGear);
+    std::swap(gear, oldGear);
+    const auto checkPreserved = [](const SaveRecordBatch& batch, const SaveGeneration& pack) {
+        const auto decision = DecideSave(batch, false, pack);
+        POE_CHECK(decision.disposition == SaveDisposition::Preserve && decision.reason.find("GEAR") != std::string::npos);
+        std::vector<RawSaveRecord> replayed;
+        POE_CHECK(ReplaySaveRecords(batch, [&](const RawSaveRecord& record) {
+            replayed.push_back(record);
+            return true;
+        }));
+        POE_CHECK(replayed == batch.records);
+    };
+    checkPreserved(gen1, kPoE2Pack);
+    checkPreserved(gen0, kPoE1Pack);
+    checkPreserved(gen0, kPoE2Pack);
+
+    body = gear.bytes;
+    POE_CHECK(ReadGearHeader(gear.version, body, header));
+    const auto bodyOffset = body.data() - gear.bytes.data();
+    gear.bytes.erase(gear.bytes.begin() + bodyOffset - sizeof(std::uint32_t), gear.bytes.begin() + bodyOffset);
+    gear.version = kLegacyGearVersion;
+    checkPreserved(gen1, kPoE2Pack);
+}
+
+POE_TEST("Legacy migration carries both PRAT deltas and reads pre-PRAT saves as zero")
+{
+    auto save = LegacySnapshot();
+    save.state.appliedSpeedMultDelta = 25.0;
+    save.state.appliedMagickaRateMultDelta = -40.0;
+    auto batch = EncodeLegacy(save);
+    const auto candidate = Build(batch);
+    POE_CHECK(candidate.report.Succeeded());
+    POE_CHECK(candidate.report.playerRates == LegacyRecordStatus::Valid);
+    POE_CHECK_NEAR(candidate.state.speedMultDelta, 25.0, 1e-6);
+    POE_CHECK_NEAR(candidate.state.magickaRateMultDelta, -40.0, 1e-6);
+    const auto remove = ReconcilePlayerRates(135.0, 50.0,
+        { candidate.state.speedMultDelta, candidate.state.magickaRateMultDelta }, 1.0, 1.0);
+    POE_CHECK_NEAR(135.0 + remove.changeSpeedMult, 110.0, 1e-6);
+    POE_CHECK_NEAR(50.0 + remove.changeMagickaRateMult, 90.0, 1e-6);
+    POE_CHECK(remove.applied == PlayerRateDeltas{});
+
+    auto bytes = WriteMigrationRecord(candidate.state);
+    auto endOfPayload = bytes.end() - sizeof(std::uint32_t);
+    bytes.erase(endOfPayload - 2 * sizeof(double), endOfPayload);
+    RefreshCrc(bytes);
+    const auto oldMigration = ReadMigrationRecord(kPreviousMigrationVersion, bytes);
+    POE_CHECK(oldMigration.status == MigrationRecordStatus::Valid);
+    auto withoutDeltas = candidate.state;
+    withoutDeltas.speedMultDelta = 0.0;
+    withoutDeltas.magickaRateMultDelta = 0.0;
+    POE_CHECK(oldMigration.state == withoutDeltas);
+
+    std::erase_if(batch.records, [](const auto& record) { return record.type == kRecordPlayerRates; });
+    const auto oldSave = Build(batch);
+    POE_CHECK(oldSave.report.Succeeded() && oldSave.report.playerRates == LegacyRecordStatus::Missing);
+    POE_CHECK(oldSave.state == withoutDeltas);
+}
+
+POE_TEST("Legacy migration preserves a damaged or duplicate PRAT before engine state is changed")
+{
+    auto batch = EncodeLegacy(LegacySnapshot());
+    std::erase_if(batch.records, [](const auto& record) { return record.type == kRecordGeneration; });
+    POE_CHECK(DecideSave(batch, false, kPoE2Pack).disposition == SaveDisposition::CleanupFromLegacy);
+    const auto valid = FindRecord(batch, kRecordPlayerRates);
+    FindRecord(batch, kRecordPlayerRates).bytes.pop_back();
+    POE_CHECK(DecideSave(batch, false, kPoE2Pack).disposition == SaveDisposition::Preserve);
+    POE_CHECK(!Build(batch).report.Succeeded());
+    FindRecord(batch, kRecordPlayerRates) = valid;
+    batch.records.push_back(valid);
+    const auto duplicate = Build(batch);
+    POE_CHECK(!duplicate.report.Succeeded() && duplicate.report.playerRates == LegacyRecordStatus::Damaged);
 }
 
 POE_TEST("Legacy CORE keeps raw deltas when slots are broken and fails on damage to its front")
@@ -355,6 +485,27 @@ POE_TEST("Legacy delta trust accepts the margin boundary in both directions")
         POE_CHECK(JudgeLegacyDelta(sign * 0.012, sign * 0.002) == Trusted);
         POE_CHECK(JudgeLegacyDelta(sign * 0.0121, sign * 0.002) == Untrusted);
     }
+}
+
+POE_TEST("Cleanup gate verifies both saved rate deltas against engine temporary modifiers")
+{
+    auto snapshot = LegacySnapshot();
+    snapshot.state.appliedSpeedMultDelta = 12.01;
+    snapshot.state.appliedMagickaRateMultDelta = -8.01;
+    const auto candidate = Build(EncodeLegacy(snapshot));
+    POE_CHECK(candidate.report.Succeeded());
+    const auto check = [&](double speed, double magickaRate) {
+        return CheckLegacyActorDeltas(candidate.state, 21.75, -6.25, speed, magickaRate);
+    };
+    POE_CHECK(check(12.0, -8.0).empty());
+    POE_CHECK(!check(0.0, -8.0).empty());
+    POE_CHECK(!check(-12.0, -8.0).empty());
+    POE_CHECK(!check(11.99, -8.0).empty());
+    POE_CHECK(!check(12.0, 0.0).empty());
+    POE_CHECK(!check(12.0, 8.0).empty());
+    POE_CHECK(!check(12.0, -7.99).empty());
+    POE_CHECK(!check(12.0, std::numeric_limits<double>::infinity()).empty());
+    POE_CHECK(CheckLegacyActorDeltas({}, 0.0, 0.0, 0.0, 0.0).empty());
 }
 
 POE_TEST("Legacy gem returns deduplicate nonzero instances shared by CORE and GKEY")

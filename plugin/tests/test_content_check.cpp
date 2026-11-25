@@ -225,7 +225,7 @@ POE_TEST("UiBuildCheck: classifies every known operation and treats unknown oper
     constexpr std::string_view readOnly[] = { "close", "refresh", "treeSearchFocus", "switchTab" };
     constexpr std::string_view stateChanging[] = {
         "equip", "unequip", "socket", "unsocket", "link", "toggleAura",
-        "treeAllocatePath", "treeRefundNode", "treeRefundAll", "treeSelectClass", "treeSelectAscendancy",
+        "treeAllocatePath", "treeSetAttribute", "treeRefundNode", "treeRefundAll", "treeSelectClass", "treeSelectAscendancy",
         "treeClearAscendancy", "treeSelectMastery", "treeSocketJewel", "treeUnsocketJewel",
         "gearIdentifyToken", "gearIdentifyUnique", "gearApplyOrb", "gearApplyJeweller",
         "gearEquipRing2", "gearUnequipRing2", "gearEquipBelt", "gearUnequipBelt", "gearEquipCharm", "gearUnequipCharm",

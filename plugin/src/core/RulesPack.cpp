@@ -127,6 +127,7 @@ namespace SkyrimPoE::Core
             }
 
             RuleValues rules;
+            rules.lowLifeFraction = Number(root.at("lifeState"), "lowLifeFraction", kPositive, 1.0);
             {
                 const auto& object = root.at("armour");
                 rules.armour = {

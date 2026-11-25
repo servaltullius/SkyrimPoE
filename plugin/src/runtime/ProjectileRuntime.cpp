@@ -1,4 +1,6 @@
 #include "PCH.h"
+#include "core/DamageConversion.h"
+#include "core/ProjectileStats.h"
 #include "runtime/ProjectileRuntime.h"
 #include "runtime/AilmentRuntime.h"
 #include "runtime/CombatHooks.h"
@@ -8,6 +10,7 @@
 #include "runtime/SkillExecution.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -19,6 +22,14 @@
 
 namespace SkyrimPoE::Runtime
 {
+    AilmentRuntime::SpellHit RollSpellHit(const Core::TriggeredSpellCast& cast,
+        double damageRoll01, double critRoll01, double damageMultiplier,
+        Core::TargetAilmentHitDamage& targetHit) noexcept;
+    bool DealSpellHit(RE::Actor* target, const AilmentRuntime::SpellHit& hit,
+        Core::DamageType dominantType, bool isDirectHit, const Core::TargetAilmentHitDamage& targetHit);
+    std::size_t ExecuteSpellNova(const RE::NiPoint3& origin, float radius, const AilmentRuntime::SpellHit& hit,
+        RE::FormID vfxId, Core::DamageType dominantType, const Core::TargetAilmentHitDamage& targetHit);
+
     namespace
     {
         using Clock = std::chrono::steady_clock;
@@ -180,6 +191,9 @@ namespace SkyrimPoE::Runtime
             RE::Projectile::LaunchData data(baseProj, shooter ? shooter : player, origin, angles);
             data.useOrigin = true;
             data.autoAim = false;
+            // AE 1.6.1170 copies launch power to the projectile. Without a MagicItem,
+            // MissileProjectile and GrenadeProjectile use that value in GetPowerSpeedMult.
+            data.power *= static_cast<float>(cast.projectileSpeedMult);
             RE::Projectile::Launch(&handle, data);
             if (!handle) {
                 return;
@@ -292,7 +306,8 @@ namespace SkyrimPoE::Runtime
             std::uniform_real_distribution<double> u01(0.0, 1.0);
             std::vector<RE::FormID> hitIds;
             RE::Actor* current = firstTarget;
-            const std::uint8_t totalChains = cast.chainCount;
+            const std::uint8_t totalChains = Core::RollCastChainCount(cast.chainCount, cast.additionalChainChancePct,
+                [&] { return u01(ProjRng()); });
             const auto domType = DominantDamageTypeOf(cast.poeBaseHitDamage);
 
             for (std::uint8_t hop = 0; hop <= totalChains && current; ++hop) {
@@ -300,9 +315,10 @@ namespace SkyrimPoE::Runtime
                 const std::uint8_t remainingChains = static_cast<std::uint8_t>(totalChains - hop);
                 const double arcMore = 1.0 + static_cast<double>(remainingChains) * (cast.arcRemainingChainMorePct / 100.0);
 
-                const auto hit = AilmentRuntime::RollSpellHit(cast, u01(ProjRng()), u01(ProjRng()), arcMore);
+                Core::TargetAilmentHitDamage targetHit;
+                const auto hit = RollSpellHit(cast, u01(ProjRng()), u01(ProjRng()), arcMore, targetHit);
                 SkillExecution::SpawnHarmlessVfx(ActorAimCenter(current), FormIds::kVfxShockNova);
-                if (AilmentRuntime::DealSpellHit(current, hit, domType, hop == 0) &&
+                if (DealSpellHit(current, hit, domType, hop == 0, targetHit) &&
                     hit.isCrit && Core::HasElementalHitDamage(hit.poeDamage)) {
                     CombatHooks::NotifyPlayerElementalCrit();
                 }
@@ -386,7 +402,8 @@ namespace SkyrimPoE::Runtime
             }
 
             std::uniform_real_distribution<double> u01(0.0, 1.0);
-            const auto hit = AilmentRuntime::RollSpellHit(shot.cast, u01(ProjRng()), u01(ProjRng()));
+            Core::TargetAilmentHitDamage targetHit;
+            const auto hit = RollSpellHit(shot.cast, u01(ProjRng()), u01(ProjRng()), 1.0, targetHit);
             const auto domType = DominantDamageTypeOf(shot.cast.poeBaseHitDamage);
             const bool elementalCrit = hit.isCrit && Core::HasElementalHitDamage(hit.poeDamage);
             bool anyElemCritHit = false;
@@ -398,7 +415,7 @@ namespace SkyrimPoE::Runtime
                 const auto splashTargets = SkillExecution::CollectHostileTargets(player, location, splashRadius);
                 for (const auto& st : splashTargets) {
                     if (!st || (hitActor && st.get() == hitActor)) continue;
-                    if (AilmentRuntime::DealSpellHit(st.get(), hit, domType, false) && elementalCrit) {
+                    if (DealSpellHit(st.get(), hit, domType, false, targetHit) && elementalCrit) {
                         anyElemCritHit = true;
                     }
                 }
@@ -411,7 +428,7 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            if (AilmentRuntime::DealSpellHit(hitActor, hit, domType, shot.generation == 0 && shot.isAimedPrimary) &&
+            if (DealSpellHit(hitActor, hit, domType, shot.generation == 0 && shot.isAimedPrimary, targetHit) &&
                 elementalCrit) {
                 anyElemCritHit = true;
             }
@@ -429,20 +446,24 @@ namespace SkyrimPoE::Runtime
 
             // PoE1 재발사 우선순위: 관통(Pierce) > 분기(Fork) > 연쇄(Chain)
             // 프로토타입 6 3차 검증: 모든 재발사에 shooter = hitActor + clearance + lift 적용!
-            if (shot.alwaysPierce || shot.remainingPierce > 0) {
-                const std::uint8_t nextPierce = shot.alwaysPierce ? shot.remainingPierce : static_cast<std::uint8_t>(shot.remainingPierce - 1);
+            const auto roll = [&] { return u01(ProjRng()); };
+            const auto pierce = Core::RollProjectilePierce(shot.remainingPierce, shot.alwaysPierce,
+                shot.cast.projectilePierceChancePct, roll);
+            if (pierce.pierced) {
                 auto nextOrigin = location + travelDir * clearance;
                 nextOrigin.z += kRelaunchLift * 0.35f;
                 LaunchSingleMissile(
                     shot.projLocalId, nextOrigin, travelDir, hitActor, shot.cast,
-                    nextPierce, shot.remainingChain, shot.canFork, shot.alwaysPierce,
+                    pierce.remainingPierces, shot.remainingChain, shot.canFork, shot.alwaysPierce,
                     static_cast<std::uint8_t>(shot.generation + 1), shot.allyPassHops,
                     false,
                     std::move(nextHitList));
             } else if (shot.canFork) {
                 constexpr float kForkAngleRad = static_cast<float>(std::numbers::pi / 3.0);  // ±60°
-                for (float sign : { -1.0f, 1.0f }) {
-                    const auto forkDir = RotateYaw(travelDir, sign * kForkAngleRad);
+                constexpr std::array yawOffsets { -kForkAngleRad, kForkAngleRad, 0.0f };
+                const auto forkCount = Core::RollForkedProjectileCount(shot.cast.additionalForkProjectileChancePct, roll);
+                for (std::uint8_t i = 0; i < forkCount; ++i) {
+                    const auto forkDir = RotateYaw(travelDir, yawOffsets[i]);
                     auto nextOrigin = location + forkDir * clearance;
                     nextOrigin.z += kRelaunchLift;
                     LaunchSingleMissile(
@@ -606,12 +627,13 @@ namespace SkyrimPoE::Runtime
         // 1) 범위 노바 주문(IceNova / ShockNova)
         if (cast.gemId == "IceNova" || cast.gemId == "ShockNova") {
             std::uniform_real_distribution<double> u01(0.0, 1.0);
-            const auto hit = AilmentRuntime::RollSpellHit(cast, u01(ProjRng()), u01(ProjRng()));
+            Core::TargetAilmentHitDamage targetHit;
+            const auto hit = RollSpellHit(cast, u01(ProjRng()), u01(ProjRng()), 1.0, targetHit);
             const RE::FormID vfxId = (cast.gemId == "ShockNova") ? FormIds::kVfxShockNova : FormIds::kVfxIceNova;
             const float radius = static_cast<float>(kBaseNovaRadius * std::clamp(cast.areaMult, 0.5, 2.5));
             const auto domType = DominantDamageTypeOf(cast.poeBaseHitDamage);
             const auto center = cast.isHandCast ? player->GetPosition() : aimOrigin;
-            const auto hits = AilmentRuntime::ExecuteSpellNova(center, radius, hit, vfxId, domType);
+            const auto hits = ExecuteSpellNova(center, radius, hit, vfxId, domType, targetHit);
             if (hits > 0 && hit.isCrit && Core::HasElementalHitDamage(hit.poeDamage)) {
                 CombatHooks::NotifyPlayerElementalCrit();
             }
@@ -630,7 +652,11 @@ namespace SkyrimPoE::Runtime
             SKSE::log::warn("ProjectileRuntime: unsupported projectile gemId '{}' — skipping launch.", cast.gemId);
             return false;
         }
-        const std::uint8_t count = std::max<std::uint8_t>(1, cast.projectileCount);
+        std::uniform_real_distribution<double> u01(0.0, 1.0);
+        const auto roll = [&] { return u01(ProjRng()); };
+        const auto count = Core::RollCastProjectileCount(cast.projectileCount, cast.additionalProjectileChancePct,
+            cast.additionalSpellProjectilesChancePct, roll);
+        const auto chains = Core::RollCastChainCount(cast.chainCount, cast.additionalChainChancePct, roll);
         const float spreadStepRad = (cast.gemId == "Spark") ? 0.24f : 0.12f;
         // 결정 111(C-21, 재검수 R-8): 첫 발(i == 0)은 언제나 조준선 그대로 날아가는 조준탄이고, 나머지는 그 양옆으로
         // 0, -s, +s, -2s, +2s ... 순서로 벌린다. 홀수 발수는 예전과 같은 대칭 부채꼴이 되고, 짝수 발수도
@@ -643,7 +669,7 @@ namespace SkyrimPoE::Runtime
             const bool isAimedPrimary = (i == 0);
             LaunchSingleMissile(
                 projLocalId, aimOrigin, dir, player, cast,
-                cast.pierceCount, cast.chainCount, cast.forkEnabled, cast.alwaysPierce,
+                cast.pierceCount, chains, cast.forkEnabled, cast.alwaysPierce,
                 0, 0, isAimedPrimary, {});
         }
         return true;
@@ -715,8 +741,14 @@ namespace SkyrimPoE::Runtime
             return;
         }
         const double avgPoe = 0.5 * (snap.heraldOfIceExplosionMin + snap.heraldOfIceExplosionMax);
-        const double skDmg = Core::ConvertOffenseHit(avgPoe, snap.exileLevel, *g_dataPack, *g_config);
-        (void)SkillExecution::ExecuteAoESpell(origin, 260.0f, skDmg, FormIds::kVfxIceNova, Core::DamageType::Cold);
+        Core::DamagePacket damage;
+        damage.byType[static_cast<std::size_t>(Core::DamageType::Cold)] = { avgPoe, avgPoe };
+        if (snap.poe2Passives) {
+            Core::ConvertGlobalHitDamage(damage, snap.passiveAilments, false);
+            if (snap.passiveAilments.dealOnlyFire) Core::RestrictToFire(damage);
+        }
+        const double skDmg = Core::ConvertOffenseHit(damage.TotalAverage(), snap.exileLevel, *g_dataPack, *g_config);
+        (void)SkillExecution::ExecuteAoESpell(origin, 260.0f, skDmg, FormIds::kVfxIceNova, DominantDamageTypeOf(damage));
     }
 
     void ProjectileRuntime::TriggerHeraldOfAshBurst(

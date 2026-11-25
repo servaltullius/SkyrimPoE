@@ -1,5 +1,6 @@
 #include "core/AilmentSystem.h"
 #include "core/RulesPack.h"
+#include "core/StatEngine.h"
 
 #include <algorithm>
 #include <cmath>
@@ -57,7 +58,7 @@ namespace SkyrimPoE::Core
         }
 
         double DamageDuring(std::vector<AilmentInstance>& instances, double deltaSec,
-            std::size_t maxActive, double movementMultiplier, bool moving)
+            std::size_t maxActive, double movementMultiplier, bool moving, double* chaosDamage = nullptr)
         {
             const auto effectiveDps = [movementMultiplier, moving](const AilmentInstance& instance) {
                 return instance.magnitude * ((moving || instance.aggravated) ? movementMultiplier : 1.0);
@@ -67,15 +68,21 @@ namespace SkyrimPoE::Core
             for (double start = 0.0; start < deltaSec;) {
                 double end = deltaSec;
                 double dps = 0.0;
+                double chaosDps = 0.0;
                 std::size_t active = 0;
                 for (const auto& instance : instances) {
                     if (instance.remaining <= start) continue;
                     if (active == maxActive) break;
                     ++active;
-                    dps += effectiveDps(instance);
+                    if (chaosDamage && instance.chaosIgnite) {
+                        chaosDps += effectiveDps(instance);
+                    } else {
+                        dps += effectiveDps(instance);
+                    }
                     end = std::min(end, instance.remaining);
                 }
                 if (active == 0) break;
+                if (chaosDamage) *chaosDamage += chaosDps * (end - start);
                 damage += dps * (end - start);
                 start = end;
             }
@@ -121,14 +128,73 @@ namespace SkyrimPoE::Core
     {
         const double roll = std::clamp(std::isfinite(roll01) ? roll01 : 0.5, 0.0, 1.0);
         DamagePacket rolled;
-        for (std::size_t i = 0; i < packet.byType.size(); ++i) {
-            const auto& range = packet.byType[i];
+        const auto rollRange = [&](const DamageRange& range) {
             const double low = std::max(0.0, std::min(range.min, range.max));
             const double high = std::max(low, std::max(range.min, range.max));
             const double damage = (low + (high - low) * roll) * multiplier;
-            rolled.byType[i] = { damage, damage };
+            return DamageRange{ damage, damage };
+        };
+        for (std::size_t i = 0; i < packet.byType.size(); ++i) {
+            rolled.byType[i] = rollRange(packet.byType[i]);
+        }
+        for (std::size_t i = 0; i < packet.targetAilmentExtra.size(); ++i) {
+            rolled.targetAilmentExtra[i] = rollRange(packet.targetAilmentExtra[i]);
         }
         return rolled;
+    }
+
+    bool ResolveTargetAilmentExtra(DamagePacket& packet, bool frozen, bool shocked, bool chilled) noexcept
+    {
+        const std::array active{ frozen, shocked, chilled };
+        bool any = false;
+        for (std::size_t i = 0; i < active.size(); ++i) {
+            const auto& extra = packet.targetAilmentExtra[i];
+            if (active[i] && extra.max > 0.0) {
+                auto& damage = packet.byType[static_cast<std::size_t>(DamageType::Fire) + i];
+                damage.min += extra.min;
+                damage.max += extra.max;
+                any = true;
+            }
+        }
+        packet.targetAilmentExtra = {};
+        return any;
+    }
+
+    bool ResolveTargetAilmentHit(DamagePacket& packet, const TargetAilmentHitDamage& modifiers,
+        const ActorAilmentState* state, DamagePacket& ailmentDamage) noexcept
+    {
+        const bool frozen = state && state->poise[Index(PoiseKind::Freeze)].activeRemaining > 0.0;
+        const bool shocked = state && state->shockRemaining > 0.0;
+        const bool chilled = state && state->chillRemaining > 0.0;
+        const bool hasExtra = ResolveTargetAilmentExtra(packet, frozen, shocked, chilled);
+        ailmentDamage = packet;
+        if (!state || !modifiers.HasModifiers()) {
+            return hasExtra;
+        }
+
+        const bool ignited = state->igniteRemaining > 0.0;
+        const bool elemental = frozen || shocked || chilled || ignited;
+        const bool affected = elemental || state->bleedRemaining > 0.0 || state->activePoisonCount > 0;
+        const double bonusPct =
+            (elemental ? modifiers.againstElementalAilmentsPct : 0.0) +
+            (affected ? modifiers.againstAnyAilmentsPct : 0.0) +
+            (ignited ? modifiers.againstIgnitedPct : 0.0) +
+            (ignited ? modifiers.againstBurningPct : 0.0) +
+            (frozen ? modifiers.againstFrozenPct : 0.0);
+        if (bonusPct == 0.0) {
+            return hasExtra;
+        }
+        auto basis = modifiers.basis;
+        (void)ResolveTargetAilmentExtra(basis, frozen, shocked, chilled);
+        for (std::size_t i = 0; i < packet.byType.size(); ++i) {
+            const double incRatio = modifiers.increasedPct[i] / 100.0;
+            const double delta = std::max(0.0, 1.0 + incRatio + bonusPct / 100.0) -
+                std::max(0.0, 1.0 + incRatio);
+            auto& hit = packet.byType[i];
+            hit.min = std::max(0.0, hit.min + basis.byType[i].min * delta);
+            hit.max = std::max(0.0, hit.max + basis.byType[i].max * delta);
+        }
+        return true;
     }
 
     bool HasElementalHitDamage(const DamagePacket& packet) noexcept
@@ -141,12 +207,13 @@ namespace SkyrimPoE::Core
         return false;
     }
 
-    void Flammability::AddHit(double fireDamage, double ailmentThreshold, double duration, double baseChancePct)
+    void Flammability::AddHit(double fireDamage, double ailmentThreshold, double duration, double baseChancePct,
+        double increasedPct)
     {
         if (fireDamage > 0.0 && ailmentThreshold > 0.0 && duration > 0.0) {
             const auto& rule = ActiveRuleValues().ignite;
             const double magnitude = ThresholdAilmentChance(fireDamage, ailmentThreshold,
-                rule.chanceMultiplier, Positive(baseChancePct));
+                rule.chanceMultiplier, Positive(baseChancePct), increasedPct);
             stacks_.push_back({ magnitude, duration });
         }
     }
@@ -189,7 +256,7 @@ namespace SkyrimPoE::Core
         }
         const auto& rules = ActiveRuleValues();
         const double physHit = Positive(in.physHitPoe);
-        const double fireHit = Positive(in.fireHitPoe);
+        const double fireHit = Positive(in.fireHitPoe) + (in.chaosContributesToIgnite ? Positive(in.chaosHitPoe) : 0.0);
         const double coldHit = Positive(in.coldHitPoe);
         const double lightningHit = Positive(in.lightningHitPoe);
         const double poisonBase = physHit + Positive(in.chaosHitPoe);
@@ -201,31 +268,41 @@ namespace SkyrimPoE::Core
 
         auto& st = states_[targetActorId];
         st.AdvanceTo(now, isMoving);
-        const auto add = [&st](AilmentKind kind, double magnitude, double duration, bool aggravated = false) {
-            return AddInstance(st.instances[Index(kind)], { magnitude, duration, aggravated });
+        const auto add = [&st, &in, &rules, unique](AilmentKind kind, double magnitude, double duration, bool aggravated = false) {
+            const auto& mods = in.modifiers[Index(kind)];
+            const double speed = std::max(0.01, 1.0 + mods.damageFasterPct / 100.0);
+            magnitude *= std::max(0.0, 1.0 + (in.ailmentMagnitudeIncPct + mods.magnitudeIncPct) / 100.0) * speed;
+            duration *= std::max(0.0, 1.0 + mods.durationIncPct / 100.0) / speed;
+            if (kind == AilmentKind::Chill) {
+                const double chillPercent = std::min(magnitude * 100.0, rules.chill.maxPercent);
+                if (chillPercent < rules.chill.minPercent) return false;
+                magnitude = chillPercent / 100.0 * rules.chill.SlowEffectMultiplier(in.targetRarity, unique);
+            }
+            if (magnitude <= 0.0 || duration <= 0.0) return false;
+            return AddInstance(st.instances[Index(kind)], { magnitude, duration, aggravated,
+                kind == AilmentKind::Ignite && in.igniteDealsChaos });
+        };
+        const auto chanceInc = [&in](AilmentKind kind) {
+            return in.ailmentChanceIncPct + in.modifiers[Index(kind)].chanceIncPct;
         };
         if (!in.targetElementalImmune && ailmentThreshold > 0.0) {
             if (fireHit > 0.0) {
                 st.flammability.AddHit(fireHit, ailmentThreshold, rules.ignite.flammabilityEnemyDurationSeconds,
-                    in.igniteChancePct);
+                    in.igniteChancePct, chanceInc(AilmentKind::Ignite) + in.flammabilityIncPct);
                 if (RollsHit(st.flammability.ChancePercent(), in.igniteRoll01)) {
                     const double dps = fireHit * (rules.ignite.damagePercentPerMinute * kPercentPerMinuteToRatioPerSecond);
                     res.appliedIgnite = add(AilmentKind::Ignite, dps, rules.ignite.durationSeconds);
                 }
             }
 
-            const double rawChillPercent = RawChillPercent(coldHit, ailmentThreshold);
-            const double chillPercent = std::min(rawChillPercent, rules.chill.maxPercent);
-            if (coldHit > 0.0 && chillPercent >= rules.chill.minPercent) {
-                const double chillRatio = chillPercent / 100.0 * rules.chill.SlowEffectMultiplier(in.targetRarity, unique);
-                if (chillRatio > 0.0) {
-                    res.appliedChill = add(AilmentKind::Chill, chillRatio, rules.chill.enemyDurationSeconds);
-                }
+            if (coldHit > 0.0) {
+                res.appliedChill = add(AilmentKind::Chill, RawChillPercent(coldHit, ailmentThreshold) / 100.0,
+                    rules.chill.enemyDurationSeconds);
             }
 
             const double shockBase = lightningHit + (in.starforgeShock ? physHit : 0.0);
             const double shockChance = ThresholdAilmentChance(shockBase, ailmentThreshold,
-                rules.shock.chanceMultiplier, Positive(in.shockChancePct));
+                rules.shock.chanceMultiplier, Positive(in.shockChancePct), chanceInc(AilmentKind::Shock));
             if (shockBase > 0.0 && RollsHit(shockChance, in.shockRoll01)) {
                 res.appliedShock = add(AilmentKind::Shock, rules.shock.effectPercent / 100.0, rules.shock.enemyDurationSeconds);
             }
@@ -233,9 +310,12 @@ namespace SkyrimPoE::Core
 
         if (!in.targetElementalImmune) {
             if (!in.targetFreezeImmune) {
-                const double effectiveColdHit = coldHit * Positive(in.coldDamageAfterResistanceMultiplier);
+                const double effectiveColdHit = coldHit * Positive(in.coldDamageAfterResistanceMultiplier) *
+                    std::max(0.0, 1.0 + in.freezeBuildupIncPct / 100.0);
+                const double duration = rules.freeze.enemyDurationSeconds *
+                    std::max(0.0, 1.0 + in.modifiers[Index(AilmentKind::Freeze)].durationIncPct / 100.0);
                 res.appliedFreeze = AddPoiseBuildup(st.poise[Index(PoiseKind::Freeze)], effectiveColdHit,
-                    poiseThreshold, rules.freeze.damageScale, rules.freeze.enemyDurationSeconds, 0.0, 0.0, rules.poise);
+                    poiseThreshold, rules.freeze.damageScale, duration, 0.0, 0.0, rules.poise);
             }
             res.appliedElectrocute = AddPoiseBuildup(st.poise[Index(PoiseKind::Electrocute)], Positive(in.electrocuteHitPoe),
                 poiseThreshold, rules.electrocute.damageScale, rules.electrocute.enemyDurationMilliseconds / 1000.0,
@@ -248,12 +328,16 @@ namespace SkyrimPoE::Core
             poiseThreshold, rules.pin.damageScale, rules.pin.enemyDurationSeconds,
             rules.pin.repeatThresholdModifierPercent, rules.pin.repeatModifierDurationSeconds, rules.poise);
 
-        if (physHit > 0.0 && !in.targetBleedImmune && RollsHit(Positive(in.bleedChancePct), in.bleedRoll01)) {
-            const double dps = physHit * (rules.bleed.damagePercentPerMinute * kPercentPerMinuteToRatioPerSecond);
-            res.appliedBleed = add(AilmentKind::Bleed, dps, rules.bleed.durationSeconds, in.aggravatesBleed);
+        const double bleedChance = Positive(in.bleedChancePct) * std::max(0.0, 1.0 + chanceInc(AilmentKind::Bleed) / 100.0);
+        if (physHit > 0.0 && !in.targetBleedImmune && RollsHit(bleedChance, in.bleedRoll01)) {
+            const double dps = physHit * (rules.bleed.damagePercentPerMinute * kPercentPerMinuteToRatioPerSecond) *
+                in.bleedMagnitudeMult;
+            const double baseDuration = in.bleedBaseDuration > 0.0 ? in.bleedBaseDuration : rules.bleed.durationSeconds;
+            res.appliedBleed = add(AilmentKind::Bleed, dps, baseDuration, in.aggravatesBleed);
         }
 
-        if (poisonBase > 0.0 && RollsHit(Positive(in.poisonChancePct), in.poisonRoll01)) {
+        const double poisonChance = Positive(in.poisonChancePct) * std::max(0.0, 1.0 + chanceInc(AilmentKind::Poison) / 100.0);
+        if (poisonBase > 0.0 && RollsHit(poisonChance, in.poisonRoll01)) {
             const double dps = poisonBase * (rules.poison.damagePercentPerMinute * kPercentPerMinuteToRatioPerSecond);
             res.appliedPoison = add(AilmentKind::Poison, dps, rules.poison.durationSeconds);
         }
@@ -273,7 +357,8 @@ namespace SkyrimPoE::Core
         double shockRemaining,
         bool targetElementalImmune,
         double now,
-        bool isMoving)
+        bool isMoving,
+        bool chaosIgnite)
     {
         if (targetActorId == 0 || targetElementalImmune) {
             return;
@@ -289,7 +374,7 @@ namespace SkyrimPoE::Core
         auto& st = states_[targetActorId];
         st.AdvanceTo(now, isMoving);
         if (safeIgDps > 0.0 && safeIgRem > 0.0) {
-            AddInstance(st.instances[Index(AilmentKind::Ignite)], { safeIgDps, safeIgRem });
+            AddInstance(st.instances[Index(AilmentKind::Ignite)], { safeIgDps, safeIgRem, false, chaosIgnite });
         }
         if (safeShRatio > 0.0 && safeShRem > 0.0) {
             AddInstance(st.instances[Index(AilmentKind::Shock)], { safeShRatio, safeShRem });
@@ -308,7 +393,8 @@ namespace SkyrimPoE::Core
 
         // Integrate to the hit/tick boundary before inserting new effects. A winner
         // that expires inside this interval can hand over for the rest of the interval.
-        pendingDamage.firePoeDamage += DamageDuring(instances[Index(AilmentKind::Ignite)], deltaSec, 1, 1.0, false);
+        pendingDamage.firePoeDamage += DamageDuring(instances[Index(AilmentKind::Ignite)], deltaSec, 1, 1.0, false,
+            &pendingDamage.chaosIgnitePoeDamage);
         pendingDamage.physPoeDamage += DamageDuring(instances[Index(AilmentKind::Bleed)], deltaSec, 1,
             rules.bleed.movingOrAggravatedMultiplier, isMoving);
         pendingDamage.chaosPoeDamage += DamageDuring(instances[Index(AilmentKind::Poison)], deltaSec,
@@ -334,6 +420,7 @@ namespace SkyrimPoE::Core
         const auto ignite = Strongest(instances[Index(AilmentKind::Ignite)]);
         igniteDps = ignite.magnitude;
         igniteRemaining = ignite.remaining;
+        igniteDealsChaos = ignite.chaosIgnite;
 
         const auto chill = Strongest(instances[Index(AilmentKind::Chill)]);
         chillRatio = chill.magnitude;

@@ -1996,6 +1996,266 @@
           }
         ]
       }
+    },
+    {
+      "id": "p3-low-life-threshold",
+      "input": {
+        "maximumLife": 100,
+        "currentLife": [
+          35,
+          40
+        ]
+      },
+      "expected": {
+        "thresholdLife": 35.0,
+        "lowLife": [
+          true,
+          false
+        ]
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/Data.lua",
+            "line": 237,
+            "endLine": 237
+          },
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 79,
+            "endLine": 80
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-price-of-freedom",
+      "input": {
+        "attackManaBase": 100,
+        "efficiencyPercent": 15,
+        "lifeSharePercent": 18
+      },
+      "expected": {
+        "lifeCost": 15.65217391304348,
+        "manaCost": 71
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 2092,
+            "endLine": 2103
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 2132,
+            "endLine": 2160
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-fire-chaos-global-conversion",
+      "input": {
+        "originalFire": 100,
+        "toFirePercent": 75,
+        "fireSpellToChaosPercent": 100
+      },
+      "expected": {
+        "rawFireDamage": 42.857142857142854,
+        "roundedFireDamage": 43,
+        "chaosDamage": 0
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 72,
+            "endLine": 81
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 2256,
+            "endLine": 2285
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 2362,
+            "endLine": 2374
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-monster-chaos-energy-shield",
+      "input": {
+        "energyShield": 100,
+        "chaosDamage": 30
+      },
+      "expected": {
+        "esRemaining": 40,
+        "lifeLost": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 590,
+            "endLine": 612
+          },
+          {
+            "file": "Data/Spectres.lua",
+            "line": 13591,
+            "endLine": 13591
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-energy-shield-converted-to-mana",
+      "input": {
+        "baseEnergyShield": 100,
+        "increasedEnergyShieldPercent": 100,
+        "increasedManaPercent": [
+          0,
+          50
+        ]
+      },
+      "expected": {
+        "additionalMana": [
+          100,
+          150
+        ],
+        "remainingEnergyShield": 0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 1354,
+            "endLine": 1405
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-evasion-gained-as-armour",
+      "input": {
+        "baseEvasion": 100,
+        "evasionIncreasePercent": 100,
+        "armourIncreasePercent": 50,
+        "gainedAsArmourPercent": 8
+      },
+      "expected": {
+        "additionalArmour": 12,
+        "evasion": 200
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 1354,
+            "endLine": 1405
+          },
+          {
+            "file": "Data/ModCache.lua",
+            "line": 5575,
+            "endLine": 5575
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-flat-deflection",
+      "input": {
+        "baseRating": 100,
+        "defenceContribution": 20,
+        "increasedPercent": 50
+      },
+      "expected": {
+        "rating": 130.0
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 1516,
+            "endLine": 1516
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-chill-magnitude-order",
+      "input": {
+        "rawChillPercent": [
+          25,
+          50
+        ],
+        "increasedEffectPercent": 40
+      },
+      "expected": {
+        "chillPercent": [
+          35.0,
+          50
+        ]
+      },
+      "tolerance": 1e-09,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5509,
+            "endLine": 5509
+          },
+          {
+            "file": "Modules/CalcOffence.lua",
+            "line": 5566,
+            "endLine": 5580
+          }
+        ]
+      }
+    },
+    {
+      "id": "p3-partial-block",
+      "input": {
+        "unblockedDamage": 100,
+        "damageTakenOnBlockPercent": 20
+      },
+      "expected": {
+        "blockedHitDamage": 20
+      },
+      "tolerance": 0,
+      "provenance": {
+        "grade": "pob",
+        "references": [
+          {
+            "file": "Modules/CalcDefence.lua",
+            "line": 1068,
+            "endLine": 1072
+          },
+          {
+            "file": "Modules/ModParser.lua",
+            "line": 2505,
+            "endLine": 2505
+          }
+        ]
+      }
     }
   ],
   "project": [

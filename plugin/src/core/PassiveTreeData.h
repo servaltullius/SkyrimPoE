@@ -17,20 +17,24 @@ namespace SkyrimPoE::Core
         Mastery = 3,
         Socket = 4,
         ClassStart = 5,
-        AscendancyStart = 6
+        AscendancyStart = 6,
+        Attribute = 7
     };
 
     struct PassiveAscendancyDef
     {
-        std::string id;    // PoB 내부 불변 ID (예: "Raider", "Juggernaut")
+        std::string id;
+        std::string contentId;
         std::string name;  // 표시명 (예: "Warden", "Juggernaut")
         std::uint8_t classId = 0;
         std::uint32_t startNodeId = 0;
+        std::vector<PassiveAscendancyDef> replacements;
     };
 
     struct PassiveClassDef
     {
         std::uint8_t id = 0;
+        std::string contentId;
         std::string name;
         std::uint32_t baseStr = 20;
         std::uint32_t baseDex = 20;
@@ -38,6 +42,23 @@ namespace SkyrimPoE::Core
         std::uint32_t startNodeId = 0;
         std::vector<std::uint32_t> startNeighbors;
         std::vector<PassiveAscendancyDef> ascendancies;
+    };
+
+    struct PassiveNodeText
+    {
+        std::string name;
+        std::vector<std::string> stats;
+    };
+
+    struct PassiveAttributeOption : PassiveNodeText
+    {
+        std::uint32_t id = 0;
+    };
+
+    struct PassiveNodeVariant : PassiveNodeText
+    {
+        std::uint32_t sourceId = 0;
+        std::string ascendancyId;
     };
 
     struct PassiveNodeDef
@@ -56,6 +77,14 @@ namespace SkyrimPoE::Core
         std::int8_t grantsClassStart = -1;     // Scion Ascendant Path of the ... (0..6, 없으면 -1)
         std::vector<std::uint32_t> masteryEffectIds;
         bool deferred = false;
+        std::vector<PassiveAttributeOption> attrOptions;
+        std::vector<std::uint32_t> unlock;
+        bool freeAlloc = false;
+        std::unordered_map<std::string, PassiveNodeVariant> variants;
+        bool jewelSocket = false;
+        std::string alias;
+
+        [[nodiscard]] const PassiveAttributeOption* FindAttributeOption(std::uint32_t optionId) const noexcept;
     };
 
     struct PassiveMasteryEffectDef
@@ -72,9 +101,11 @@ namespace SkyrimPoE::Core
         bool LoadFromJsonString(std::string_view jsonText, std::string* errorOut = nullptr);
 
         [[nodiscard]] bool IsLoaded() const noexcept { return loaded_; }
+        [[nodiscard]] std::uint32_t Generation() const noexcept { return generation_; }
         [[nodiscard]] const std::vector<PassiveClassDef>& Classes() const noexcept { return classes_; }
         [[nodiscard]] const PassiveClassDef* FindClass(std::uint8_t classId) const noexcept;
         [[nodiscard]] const PassiveClassDef* FindClassByName(std::string_view name) const noexcept;
+        [[nodiscard]] const PassiveClassDef* FindClassByContentId(std::string_view id) const noexcept;
         [[nodiscard]] const PassiveAscendancyDef* FindAscendancy(std::string_view ascId) const noexcept;
         [[nodiscard]] const PassiveNodeDef* FindNode(std::uint32_t nodeId) const noexcept;
         [[nodiscard]] const PassiveMasteryEffectDef* FindMasteryEffect(std::uint32_t effectId) const noexcept;
@@ -87,6 +118,7 @@ namespace SkyrimPoE::Core
 
     private:
         bool loaded_ = false;
+        std::uint32_t generation_ = 0;
         std::vector<PassiveClassDef> classes_;
         std::unordered_map<std::uint32_t, PassiveNodeDef> nodes_;
         std::unordered_map<std::uint32_t, PassiveMasteryEffectDef> masteryEffects_;

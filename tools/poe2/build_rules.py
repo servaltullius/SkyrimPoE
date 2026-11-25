@@ -198,6 +198,7 @@ def defence_rules(source):
     }
     return {
         "armour": armour, "energyShield": energy_shield, "hit": hit,
+        "lifeState": source.assignments(DATA, "lifeState", {"lowLifeFraction": "LowPoolThreshold"}),
         "block": {
             **source.assignments(MISC, "block", {"baseMaxPercent": "object_inherent_base_maximum_block_%_from_ot"}, start=143, end=244),
             **source.assignments(DATA, "block", {"capPercent": "BlockChanceCap"}),

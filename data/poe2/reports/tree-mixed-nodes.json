@@ -1,0 +1,120 @@
+{
+  "contentGeneration": 1,
+  "nodes": [
+    {
+      "id": 4709,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "30% increased penalty to Accuracy Rating at range"
+      ]
+    },
+    {
+      "id": 12964,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "Your Aura Buffs do not affect Allies"
+      ]
+    },
+    {
+      "id": 23630,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "Ignites you cause are reflected back to you"
+      ]
+    },
+    {
+      "id": 23736,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "20% reduced Accuracy Rating while moving"
+      ]
+    },
+    {
+      "id": 27491,
+      "implementedDrawbacks": [
+        "5% of Damage taken bypasses Energy Shield"
+      ],
+      "treatment": "implemented",
+      "unsupportedDrawbacks": []
+    },
+    {
+      "id": 33570,
+      "implementedDrawbacks": [
+        "10% of Damage taken bypasses Energy Shield"
+      ],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [],
+      "unsupportedManaRegenReplacement": [
+        "Regenerate Mana equal to 6% of maximum Life per second"
+      ]
+    },
+    {
+      "id": 33781,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "15% reduced Presence Area of Effect"
+      ]
+    },
+    {
+      "id": 34473,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "23% reduced Light Radius"
+      ]
+    },
+    {
+      "id": 39911,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "20% reduced Accuracy Rating"
+      ]
+    },
+    {
+      "id": 43854,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "20% reduced Presence Area of Effect"
+      ]
+    },
+    {
+      "id": 52068,
+      "implementedDrawbacks": [
+        "You take 20% of damage from Blocked Hits"
+      ],
+      "treatment": "implemented",
+      "unsupportedDrawbacks": []
+    },
+    {
+      "id": 52191,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "Lose 3% of maximum Life and Energy Shield when you use a Chaos Skill"
+      ]
+    },
+    {
+      "id": 57471,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "80% less Knockback Distance for Blocked Hits"
+      ]
+    },
+    {
+      "id": 65493,
+      "implementedDrawbacks": [],
+      "treatment": "deferred",
+      "unsupportedDrawbacks": [
+        "15% reduced Presence Area of Effect"
+      ]
+    }
+  ]
+}

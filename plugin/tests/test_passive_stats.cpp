@@ -3,7 +3,12 @@
 #include "core/Config.h"
 #include "core/DamageConversion.h"
 #include "core/DataPack.h"
+#include "core/AilmentSystem.h"
+#include "core/EnergyShield.h"
+#include "core/MonsterModSystem.h"
 #include "core/PassiveStatParser.h"
+#include "core/PassiveTree.h"
+#include "core/RulesPack.h"
 #include "core/PassiveTreeData.h"
 #include "core/StatEngine.h"
 
@@ -40,6 +45,587 @@ namespace
         }
         return tree;
     }
+
+    const PassiveTreeData& LoadPoe2Tree()
+    {
+        static const PassiveTreeData tree = [] {
+            PassiveTreeData result;
+            std::string error;
+            POE_CHECK(result.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs/gen1/tree.json", &error));
+            return result;
+        }();
+        return tree;
+    }
+
+    PassiveStatTotals Poe2Keystone(std::string_view name)
+    {
+        const auto& tree = LoadPoe2Tree();
+        PassiveTreeState state;
+        POE_CHECK(PassiveTree::SelectClass(tree, state, 0).ok);
+        for (const auto& [id, node] : tree.AllNodes()) {
+            if (node.kind == PassiveNodeKind::Keystone && node.name == name) {
+                state.allocatedNodes.push_back(id);
+                return PassiveStatParser::AggregateTree(tree, state);
+            }
+        }
+        throw std::runtime_error("Missing PoE2 keystone " + std::string(name));
+    }
+
+    Layer1Input CombatInput()
+    {
+        Layer1Input input;
+        input.passives.poe2 = true;
+        input.flatEnergyShield = 90.0;
+        input.evasion = 100.0;
+        input.armour = 20.0;
+        auto& weapon = input.equippedGear[static_cast<std::size_t>(EquipSlot::MainHand)];
+        weapon.occupied = true;
+        weapon.isWeapon = true;
+        weapon.baseWeaponPhysMin = 100.0;
+        weapon.baseWeaponPhysMax = 100.0;
+        for (const auto& [index, gem] : { std::pair{ 0u, "Cyclone" }, { 1u, "Fireball" }, { 2u, "IceNova" } }) {
+            auto& slot = input.slots[index];
+            slot.occupied = true;
+            slot.slotIndex = static_cast<std::uint8_t>(index);
+            slot.gem.gemId = gem;
+            slot.gem.instanceId = index + 1;
+            slot.gem.level = 1;
+        }
+        return input;
+    }
+
+    std::shared_ptr<const StatSnapshot> Snapshot(const Layer1Input& input, const Layer2Input& dynamic = {})
+    {
+        StatEngine engine;
+        engine.SetLayer1(input);
+        engine.SetLayer2(dynamic);
+        POE_CHECK(engine.RebuildIfDirty(LoadPack(), Config{}));
+        return engine.GetSnapshot();
+    }
+}
+
+POE_TEST("PoE2 Avatar of Fire converts 75 percent of non-fire hit damage and removes the remainder")
+{
+    auto input = CombatInput();
+    const auto before = Snapshot(input)->slotStats[0].baseHitDamage;
+    input.passives = Poe2Keystone("Avatar of Fire");
+    const auto after = Snapshot(input)->slotStats[0].baseHitDamage;
+    POE_CHECK_NEAR(after.TotalAverage(), before.TotalAverage() * 0.75, 1e-8);
+    POE_CHECK_NEAR(after.byType[static_cast<std::size_t>(DamageType::Fire)].Average(), after.TotalAverage(), 1e-8);
+}
+
+POE_TEST("PoE2 Blackflame Covenant converts fire spells and their ignite becomes chaos damage")
+{
+    auto input = CombatInput();
+    const auto before = Snapshot(input);
+    input.passives = Poe2Keystone("Blackflame Covenant");
+    const auto after = Snapshot(input);
+    const auto& fireball = after->slotStats[1].baseHitDamage.byType;
+    POE_CHECK_NEAR(fireball[static_cast<std::size_t>(DamageType::Fire)].Average(), 0.0, 1e-8);
+    POE_CHECK_NEAR(fireball[static_cast<std::size_t>(DamageType::Chaos)].Average(),
+        before->slotStats[1].baseHitDamage.TotalAverage(), 1e-8);
+    POE_CHECK_NEAR(after->slotStats[2].baseHitDamage.TotalAverage(), before->slotStats[2].baseHitDamage.TotalAverage(), 1e-8);
+    AilmentSystem system;
+    HitAilmentInput hit;
+    hit.chaosHitPoe = 100.0;
+    hit.igniteRoll01 = 0.0;
+    POE_CHECK(!system.ApplyHitAilments(1, hit).appliedIgnite);
+    hit.chaosContributesToIgnite = after->chaosFireSpellIgniteMagnitude;
+    hit.igniteDealsChaos = after->fireSpellIgniteDealsChaos;
+    POE_CHECK(system.ApplyHitAilments(1, hit).appliedIgnite);
+    POE_CHECK(system.FlammabilityChancePercent(1) > 0.0);
+    const auto dot = system.TickActor(1, 1.0, false);
+    POE_CHECK_NEAR(dot.firePoeDamage, 0.0, 1e-8);
+    POE_CHECK_NEAR(dot.chaosIgnitePoeDamage, ActiveRuleValues().ignite.damagePercentPerMinute / 60.0, 1e-8);
+}
+
+POE_TEST("PoE2 global conversion normalizes the original fire without reconverting its results")
+{
+    PassiveStatTotals passives = Poe2Keystone("Avatar of Fire");
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("Fire Spells Convert 100% of Fire Damage to Chaos Damage", passives, true));
+
+    const auto fire = static_cast<std::size_t>(DamageType::Fire);
+    const auto chaos = static_cast<std::size_t>(DamageType::Chaos);
+    DamagePacket packet;
+    packet.byType[fire] = { 100.0, 100.0 };
+    ConvertGlobalHitDamage(packet, passives, true);
+    POE_CHECK_NEAR(packet.byType[fire].Average(), 100.0 * 75.0 / 175.0, 1e-8);
+    POE_CHECK_NEAR(packet.byType[chaos].Average(), 100.0 * 100.0 / 175.0, 1e-8);
+    RestrictToFire(packet);
+    POE_CHECK_NEAR(packet.TotalAverage(), 100.0 * 75.0 / 175.0, 1e-8);
+
+    DamagePacket explosion;
+    explosion.byType[static_cast<std::size_t>(DamageType::Cold)] = { 100.0, 100.0 };
+    ConvertGlobalHitDamage(explosion, passives, false);
+    RestrictToFire(explosion);
+    POE_CHECK_NEAR(explosion.TotalAverage(), 75.0, 1e-8);
+    POE_CHECK_NEAR(explosion.byType[fire].Average(), 75.0, 1e-8);
+}
+
+POE_TEST("PoE2 Blood Magic removes mana and retains the existing life cost conversion")
+{
+    auto input = CombatInput();
+    input.passives = Poe2Keystone("Blood Magic");
+    const auto after = Snapshot(input);
+    POE_CHECK(after->bloodMagic);
+    POE_CHECK_NEAR(after->poeMaxMana, 0.0, 1e-8);
+    POE_CHECK_NEAR(after->slotStats[1].poeManaCost, 0.0, 1e-8);
+    POE_CHECK(ComputeBloodMagicLifeCost(100.0, after->poeMaxLife, after->slotStats[1].poeLifeCost) > 0.0);
+}
+
+POE_TEST("PoE2 Chaos Inoculation sets life to one and grants chaos and bleed immunity")
+{
+    auto input = CombatInput();
+    input.passives = Poe2Keystone("Chaos Inoculation");
+    const auto after = Snapshot(input);
+    POE_CHECK_NEAR(after->poeMaxLife, 1.0, 1e-8);
+    POE_CHECK_NEAR(ConvertDefenseResistDamage(20.0, DamageType::Chaos, 1, *after, LoadPack(), Config{}), 0.0, 1e-8);
+    AilmentSystem system;
+    HitAilmentInput hit;
+    hit.physHitPoe = 100.0;
+    hit.bleedChancePct = 100.0;
+    hit.targetBleedImmune = after->bleedImmune;
+    POE_CHECK(!system.ApplyHitAilments(1, hit).appliedBleed);
+}
+
+POE_TEST("PoE2 Dance with Death only speeds one-handed attacks and spells with an empty off hand")
+{
+    auto input = CombatInput();
+    const auto before = Snapshot(input);
+    input.passives = Poe2Keystone("Dance with Death");
+    const auto after = Snapshot(input, Layer2Input{ .mainHandOneHandedMartial = true });
+    POE_CHECK_NEAR(after->slotStats[0].attackSpeedMult, before->slotStats[0].attackSpeedMult * 1.25, 1e-8);
+    POE_CHECK_NEAR(after->slotStats[1].castSpeedMult, before->slotStats[1].castSpeedMult * 1.25, 1e-8);
+    // A torch and an equipped spell both occupy the live off-hand slot.
+    const auto occupiedOffHand = Snapshot(input, Layer2Input{ .mainHandOneHandedMartial = true, .offHandOccupied = true });
+    POE_CHECK_NEAR(occupiedOffHand->slotStats[1].castSpeedMult, before->slotStats[1].castSpeedMult, 1e-8);
+    input.mainWeaponTag = "Staff";
+    POE_CHECK_NEAR(Snapshot(input)->slotStats[1].castSpeedMult, before->slotStats[1].castSpeedMult, 1e-8);
+    input.equippedGear[static_cast<std::size_t>(EquipSlot::MainHand)].isTwoHanded = true;
+    POE_CHECK_NEAR(Snapshot(input)->slotStats[1].castSpeedMult, before->slotStats[1].castSpeedMult, 1e-8);
+}
+
+POE_TEST("PoE2 Eldritch Battery transfers maximum ES to mana and doubles mana cost")
+{
+    auto input = CombatInput();
+    input.flatEnergyShield = 100.0;
+    input.incEnergyShieldPct = 100.0;
+    const auto before = Snapshot(input);
+    input.passives = Poe2Keystone("Eldritch Battery");
+    const auto after = Snapshot(input);
+    POE_CHECK_NEAR(after->poeMaxEnergyShield, 0.0, 1e-8);
+    POE_CHECK_NEAR(before->poeMaxEnergyShield, 200.0, 1e-8);
+    POE_CHECK_NEAR(after->poeMaxMana, before->poeMaxMana + 100.0, 1e-8);
+    input.incManaPct = 50.0;
+    input.passives.convertEsToManaPct = 0.0;
+    const auto scaledMana = Snapshot(input)->poeMaxMana;
+    input.passives.convertEsToManaPct = 100.0;
+    POE_CHECK_NEAR(Snapshot(input)->poeMaxMana, scaledMana + 150.0, 1e-8);
+    POE_CHECK_NEAR(after->slotStats[1].poeManaCost, before->slotStats[1].poeManaCost * 2.0, 1e-8);
+}
+
+POE_TEST("PoE2 Glancing Blows gives the probabilities of unlucky evade and lucky deflect")
+{
+    auto input = CombatInput();
+    input.passives = Poe2Keystone("Glancing Blows");
+    const auto after = Snapshot(input);
+    POE_CHECK_NEAR(ApplyRollBias(0.25, false, after->unluckyEvade), 0.0625, 1e-8);
+    POE_CHECK_NEAR(ApplyRollBias(0.25, after->luckyDeflect, false), 0.4375, 1e-8);
+}
+
+POE_TEST("PoE2 Iron Reflexes moves all evasion into armour")
+{
+    auto input = CombatInput();
+    const auto before = Snapshot(input);
+    input.passives = Poe2Keystone("Iron Reflexes");
+    const auto after = Snapshot(input);
+    POE_CHECK_NEAR(after->evasion, 0.0, 1e-8);
+    POE_CHECK_NEAR(after->armour, before->armour + before->evasion, 1e-8);
+}
+
+POE_TEST("PoE2 Mind Over Matter consumes mana before life and halves mana recovery")
+{
+    auto input = CombatInput();
+    const auto before = Snapshot(input);
+    input.passives = Poe2Keystone("Mind Over Matter");
+    const auto after = Snapshot(input);
+    const auto hit = AbsorbWithMindOverMatter(120.0, 1.0, after->momRatio, 90.0);
+    POE_CHECK_NEAR(hit.absorbedMagicka, 90.0, 1e-8);
+    POE_CHECK_NEAR(hit.remainingRawDamage, 30.0, 1e-8);
+    POE_CHECK_NEAR(after->nativeManaRegenMult, before->nativeManaRegenMult * 0.5, 1e-8);
+}
+
+POE_TEST("PoE2 Pain Attunement changes only the critical damage bonus according to life")
+{
+    auto input = CombatInput();
+    const double base = Snapshot(input)->slotStats[1].critMultiplierPct - 100.0;
+    input.passives = Poe2Keystone("Pain Attunement");
+    POE_CHECK_NEAR(Snapshot(input)->slotStats[1].critMultiplierPct, 100.0 + base, 1e-8);
+    POE_CHECK_NEAR(Snapshot(input, Layer2Input{ .fullLife = true })->slotStats[1].critMultiplierPct, 100.0 + base * 0.70, 1e-8);
+    POE_CHECK_NEAR(Snapshot(input, Layer2Input{ .lowLife = true })->slotStats[1].critMultiplierPct, 100.0 + base * 1.30, 1e-8);
+}
+
+POE_TEST("PoE2 life conditions use the rules threshold and the temporary maximum")
+{
+    const auto snapshot = Snapshot(CombatInput());
+    POE_CHECK(!GetPlayerLifeConditions(40.0, 100.0, 100.0, *snapshot).lowLife);
+    POE_CHECK(GetPlayerLifeConditions(35.0, 100.0, 100.0, *snapshot).lowLife);
+    POE_CHECK(!GetPlayerLifeConditions(120.0, 100.0, 150.0, *snapshot).fullLife);
+    POE_CHECK(GetPlayerLifeConditions(150.0, 100.0, 150.0, *snapshot).fullLife);
+    StatSnapshot legacy;
+    POE_CHECK(GetPlayerLifeConditions(50.0, 100.0, 150.0, legacy).lowLife);
+    POE_CHECK(!GetPlayerLifeConditions(51.0, 100.0, 150.0, legacy).lowLife);
+}
+
+POE_TEST("PoE2 life regeneration uses distinct life and energy shield units")
+{
+    StatSnapshot snapshot;
+    snapshot.poe2Passives = true;
+    snapshot.poeMaxLife = 100.0;
+    snapshot.poeMaxEnergyShield = 80.0;
+    snapshot.excessLifeRegenToEs = true;
+    const auto temporary = ConvertLifeRegeneration(24.0, 120.0, 150.0, 40.0, snapshot);
+    POE_CHECK_NEAR(temporary.life, 30.0, 1e-8);
+    POE_CHECK_NEAR(temporary.energyShield, 2.0, 1e-8);
+    snapshot.chaosInoculation = true;
+    snapshot.poeMaxLife = 1.0;
+    auto ci = ConvertLifeRegeneration(1.0, 15.0, 15.0, 40.0, snapshot);
+    POE_CHECK_NEAR(ci.life, 0.0, 1e-8);
+    POE_CHECK_NEAR(ci.energyShield, 0.5, 1e-8);
+    snapshot.passiveAilments.esAsFreezeThresholdPct = 100.0;
+    POE_CHECK(!PlayerHitMeetsAilmentThreshold(4.49, 15.0, snapshot, DamageType::Cold, 40.0));
+    POE_CHECK(PlayerHitMeetsAilmentThreshold(4.5, 15.0, snapshot, DamageType::Cold, 40.0));
+}
+
+POE_TEST("PoE2 Price of Freedom applies generic attack efficiency independently to life and mana")
+{
+    PassiveStatTotals stats;
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("15% increased Cost Efficiency of Attacks", stats));
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("18% of Skill Mana Costs Converted to Life Costs", stats));
+    const auto cost = ComputePoe2SkillCosts(100.0, 0.0, stats, true, false, false);
+    POE_CHECK_NEAR(cost.life, 18.0 / 1.15, 1e-8);
+    POE_CHECK_NEAR(cost.mana, 71.0, 1e-8);
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("10% increased Mana Cost Efficiency", stats));
+    const auto manaOnly = ComputePoe2SkillCosts(100.0, 0.0, stats, true, false, false);
+    POE_CHECK_NEAR(manaOnly.life, cost.life, 1e-8);
+    POE_CHECK_NEAR(manaOnly.mana, 65.0, 1e-8);
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("5% increased Life Cost Efficiency", stats));
+    const auto lifeOnly = ComputePoe2SkillCosts(100.0, 0.0, stats, true, false, false);
+    POE_CHECK_NEAR(lifeOnly.life, 15.0, 1e-8);
+    POE_CHECK_NEAR(lifeOnly.mana, manaOnly.mana, 1e-8);
+}
+
+POE_TEST("PoE2 evasion conversion and gain use the armour modifiers")
+{
+    auto input = CombatInput();
+    input.passives.incEvasionPct = 100.0;
+    input.passives.incArmourPct = 50.0;
+    const double baseEvasion = ActiveRuleValues().hit.baseEvasion + input.evasion;
+    input.passives.evasionAsExtraArmourPct = 8.0;
+    const auto gained = Snapshot(input);
+    POE_CHECK_NEAR(gained->evasion, baseEvasion * 2.0, 1e-8);
+    POE_CHECK_NEAR(gained->armour, (input.armour + baseEvasion * 0.08) * 1.5, 1e-8);
+    input.passives.ironReflexes = true;
+    const auto converted = Snapshot(input);
+    POE_CHECK_NEAR(converted->evasion, 0.0, 1e-8);
+    POE_CHECK_NEAR(converted->armour, (input.armour + baseEvasion * 1.08) * 1.5, 1e-8);
+}
+
+POE_TEST("PoE2 increased deflection scales only the defence contribution")
+{
+    auto input = CombatInput();
+    input.deflectionRating = 100.0;
+    input.passives.incDeflectionPct = 50.0;
+    POE_CHECK_NEAR(Snapshot(input)->deflectionRating, 100.0, 1e-8);
+    input.passives.evasionAsDeflectionPct = 10.0;
+    const auto gained = Snapshot(input);
+    POE_CHECK_NEAR(gained->deflectionRating, 100.0 + gained->evasion * 0.10 * 1.5, 1e-8);
+}
+
+POE_TEST("PoE2 uses the native mana regeneration once, including its conditional modifiers")
+{
+    auto input = CombatInput();
+    input.passives.incManaRegenPct = 30.0;
+    input.passives.fullLifeManaRegenIncPct = 40.0;
+    input.passives.manaRecoveryMult = 0.5;
+    const auto snapshot = Snapshot(input, Layer2Input{ .fullLife = true });
+    POE_CHECK_NEAR(snapshot->nativeManaRegenMult, 0.85, 1e-8);
+    POE_CHECK_NEAR(snapshot->manaRegenPerSec, 0.0, 1e-8);
+    input.passives.noInherentManaRegen = true;
+    const auto disabled = Snapshot(input);
+    POE_CHECK_NEAR(disabled->nativeManaRegenMult, 0.0, 1e-8);
+    POE_CHECK_NEAR(disabled->manaRegenPerSec, 0.0, 1e-8);
+}
+
+POE_TEST("PoE2 life and motion conditions are consumed by skill and defence stats")
+{
+    auto input = CombatInput();
+    input.passives.fullLifeCastSpeedIncPct = 10.0;
+    input.passives.lowLifeCastSpeedIncPct = 20.0;
+    input.passives.movingEvasionIncPct = 25.0;
+    const auto normal = Snapshot(input);
+    const auto full = Snapshot(input, Layer2Input{ .moving = true, .fullLife = true });
+    const auto low = Snapshot(input, Layer2Input{ .lowLife = true });
+    POE_CHECK_NEAR(full->slotStats[1].castSpeedMult, normal->slotStats[1].castSpeedMult * 1.10, 1e-8);
+    POE_CHECK_NEAR(low->slotStats[1].castSpeedMult, normal->slotStats[1].castSpeedMult * 1.20, 1e-8);
+    POE_CHECK_NEAR(full->evasion, normal->evasion * 1.25, 1e-8);
+}
+
+POE_TEST("PoE2 Resonance exchanges the source of three charge gains without changing existing counts")
+{
+    auto input = CombatInput();
+    input.passives = Poe2Keystone("Resonance");
+    const auto after = Snapshot(input);
+    POE_CHECK(after->MapChargeGain(ChargeKind::Frenzy) == ChargeKind::Power);
+    POE_CHECK(after->MapChargeGain(ChargeKind::Endurance) == ChargeKind::Frenzy);
+    POE_CHECK(after->MapChargeGain(ChargeKind::Power) == ChargeKind::Endurance);
+}
+
+POE_TEST("PoE2 Zealot's Oath recovers only excess life regeneration and does not recharge ES")
+{
+    auto input = CombatInput();
+    input.passives = Poe2Keystone("Zealot's Oath");
+    const auto after = Snapshot(input);
+    EnergyShieldPool shield;
+    shield.Configure(1.0, 1.0, !after->esCannotRecharge);
+    shield.SetMax(100.0);
+    (void)shield.AbsorbDamage(60.0, 1.0, false);
+    shield.Tick(20.0, false);
+    POE_CHECK_NEAR(shield.Snapshot().current, 40.0, 1e-8);
+    const auto recovery = SplitLifeRegeneration(24.0, 15.0, after->excessLifeRegenToEs);
+    POE_CHECK_NEAR(recovery.life, 15.0, 1e-8);
+    const double timer = shield.Snapshot().timeSinceLastHit;
+    shield.Recover(recovery.energyShield);
+    POE_CHECK_NEAR(shield.Snapshot().current, 49.0, 1e-8);
+    POE_CHECK_NEAR(shield.Snapshot().timeSinceLastHit, timer, 1e-8);
+    shield.Recover(100.0);
+    POE_CHECK_NEAR(shield.Snapshot().current, 100.0, 1e-8);
+}
+
+POE_TEST("PoE2 Crimson Assault aggravates stationary bleed for one second at 50 percent more magnitude")
+{
+    auto input = CombatInput();
+    input.passives = Poe2Keystone("Crimson Assault");
+    const auto after = Snapshot(input);
+    const auto& p = after->passiveAilments;
+    HitAilmentInput hit;
+    hit.physHitPoe = 100.0;
+    hit.bleedChancePct = 100.0;
+    hit.aggravatesBleed = p.alwaysAggravateBleed;
+    hit.bleedBaseDuration = p.bleedBaseDuration;
+    hit.bleedMagnitudeMult = p.bleedMagnitudeMult;
+    AilmentSystem system;
+    POE_CHECK(system.ApplyHitAilments(1, hit).appliedBleed);
+    const auto& rule = ActiveRuleValues().bleed;
+    POE_CHECK_NEAR(system.GetState(1)->bleedRemaining, 1.0, 1e-8);
+    POE_CHECK_NEAR(system.TickActor(1, 2.0, false).physPoeDamage,
+        (rule.damagePercentPerMinute / 60.0) * rule.movingOrAggravatedMultiplier * 1.5, 1e-8);
+}
+
+POE_TEST("PoE2 aggregate uses the chosen attribute and class variant from the real tree")
+{
+    const auto& tree = LoadPoe2Tree();
+    const auto* attribute = tree.FindNode(722);
+    POE_CHECK(attribute && attribute->attrOptions.size() == 3);
+    PassiveTreeState ranger;
+    POE_CHECK(PassiveTree::SelectClass(tree, ranger, "cls.Ranger").ok);
+    ranger.allocatedNodes = { 722, 56651 };
+    for (const auto& option : attribute->attrOptions) {
+        ranger.attributeSelections[722] = option.id;
+        const auto result = PassiveStatParser::AggregateTree(tree, ranger);
+        POE_CHECK_NEAR(result.flatStr + result.flatDex + result.flatInt, 5.0, 1e-8);
+        POE_CHECK_NEAR(result.projectileDamageIncPct, 10.0, 1e-8);
+    }
+    PassiveTreeState huntress;
+    POE_CHECK(PassiveTree::SelectClass(tree, huntress, "cls.Huntress").ok);
+    huntress.allocatedNodes = { 56651 };
+    const auto result = PassiveStatParser::AggregateTree(tree, huntress);
+    POE_CHECK_NEAR(result.projectileDamageIncPct, 0.0, 1e-8);
+    POE_CHECK_NEAR(result.incAttackDamagePct, 10.0, 1e-8);
+}
+
+POE_TEST("PoE2 ordinary block, deflection, critical chance and regeneration modify combat results")
+{
+    auto input = CombatInput();
+    input.attackBlockChance = 20.0;
+    const auto before = Snapshot(input);
+    for (const auto* line : {
+        "10% increased Block Chance",
+        "Gain Deflection Rating equal to 50% of Evasion Rating",
+        "20% increased Critical Hit Chance",
+        "30% increased Mana Regeneration Rate",
+        "Regenerate 1% of maximum Life per second",
+    }) {
+        POE_CHECK(PassiveStatParser::ParsePoe2Line(line, input.passives));
+    }
+    const auto after = Snapshot(input);
+    POE_CHECK_NEAR(after->attackBlockChance, 22.0, 1e-8);
+    POE_CHECK_NEAR(after->deflectionRating, before->evasion * 0.5, 1e-8);
+    POE_CHECK_NEAR(after->slotStats[0].EffectiveCritChancePct(), before->slotStats[0].EffectiveCritChancePct() * 1.2, 1e-8);
+    POE_CHECK_NEAR(after->nativeManaRegenMult, before->nativeManaRegenMult * 1.3, 1e-8);
+    POE_CHECK_NEAR(after->lifeRegenPerSec, after->poeMaxLife * 0.01, 1e-8);
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("Maximum Physical Damage Reduction is 50%", input.passives));
+    const auto capped = Snapshot(input);
+    POE_CHECK_NEAR(ArmourPassRatio(100'000.0, 1.0, 0.0, capped->passiveAilments.maximumPhysicalReductionPct), 0.50, 1e-8);
+}
+
+POE_TEST("PoE2 penetration applies per hit type against promotion and map resistance")
+{
+    auto input = CombatInput();
+    for (auto* line : { "Damage Penetrates 15% Fire Resistance",
+        "Damage Penetrates 10% of Enemy Elemental Resistances", "Damage Penetrates 5% Chaos Resistance" }) {
+        POE_CHECK(PassiveStatParser::ParsePoe2Line(line, input.passives));
+    }
+    const auto snap = Snapshot(input);
+    MonsterProfile enemy;
+    enemy.modMask = static_cast<std::uint16_t>(1u << static_cast<unsigned>(MonsterModKind::FireResistant));
+    DamagePacket packet;
+    packet.byType[static_cast<std::size_t>(DamageType::Fire)] = { 70.0, 70.0 };
+    packet.byType[static_cast<std::size_t>(DamageType::Cold)] = { 30.0, 30.0 };
+    MonsterHitResistance resist;
+    resist.poe2 = true;
+    resist.mapElementalPct = 20.0;
+    resist.mapChaosPct = 12.0;
+    resist.penetrationPct = snap->penetrationPct;
+    resist.hitTypes = &packet;
+    POE_CHECK_NEAR(MonsterModSystem::ApplyPlayerHitToMonster(enemy, 100.0, DamageType::Fire, false, resist)
+                       .remainingHealthDamage,
+        70.0 * 0.65 + 30.0 * 0.90, 1e-8);
+    POE_CHECK_NEAR(MonsterModSystem::IncomingDamageMultiplier(enemy, DamageType::Chaos, resist), 0.93, 1e-8);
+    resist.isDamageOverTime = true;
+    POE_CHECK_NEAR(MonsterModSystem::IncomingDamageMultiplier(enemy, DamageType::Fire, resist), 0.40, 1e-8);
+    POE_CHECK_NEAR(MonsterModSystem::ApplyResistancePenetration(12.0, 25.0), 0.0, 1e-8);
+    POE_CHECK_NEAR(MonsterModSystem::ApplyResistancePenetration(-12.0, 25.0), -12.0, 1e-8);
+}
+
+POE_TEST("PoE2 enemy ES absorbs chaos at double cost and ailments can bypass it")
+{
+    MonsterProfile enemy;
+    enemy.maxEsSkyrim = enemy.currentEsSkyrim = 100.0;
+    MonsterHitResistance resistance;
+    resistance.poe2 = true;
+
+    const auto hit = MonsterModSystem::ApplyPlayerHitToMonster(enemy, 30.0, DamageType::Chaos, false, resistance);
+    POE_CHECK(hit.hadAnyImpact);
+    POE_CHECK_NEAR(enemy.currentEsSkyrim, 40.0, 1e-8);
+    POE_CHECK_NEAR(hit.absorbedByEs, 30.0, 1e-8);
+    POE_CHECK_NEAR(hit.remainingHealthDamage, 0.0, 1e-8);
+
+    resistance.isDamageOverTime = true;
+    enemy.esRechargeCooldown = 1.0;
+    const auto bleed = MonsterModSystem::ApplyPlayerHitToMonster(enemy, 10.0, DamageType::Physical, true, resistance);
+    const auto poison = MonsterModSystem::ApplyPlayerHitToMonster(enemy, 10.0, DamageType::Chaos, true, resistance);
+    POE_CHECK_NEAR(bleed.remainingHealthDamage, 10.0, 1e-8);
+    POE_CHECK_NEAR(poison.remainingHealthDamage, 10.0, 1e-8);
+    POE_CHECK_NEAR(enemy.currentEsSkyrim, 40.0, 1e-8);
+    POE_CHECK_NEAR(enemy.esRechargeCooldown, 1.0, 1e-8);
+
+    const auto chaosIgnite = MonsterModSystem::ApplyPlayerHitToMonster(enemy, 30.0, DamageType::Chaos, false, resistance);
+    POE_CHECK_NEAR(chaosIgnite.absorbedByEs, 20.0, 1e-8);
+    POE_CHECK_NEAR(chaosIgnite.remainingHealthDamage, 10.0, 1e-8);
+    POE_CHECK_NEAR(enemy.currentEsSkyrim, 0.0, 1e-8);
+}
+
+POE_TEST("PoE2 mixed enemy hits consume ES per type after resistance")
+{
+    DamagePacket packet;
+    packet.byType[static_cast<std::size_t>(DamageType::Chaos)] = { 45.0, 45.0 };
+    packet.byType[static_cast<std::size_t>(DamageType::Fire)] = { 40.0, 40.0 };
+    MonsterHitResistance resistance;
+    resistance.poe2 = true;
+    resistance.mapElementalPct = 25.0;
+    resistance.hitTypes = &packet;
+
+    for (const auto representative : { DamageType::Fire, DamageType::Chaos }) {
+        MonsterProfile enemy;
+        enemy.maxEsSkyrim = enemy.currentEsSkyrim = 100.0;
+        const auto hit = MonsterModSystem::ApplyPlayerHitToMonster(enemy, 85.0, representative, false, resistance);
+        POE_CHECK_NEAR(enemy.currentEsSkyrim, 0.0, 1e-8);
+        POE_CHECK_NEAR(hit.absorbedByEs, 55.0, 1e-8);
+        POE_CHECK_NEAR(hit.remainingHealthDamage, 20.0, 1e-8);
+    }
+}
+
+POE_TEST("Armour break changes only the physical share forwarded to enemy ES")
+{
+    DamagePacket packet;
+    packet.byType[static_cast<std::size_t>(DamageType::Physical)] = { 50.0, 50.0 };
+    packet.byType[static_cast<std::size_t>(DamageType::Chaos)] = { 50.0, 50.0 };
+    const auto adjusted = MonsterModSystem::AdjustPhysicalHitDamage(packet, 100.0, 110.0);
+    MonsterHitResistance resistance;
+    resistance.poe2 = true;
+    resistance.hitTypes = &adjusted;
+    MonsterProfile enemy;
+    enemy.maxEsSkyrim = enemy.currentEsSkyrim = 110.0;
+    const auto hit = MonsterModSystem::ApplyPlayerHitToMonster(enemy, 110.0, DamageType::Physical, false, resistance);
+    POE_CHECK_NEAR(enemy.currentEsSkyrim, 0.0, 1e-8);
+    POE_CHECK_NEAR(hit.absorbedByEs, 60.0, 1e-8);
+    POE_CHECK_NEAR(hit.remainingHealthDamage, 50.0, 1e-8);
+}
+
+POE_TEST("PoE2 gains extra damage from the converted base, uses target modifiers and never cascades gains")
+{
+    auto input = CombatInput();
+    const auto before = Snapshot(input);
+    const double fireball = before->slotStats[1].baseHitDamage.TotalAverage();
+    input.passives = Poe2Keystone("Blackflame Covenant");
+    for (auto* line : { "Gain 20% of Damage as Extra Cold Damage",
+        "Gain 30% of Cold Damage as Extra Lightning Damage", "50% increased Cold Damage",
+        "100% increased Fire Damage" }) {
+        POE_CHECK(PassiveStatParser::ParsePoe2Line(line, input.passives));
+    }
+    const auto after = Snapshot(input);
+    const auto& packet = after->slotStats[1].baseHitDamage;
+    POE_CHECK_NEAR(packet.byType[static_cast<std::size_t>(DamageType::Chaos)].Average(), fireball, 1e-8);
+    POE_CHECK_NEAR(packet.byType[static_cast<std::size_t>(DamageType::Cold)].Average(), fireball * 0.20 * 1.5, 1e-8);
+    POE_CHECK_NEAR(packet.byType[static_cast<std::size_t>(DamageType::Lightning)].Average(), 0.0, 1e-8);
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("Gain 9% of Damage as Extra Damage of a random Element", input.passives));
+    const auto random = Snapshot(input)->slotStats[1].baseHitDamage;
+    POE_CHECK(HasRandomElementExtra(random));
+    const auto resolved = ResolveRandomElementExtra(random, 1);
+    POE_CHECK_NEAR(resolved.byType[static_cast<std::size_t>(DamageType::Cold)].Average(), fireball * 0.29 * 1.5, 1e-8);
+    POE_CHECK(!HasRandomElementExtra(resolved));
+}
+
+POE_TEST("PoE2 typed damage gained against an ailment is decided at the target")
+{
+    auto input = CombatInput();
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("Gain 20% of Physical Damage as Extra Cold Damage against Shocked Enemies",
+        input.passives));
+    const auto stats = Snapshot(input)->slotStats[0];
+    const auto roll = RollSpellDamagePacket(stats.baseHitDamage, 0.5, 1.0);
+    auto noShock = roll;
+    POE_CHECK(!ResolveTargetAilmentExtra(noShock, false, false, true));
+    POE_CHECK_NEAR(noShock.TotalAverage(), roll.TotalAverage(), 1e-8);
+    auto shocked = roll;
+    POE_CHECK(ResolveTargetAilmentExtra(shocked, false, true, false));
+    POE_CHECK_NEAR(shocked.byType[static_cast<std::size_t>(DamageType::Cold)].Average(),
+        roll.byType[static_cast<std::size_t>(DamageType::Physical)].Average() * 0.20, 1e-8);
+    POE_CHECK(!ResolveTargetAilmentExtra(shocked, false, true, false));
+}
+
+POE_TEST("PoE2 ailment-conditioned hit increases add to existing increases without amplifying inflicted ailments")
+{
+    auto input = CombatInput();
+    const double base = Snapshot(input)->slotStats[0].baseHitDamage.TotalAverage();
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("100% increased Physical Damage", input.passives));
+    POE_CHECK(PassiveStatParser::ParsePoe2Line("20% increased Damage with Hits against Enemies affected by Elemental Ailments",
+        input.passives));
+    const auto stats = Snapshot(input)->slotStats[0];
+
+    DamagePacket hit = stats.baseHitDamage;
+    DamagePacket ailmentDamage;
+    POE_CHECK(!ResolveTargetAilmentHit(hit, stats.targetAilmentHitDamage, nullptr, ailmentDamage));
+    POE_CHECK_NEAR(hit.TotalAverage(), base * 2.0, 1e-8);
+
+    ActorAilmentState state;
+    state.activePoisonCount = 1;
+    POE_CHECK(!ResolveTargetAilmentHit(hit, stats.targetAilmentHitDamage, &state, ailmentDamage));
+    state.igniteRemaining = 1.0;
+    state.shockRemaining = 1.0;
+    POE_CHECK(ResolveTargetAilmentHit(hit, stats.targetAilmentHitDamage, &state, ailmentDamage));
+    POE_CHECK_NEAR(hit.TotalAverage(), base * 2.2, 1e-8);
+    POE_CHECK_NEAR(ailmentDamage.TotalAverage(), base * 2.0, 1e-8);
 }
 
 POE_TEST("PassiveStatParser: parses core stat lines and skips conditional/weapon-specific/minion lines")

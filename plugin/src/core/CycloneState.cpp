@@ -34,7 +34,9 @@ namespace SkyrimPoE::Core
         bool yieldingToFrenzy,
         bool playerAllowed,
         double currentMagicka,
-        double firstCycleCost)
+        double firstCycleCost,
+        double currentHealth,
+        double firstCycleHealthCost)
     {
         if (phase_ != CyclonePhase::Idle) {
             return false;
@@ -43,8 +45,9 @@ namespace SkyrimPoE::Core
             return false;
         }
         const double cost = (std::isfinite(firstCycleCost) && firstCycleCost > 0.0) ? firstCycleCost : 0.0;
-        // 결정 97, 122: 시작 이벤트에서는 매지카 잔액 읽기만 수행, 부족하면 원래 강공격 통과.
-        if (currentMagicka + 1e-6 < cost) {
+        // 결정 97, 122: 시작 이벤트에서는 두 자원 잔액만 읽고, 부족하면 원래 강공격 통과.
+        if (currentMagicka + 1e-6 < cost ||
+            (firstCycleHealthCost > 0.0 && !(currentHealth - firstCycleHealthCost >= 1.0))) {
             return false;
         }
 
@@ -116,14 +119,16 @@ namespace SkyrimPoE::Core
         const double dt = (std::isfinite(in.deltaSec) && in.deltaSec > 0.0) ? std::min(in.deltaSec, 0.1) : 0.0;
         const double period = ComputeCyclePeriod(in.weaponSpeed, in.poeAttackSpeedMult);
         const double cost = (std::isfinite(in.cycleMagickaCost) && in.cycleMagickaCost > 0.0) ? in.cycleMagickaCost : 0.0;
+        const double healthCost = (std::isfinite(in.cycleHealthCost) && in.cycleHealthCost > 0.0) ? in.cycleHealthCost : 0.0;
+        const bool sufficientHealth = healthCost == 0.0 || in.currentHealth - healthCost >= 1.0;
         const double turnsPerSec = std::clamp(1.0 / period, 0.5, 5.0);
 
         // 1. 결정 128: 첫 주 갱신에서 첫 주기 비용 차감 성공 시에만 OAR 켜고 채널링 시작.
         if (phase_ == CyclonePhase::PendingStart) {
-            if (in.currentMagicka + 1e-6 < cost) {
+            if (in.currentMagicka + 1e-6 < cost || !sufficientHealth) {
                 ForceStop();
                 out.ended = true;
-                out.endReason = "insufficient_magicka_on_start";
+                out.endReason = sufficientHealth ? "insufficient_magicka_on_start" : "insufficient_health_on_start";
                 return out;
             }
             phase_ = CyclonePhase::Channeling;
@@ -136,6 +141,7 @@ namespace SkyrimPoE::Core
                 out.consumeMagicka = true;
                 out.magickaToConsume = cost;
             }
+            out.healthToConsume = healthCost;
             out.spinRadiansDelta = kTwoPi * turnsPerSec * dt;
             return out;
         }
@@ -178,17 +184,18 @@ namespace SkyrimPoE::Core
         }
 
         if (cycleElapsedSec_ >= period) {
-            if (in.currentMagicka + 1e-6 < cost) {
+            if (in.currentMagicka + 1e-6 < cost || !sufficientHealth) {
                 ForceStop();
                 out.stopOar = true;
                 out.ended = true;
-                out.endReason = "out_of_magicka";
+                out.endReason = sufficientHealth ? "out_of_magicka" : "out_of_health";
                 return out;
             }
             if (cost > 0.0) {
                 out.consumeMagicka = true;
                 out.magickaToConsume = cost;
             }
+            out.healthToConsume = healthCost;
             // 프레임 스파이크(dt >= period)에서도 반 주기 위상이 깨지지 않도록 잔여 시간을 [0, 0.5*period)로 제한한다.
             cycleElapsedSec_ = std::fmod(cycleElapsedSec_, period);
             if (cycleElapsedSec_ >= period * 0.5) {

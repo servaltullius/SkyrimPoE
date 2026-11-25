@@ -6,11 +6,16 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <iterator>
+#include <limits>
 
 namespace SkyrimPoE::Core::SaveRecord
 {
     namespace
     {
+        // Existing TREE v2 starts the class field with a bounded string length.
+        constexpr auto kTreeClassSelectionMarker = std::numeric_limits<std::uint32_t>::max();
+
         struct RecordBuffer
         {
             RawSaveRecord record;
@@ -118,6 +123,76 @@ namespace SkyrimPoE::Core::SaveRecord
                 return true;
             }, out);
         }
+
+        bool ReadTreeGeneration(std::uint32_t version, std::span<const std::uint8_t>& bytes, std::uint32_t& generation)
+        {
+            if (version == kLegacyTreeVersion) {
+                generation = 0;
+                return true;
+            }
+            return version == kTreeVersion && ReadPod(bytes, generation);
+        }
+    }
+
+    bool ReadTreeRecord(const RawSaveRecord& record, PassiveTreeState& out)
+    {
+        if (record.type != kRecordTree || record.bytes.size() > kMaxSaveRecordBytes) {
+            return false;
+        }
+        std::span<const std::uint8_t> bytes = record.bytes;
+        PassiveTreeState tree;
+        if (!ReadTreeGeneration(record.version, bytes, tree.generation)) return false;
+        if (record.version == kLegacyTreeVersion) {
+            std::uint8_t selected = 0;
+            if (!ReadPod(bytes, selected) || !ReadPod(bytes, tree.classId)) return false;
+            tree.classSelected = selected != 0;
+        } else {
+            auto classField = bytes;
+            std::uint32_t marker = 0;
+            if (!ReadPod(classField, marker)) return false;
+            if (marker == kTreeClassSelectionMarker) {
+                std::uint8_t selected = 0;
+                bytes = classField;
+                if (!ReadPod(bytes, selected) || selected > 1 || !ReadString(bytes, tree.classContentId)) return false;
+                tree.classSelected = selected != 0;
+                const bool hasContentId = !tree.classContentId.empty();
+                if (tree.classSelected != hasContentId) return false;
+            } else {
+                if (!ReadString(bytes, tree.classContentId)) return false;
+                tree.classSelected = !tree.classContentId.empty();
+            }
+        }
+        if (!ReadString(bytes, tree.ascendancyId)) return false;
+
+        std::uint32_t nodeCount = 0;
+        if (!ReadPod(bytes, nodeCount) || nodeCount > kMaxTreeNodes) return false;
+        tree.allocatedNodes.resize(nodeCount);
+        for (auto& node : tree.allocatedNodes) {
+            if (!ReadPod(bytes, node)) return false;
+        }
+        const auto readChoices = [&](auto& choices, std::uint32_t cap, bool rejectDuplicates) {
+            std::uint32_t count = 0;
+            if (!ReadPod(bytes, count) || count > cap) return false;
+            for (std::uint32_t i = 0; i < count; ++i) {
+                std::uint32_t node = 0, choice = 0;
+                if (!ReadPod(bytes, node) || !ReadPod(bytes, choice)) return false;
+                auto [entry, inserted] = choices.try_emplace(node, choice);
+                if (!inserted) {
+                    if (rejectDuplicates) return false;
+                    entry->second = choice;
+                }
+            }
+            return true;
+        };
+        if (record.version == kTreeVersion && !readChoices(tree.attributeSelections, kMaxTreeNodes, true)) return false;
+        if (!readChoices(tree.masterySelections, kMaxListLen, false) ||
+            !ReadPod(bytes, tree.bossKillCount) || !ReadPod(bytes, tree.dragonKillCount) ||
+            !ReadPod(bytes, tree.ascendancyMilestonesBitmask) || !bytes.empty()) {
+            return false;
+        }
+        tree.ascendancyMilestonesBitmask &= 0xFu;
+        out = std::move(tree);
+        return true;
     }
 
     bool ReadGemInstance(std::span<const std::uint8_t>& bytes, Core::GemInstance& out, std::uint32_t depth)
@@ -187,23 +262,140 @@ namespace SkyrimPoE::Core::SaveRecord
         return true;
     }
 
+    namespace
+    {
+        bool ReadCorePayload(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp, bool strict)
+        {
+            if (!ReadLegacyCoreV2Front(bytes, tmp) || !ReadLegacyCoreV2Slots(bytes, tmp)) {
+                return false;
+            }
+            const bool finiteHealth = std::isfinite(tmp.appliedHealthDelta);
+            const bool finiteMagicka = std::isfinite(tmp.appliedMagickaDelta);
+            if (strict && (!bytes.empty() || !finiteHealth || !finiteMagicka)) {
+                return false;
+            }
+
+            tmp.exileLevel = std::clamp(tmp.exileLevel, 1u, kMaxExileLevel);
+            tmp.nextGemInstanceId = std::max<std::uint64_t>(tmp.nextGemInstanceId, 1);
+            if (!finiteHealth) tmp.appliedHealthDelta = 0.0;
+            if (!finiteMagicka) tmp.appliedMagickaDelta = 0.0;
+            return true;
+        }
+    }
+
     bool ReadCoreV2(std::span<const std::uint8_t>& bytes, Runtime::PersistentState& tmp)
     {
-        if (!ReadLegacyCoreV2Front(bytes, tmp) || !ReadLegacyCoreV2Slots(bytes, tmp)) {
+        return ReadCorePayload(bytes, tmp, false);
+    }
+
+    bool ReadCoreRecord(const RawSaveRecord& record, Runtime::PersistentState& out)
+    {
+        if (record.type != kRecordCore ||
+            (record.version != kLegacyCoreVersion && record.version != kCoreVersion)) {
             return false;
         }
-
-        tmp.exileLevel = std::clamp(tmp.exileLevel, 1u, kMaxExileLevel);
-        tmp.nextGemInstanceId = std::max<std::uint64_t>(tmp.nextGemInstanceId, 1);
-        if (!std::isfinite(tmp.appliedHealthDelta)) tmp.appliedHealthDelta = 0.0;
-        if (!std::isfinite(tmp.appliedMagickaDelta)) tmp.appliedMagickaDelta = 0.0;
+        std::span<const std::uint8_t> bytes = record.bytes;
+        Runtime::PersistentState state;
+        if (!ReadCorePayload(bytes, state, record.version == kCoreVersion)) {
+            return false;
+        }
+        out = std::move(state);
         return true;
     }
 
-    SaveDecision DecideSave(const SaveRecordBatch& batch, bool isNewGame, const SaveGeneration& pack)
+    bool ReadGearHeader(std::uint32_t version, std::span<const std::uint8_t>& bytes, GearHeader& out)
+    {
+        if (version != kLegacyGearVersion && version != kGearVersion) {
+            return false;
+        }
+        GearHeader gear;
+        if (!ReadPod(bytes, gear.ring2Key.ownerFormId) || !ReadPod(bytes, gear.ring2Key.uniqueId) ||
+            !ReadPod(bytes, gear.ring2BaseFormId) || !ReadPod(bytes, gear.beltKey.ownerFormId) ||
+            !ReadPod(bytes, gear.beltKey.uniqueId) || !ReadPod(bytes, gear.beltBaseFormId) ||
+            !ReadPod(bytes, gear.charmCount) || gear.charmCount > gear.charms.size()) {
+            return false;
+        }
+        for (std::uint32_t index = 0; index < gear.charmCount; ++index) {
+            auto& charm = gear.charms[index];
+            if (!ReadPod(bytes, charm.occupied) || !ReadPod(bytes, charm.kind) || !ReadPod(bytes, charm.charges)) {
+                return false;
+            }
+        }
+        if (!ReadPod(bytes, gear.jewelCount) || gear.jewelCount > kMaxSocketedJewels ||
+            (version == kGearVersion && !ReadPod(bytes, gear.jewelGeneration))) {
+            return false;
+        }
+        out = gear;
+        return true;
+    }
+
+    bool AreValidPlayerRateDeltas(PlayerRateDeltas deltas) noexcept
+    {
+        const auto valid = [](double value) {
+            return std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
+        };
+        return valid(deltas.speedMult) && valid(deltas.magickaRateMult);
+    }
+
+    std::optional<PlayerRateDeltas> ReadPlayerRateRecord(const RawSaveRecord& record) noexcept
+    {
+        if (record.type != kRecordPlayerRates || record.version != kPlayerRatesVersion) {
+            return std::nullopt;
+        }
+        std::span<const std::uint8_t> bytes = record.bytes;
+        PlayerRateDeltas deltas;
+        if (!ReadPod(bytes, deltas.speedMult) || !ReadPod(bytes, deltas.magickaRateMult) ||
+            !bytes.empty() || !AreValidPlayerRateDeltas(deltas)) {
+            return std::nullopt;
+        }
+        return deltas;
+    }
+
+    std::optional<PlayerRateDeltas> ReadPlayerRates(const SaveRecordBatch& batch) noexcept
+    {
+        const auto record = std::ranges::find(batch.records, kRecordPlayerRates, &RawSaveRecord::type);
+        if (record == batch.records.end()) {
+            return PlayerRateDeltas{};
+        }
+        if (std::find_if(std::next(record), batch.records.end(), [](const auto& next) {
+            return next.type == kRecordPlayerRates;
+        }) != batch.records.end()) {
+            return std::nullopt;
+        }
+        return ReadPlayerRateRecord(*record);
+    }
+
+    float ComputePlayerRateDelta(double observed, double applied, double multiplier) noexcept
+    {
+        if (!std::isfinite(observed) || !std::isfinite(applied) || !std::isfinite(multiplier)) {
+            return 0.0f;
+        }
+        const double baseline = std::max(0.0, observed - applied);
+        const double change = baseline * (std::max(0.0, multiplier) - 1.0) - applied;
+        return std::abs(change) <= std::numeric_limits<float>::max() ? static_cast<float>(change) : 0.0f;
+    }
+
+    PlayerRateReconciliation ReconcilePlayerRates(double speedMult, double magickaRateMult,
+        PlayerRateDeltas applied, double speedFactor, double magickaRateFactor) noexcept
+    {
+        constexpr double tolerance = 0.0001;
+        const auto change = [](double observed, double previous, double factor) {
+            const float next = ComputePlayerRateDelta(observed, previous, factor);
+            return std::abs(next) > tolerance ? next : 0.0f;
+        };
+        const float speed = change(speedMult, applied.speedMult, speedFactor);
+        const float magicka = change(magickaRateMult, applied.magickaRateMult, magickaRateFactor);
+        return { speed, magicka, { applied.speedMult + speed, applied.magickaRateMult + magicka } };
+    }
+
+    SaveDecision DecideSave(const SaveRecordBatch& batch, bool isNewGame, const SaveGeneration& pack,
+        std::optional<std::uint32_t> activeTreeGeneration)
     {
         if (!batch.complete) {
             return { SaveDisposition::Preserve, "모드 기록 수집이 불완전합니다." };
+        }
+        if (!isNewGame && !ReadPlayerRates(batch)) {
+            return { SaveDisposition::Preserve, "PRAT 레코드의 플레이어 속도·매지카 재생 보정치를 복원할 수 없습니다." };
         }
         SaveGenerationInput input{
             .isNewGame = isNewGame,
@@ -240,7 +432,65 @@ namespace SkyrimPoE::Core::SaveRecord
                 input.hasIntactCoreV2Front = ReadLegacyCoreV2Front(bytes, core);
             }
         }
-        return DecideSaveGeneration(input);
+        if (!isNewGame && input.generation.status == GenerationRecordStatus::Missing &&
+            std::ranges::any_of(batch.records, [](const auto& record) {
+                return record.type == kRecordCore && record.version > kLegacyCoreVersion;
+            })) {
+            return { SaveDisposition::Preserve, "세대 기록(GENR)이 없는 CORE v3 이상 세이브입니다." };
+        }
+        const auto decision = DecideSaveGeneration(input);
+        if (isNewGame) {
+            return decision;
+        }
+        const bool normal = decision.disposition == SaveDisposition::Normal;
+        const bool legacyCleanup = decision.disposition == SaveDisposition::CleanupFromLegacy;
+        const bool needsGenerationRecords = normal && pack.contentGeneration != 0;
+        if (needsGenerationRecords) {
+            if (std::ranges::find(batch.records, kRecordPlayerRates, &RawSaveRecord::type) == batch.records.end()) {
+                return { SaveDisposition::Preserve, "세대 1 이상 세이브에 필수 PRAT 레코드가 없습니다." };
+            }
+            const auto core = std::ranges::find(batch.records, kRecordCore, &RawSaveRecord::type);
+            Runtime::PersistentState decoded;
+            if (core == batch.records.end() || core->version != kCoreVersion ||
+                std::ranges::find_if(std::next(core), batch.records.end(), [](const auto& record) {
+                    return record.type == kRecordCore;
+                }) != batch.records.end() || !ReadCoreRecord(*core, decoded)) {
+                return { SaveDisposition::Preserve, "세대 1 이상 세이브에 온전한 CORE v3 레코드가 하나 있어야 합니다." };
+            }
+        }
+        if (normal || legacyCleanup) {
+            const auto expected = legacyCleanup ? 0u : activeTreeGeneration.value_or(pack.contentGeneration);
+            bool sawTree = false;
+            for (const auto& record : batch.records) {
+                if (record.type == kRecordTree) {
+                    PassiveTreeState tree;
+                    if (sawTree || (needsGenerationRecords && record.version != kTreeVersion) ||
+                        !ReadTreeRecord(record, tree)) {
+                        return { SaveDisposition::Preserve, "TREE 레코드가 중복되었거나 온전히 읽을 수 없습니다." };
+                    }
+                    if (tree.generation != expected) {
+                        return { SaveDisposition::Preserve, legacyCleanup
+                            ? "PoE1 정리 대상의 TREE 레코드가 세대 0이 아닙니다."
+                            : "TREE 레코드와 활성 패시브 트리 팩의 세대가 다릅니다." };
+                    }
+                    sawTree = true;
+                } else if (record.type == kRecordGear) {
+                    std::span<const std::uint8_t> bytes = record.bytes;
+                    GearHeader gear;
+                    if (ReadGearHeader(record.version, bytes, gear) && gear.jewelCount != 0 &&
+                        gear.jewelGeneration != expected) {
+                        return { SaveDisposition::Preserve, "GEAR 소켓 주얼과 패시브 트리의 세대가 다릅니다." };
+                    }
+                } else if (!needsGenerationRecords && record.type == kRecordCore &&
+                    record.version >= kCoreVersion) {
+                    return { SaveDisposition::Preserve, "세대 0 세이브에 세대 1 이상의 CORE 레코드가 있습니다." };
+                }
+            }
+            if (needsGenerationRecords && !sawTree) {
+                return { SaveDisposition::Preserve, "세대 1 이상 세이브에 필수 TREE v2 레코드가 없습니다." };
+            }
+        }
+        return decision;
     }
 
     bool WriteSnapshot(const Snapshot& snapshot, const SaveGeneration& generation, const RecordSink& sink,
@@ -268,7 +518,8 @@ namespace SkyrimPoE::Core::SaveRecord
                 reportWarning(std::format("failed to write record 0x{:08X} v{}.", type, version));
             }
         };
-        encode(kRecordCore, kCoreVersion, [&](RecordBuffer* intfc) {
+        const auto coreVersion = generation.contentGeneration == 0 ? kLegacyCoreVersion : kCoreVersion;
+        encode(kRecordCore, coreVersion, [&](RecordBuffer* intfc) {
             bool ok = intfc->WriteRecordData(&state.exileLevel, sizeof(state.exileLevel));
             ok = ok && intfc->WriteRecordData(&state.exileXp, sizeof(state.exileXp));
             ok = ok && intfc->WriteRecordData(&state.unallocatedPassivePoints, sizeof(state.unallocatedPassivePoints));
@@ -290,6 +541,12 @@ namespace SkyrimPoE::Core::SaveRecord
                 }
             }
             return ok;
+        });
+        encode(kRecordPlayerRates, kPlayerRatesVersion, [&](RecordBuffer* intfc) {
+            const PlayerRateDeltas deltas{ state.appliedSpeedMultDelta, state.appliedMagickaRateMultDelta };
+            return AreValidPlayerRateDeltas(deltas) &&
+                intfc->WriteRecordData(&deltas.speedMult, sizeof(deltas.speedMult)) &&
+                intfc->WriteRecordData(&deltas.magickaRateMult, sizeof(deltas.magickaRateMult));
         });
 
         encode(kRecordGemKeys, kGemKeysVersion, [&](RecordBuffer* intfc) {
@@ -314,10 +571,17 @@ namespace SkyrimPoE::Core::SaveRecord
 
         encode(kRecordTree, kTreeVersion, [&](RecordBuffer* intfc) {
             const auto& tr = state.tree;
-            const std::uint8_t clsSelByte = tr.classSelected ? 1 : 0;
-            bool treeOk = intfc->WriteRecordData(&clsSelByte, sizeof(clsSelByte));
-            treeOk = treeOk && intfc->WriteRecordData(&tr.classId, sizeof(tr.classId));
-            treeOk = treeOk && WriteString(intfc, tr.ascendancyId);
+            if (tr.classSelected && tr.classContentId.empty() && reportWarning) {
+                reportWarning("SaveLoad: selected class has no content ID; saving TREE with no class selected.");
+            }
+            const std::uint8_t selected = tr.classSelected && !tr.classContentId.empty() ? 1 : 0;
+            const auto ascendancyId = tr.ascendancyId.empty() || tr.ascendancyId.starts_with("asc.")
+                ? tr.ascendancyId : "asc." + tr.ascendancyId;
+            bool treeOk = intfc->WriteRecordData(&tr.generation, sizeof(tr.generation));
+            treeOk = treeOk && intfc->WriteRecordData(&kTreeClassSelectionMarker, sizeof(kTreeClassSelectionMarker));
+            treeOk = treeOk && intfc->WriteRecordData(&selected, sizeof(selected));
+            treeOk = treeOk && WriteString(intfc, selected ? tr.classContentId : std::string{});
+            treeOk = treeOk && WriteString(intfc, ascendancyId);
 
             const auto nodeCount = static_cast<std::uint32_t>(std::min<std::size_t>(tr.allocatedNodes.size(), kMaxTreeNodes));
             treeOk = treeOk && intfc->WriteRecordData(&nodeCount, sizeof(nodeCount));
@@ -325,15 +589,19 @@ namespace SkyrimPoE::Core::SaveRecord
                 treeOk = treeOk && intfc->WriteRecordData(&tr.allocatedNodes[i], sizeof(std::uint32_t));
             }
 
-            std::vector<std::pair<std::uint32_t, std::uint32_t>> sortedMasteries(
-                tr.masterySelections.begin(), tr.masterySelections.end());
-            std::sort(sortedMasteries.begin(), sortedMasteries.end());
-            const auto masteryCount = static_cast<std::uint32_t>(std::min<std::size_t>(sortedMasteries.size(), kMaxListLen));
-            treeOk = treeOk && intfc->WriteRecordData(&masteryCount, sizeof(masteryCount));
-            for (std::uint32_t i = 0; i < masteryCount && treeOk; ++i) {
-                treeOk = treeOk && intfc->WriteRecordData(&sortedMasteries[i].first, sizeof(std::uint32_t));
-                treeOk = treeOk && intfc->WriteRecordData(&sortedMasteries[i].second, sizeof(std::uint32_t));
-            }
+            const auto writeChoices = [&](const auto& choices, std::uint32_t cap) {
+                std::vector<std::pair<std::uint32_t, std::uint32_t>> sorted(choices.begin(), choices.end());
+                std::sort(sorted.begin(), sorted.end());
+                const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(sorted.size(), cap));
+                if (!intfc->WriteRecordData(&count, sizeof(count))) return false;
+                for (std::uint32_t i = 0; i < count; ++i) {
+                    if (!intfc->WriteRecordData(&sorted[i].first, sizeof(std::uint32_t)) ||
+                        !intfc->WriteRecordData(&sorted[i].second, sizeof(std::uint32_t))) return false;
+                }
+                return true;
+            };
+            treeOk = treeOk && writeChoices(tr.attributeSelections, kMaxTreeNodes);
+            treeOk = treeOk && writeChoices(tr.masterySelections, kMaxListLen);
 
             treeOk = treeOk && intfc->WriteRecordData(&tr.bossKillCount, sizeof(tr.bossKillCount));
             treeOk = treeOk && intfc->WriteRecordData(&tr.dragonKillCount, sizeof(tr.dragonKillCount));
@@ -413,6 +681,8 @@ namespace SkyrimPoE::Core::SaveRecord
             }
             const auto jewelCount = static_cast<std::uint32_t>(std::min<std::size_t>(sortedJewels.size(), kMaxSocketedJewels));
             gearOk = gearOk && intfc->WriteRecordData(&jewelCount, sizeof(jewelCount));
+            const auto jewelGeneration = state.tree.generation;
+            gearOk = gearOk && intfc->WriteRecordData(&jewelGeneration, sizeof(jewelGeneration));
             for (std::uint32_t j = 0; j < jewelCount && gearOk; ++j) {
                 gearOk = gearOk && intfc->WriteRecordData(&sortedJewels[j].first, sizeof(std::uint32_t));
                 gearOk = gearOk && WritePoEItemRecordV2(intfc, sortedJewels[j].second);

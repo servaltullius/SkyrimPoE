@@ -19,10 +19,12 @@ namespace SkyrimPoE::Core
     class EnergyShieldPool
     {
     public:
-        void Configure(double rechargeDelayMultiplier = 1.0, double rechargeRateMultiplier = 1.0);
+        void Configure(double rechargeDelayMultiplier = 1.0, double rechargeRateMultiplier = 1.0,
+            bool rechargeEnabled = true);
         void SetMax(double newMax, bool refillIfInitializedEmpty = false);
         void ResetFull(double newMax);
         void Clear();
+        void Recover(double amount);
 
         // ES에 들어간 피해만 재충전 지연을 새로 시작한다.
         [[nodiscard]] EnergyShieldAbsorbResult AbsorbDamage(

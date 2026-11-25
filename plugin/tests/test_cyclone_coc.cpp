@@ -274,3 +274,113 @@ POE_TEST("EnergyShieldPool: difficulty absorb, 4s recharge delay, chaos ES loss 
     pool.Tick(1.0, false);
     POE_CHECK_NEAR(pool.Snapshot().current, 12.5, 1e-6);
 }
+
+POE_TEST("CycloneState: both resource costs are approved together at start and renewal")
+{
+    CycloneStateMachine cyclone;
+    POE_CHECK(!cyclone.TryBeginFromPowerAttack(true, false, true, 50.0, 10.0, 20.0, 20.0));
+    POE_CHECK(!cyclone.TryBeginFromPowerAttack(true, false, true, 9.0, 10.0, 50.0, 20.0));
+    POE_CHECK(cyclone.TryBeginFromPowerAttack(true, false, true, 10.0, 10.0, 21.0, 20.0));
+
+    CycloneTickInput input;
+    input.currentMagicka = 10.0;
+    input.cycleMagickaCost = 10.0;
+    input.currentHealth = 20.0;
+    input.cycleHealthCost = 20.0;
+    input.buttonHeld = true;
+    input.poeAttackSpeedMult = 20.0;
+    input.deltaSec = 0.1;
+    const auto rejected = cyclone.Tick(input);
+    POE_CHECK(rejected.ended && !rejected.startOar && !rejected.consumeMagicka);
+    POE_CHECK_NEAR(rejected.healthToConsume, 0.0, 1e-9);
+
+    input.currentHealth = 21.0;
+    POE_CHECK(cyclone.TryBeginFromPowerAttack(true, false, true, 10.0, 10.0, 21.0, 20.0));
+    const auto started = cyclone.Tick(input);
+    POE_CHECK(started.startOar && started.consumeMagicka);
+    POE_CHECK_NEAR(started.magickaToConsume, 10.0, 1e-9);
+    POE_CHECK_NEAR(started.healthToConsume, 20.0, 1e-9);
+
+    input.currentMagicka = 0.0;
+    const auto renewal = cyclone.Tick(input);
+    POE_CHECK(renewal.ended && renewal.performAreaHit && !renewal.consumeMagicka);
+    POE_CHECK_NEAR(renewal.healthToConsume, 0.0, 1e-9);
+}
+
+POE_TEST("SkillSystem: hand cast checks life and dual-cast mana before advancing cooldown")
+{
+    const auto pack = LoadStage2Pack();
+    const Config config;
+    StatSnapshot snapshot;
+    snapshot.poe2Passives = true;
+    snapshot.poeMaxMana = 200.0;
+    snapshot.expectedPoeMana = 100.0;
+    snapshot.poeMaxLife = 60.0;
+    auto& stats = snapshot.slotStats[0];
+    stats.gemId = "Fireball";
+    stats.kind = GemKind::Spell;
+    stats.poeManaCost = 8.0;
+    stats.poeLifeCost = 6.0;
+    stats.cooldownSec = 0.5;
+    std::array<SkillSlot, kSkillSlotCount> slots;
+    slots[0].occupied = true;
+    slots[0].gem = GemInstance{ 1, "Fireball", 1 };
+
+    SkillSystem skills;
+    POE_CHECK(!skills.TryBuildHandCastSpell(0, snapshot, slots, 20.0, 100.0, pack, config, 12.5, 120.0, 2.5));
+    POE_CHECK(!skills.TryBuildHandCastSpell(0, snapshot, slots, 19.0, 100.0, pack, config, 13.0, 120.0, 2.5));
+    POE_CHECK_NEAR(skills.RemainingCooldown(1), 0.0, 1e-9);
+    const auto cast = skills.TryBuildHandCastSpell(0, snapshot, slots, 20.0, 100.0, pack, config, 13.0, 120.0, 2.5);
+    POE_CHECK(cast && cast->usesHealthCost);
+    POE_CHECK_NEAR(cast->skyrimMagickaCost, 20.0, 1e-9);
+    POE_CHECK_NEAR(cast->skyrimHealthCost, 12.0, 1e-9);
+    POE_CHECK_NEAR(skills.RemainingCooldown(1), 0.5, 1e-9);
+}
+
+POE_TEST("SkillSystem: triggered spell and guard power charge both resources together")
+{
+    const auto pack = LoadStage2Pack();
+    Config config;
+    config.enforceGemRequirements = false;
+    Layer1Input layer;
+    layer.slots[0].occupied = true;
+    layer.slots[0].gem = GemInstance{ 1, "Cyclone", 1 };
+    layer.slots[1].occupied = true;
+    layer.slots[1].linkedAttackSlot = 0;
+    layer.slots[1].gem = GemInstance{ 2, "SupportCastOnCriticalStrike", 1, 0, 0, 3,
+        { GemInstance{ 3, "IceNova", 1 }, GemInstance{ 4, "ShockNova", 1 } } };
+    layer.slots[2].occupied = true;
+    layer.slots[2].gem = GemInstance{ 5, "MoltenShell", 1 };
+    StatEngine engine;
+    engine.SetLayer1(layer);
+    POE_CHECK(engine.RebuildIfDirty(pack, config));
+    auto snapshot = *engine.GetSnapshot();
+    snapshot.poe2Passives = true;
+    snapshot.poeMaxMana = 200.0;
+    snapshot.expectedPoeMana = 100.0;
+    snapshot.poeMaxLife = 60.0;
+    auto& triggered = snapshot.triggeredSpellStats.at(3);
+    auto& guard = snapshot.slotStats[2];
+    triggered.poeManaCost = guard.poeManaCost = 8.0;
+    triggered.poeLifeCost = guard.poeLifeCost = 6.0;
+
+    SkillSystem skills;
+    POE_CHECK(!skills.TryTriggerOnCrit(0, snapshot, layer.slots, 7.0, 100.0, pack, config, 13.0, 120.0));
+    POE_CHECK(!skills.TryTriggerOnCrit(0, snapshot, layer.slots, 8.0, 100.0, pack, config, 12.0, 120.0));
+    POE_CHECK(skills.RoundRobinCursor(2) == 0);
+    POE_CHECK_NEAR(skills.RemainingCooldown(3), 0.0, 1e-9);
+    const auto cast = skills.TryTriggerOnCrit(0, snapshot, layer.slots, 8.0, 100.0, pack, config, 13.0, 120.0);
+    POE_CHECK(cast && cast->spellInstanceId == 3);
+    POE_CHECK_NEAR(cast->skyrimMagickaCost, 8.0, 1e-9);
+    POE_CHECK_NEAR(cast->skyrimHealthCost, 12.0, 1e-9);
+    POE_CHECK(skills.RoundRobinCursor(2) == 1);
+
+    POE_CHECK(!skills.TryActivateMoltenShell(2, snapshot, layer.slots, 8.0, 100.0, 120.0, pack, config, 12.0, 120.0).ok);
+    POE_CHECK(!skills.TryActivateMoltenShell(2, snapshot, layer.slots, 7.0, 100.0, 120.0, pack, config, 13.0, 120.0).ok);
+    POE_CHECK(!skills.GuardSnapshot().active);
+    const auto activation =
+        skills.TryActivateMoltenShell(2, snapshot, layer.slots, 8.0, 100.0, 120.0, pack, config, 13.0, 120.0);
+    POE_CHECK(activation.ok && skills.GuardSnapshot().active);
+    POE_CHECK_NEAR(activation.skyrimMagickaCost, 8.0, 1e-9);
+    POE_CHECK_NEAR(activation.skyrimHealthCost, 12.0, 1e-9);
+}

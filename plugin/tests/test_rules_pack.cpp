@@ -224,6 +224,7 @@ POE_TEST("P2b player rules: PoB life, mana, block, deflection and critical answe
         const double tolerance = entry.at("tolerance");
         Layer1Input layer;
         if (id.starts_with("life-mana-")) {
+            layer.className = "Scion";
             const auto* scion = pack.FindClass(layer.className);
             POE_CHECK(scion);
             layer.exileLevel = input.at("level");

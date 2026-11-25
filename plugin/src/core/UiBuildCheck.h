@@ -23,6 +23,7 @@ namespace SkyrimPoE::Core::UiBuildCheck
         { "link", OperationKind::StateChanging },
         { "toggleAura", OperationKind::StateChanging },
         { "treeAllocatePath", OperationKind::StateChanging },
+        { "treeSetAttribute", OperationKind::StateChanging },
         { "treeRefundNode", OperationKind::StateChanging },
         { "treeRefundAll", OperationKind::StateChanging },
         { "treeSelectClass", OperationKind::StateChanging },

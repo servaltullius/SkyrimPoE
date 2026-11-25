@@ -207,11 +207,16 @@ namespace SkyrimPoE::Runtime
         }
 
         const bool playerMoving = IsMoving(player);
+        const auto playerStats = g_statEngine->GetSnapshot();
         double playerIgniteSkyrim;
         double playerBleedSkyrim;
         double playerStaminaDrain;
         {
             std::scoped_lock lk(g_mutex);
+            if (playerStats && playerStats->chaosInoculation && playerStats->bleedImmune) {
+                g_playerAilments.bleedRemainingSec = 0.0;
+                g_pendingPlayerBleed = 0.0;
+            }
             AdvancePlayerAilments(playerMoving);
             playerIgniteSkyrim = std::exchange(g_pendingPlayerIgnite, 0.0);
             playerBleedSkyrim = std::exchange(g_pendingPlayerBleed, 0.0);
@@ -223,9 +228,10 @@ namespace SkyrimPoE::Runtime
                 // 마법 지속 피해와 같이 ES와 MoM에 난이도를 넘기고 남은 생명 피해에 한 번 적용한다.
                 const double difficulty = SkillExecution::GetDifficultyMultiplier(true);
                 auto& es = Core::GetPlayerEnergyShield();
-                const auto ignite = es.AbsorbDamage(playerIgniteSkyrim, difficulty, false, Core::AilmentKind::Ignite);
+                const double igniteBypass = playerStats ? Core::PlayerDamageBypassingEnergyShield(playerIgniteSkyrim, *playerStats) : 0.0;
+                const auto ignite = es.AbsorbDamage(playerIgniteSkyrim - igniteBypass, difficulty, false, Core::AilmentKind::Ignite);
                 const auto bleed = es.AbsorbDamage(playerBleedSkyrim, difficulty, false, Core::AilmentKind::Bleed);
-                const double rawAfterEs = ignite.remainingRawDamage + bleed.remainingRawDamage;
+                const double rawAfterEs = igniteBypass + ignite.remainingRawDamage + bleed.remainingRawDamage;
                 const double rawAfterMom = ApplyPlayerDotMindOverMatter(rawAfterEs, difficulty, player);
                 if (rawAfterMom > 0.0) {
                     const double curHp = static_cast<double>(pav->GetActorValue(RE::ActorValue::kHealth));
@@ -297,30 +303,96 @@ namespace SkyrimPoE::Runtime
             }
             if (dot.physPoeDamage > 0.0 && !actor->IsDead()) {
                 const double skDmg = Core::ConvertOffenseHit(dot.physPoeDamage, exileLevel, *g_dataPack, *g_config);
-                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Physical, false, false, true);
+                const bool bypassesEs = snap && snap->poe2Passives && Core::ActiveRuleValues().energyShield.bleedBypasses;
+                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Physical, false, bypassesEs, true);
             }
             if (dot.chaosPoeDamage > 0.0 && !actor->IsDead()) {
                 const double skDmg = Core::ConvertOffenseHit(dot.chaosPoeDamage, exileLevel, *g_dataPack, *g_config);
-                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Chaos, false, true, true);
+                const bool bypassesEs = !snap || !snap->poe2Passives || Core::ActiveRuleValues().energyShield.poisonBypasses;
+                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Chaos, false, bypassesEs, true);
+            }
+            if (dot.chaosIgnitePoeDamage > 0.0 && !actor->IsDead()) {
+                const double skDmg = Core::ConvertOffenseHit(dot.chaosIgnitePoeDamage, exileLevel, *g_dataPack, *g_config);
+                (void)SkillExecution::DealDirectSkillDamage(actor, skDmg, Core::DamageType::Chaos, false, false, true);
             }
         }
+    }
+
+    AilmentRuntime::SpellHit RollSpellHit(const Core::TriggeredSpellCast& cast,
+        double damageRoll01, double critRoll01, double damageMultiplier,
+        Core::TargetAilmentHitDamage& targetHit) noexcept
+    {
+        AilmentRuntime::SpellHit hit;
+        if (!g_dataPack || !g_config) {
+            return hit;
+        }
+        hit.skyrimDamagePerPoe = Core::ConvertOffenseHit(1.0, cast.exileLevel, *g_dataPack, *g_config);
+        const auto rollDamage = [&](const Core::TriggeredSpellCast& source) {
+            hit.skyrimDamage = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
+                source, *g_dataPack, *g_config, damageRoll01, critRoll01, hit.isCrit) * damageMultiplier;
+            const double critMultiplier = hit.isCrit ? std::max(1.0, source.critMultiplierPct / 100.0) : 1.0;
+            static_cast<Core::DamagePacket&>(hit.poeDamage) =
+                Core::RollSpellDamagePacket(source.poeBaseHitDamage, damageRoll01, critMultiplier * damageMultiplier);
+            targetHit = source.targetAilmentHitDamage;
+            if (targetHit.HasModifiers()) {
+                targetHit.basis =
+                    Core::RollSpellDamagePacket(source.targetAilmentHitDamage.basis, damageRoll01, critMultiplier * damageMultiplier);
+            }
+        };
+        if (Core::HasRandomElementExtra(cast.poeBaseHitDamage) ||
+            Core::HasRandomElementExtra(cast.targetAilmentHitDamage.basis)) {
+            std::uniform_int_distribution<std::size_t> element(0, 2);
+            auto resolved = cast;
+            const auto chosen = element(AilmentRng());
+            resolved.poeBaseHitDamage = Core::ResolveRandomElementExtra(cast.poeBaseHitDamage, chosen);
+            resolved.targetAilmentHitDamage.basis = Core::ResolveRandomElementExtra(cast.targetAilmentHitDamage.basis, chosen);
+            rollDamage(resolved);
+            const auto& ranges = hit.poeDamage.byType;
+            const auto dominant = std::ranges::max_element(ranges, {}, &Core::DamageRange::Average);
+            hit.resolvedDominantType = static_cast<Core::DamageType>(dominant - ranges.begin());
+        } else {
+            rollDamage(cast);
+        }
+        const auto* gem = g_dataPack->FindGem(cast.gemId);
+        hit.poeDamage.fireSpell = gem && gem->kind == Core::GemKind::Spell && gem->skillTypes.contains("Fire");
+        hit.poeDamage.projectileAilmentChanceIncPct = cast.projectileAilmentChanceIncPct;
+        hit.igniteChancePct = cast.igniteChancePct;
+        hit.starforgeShock = cast.starforgeShock;
+        return hit;
     }
 
     AilmentRuntime::SpellHit AilmentRuntime::RollSpellHit(const Core::TriggeredSpellCast& cast,
         double damageRoll01, double critRoll01, double damageMultiplier) noexcept
     {
-        SpellHit hit;
-        if (!g_dataPack || !g_config) {
-            return hit;
+        Core::TargetAilmentHitDamage ignored;
+        return Runtime::RollSpellHit(cast, damageRoll01, critRoll01, damageMultiplier, ignored);
+    }
+
+    bool ResolveTargetAilmentHit(RE::Actor* target, Core::DamagePacket& packet,
+        const Core::TargetAilmentHitDamage& modifiers, Core::DamagePacket& ailmentDamage)
+    {
+        if (!target || (!modifiers.HasModifiers() &&
+            std::ranges::none_of(packet.targetAilmentExtra, [](const auto& range) { return range.max > 0.0; }))) {
+            ailmentDamage = packet;
+            return false;
         }
-        // The skill's damage and the packet use the same damage and critical rolls.
-        hit.skyrimDamage = Core::SkillSystem::RollTriggeredSpellSkyrimDamage(
-            cast, *g_dataPack, *g_config, damageRoll01, critRoll01, hit.isCrit) * damageMultiplier;
-        const double critMultiplier = hit.isCrit ? std::max(1.0, cast.critMultiplierPct / 100.0) : 1.0;
-        hit.poeDamage = Core::RollSpellDamagePacket(cast.poeBaseHitDamage, damageRoll01, critMultiplier * damageMultiplier);
-        hit.igniteChancePct = cast.igniteChancePct;
-        hit.starforgeShock = cast.starforgeShock;
-        return hit;
+        const auto actorId = target->GetFormID();
+        const std::scoped_lock lock(g_mutex);
+        return Core::ResolveTargetAilmentHit(packet, modifiers, g_ailments.GetState(actorId), ailmentDamage);
+    }
+
+    bool AilmentRuntime::ResolveTargetAilmentExtra(RE::Actor* target, Core::DamagePacket& packet)
+    {
+        Core::DamagePacket ignored;
+        return ResolveTargetAilmentHit(target, packet, {}, ignored);
+    }
+
+    Core::AilmentApplyResult AilmentRuntime::ApplyPlayerHitAilments(
+        RE::Actor* target, const SpellDamage& damage, bool isCrit, HitKind kind,
+        double igniteChancePct, bool starforgeShock)
+    {
+        return ApplyPlayerHitAilments(target, damage, isCrit, kind, igniteChancePct, starforgeShock, 0.0,
+            0.0, 0.0, damage.fireSpell, damage.projectileAilmentChanceIncPct);
     }
 
     Core::AilmentApplyResult AilmentRuntime::ApplyPlayerHitAilments(
@@ -332,7 +404,9 @@ namespace SkyrimPoE::Runtime
         bool starforgeShock,
         double bleedChancePct,
         double poisonChancePct,
-        double shockChancePct)
+        double shockChancePct,
+        bool fireSpell,
+        double projectileAilmentChanceIncPct)
     {
         Core::AilmentApplyResult res{};
         if (MapDeviceRuntime::IsUninstallCleanupActive() ||
@@ -349,6 +423,7 @@ namespace SkyrimPoE::Runtime
 
         std::uniform_real_distribution<double> u01(0.0, 1.0);
         Core::HitAilmentInput in{};
+        in.ailmentChanceIncPct = projectileAilmentChanceIncPct;
         in.physHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Physical)].Average();
         in.fireHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Fire)].Average();
         in.coldHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Cold)].Average();
@@ -361,13 +436,32 @@ namespace SkyrimPoE::Runtime
         in.isBossOrDragon = SkillExecution::IsDragonActor(target) || SkillExecution::HasLocationBossRefType(target);
         if (profile) {
             in.targetRarity = profile->rarity;
+        }
+        if (snap && snap->poe2Passives) {
+            Core::MonsterHitResistance coldDefence;
+            coldDefence.poe2 = true;
+            coldDefence.penetrationPct = snap->penetrationPct;
+            if (hitKind == HitKind::Attack) {
+                coldDefence.penetrationPct[static_cast<std::size_t>(Core::DamageType::Cold)] += snap->attackElementalPenetrationPct;
+            }
+            if (mapActor.runId != 0) {
+                Core::MapModSummary mapMods;
+                if (MapDeviceRuntime::GetMapActorScaling(targetId, &mapMods).runId == mapActor.runId) {
+                    coldDefence.mapElementalPct = mapMods.monsterElemResPct;
+                }
+            }
+            auto resistances = profile.value_or(Core::MonsterProfile{});
+            resistances.rarity = Core::MonsterRarity::Normal;
+            in.coldDamageAfterResistanceMultiplier =
+                Core::MonsterModSystem::IncomingDamageMultiplier(resistances, Core::DamageType::Cold, coldDefence);
+        } else if (profile) {
             auto resistances = *profile;
             // Reuse the cold-resistance adjustment without the general rarity damage reduction.
             resistances.rarity = Core::MonsterRarity::Normal;
             in.coldDamageAfterResistanceMultiplier =
                 Core::MonsterModSystem::IncomingDamageMultiplier(resistances, Core::DamageType::Cold);
         }
-        if (in.coldHitPoe > 0.0 && mapActor.runId != 0) {
+        if ((!snap || !snap->poe2Passives) && in.coldHitPoe > 0.0 && mapActor.runId != 0) {
             Core::MapModSummary mapMods;
             if (MapDeviceRuntime::GetMapActorScaling(targetId, &mapMods).runId == mapActor.runId) {
                 in.coldDamageAfterResistanceMultiplier *= std::max(0.25, 1.0 - mapMods.monsterElemResPct / 100.0);
@@ -377,6 +471,19 @@ namespace SkyrimPoE::Runtime
         // N-1: 패시브/전역 상태이상 확률을 스킬·타격 개별 확률에 자동 합산
         // 공격·주문 한정 확률은 해당 적중에만 더한다.
         const bool isAttack = (hitKind == HitKind::Attack);
+        if (snap) {
+            const auto& p = snap->passiveAilments;
+            in.chaosContributesToIgnite = fireSpell && snap->chaosFireSpellIgniteMagnitude;
+            in.igniteDealsChaos = fireSpell && snap->fireSpellIgniteDealsChaos;
+            in.aggravatesBleed = p.alwaysAggravateBleed;
+            in.bleedBaseDuration = p.bleedBaseDuration;
+            in.bleedMagnitudeMult = p.bleedMagnitudeMult;
+            in.freezeBuildupIncPct = p.incFreezeBuildupPct;
+            in.flammabilityIncPct = p.flammabilityIncPct;
+            in.ailmentChanceIncPct += p.incAilmentChancePct;
+            in.ailmentMagnitudeIncPct = p.incAilmentMagnitudePct;
+            in.modifiers = p.ailments;
+        }
         in.igniteChancePct = igniteChancePct +
             (snap ? snap->igniteChancePct + (isAttack ? snap->attackIgniteChancePct : 0.0) : 0.0);
         in.shockChancePct = shockChancePct + (snap ? snap->shockChancePct : 0.0);
@@ -438,6 +545,8 @@ namespace SkyrimPoE::Runtime
         // C-22, N-3: 면역/참에 막히지 않았으면 실제 플레이어 측 상태이상 부여
         const double safeHit = (std::isfinite(skyrimHitDamage) && skyrimHitDamage > 0.0) ? skyrimHitDamage : 10.0;
         const auto& rules = Core::ActiveRuleValues();
+        const double durationMultiplier = snap
+            ? std::max(0.0, 1.0 - snap->passiveAilments.reducedIncomingAilmentDurationPct / 100.0) : 1.0;
         const bool moving = IsMoving(RE::PlayerCharacter::GetSingleton());
         {
             std::scoped_lock lk(g_mutex);
@@ -455,10 +564,11 @@ namespace SkyrimPoE::Runtime
             }
             switch (kind) {
                 case Core::AilmentKind::Ignite: {
-                    const double dps = std::clamp(safeHit * 0.25, 1.0, 25.0);
+                    const double reduction = snap ? snap->passiveAilments.reducedIncomingIgniteMagnitudePct : 0.0;
+                    const double dps = std::clamp(safeHit * 0.25, 1.0, 25.0) * std::max(0.0, 1.0 - reduction / 100.0);
                     if (dps >= g_playerAilments.igniteDpsSkyrim || g_playerAilments.igniteRemainingSec <= 0.0) {
                         g_playerAilments.igniteDpsSkyrim = dps;
-                        g_playerAilments.igniteRemainingSec = rules.ignite.durationSeconds;
+                        g_playerAilments.igniteRemainingSec = rules.ignite.durationSeconds * durationMultiplier;
                     }
                     break;
                 }
@@ -466,19 +576,22 @@ namespace SkyrimPoE::Runtime
                     const double dps = std::clamp(safeHit * 0.20, 1.0, 20.0);
                     if (dps >= g_playerAilments.bleedDpsSkyrim || g_playerAilments.bleedRemainingSec <= 0.0) {
                         g_playerAilments.bleedDpsSkyrim = dps;
-                        g_playerAilments.bleedRemainingSec = rules.bleed.durationSeconds;
+                        g_playerAilments.bleedRemainingSec = rules.bleed.durationSeconds * durationMultiplier;
                     }
                     break;
                 }
-                case Core::AilmentKind::Shock:
-                    g_playerAilments.shockMult = 1.0 + rules.shock.effectPercent / 100.0;
-                    g_playerAilments.shockRemainingSec = rules.shock.playerDurationSeconds;
+                case Core::AilmentKind::Shock: {
+                    const double reduction = snap ? snap->passiveAilments.reducedIncomingShockMagnitudePct : 0.0;
+                    g_playerAilments.shockMult = 1.0 +
+                        rules.shock.effectPercent / 100.0 * std::max(0.0, 1.0 - reduction / 100.0);
+                    g_playerAilments.shockRemainingSec = rules.shock.playerDurationSeconds * durationMultiplier;
                     break;
+                }
                 case Core::AilmentKind::Chill:
-                    g_playerAilments.chillRemainingSec = rules.chill.playerDurationSeconds;
+                    g_playerAilments.chillRemainingSec = rules.chill.playerDurationSeconds * durationMultiplier;
                     break;
                 case Core::AilmentKind::Freeze:
-                    g_playerAilments.chillRemainingSec = rules.freeze.playerDurationSeconds;
+                    g_playerAilments.chillRemainingSec = rules.freeze.playerDurationSeconds * durationMultiplier;
                     break;
                 default:
                     break;
@@ -562,7 +675,7 @@ namespace SkyrimPoE::Runtime
                         prevState->igniteRemaining,
                         prevState->shockRatio,
                         prevState->shockRemaining,
-                        false, g_ailmentTimeSec, moving);
+                        false, g_ailmentTimeSec, moving, prevState->igniteDealsChaos);
                 }
             }
         }

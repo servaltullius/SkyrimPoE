@@ -176,6 +176,15 @@
     }
   }
 
+  function formatSkillCost(stats, bloodMagic) {
+    if (stats.lifeCost > 0 || bloodMagic) {
+      return stats.manaCost > 0
+        ? `마나 비용 ${stats.manaCost} + 생명 비용 ${stats.lifeCost}`
+        : `생명 비용 ${stats.lifeCost}`;
+    }
+    return `마나 비용 ${stats.manaCost}`;
+  }
+
   function renderSlots(data) {
     slotsList.textContent = "";
     if (skillsSpiritBadge && data && data.stats) {
@@ -278,7 +287,8 @@
         if (gem.kind === "aura" || gem.kind === "herald") {
           line = `정신력 예약 ${c.spiritCost ?? 0} · 상태 ${slot.auraActive ? "활성 중" : "꺼짐"}`;
         } else {
-          line = `평균 PoE 피해 ${c.avgDamage} · 치명타 ${c.critPct}% · 마나 ${c.manaCost} · 반경 ×${c.areaMult}`;
+          line = `평균 PoE 피해 ${c.avgDamage} · 치명타 ${c.critPct}% · ${formatSkillCost(c, data.stats?.bloodMagic)} · 반경 ×${c.areaMult}`;
+          if (gem.kind === "guard") line += ` · 쿨다운 ${c.cooldownSec}초`;
           const extras = [];
           if ((c.projectileCount ?? 1) > 1) extras.push(`투사체 ${c.projectileCount}`);
           if ((c.pierceCount ?? 0) > 0) extras.push(`관통 +${c.pierceCount}`);
@@ -360,7 +370,7 @@
             if (child.computed) {
               const cc = child.computed;
               spCard.appendChild(el("div", "slot-stats-line",
-                `평균 PoE 피해 ${cc.avgDamage} · 치명타 ${cc.critPct}% · 마나 ${cc.manaCost} · 반경 ×${cc.areaMult} · 쿨 ${cc.cooldownSec}s`));
+                `평균 PoE 피해 ${cc.avgDamage} · 치명타 ${cc.critPct}% · ${formatSkillCost(cc, data.stats?.bloodMagic)} · 반경 ×${cc.areaMult} · 쿨다운 ${cc.cooldownSec}초`));
             }
 
             const nestedSups = child.socketedGems || [];

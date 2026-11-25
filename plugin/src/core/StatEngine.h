@@ -13,17 +13,21 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace SkyrimPoE::Core
 {
+    class EnergyShieldPool;
+
     // 층 ①: 장비·패시브·젬·레벨 등 정적 입력(결정 117)
     struct Layer1Input
     {
         std::uint32_t exileLevel = 1;
-        std::string className = "Scion";
+        std::string className;  // Compatibility for callers supplying a standalone stat input.
+        std::optional<ClassBase> treeClass;
         std::array<SkillSlot, kSkillSlotCount> slots{};
 
         // 향후 3~4단계에서 패시브·장비가 채워 넣는 정적 합산치(2단계 기본값 0)
@@ -58,9 +62,12 @@ namespace SkyrimPoE::Core
 
         // 4~5단계(결정 156, 162): 논리 10칸 장착 장비 입력(8 물리 + 가상 반지2·벨트)
         std::array<EquippedSlotInput, kEquipSlotCount> equippedGear{};
+        std::string mainWeaponTag;
 
         // 5단계(결정 161, 164): 패시브 주얼 소켓(고정점 루프 진입 전 선합산), 오라 토글, 보스 이정표 달성 수
         std::vector<ItemStatTotals> socketedJewelStats;
+        // The live player pool outlives the stat engine input. Only set while the Phylactery is allocated.
+        const EnergyShieldPool* phylacteryEnergyShield = nullptr;
         std::uint16_t activeAuraMask = 0;         // bit i = 스킬 칸 i의 오라/전령 ON 요청
         std::uint32_t achievementMask = 0;
     };
@@ -70,7 +77,11 @@ namespace SkyrimPoE::Core
     {
         bool moving = false;
         bool lowLife = false;
+        bool fullLife = false;
+        bool mainHandOneHandedMartial = false;
+        bool offHandOccupied = false;
         bool elementalOverloadActive = false;  // 최근 8초 이내 치명타 적중 시 활성(원소 피해 40% 증폭)
+        bool phylacteryHasEnergyShield = false;
         std::uint8_t enduranceCharges = 0;
         std::uint8_t frenzyCharges = 0;
         std::uint8_t powerCharges = 0;
@@ -85,6 +96,33 @@ namespace SkyrimPoE::Core
         MapModSummary activeMapMods{};
     };
 
+    struct PoeSkillCosts
+    {
+        double mana = 0.0;
+        double life = 0.0;
+    };
+
+    [[nodiscard]] PoeSkillCosts ComputePoe2SkillCosts(double baseManaCost, double flatManaCostDelta,
+        const PassiveStatTotals& passives, bool isAttack, bool isSpell, bool bloodMagic,
+        bool phylacteryWithoutEnergyShield = false) noexcept;
+
+    struct TargetAilmentHitDamage
+    {
+        DamagePacket basis;  // Converted and gained damage after more multipliers, before increases.
+        DamageTypeValues increasedPct{};
+        double againstElementalAilmentsPct = 0.0;
+        double againstAnyAilmentsPct = 0.0;
+        double againstIgnitedPct = 0.0;
+        double againstBurningPct = 0.0;
+        double againstFrozenPct = 0.0;
+
+        [[nodiscard]] bool HasModifiers() const noexcept
+        {
+            return againstElementalAilmentsPct != 0.0 || againstAnyAilmentsPct != 0.0 ||
+                againstIgnitedPct != 0.0 || againstBurningPct != 0.0 || againstFrozenPct != 0.0;
+        }
+    };
+
     // 사전 계산된 스킬 1건의 집계 스탯(불변 사본 내부)
     struct ComputedSkillStats
     {
@@ -95,6 +133,7 @@ namespace SkyrimPoE::Core
         bool isTriggered = false;
 
         DamagePacket baseHitDamage;
+        TargetAilmentHitDamage targetAilmentHitDamage;
         double attackSpeedMult = 1.0;        // 사이클론 기본 3.0 × 보조/충전 배율
         double castSpeedMult = 1.0;          // 주문 시전 속도 배율(패시브 시전 속도 + 격분 충전 + 주문 메아리)
         double baseCritChancePct = 5.0;      // 무기 또는 주문 기본 치명타 + 추가 기본 치명타
@@ -102,6 +141,7 @@ namespace SkyrimPoE::Core
         double critMultiplierPct = 100.0;    // 치명타 피해 배율(%)
         double areaMult = 1.0;               // 반경 배율: sqrt((1 + area_inc/100) * more)
         double poeManaCost = 0.0;            // PoE 단위 스킬 비용
+        double poeLifeCost = 0.0;
         double cooldownSec = 0.0;            // 쿨다운(초)
         bool dealNoElemental = false;
         bool dealNoChaos = false;
@@ -116,6 +156,13 @@ namespace SkyrimPoE::Core
         std::uint8_t pierceCount = 0;
         bool alwaysPierce = false;
         std::uint8_t spellRepeatCount = 0;
+        double projectilePierceChancePct = 0.0;
+        std::array<double, 16> additionalSpellProjectilesChancePct{};
+        double additionalProjectileChancePct = 0.0;
+        double additionalChainChancePct = 0.0;
+        double additionalForkProjectileChancePct = 0.0;
+        double projectileSpeedMult = 1.0;
+        double projectileAilmentChanceIncPct = 0.0;
         double igniteChancePct = 0.0;
         double arcRemainingChainMorePct = 0.0;
         double moltenShellFlatArmour = 0.0;
@@ -161,14 +208,31 @@ namespace SkyrimPoE::Core
         double attackBlockChance = 0.0;
         double spellBlockChance = 0.0;
         double deflectionRating = 0.0;
+        double deflectReductionBonusPct = 0.0;
+        std::array<double, static_cast<std::size_t>(DamageType::Count)> armourAppliesPct{};
+        bool unluckyEvade = false;
+        double maximumEvadePct = 100.0;
+        bool luckyDeflect = false;
         double spellSuppressionChance = 0.0;
         double spellDodgeChance = 0.0;
         double esRechargeRateMult = 1.0;
         double esRechargeDelayMult = 1.0;
         double momRatio = 0.0;
+        double manaRecoveryMult = 1.0;
+        double nativeManaRegenMult = 1.0;
+        bool poe2Passives = false;
+        bool excessLifeRegenToEs = false;
+        bool esCannotRecharge = false;
+        bool chaosFireSpellIgniteMagnitude = false;
+        bool fireSpellIgniteDealsChaos = false;
+        PassiveStatTotals passiveAilments{};
         double lifeRegenPerSec = 0.0;      // 4단계 검수 C2: 장비 생명력 재생
         double incManaRegenPct = 0.0;      // 4단계 검수 C2: 장비 마나 재생 속도 증가(%)
         double incMovementSpeedPct = 0.0;  // 4단계 검수 C2: 장비 이동 속도 증가(%)
+        double incSprintingMovementSpeedPct = 0.0;
+        double incEsMovementSpeedPct = 0.0;
+        DamageTypeValues penetrationPct{};
+        double attackElementalPenetrationPct = 0.0;
 
         bool bloodMagic = false;
         bool chaosInoculation = false;
@@ -179,6 +243,14 @@ namespace SkyrimPoE::Core
         std::uint8_t maxEnduranceCharges = 3;
         std::uint8_t maxFrenzyCharges = 3;
         std::uint8_t maxPowerCharges = 3;
+        std::array<ChargeKind, static_cast<std::size_t>(ChargeKind::Count)> chargeGain{
+            ChargeKind::Endurance, ChargeKind::Frenzy, ChargeKind::Power
+        };
+
+        [[nodiscard]] ChargeKind MapChargeGain(ChargeKind source) const noexcept
+        {
+            return source == ChargeKind::Count ? source : chargeGain[static_cast<std::size_t>(source)];
+        }
 
         // 5단계(결정 161~164): 정신력·오라·전령·고유 특수 효과·참 면역
         std::uint32_t baseMaxSpirit = 0;  // 기본 이정표 진행분, INI와 장비 제외

@@ -6,14 +6,17 @@
 
 namespace SkyrimPoE::Core
 {
-    void EnergyShieldPool::Configure(double rechargeDelayMultiplier, double rechargeRateMultiplier)
+    void EnergyShieldPool::Configure(double rechargeDelayMultiplier, double rechargeRateMultiplier,
+        bool rechargeEnabled)
     {
         const auto& rule = ActiveRuleValues().energyShield;
         std::scoped_lock lock(mutex_);
         state_.rechargeDelay = rule.rechargeDelaySeconds *
             ((std::isfinite(rechargeDelayMultiplier) && rechargeDelayMultiplier >= 0.0) ? rechargeDelayMultiplier : 1.0);
-        state_.rechargeRate = (rule.rechargePercentPerMinute / (60.0 * 100.0)) *
-            ((std::isfinite(rechargeRateMultiplier) && rechargeRateMultiplier >= 0.0) ? rechargeRateMultiplier : 1.0);
+        state_.rechargeRate = rechargeEnabled
+            ? (rule.rechargePercentPerMinute / (60.0 * 100.0)) *
+                ((std::isfinite(rechargeRateMultiplier) && rechargeRateMultiplier >= 0.0) ? rechargeRateMultiplier : 1.0)
+            : 0.0;
     }
 
     void EnergyShieldPool::SetMax(double newMax, bool /*refillIfInitializedEmpty*/)
@@ -48,6 +51,15 @@ namespace SkyrimPoE::Core
         state_.max = 0.0;
         state_.timeSinceLastHit = 0.0;
         initialized_ = false;
+    }
+
+    void EnergyShieldPool::Recover(double amount)
+    {
+        if (!std::isfinite(amount) || amount <= 0.0) {
+            return;
+        }
+        std::scoped_lock lock(mutex_);
+        state_.current = std::min(state_.max, state_.current + amount);
     }
 
     EnergyShieldAbsorbResult EnergyShieldPool::AbsorbDamage(

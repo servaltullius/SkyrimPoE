@@ -14,16 +14,30 @@
 
 namespace SkyrimPoE::Core
 {
+    struct SkillResourceCost
+    {
+        double magicka = 0.0;
+        double health = 0.0;
+
+        [[nodiscard]] bool CanPayMagicka(double currentMagicka) const noexcept;
+        [[nodiscard]] bool CanPayHealth(double currentHealth) const noexcept;
+    };
+
+    [[nodiscard]] SkillResourceCost ComputeSkillResourceCost(
+        const ComputedSkillStats& stats, const StatSnapshot& snapshot, double baseSkyrimMaxMagicka,
+        double skyrimMaxHealth, double magickaCostMultiplier = 1.0) noexcept;
+
     struct TriggeredSpellCast
     {
         std::uint64_t spellInstanceId = 0;
         std::string gemId;
         std::uint32_t exileLevel = 1;
         DamagePacket poeBaseHitDamage;
+        TargetAilmentHitDamage targetAilmentHitDamage;
         double effectiveCritChancePct = 0.0;
         double critMultiplierPct = 100.0;
         double skyrimMagickaCost = 0.0;
-        double skyrimHealthCost = 0.0;  // Blood Magic 시 생명력 비용(1 HP 자살 방지 가드 통과 완료)
+        double skyrimHealthCost = 0.0;  // 생명력 비용(1 HP 자살 방지 가드 통과 완료)
         bool usesHealthCost = false;
         double skyrimHitDamage = 0.0;   // 평균 기대값(참고·비롤 폴백용)
         double areaMult = 1.0;
@@ -40,6 +54,13 @@ namespace SkyrimPoE::Core
         double igniteChancePct = 0.0;
         double arcRemainingChainMorePct = 0.0;
         bool starforgeShock = false;
+        double projectilePierceChancePct = 0.0;
+        std::array<double, 16> additionalSpellProjectilesChancePct{};
+        double additionalProjectileChancePct = 0.0;
+        double additionalChainChancePct = 0.0;
+        double additionalForkProjectileChancePct = 0.0;
+        double projectileSpeedMult = 1.0;
+        double projectileAilmentChanceIncPct = 0.0;
     };
 
     // 5단계(결정 163): Molten Shell 가드 버프 상태 스냅샷
@@ -119,7 +140,8 @@ namespace SkyrimPoE::Core
             const DataPack& pack,
             const Config& config,
             double currentSkyrimHealth = 100.0,
-            double skyrimMaxHealth = 100.0);
+            double skyrimMaxHealth = 100.0,
+            double magickaCostMultiplier = 1.0);
 
         // 5단계(결정 163): Molten Shell 즉발 가드 파워 발동·흡수·틱 (CombatHooks 워커 스레드 안전)
         [[nodiscard]] GuardActivationResult TryActivateMoltenShell(

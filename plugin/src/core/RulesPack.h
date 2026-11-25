@@ -16,6 +16,8 @@ namespace SkyrimPoE::Core
     // Units are given in the field names. For a level L, use index L - 1.
     struct RuleValues
     {
+        double lowLifeFraction{};
+
         struct Armour
         {
             double damageCoefficient{};

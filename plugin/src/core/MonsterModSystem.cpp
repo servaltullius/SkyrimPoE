@@ -1,4 +1,5 @@
 #include "core/MonsterModSystem.h"
+#include "core/DamageConversion.h"
 
 #include <algorithm>
 #include <cmath>
@@ -68,11 +69,25 @@ namespace SkyrimPoE::Core
 
     double MonsterModSystem::IncomingDamageMultiplier(
         const MonsterProfile& profile,
-        DamageType dominantType) noexcept
+        DamageType dominantType,
+        const MonsterHitResistance& resistance) noexcept
     {
         double mult = 1.0;
         if (profile.rarity == MonsterRarity::Magic) mult *= 0.75;
         else if (profile.rarity == MonsterRarity::Rare) mult *= 0.55;
+
+        if (resistance.poe2 && dominantType > DamageType::Physical && dominantType < DamageType::Count) {
+            constexpr MonsterModKind resistanceMods[]{
+                MonsterModKind::FireResistant, MonsterModKind::ColdResistant,
+                MonsterModKind::LightningResistant, MonsterModKind::ChaosResistant
+            };
+            const auto type = static_cast<std::size_t>(dominantType);
+            const double promotion = profile.HasMod(resistanceMods[type - 1]) ? 40.0 : 0.0;
+            const double map = dominantType == DamageType::Chaos ? resistance.mapChaosPct : resistance.mapElementalPct;
+            const double combined = std::min(75.0, promotion + map);
+            const double penetration = resistance.isDamageOverTime ? 0.0 : resistance.penetrationPct[type];
+            return mult * (1.0 - ApplyResistancePenetration(combined, penetration) / 100.0);
+        }
 
         switch (dominantType) {
             case DamageType::Physical:
@@ -100,30 +115,82 @@ namespace SkyrimPoE::Core
         MonsterProfile& profile,
         double rawSkyrimDamage,
         DamageType dominantType,
-        bool bypassesEs) noexcept
+        bool bypassesEs,
+        const MonsterHitResistance& resistance) noexcept
     {
         MonsterIncomingResult res{};
         if (!std::isfinite(rawSkyrimDamage) || rawSkyrimDamage <= 0.0) {
             return res;
         }
 
-        const double scaled = rawSkyrimDamage * IncomingDamageMultiplier(profile, dominantType);
-        res.hadAnyImpact = scaled > 0.0;
-
-        const bool chaosBypass = bypassesEs || (dominantType == DamageType::Chaos);
-        if (!chaosBypass && profile.currentEsSkyrim > 0.0) {
-            const double absorbed = std::min(profile.currentEsSkyrim, scaled);
-            profile.currentEsSkyrim -= absorbed;
-            profile.esRechargeCooldown = kEsRechargeDelaySec;
-            res.absorbedByEs = absorbed;
-            res.remainingHealthDamage = std::max(0.0, scaled - absorbed);
-        } else {
-            if (profile.maxEsSkyrim > 0.0) {
-                profile.esRechargeCooldown = kEsRechargeDelaySec;
+        const auto applyDamagePart = [&](double rawPart, DamageType type) {
+            const double scaled = rawPart * IncomingDamageMultiplier(profile, type, resistance);
+            if (bypassesEs || (!resistance.poe2 && type == DamageType::Chaos)) {
+                res.remainingHealthDamage += scaled;
+                return;
             }
-            res.remainingHealthDamage = scaled;
+            if (resistance.poe2) {
+                // Enemy ES and the damage forwarded to Skyrim use the same pre-difficulty units.
+                const auto absorb = AbsorbWithEnergyShield(
+                    scaled, 1.0, type == DamageType::Chaos, profile.currentEsSkyrim);
+                profile.currentEsSkyrim = absorb.newEnergyShield;
+                res.absorbedByEs += absorb.absorbedEffectiveDamage;
+                res.remainingHealthDamage += absorb.remainingRawDamage;
+            } else {
+                const double absorbed = std::min(std::max(0.0, profile.currentEsSkyrim), scaled);
+                profile.currentEsSkyrim -= absorbed;
+                res.absorbedByEs += absorbed;
+                res.remainingHealthDamage += scaled - absorbed;
+            }
+        };
+
+        double total = 0.0;
+        std::array<double, static_cast<std::size_t>(DamageType::Count)> byType{};
+        if (resistance.poe2 && resistance.hitTypes) {
+            for (std::size_t i = 0; i < byType.size(); ++i) {
+                byType[i] = std::max(0.0, resistance.hitTypes->byType[i].Average());
+                total += byType[i];
+            }
+        }
+        if (total > 0.0) {
+            // PoB CalcDefence applies ES in reverse damage-type order, starting with Chaos.
+            constexpr DamageType order[]{
+                DamageType::Chaos, DamageType::Fire, DamageType::Cold,
+                DamageType::Lightning, DamageType::Physical
+            };
+            for (const auto type : order) {
+                const double part = byType[static_cast<std::size_t>(type)];
+                if (part > 0.0) {
+                    applyDamagePart(rawSkyrimDamage * (part / total), type);
+                }
+            }
+        } else {
+            applyDamagePart(rawSkyrimDamage, dominantType);
+        }
+        res.hadAnyImpact = res.absorbedByEs > 0.0 || res.remainingHealthDamage > 0.0;
+        if (res.absorbedByEs > 0.0 || (!resistance.poe2 && profile.maxEsSkyrim > 0.0)) {
+            profile.esRechargeCooldown = kEsRechargeDelaySec;
         }
         return res;
+    }
+
+    DamagePacket MonsterModSystem::AdjustPhysicalHitDamage(
+        DamagePacket packet, double rawDamage, double afterArmourBreak) noexcept
+    {
+        auto& physical = packet.byType[static_cast<std::size_t>(DamageType::Physical)];
+        if (rawDamage > 0.0 && physical.Average() > 0.0) {
+            const double physicalShare = PhysicalDamageFraction(packet);
+            const double multiplier = 1.0 + (afterArmourBreak - rawDamage) / (rawDamage * physicalShare);
+            physical.min *= multiplier;
+            physical.max *= multiplier;
+        }
+        return packet;
+    }
+
+    double MonsterModSystem::ApplyResistancePenetration(double resistancePct, double penetrationPct) noexcept
+    {
+        // PoB 0.23.1 CalcOffence: penetration does not take a resistance through zero.
+        return resistancePct > 0.0 ? std::max(0.0, resistancePct - std::max(0.0, penetrationPct)) : resistancePct;
     }
 
     MonsterOutgoingModifier MonsterModSystem::ComputeOutgoingModifier(

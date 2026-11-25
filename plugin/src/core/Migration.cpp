@@ -299,16 +299,6 @@ namespace SkyrimPoE::Core
             return reader.bytes.empty();
         }
 
-        bool ReadLegacyTree(Reader& reader, std::uint32_t& nodeCount)
-        {
-            std::string ascendancy;
-            std::uint32_t masteryCount = 0;
-            return reader.Skip(2) && reader.String(ascendancy) &&
-                reader.Pod(nodeCount) && nodeCount <= kMaxTreeNodes && reader.Skip(nodeCount * sizeof(std::uint32_t)) &&
-                reader.Pod(masteryCount) && masteryCount <= kMaxListLen && reader.Skip(masteryCount * 2 * sizeof(std::uint32_t)) &&
-                reader.Skip(3 * sizeof(std::uint32_t)) && reader.bytes.empty();
-        }
-
         bool ReadLegacyItem(Reader& reader, std::uint32_t version, std::uint32_t& baseFormId, std::uint8_t& jewelColor)
         {
             const auto read = [&](void* data, std::uint32_t size) { return reader.Read(data, size); };
@@ -338,42 +328,34 @@ namespace SkyrimPoE::Core
             return reader.bytes.empty();
         }
 
-        bool ReadLegacyGear(Reader& reader, std::vector<ReturnEntry>& entries, std::vector<MigrationVirtualRef>& refs)
+        bool ReadLegacyGear(Reader& reader, std::uint32_t version, std::vector<ReturnEntry>& entries,
+            std::vector<MigrationVirtualRef>& refs)
         {
-            for (const auto slot : { VirtualSlot::Ring2, VirtualSlot::Belt }) {
-                MigrationVirtualRef ref{ .slot = slot, .key = {} };
-                if (!reader.Pod(ref.key.ownerFormId) || !reader.Pod(ref.key.uniqueId) || !reader.Pod(ref.baseFormId)) {
-                    return false;
-                }
+            GearHeader gear;
+            if (!ReadGearHeader(version, reader.bytes, gear) || (gear.jewelCount != 0 && gear.jewelGeneration != 0)) {
+                return false;
+            }
+            for (const auto& ref : { MigrationVirtualRef{ VirtualSlot::Ring2, gear.ring2Key, gear.ring2BaseFormId },
+                     MigrationVirtualRef{ VirtualSlot::Belt, gear.beltKey, gear.beltBaseFormId } }) {
                 if (ref.baseFormId != 0 || ref.key.ownerFormId != 0 || ref.key.uniqueId != 0) {
                     refs.push_back(ref);
                 }
             }
 
-            std::uint32_t charmCount = 0;
-            if (!reader.Pod(charmCount) || charmCount > kMaxCharmSlots) {
-                return false;
-            }
-            for (std::uint32_t index = 0; index < charmCount; ++index) {
-                bool occupied = false;
-                CharmKind kind;
-                double charges = 0.0;
-                if (!reader.Flag(occupied) || !reader.Enum(kind, CharmKind::Bastion) || !reader.Pod(charges)) {
+            for (std::uint32_t index = 0; index < gear.charmCount; ++index) {
+                const auto& charm = gear.charms[index];
+                if (charm.occupied > 1 || charm.kind > static_cast<std::uint8_t>(CharmKind::Bastion)) {
                     return false;
                 }
-                if (occupied) {
-                    entries.push_back({ .kind = ReturnKind::Charm, .gemId = {}, .charmKind = kind,
+                if (charm.occupied != 0) {
+                    entries.push_back({ .kind = ReturnKind::Charm, .gemId = {}, .charmKind = static_cast<CharmKind>(charm.kind),
                         .recipientFormId = kPlayerRefFormId });
                 }
             }
-            std::uint32_t jewelCount = 0;
-            if (!reader.Pod(jewelCount) || jewelCount > kMaxSocketedJewels) {
-                return false;
-            }
-            for (std::uint32_t index = 0; index < jewelCount; ++index) {
+            for (std::uint32_t index = 0; index < gear.jewelCount; ++index) {
                 ReturnEntry entry{ .kind = ReturnKind::Jewel, .gemId = {}, .recipientFormId = kPlayerRefFormId };
                 if (!reader.Skip(sizeof(std::uint32_t)) ||
-                    !ReadLegacyItem(reader, kItemsVersion, entry.baseFormId, entry.jewelColor) || entry.jewelColor > kMaxJewelColor) {
+                    !ReadLegacyItem(reader, kGearItemVersion, entry.baseFormId, entry.jewelColor) || entry.jewelColor > kMaxJewelColor) {
                     return false;
                 }
                 entries.push_back(std::move(entry));
@@ -484,6 +466,9 @@ namespace SkyrimPoE::Core
 
     std::vector<std::uint8_t> WriteMigrationRecord(const MigrationState& state)
     {
+        if (!SaveRecord::AreValidPlayerRateDeltas({ state.speedMultDelta, state.magickaRateMultDelta })) {
+            throw std::length_error("Invalid player rate deltas in MIGR");
+        }
         Writer writer;
         writer.String(state.sourceGame);
         writer.Pod(state.sourceGeneration);
@@ -525,6 +510,8 @@ namespace SkyrimPoE::Core
         });
         writer.Byte(state.starterGranted);
         writer.Pod(state.lostCount);
+        writer.Pod(state.speedMultDelta);
+        writer.Pod(state.magickaRateMultDelta);
         writer.Pod(SaveRecordCrc32(writer.bytes));
         return std::move(writer.bytes);
     }
@@ -533,7 +520,8 @@ namespace SkyrimPoE::Core
         std::uint32_t version, std::span<const std::uint8_t> bytes, const FormIdResolver& resolver)
     {
         constexpr auto crcSize = sizeof(std::uint32_t);
-        if (version != kMigrationVersion || bytes.size() < crcSize || bytes.size() > kMaxSaveRecordBytes) {
+        if ((version != kPreviousMigrationVersion && version != kMigrationVersion) ||
+            bytes.size() < crcSize || bytes.size() > kMaxSaveRecordBytes) {
             return {};
         }
         Reader reader{ bytes.first(bytes.size() - crcSize) };
@@ -572,7 +560,15 @@ namespace SkyrimPoE::Core
                     reader.Pod(drop.beamRefFormId) && reader.Pod(drop.worldDropTier) &&
                     reader.Enum(drop.status, WorldDropStatus::CorpseGone);
             });
-        if (!listsOk || !reader.Flag(state.starterGranted) || !reader.Pod(state.lostCount) || !reader.bytes.empty()) {
+        if (!listsOk || !reader.Flag(state.starterGranted) || !reader.Pod(state.lostCount)) {
+            return {};
+        }
+        if (version == kMigrationVersion &&
+            (!reader.Pod(state.speedMultDelta) || !reader.Pod(state.magickaRateMultDelta) ||
+             !SaveRecord::AreValidPlayerRateDeltas({ state.speedMultDelta, state.magickaRateMultDelta }))) {
+            return {};
+        }
+        if (!reader.bytes.empty()) {
             return {};
         }
         const auto unresolved = ResolveMigrationForms(state, resolver);
@@ -607,6 +603,17 @@ namespace SkyrimPoE::Core
         state.step = CleanupStep::CloseMapRun;
         state.healthDelta = core.appliedHealthDelta;
         state.magickaDelta = core.appliedMagickaDelta;
+        report.playerRates = ReadLegacyRecord(batch, kRecordPlayerRates, kPlayerRatesVersion, [&](const auto& record) {
+            const auto deltas = ReadPlayerRateRecord(record);
+            if (!deltas) return false;
+            state.speedMultDelta = deltas->speedMult;
+            state.magickaRateMultDelta = deltas->magickaRateMult;
+            return true;
+        });
+        if (!report.Succeeded()) {
+            report.failureReason = "PRAT 기록이 중복되었거나 플레이어 속도·매지카 재생 보정치가 손상되었습니다.";
+            return result;
+        }
         report.slotsDamaged = !ReadLegacyCoreV2Slots(slots, core) || !slots.empty();
         if (!report.slotsDamaged) {
             for (const auto& slot : core.slots) {
@@ -629,9 +636,13 @@ namespace SkyrimPoE::Core
         report.duplicateReturns = static_cast<std::uint32_t>(std::erase_if(state.returns, [&](const auto& entry) {
             return entry.instanceId != 0 && !returnedGemIds.insert(entry.instanceId).second;
         }));
-        report.tree = ReadLegacyRecord(batch, kRecordTree, kTreeVersion, [&](const auto& record) {
-            Reader reader{ record.bytes };
-            return ReadLegacyTree(reader, report.treeNodeCount);
+        report.tree = ReadLegacyRecord(batch, kRecordTree, 0, [&](const auto& record) {
+            PassiveTreeState tree;
+            if (!ReadTreeRecord(record, tree) || tree.generation != 0) {
+                return false;
+            }
+            report.treeNodeCount = static_cast<std::uint32_t>(tree.allocatedNodes.size());
+            return true;
         });
         report.items = ReadLegacyRecord(batch, kRecordItems, 0, [&](const auto& record) {
             Reader reader{ record.bytes };
@@ -648,11 +659,11 @@ namespace SkyrimPoE::Core
             report.auraCount = std::popcount(auraMask);
             return true;
         });
-        report.gear = ReadLegacyRecord(batch, kRecordGear, kGearVersion, [&](const auto& record) {
+        report.gear = ReadLegacyRecord(batch, kRecordGear, 0, [&](const auto& record) {
             Reader reader{ record.bytes };
             std::vector<ReturnEntry> entries;
             std::vector<MigrationVirtualRef> refs;
-            if (!ReadLegacyGear(reader, entries, refs)) return false;
+            if (!ReadLegacyGear(reader, record.version, entries, refs)) return false;
             std::ranges::move(entries, std::back_inserter(state.returns));
             state.virtualRefs = std::move(refs);
             return true;
@@ -726,7 +737,7 @@ namespace SkyrimPoE::Core
         return test && matchedCleanupLoad ? &*test : &*content;
     }
 
-    DeltaTrust JudgeLegacyDelta(double delta, double currentPermanentModifier) noexcept
+    DeltaTrust JudgeLegacyDelta(double delta, double modifier) noexcept
     {
         if (!std::isfinite(delta)) {
             return DeltaTrust::Untrusted;
@@ -734,12 +745,26 @@ namespace SkyrimPoE::Core
         if (delta == 0.0) {
             return DeltaTrust::Trusted;
         }
-        if (std::isfinite(currentPermanentModifier) && currentPermanentModifier != 0.0 &&
-            std::signbit(delta) == std::signbit(currentPermanentModifier) &&
-            std::abs(delta) <= std::abs(currentPermanentModifier) + kLegacyDeltaTolerance) {
+        if (std::isfinite(modifier) && modifier != 0.0 &&
+            std::signbit(delta) == std::signbit(modifier) &&
+            std::abs(delta) <= std::abs(modifier) + kLegacyDeltaTolerance) {
             return DeltaTrust::Trusted;
         }
         return DeltaTrust::Untrusted;
+    }
+
+    std::string_view CheckLegacyActorDeltas(const MigrationState& state, double permanentHealth, double permanentMagicka,
+        double temporarySpeedMult, double temporaryMagickaRateMult) noexcept
+    {
+        if (JudgeLegacyDelta(state.healthDelta, permanentHealth) != DeltaTrust::Trusted ||
+            JudgeLegacyDelta(state.magickaDelta, permanentMagicka) != DeltaTrust::Trusted) {
+            return "옛 체력·매지카 보정값을 확인할 수 없어 정리하지 않았습니다.";
+        }
+        if (JudgeLegacyDelta(state.speedMultDelta, temporarySpeedMult) != DeltaTrust::Trusted ||
+            JudgeLegacyDelta(state.magickaRateMultDelta, temporaryMagickaRateMult) != DeltaTrust::Trusted) {
+            return "옛 이동 속도·매지카 재생 보정값을 확인할 수 없어 정리하지 않았습니다.";
+        }
+        return {};
     }
 
     StepOutcome AdvanceCleanup(MigrationState& state, CleanupOps& ops)

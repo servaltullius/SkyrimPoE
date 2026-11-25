@@ -23,6 +23,8 @@ namespace SkyrimPoE::Runtime
         bool isCrit = false;
         RE::FormID expectedTargetId = 0;
         bool* outAbsorbedByMonsterEs = nullptr;  // 검수 M3: 적 ES 100% 흡수 시에도 CoC/상태이상 발동 보장
+        const Core::DamagePacket* hitTypes = nullptr;
+        const Core::StatSnapshot* snapshot = nullptr;
     };
 
     class ScopedCycloneHitContext
@@ -33,7 +35,9 @@ namespace SkyrimPoE::Runtime
             double physicalDamageFraction,
             bool isCrit,
             RE::FormID targetId,
-            bool* outAbsorbedByMonsterEs = nullptr) noexcept;
+            bool* outAbsorbedByMonsterEs = nullptr,
+            const Core::DamagePacket* hitTypes = nullptr,
+            const Core::StatSnapshot* snapshot = nullptr) noexcept;
         ~ScopedCycloneHitContext() noexcept;
         ScopedCycloneHitContext(const ScopedCycloneHitContext&) = delete;
         ScopedCycloneHitContext& operator=(const ScopedCycloneHitContext&) = delete;
@@ -65,6 +69,8 @@ namespace SkyrimPoE::Runtime
 
         // 주 갱신 스레드 프레임 콜백에서 호출: 최대 체력·매지카·ES 동기화, MoM 매지카 차감, Low Life/EO 감시 및 ES 재충전.
         static void TickPlayerPools(double deltaSec, bool gamePaused);
+        // 주 갱신 스레드의 저장 트랜잭션에서 플레이어 보정 추가 또는 원복에 사용한다.
+        static void ModifyPlayerRateValues(RE::ActorValueOwner& values, float speedDelta, float magickaRateDelta);
 
         [[nodiscard]] static double DamageWithEnemyArmourBreak(RE::Actor* target, double damage,
             double physicalFraction, bool isDamageOverTime, std::optional<std::uint64_t> generation = std::nullopt);

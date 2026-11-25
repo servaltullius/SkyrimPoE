@@ -1,6 +1,371 @@
 (() => {
   "use strict";
 
+  const KIND_NORMAL = 0;
+  const KIND_NOTABLE = 1;
+  const KIND_KEYSTONE = 2;
+  const KIND_MASTERY = 3;
+  const KIND_SOCKET = 4;
+  const KIND_CLASS_START = 5;
+  const KIND_ASCEND_START = 6;
+  const KIND_ATTRIBUTE = 7;
+
+  // PassiveTree.cpp의 규칙을 트리 화면과 미리보기 브리지가 공유한다.
+  function createTreeRules(tree) {
+    const generation = tree.meta?.contentGeneration ?? 0;
+    const nodeById = new Map(tree.nodes.map((node) => [node.id, node]));
+    const classById = new Map((tree.classes || []).map((cls) => [cls.id, cls]));
+    const ascById = new Map();
+    for (const cls of classById.values()) {
+      for (const asc of cls.ascendancies || []) {
+        ascById.set(asc.id, { ...asc, classId: cls.id });
+        for (const alternate of asc.replacements || []) {
+          ascById.set(alternate.id, { ...alternate, classId: cls.id });
+        }
+      }
+    }
+    const hubOptions = new Map();
+    for (const node of tree.nodes) {
+      if (!node.mco || !node.mcParent) continue;
+      if (!hubOptions.has(node.mcParent)) hubOptions.set(node.mcParent, []);
+      hubOptions.get(node.mcParent).push(node.id);
+    }
+    const masteryGroups = tree.masteryGroups || {};
+
+    function canUseTree(state) {
+      return state.loaded !== false && state.classSelected && (state.generation ?? 0) === generation;
+    }
+    function variantFor(node, state) {
+      return node.variants?.[state.classContentId] || node.variants?.[state.ascendancyId];
+    }
+    function ascendancyOf(node, state) {
+      return variantFor(node, state)?.asc || node.asc || "";
+    }
+    function resolveNode(node, state) {
+      const optionId = state.attributeSelections?.[node.id];
+      const option = node.attrOptions?.find((item) => item.id === optionId);
+      if (option) return { ...option, asc: node.asc || "" };
+      const variant = variantFor(node, state);
+      return variant ? { ...variant, asc: variant.asc || node.asc || "" } : node;
+    }
+    function isAllocatable(node) {
+      return node.k !== KIND_CLASS_START && node.k !== KIND_ASCEND_START &&
+        node.k !== KIND_MASTERY && !node.mc && !node.alias;
+    }
+    function requirementsMet(node, allocated) {
+      return !node.unlock || node.unlock.every((id) => allocated.has(id));
+    }
+    function isJewelSocket(node) {
+      return !node.alias && (node.k === KIND_SOCKET || Boolean(node.jewelSocket));
+    }
+    function isAllocatedJewelSocket(state, id) {
+      const node = nodeById.get(id);
+      return (state.generation ?? 0) === generation && Boolean(node && isJewelSocket(node)) &&
+        state.allocatedNodes.includes(id);
+    }
+    function isPhylactery(id) {
+      return generation === 1 && id === 17788;
+    }
+    function jewelEffectMultiplier(state, id) {
+      return isAllocatedJewelSocket(state, id) ? (isPhylactery(id) ? 2 : 1) : 0;
+    }
+    function isMasteryUnlocked(node, state, allocated) {
+      return canUseTree(state) && node?.k === KIND_MASTERY &&
+        (masteryGroups[node.g] || []).some((id) => allocated.has(id));
+    }
+    function isHubUnlocked(id, allocated) {
+      return (hubOptions.get(id) || []).some((option) => allocated.has(option));
+    }
+    function activeNormalSeeds(state, allocated) {
+      const seeds = new Set();
+      if (!state.classSelected) return seeds;
+      for (const id of classById.get(state.classId)?.startNeighbors || []) seeds.add(id);
+      for (const id of allocated) {
+        const cls = classById.get(nodeById.get(id)?.grantStart);
+        for (const neighbor of cls?.startNeighbors || []) seeds.add(neighbor);
+      }
+      return seeds;
+    }
+
+    function computeShortestPath(state, targetId, allocated = new Set(state.allocatedNodes)) {
+      const target = nodeById.get(targetId);
+      if (!canUseTree(state) || !target || !isAllocatable(target) || allocated.has(targetId) ||
+          !requirementsMet(target, allocated)) return [];
+      const ascId = ascendancyOf(target, state);
+      const asc = ascId ? ascById.get(state.ascendancyId) : null;
+      if (ascId && (!asc?.startNodeId || asc.id !== ascId)) return [];
+
+      const parent = new Map();
+      const distance = new Map();
+      const queue = new Map();
+      let front = 0;
+      let back = 0;
+      function enqueue(id, from, cost) {
+        const node = nodeById.get(id);
+        if (!node || ascendancyOf(node, state) !== ascId || !requirementsMet(node, allocated)) return;
+        const isStart = id === asc?.startNodeId;
+        if (!isAllocatable(node) && !isStart && !(asc && node.mc)) return;
+        const step = isStart || node.mc || node.freeAlloc || allocated.has(id) ? 0 : 1;
+        const next = cost + step;
+        if ((distance.get(id) ?? Infinity) <= next) return;
+        distance.set(id, next);
+        parent.set(id, from);
+        if (step === 0) queue.set(--front, id);
+        else queue.set(back++, id);
+      }
+
+      for (const id of allocated) enqueue(id, 0, 0);
+      if (asc) enqueue(asc.startNodeId, 0, 0);
+      else for (const id of activeNormalSeeds(state, allocated)) enqueue(id, 0, 0);
+
+      while (front < back) {
+        const id = queue.get(front);
+        queue.delete(front++);
+        if (id === targetId) {
+          const path = [];
+          for (let current = id; current !== 0; current = parent.get(current)) {
+            if (isAllocatable(nodeById.get(current)) && !allocated.has(current)) path.push(current);
+          }
+          return path.reverse();
+        }
+        const node = nodeById.get(id);
+        for (const neighborId of node.adj || []) {
+          const neighbor = nodeById.get(neighborId);
+          if (!neighbor || (node.mc && isHubUnlocked(id, allocated) === Boolean(neighbor.mco)) ||
+              (node.mco && neighbor.mc)) continue;
+          enqueue(neighborId, id, distance.get(id));
+        }
+      }
+      return [];
+    }
+
+    function isConnected(state, allocated) {
+      const kept = new Set();
+      const visited = new Set();
+      const queue = [];
+      function enqueue(id, ascId) {
+        if (visited.has(id)) return;
+        const node = nodeById.get(id);
+        if (!node || ascendancyOf(node, state) !== ascId || !requirementsMet(node, allocated)) return;
+        if (!(node.mc && ascId && isHubUnlocked(id, allocated))) {
+          if (!allocated.has(id) || !isAllocatable(node)) return;
+          kept.add(id);
+        }
+        visited.add(id);
+        queue.push(id);
+      }
+      function visit(seeds, ascId) {
+        for (const id of seeds) enqueue(id, ascId);
+        for (let index = 0; index < queue.length; index++) {
+          for (const id of nodeById.get(queue[index]).adj || []) enqueue(id, ascId);
+        }
+        queue.length = 0;
+      }
+      const asc = ascById.get(state.ascendancyId);
+      if (asc) visit(nodeById.get(asc.startNodeId)?.adj || [], asc.id);
+      visit(activeNormalSeeds(state, kept), "");
+      return kept.size === allocated.size;
+    }
+
+    function canAllocateStep(node, state, allocated) {
+      if (!isAllocatable(node) || !requirementsMet(node, allocated)) return false;
+      const ascId = ascendancyOf(node, state);
+      if (!ascId) {
+        return activeNormalSeeds(state, allocated).has(node.id) || (node.adj || []).some((id) =>
+          allocated.has(id) && !ascendancyOf(nodeById.get(id), state));
+      }
+      const asc = ascById.get(state.ascendancyId);
+      if (!asc?.startNodeId || asc.id !== ascId) return false;
+      if (node.mco) {
+        const hub = nodeById.get(node.mcParent);
+        return Boolean(hub?.mc && requirementsMet(hub, allocated) && !isHubUnlocked(hub.id, allocated) &&
+          (hub.adj || []).some((id) => id === asc.startNodeId || (allocated.has(id) && !nodeById.get(id).mco)));
+      }
+      return (node.adj || []).some((id) => {
+        if (id === asc.startNodeId) return true;
+        const neighbor = nodeById.get(id);
+        return neighbor && ascendancyOf(neighbor, state) === ascId && (allocated.has(id) ||
+          (neighbor.mc && requirementsMet(neighbor, allocated) && isHubUnlocked(id, allocated)));
+      });
+    }
+
+    function pointUsage(state, allocated = new Set(state.allocatedNodes), masteries = state.masterySelections || {}) {
+      let normal = Object.keys(masteries).length;
+      let ascendancy = 0;
+      let granted = 0;
+      for (const id of allocated) {
+        const node = nodeById.get(id);
+        if (!node) continue;
+        granted += node.grantPts || 0;
+        if (!isAllocatable(node) || node.freeAlloc) continue;
+        if (ascendancyOf(node, state)) ascendancy++;
+        else normal++;
+      }
+      return { normal, ascendancy, granted };
+    }
+
+    function pointTotals(state, { exileLevel, atlasCompletedTierMask, bonusPassivePoints, bonusAscendancyPoints }) {
+      function countBits(mask) {
+        let count = 0;
+        while (mask) {
+          mask &= mask - 1;
+          count++;
+        }
+        return count;
+      }
+      const { normal, ascendancy, granted } = pointUsage(state);
+      const milestones = 2 * countBits(state.ascendancyMilestonesBitmask & 0xf);
+      const earned = Math.min(8, milestones + Math.max(0, bonusAscendancyPoints));
+      return {
+        availableNormalPoints: Math.max(1, Math.min(100, exileLevel)) - 1 +
+          countBits(atlasCompletedTierMask & 0xffff) + milestones + Math.max(0, bonusPassivePoints) + granted - normal,
+        availableAscendancyPoints: earned - ascendancy,
+        spentNormalPoints: normal,
+        spentAscendancyPoints: ascendancy,
+        grantedPassivePoints: granted,
+        earnedAscendancyPoints: earned,
+      };
+    }
+
+    function planAllocation(state, path, choices) {
+      if (!canUseTree(state) || !path.length) return null;
+      const allocated = new Set(state.allocatedNodes);
+      const attributes = { ...state.attributeSelections };
+      let normal = state.availableNormalPoints;
+      let ascendancy = state.availableAscendancyPoints;
+      for (const id of path) {
+        if (allocated.has(id)) continue;
+        const node = nodeById.get(id);
+        if (!node) return null;
+        if (node.mc) continue;
+        if (!canAllocateStep(node, state, allocated)) return null;
+        if (node.k === KIND_ATTRIBUTE) {
+          const optionId = choices.get(id);
+          if (!node.attrOptions.some((option) => option.id === optionId)) return null;
+          attributes[id] = optionId;
+        }
+        if (!node.freeAlloc) {
+          if (ascendancyOf(node, state)) {
+            if (ascendancy < 1) return null;
+            ascendancy--;
+          } else {
+            if (normal < 1) return null;
+            normal--;
+          }
+        }
+        normal += node.grantPts || 0;
+        allocated.add(id);
+      }
+      if (allocated.size === state.allocatedNodes.length || normal < 0 || ascendancy < 0 ||
+          !isConnected(state, allocated)) return null;
+      return { allocatedNodes: [...allocated].sort((a, b) => a - b), attributeSelections: attributes };
+    }
+
+    function attributeChangeCost(state, nodeId, optionId, freeRefund) {
+      return freeRefund || state.attributeSelections?.[nodeId] === optionId ? 0 : 1;
+    }
+    function planAttributeChange(state, nodeId, optionId, { freeRefund, regretOrbCount }) {
+      const node = nodeById.get(nodeId);
+      if (!canUseTree(state) || node?.k !== KIND_ATTRIBUTE || !state.allocatedNodes.includes(nodeId) ||
+          state.attributeSelections?.[nodeId] === undefined ||
+          !node.attrOptions.some((option) => option.id === optionId)) return null;
+      const cost = attributeChangeCost(state, nodeId, optionId, freeRefund);
+      if (regretOrbCount < cost) return null;
+      return { attributeSelections: { ...state.attributeSelections, [nodeId]: optionId }, cost };
+    }
+
+    function pruneMasteries(state, allocated, masteries) {
+      let orphaned = 0;
+      for (const id of Object.keys(masteries)) {
+        if (isMasteryUnlocked(nodeById.get(Number(id)), state, allocated)) continue;
+        delete masteries[id];
+        orphaned++;
+      }
+      return orphaned;
+    }
+    function refundNodeCost(state, nodeId, { freeRefund, ascendancyRefundCost }) {
+      if (freeRefund || !canUseTree(state)) return 0;
+      if (state.masterySelections?.[nodeId] !== undefined) return 1;
+      const node = nodeById.get(nodeId);
+      if (!node || node.freeAlloc || !state.allocatedNodes.includes(nodeId)) return 0;
+      if (ascendancyOf(node, state)) return Math.max(1, ascendancyRefundCost);
+      const remaining = new Set(state.allocatedNodes);
+      remaining.delete(nodeId);
+      return 1 + pruneMasteries(state, remaining, { ...state.masterySelections });
+    }
+    function refundDependents(state, nodeId) {
+      if ((state.generation ?? 0) !== generation) return [];
+      return state.allocatedNodes.filter((id) => nodeById.get(id)?.unlock?.includes(nodeId));
+    }
+
+    function planRefund(state, nodeId, { freeRefund, ascendancyRefundCost, regretOrbCount }) {
+      if (!canUseTree(state)) return null;
+      const allocated = new Set(state.allocatedNodes);
+      const masteries = { ...state.masterySelections };
+      const attributes = { ...state.attributeSelections };
+      let cost = 0;
+      if (masteries[nodeId] !== undefined) {
+        delete masteries[nodeId];
+        cost = freeRefund ? 0 : 1;
+      } else {
+        const node = nodeById.get(nodeId);
+        if (!node || refundDependents(state, nodeId).length || !allocated.delete(nodeId) ||
+            !isConnected(state, allocated)) return null;
+        delete attributes[nodeId];
+        const orphaned = pruneMasteries(state, allocated, masteries);
+        const before = pointUsage(state);
+        const after = pointUsage(state, allocated, masteries);
+        const delta = after.granted - before.granted + before.normal - after.normal;
+        if (delta < 0 && state.availableNormalPoints + delta < 0) return null;
+        if (!freeRefund && !node.freeAlloc) {
+          cost = ascendancyOf(node, state) ? Math.max(1, ascendancyRefundCost) : 1 + orphaned;
+        }
+      }
+      if (regretOrbCount < cost) return null;
+      return {
+        allocatedNodes: [...allocated], masterySelections: masteries,
+        attributeSelections: attributes, cost,
+      };
+    }
+
+    function refundAllCost(state, ascendancyOnly, { freeRefund, ascendancyRefundCost }) {
+      if (freeRefund || !canUseTree(state)) return 0;
+      const usage = pointUsage(state);
+      return usage.ascendancy * Math.max(1, ascendancyRefundCost) + (ascendancyOnly ? 0 : usage.normal);
+    }
+
+    function planRefundAll(state, ascendancyOnly, settings) {
+      if (!canUseTree(state)) return null;
+      const cost = refundAllCost(state, ascendancyOnly, settings);
+      if (settings.regretOrbCount < cost) return null;
+      if (!ascendancyOnly) {
+        return { allocatedNodes: [], attributeSelections: {}, masterySelections: {}, ascendancyId: "", cost };
+      }
+      const remaining = state.allocatedNodes.filter((id) => !ascendancyOf(nodeById.get(id), state));
+      const next = { ...state, ascendancyId: "", allocatedNodes: remaining };
+      const before = pointUsage(state);
+      const after = pointUsage(next);
+      const delta = after.granted - before.granted + before.normal - after.normal;
+      if (!isConnected(next, new Set(remaining)) || (delta < 0 && state.availableNormalPoints + delta < 0)) return null;
+      const attributes = Object.fromEntries(remaining.filter((id) => state.attributeSelections?.[id] !== undefined)
+        .map((id) => [id, state.attributeSelections[id]]));
+      return { allocatedNodes: remaining, attributeSelections: attributes, ascendancyId: "", cost };
+    }
+
+    return {
+      generation, nodeById, classById, ascById, canUseTree, resolveNode, ascendancyOf, isAllocatable,
+      requirementsMet, isJewelSocket, isAllocatedJewelSocket, isPhylactery, jewelEffectMultiplier,
+      isMasteryUnlocked, isHubUnlocked, computeShortestPath, refundDependents,
+      pointUsage, pointTotals, planAllocation, attributeChangeCost, planAttributeChange, refundNodeCost, planRefund,
+      refundAllCost, planRefundAll,
+    };
+  }
+
+  if (typeof module !== "undefined" && module.exports && typeof window === "undefined") {
+    module.exports = { createTreeRules };
+    return;
+  }
+
   const TREE = window.POE_TREE || null;
   if (!TREE || !Array.isArray(TREE.nodes)) {
     const showMissingTreeError = () => {
@@ -9,7 +374,7 @@
         const msg = document.createElement("div");
         msg.className = "tree-error-banner";
         msg.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#f5c06f;font-size:15px;padding:24px;text-align:center;";
-        msg.textContent = "패시브 트리 데이터(tree_data.js)를 불러오지 못했습니다. 모드 설치 파일을 확인해 주세요.";
+        msg.textContent = "패시브 트리 데이터를 불러오지 못했습니다. 모드 설치 파일을 확인해 주세요.";
         wrap.appendChild(msg);
       }
       if (window.poeShowToast) {
@@ -61,6 +426,13 @@
   const btnMasteryClose = document.getElementById("btn-mastery-modal-close");
   const btnMasteryRefund = document.getElementById("btn-mastery-refund");
 
+  const attributeModal = document.getElementById("tree-attribute-modal");
+  const attributeTitle = document.getElementById("tree-attribute-title");
+  const attributeList = document.getElementById("tree-attribute-list");
+  const btnAttributeClose = document.getElementById("btn-attribute-close");
+  const btnAttributeApply = document.getElementById("btn-attribute-apply");
+  let attributeRequest = null;
+
   const jewelModal = document.getElementById("tree-jewel-modal");
   const jewelTitle = document.getElementById("tree-jewel-title");
   const jewelCurrent = document.getElementById("tree-jewel-current");
@@ -73,19 +445,15 @@
   const treeMilestonesBox = document.getElementById("tree-milestones-box");
 
   // ---- 상수 (결정 57, 154) ----
-  const KIND_NORMAL = 0;
-  const KIND_NOTABLE = 1;
-  const KIND_KEYSTONE = 2;
-  const KIND_MASTERY = 3;
-  const KIND_SOCKET = 4;
-  const KIND_CLASS_START = 5;
-  const KIND_ASCEND_START = 6;
-
+  const bounds = TREE.bounds;
+  const wideTree = bounds && Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) > 25000;
   const TILE_SIZE = 512;
-  const MAX_TILES = 96;
-  const SPATIAL_CELL = 800;
-  const MIN_ZOOM = 0.045;
-  const MAX_ZOOM = 0.72;
+  const MAX_TILES = wideTree ? 112 : 96;
+  const SPATIAL_CELL = wideTree ? 1100 : 800;
+  const MIN_ZOOM = wideTree ? 0.020 : 0.045;
+  const MAX_ZOOM = wideTree ? 0.84 : 0.72;
+  const ZOOM_BUCKETS = wideTree ? [0.025, 0.045, 0.08, 0.14, 0.25, 0.45, 0.72]
+    : [0.06, 0.11, 0.20, 0.36, 0.60];
 
   const NODE_RADIUS = {
     [KIND_NORMAL]: 27,
@@ -95,40 +463,40 @@
     [KIND_SOCKET]: 40,
     [KIND_CLASS_START]: 86,
     [KIND_ASCEND_START]: 52,
+    [KIND_ATTRIBUTE]: 30,
   };
 
   // ---- 정적 트리 인덱스 구축 ----
-  const nodeById = new Map();
-  const classById = new Map();
-  const ascById = new Map();
-  const hubOptions = new Map();
+  const rules = createTreeRules(TREE);
+  const { nodeById, classById, ascById } = rules;
+  const classStartLabels = new Map();
   const spatialGrid = new Map();
   const edgeSpatialGrid = new Map();
 
-  for (const cls of TREE.classes || []) {
-    classById.set(cls.id, cls);
-    for (const asc of cls.ascendancies || []) {
-      ascById.set(asc.id, { ...asc, classId: cls.id });
-    }
+  for (const cls of classById.values()) {
+    if (!classStartLabels.has(cls.startNodeId)) classStartLabels.set(cls.startNodeId, []);
+    classStartLabels.get(cls.startNodeId).push(cls);
   }
 
   const masteryEffects = TREE.masteryEffects || {};
-  const masteryGroups = TREE.masteryGroups || {};
+  const hasMasteries = Object.keys(masteryEffects).length > 0;
+  const conditionalNodes = TREE.nodes.filter((node) => node.unlock?.length);
+  const searchText = new Map();
+  const lockedNodes = new Set();
+
+  function localizedName(node) {
+    return node.nameKo || node.name;
+  }
+
+  function localizedStats(node) {
+    return node.statsKo?.length ? node.statsKo : (node.stats || []);
+  }
 
   function cellKey(cx, cy) {
     return `${cx},${cy}`;
   }
 
   for (const n of TREE.nodes) {
-    nodeById.set(n.id, n);
-    if (n.mco && n.mcParent) {
-      let arr = hubOptions.get(n.mcParent);
-      if (!arr) {
-        arr = [];
-        hubOptions.set(n.mcParent, arr);
-      }
-      arr.push(n.id);
-    }
     const cx = Math.floor(n.x / SPATIAL_CELL);
     const cy = Math.floor(n.y / SPATIAL_CELL);
     const k = cellKey(cx, cy);
@@ -140,19 +508,12 @@
     bucket.push(n);
 
     // 검색용 소문자 문자열 캐시(한글 + 영문 + 마스터리 효과 포함)
-    const parts = [n.name || "", n.nameKo || ""];
-    if (Array.isArray(n.stats)) parts.push(...n.stats);
-    if (Array.isArray(n.statsKo)) parts.push(...n.statsKo);
-    if (Array.isArray(n.effects)) {
-      for (const eid of n.effects) {
-        const eff = masteryEffects[String(eid)];
-        if (eff) {
-          if (Array.isArray(eff.stats)) parts.push(...eff.stats);
-          if (Array.isArray(eff.statsKo)) parts.push(...eff.statsKo);
-        }
-      }
+    const entries = [n, ...(n.attrOptions || []), ...(classStartLabels.get(n.id) || [])];
+    for (const eid of n.effects || []) {
+      if (masteryEffects[eid]) entries.push(masteryEffects[eid]);
     }
-    n._search = parts.join(" ").toLowerCase();
+    searchText.set(n.id, entries.flatMap((entry) =>
+      [entry.name, entry.nameKo, ...(entry.stats || []), ...(entry.statsKo || [])]).join(" ").toLowerCase());
   }
 
   // 검수 C1: visualEdges는 compile_tree.py 포맷에 맞춰 TREE.nodes 배열 인덱스로 조회:
@@ -226,6 +587,7 @@
   let panelData = null;
   let treeState = {
     loaded: true,
+    generation: rules.generation,
     classSelected: false,
     classId: 0,
     ascendancyId: "",
@@ -244,15 +606,14 @@
   let allocatedSet = new Set();
   let openMasteryNodeId = 0;
 
-  // ---- 512px 정적 타일 캐시 (LRU 96장) ----
+  // ---- 512px 정적 타일 캐시 (LRU) ----
   const tileCache = new Map();
 
   function getZoomBucket(z) {
-    const levels = [0.06, 0.11, 0.20, 0.36, 0.60];
-    for (const lv of levels) {
+    for (const lv of ZOOM_BUCKETS) {
       if (z <= lv * 1.18) return lv;
     }
-    return levels[levels.length - 1];
+    return ZOOM_BUCKETS[ZOOM_BUCKETS.length - 1];
   }
 
   function evictTileCacheIfNeeded() {
@@ -309,165 +670,13 @@
     });
   }
 
-  // ---- 클라이언트 측 규칙/최단 경로(0-1 BFS, C++ PassiveTree와 동일 규칙) ----
-  function isNormalSpendable(n) {
-    return !n.asc && n.k !== KIND_CLASS_START && n.k !== KIND_MASTERY && !n.mc;
-  }
-
-  function isAscSpendable(n) {
-    return Boolean(n.asc) && n.k !== KIND_ASCEND_START && n.k !== KIND_MASTERY && !n.mc;
-  }
-
-  function isHubUnlocked(hubId) {
-    const opts = hubOptions.get(hubId);
-    if (!opts) return false;
-    for (const oid of opts) {
-      if (allocatedSet.has(oid)) return true;
-    }
-    return false;
-  }
-
-  function buildActiveNormalSeeds() {
-    const seeds = new Set();
-    if (!treeState.classSelected) return seeds;
-    const cls = classById.get(treeState.classId);
-    if (cls && Array.isArray(cls.startNeighbors)) {
-      for (const nb of cls.startNeighbors) seeds.add(nb);
-    }
-    for (const nid of allocatedSet) {
-      const n = nodeById.get(nid);
-      if (n && typeof n.grantStart === "number" && n.grantStart >= 0) {
-        const extraCls = classById.get(n.grantStart);
-        if (extraCls && Array.isArray(extraCls.startNeighbors)) {
-          for (const nb of extraCls.startNeighbors) seeds.add(nb);
-        }
-      }
-    }
-    return seeds;
-  }
-
-  function isMasteryUnlocked(masteryNode) {
-    if (!treeState.classSelected || !masteryNode || masteryNode.k !== KIND_MASTERY) return false;
-    const notables = masteryGroups[String(masteryNode.g)];
-    if (!Array.isArray(notables)) return false;
-    for (const nid of notables) {
-      if (allocatedSet.has(nid)) return true;
-    }
-    return false;
-  }
-
   function computeShortestPath(targetId) {
-    if (!treeState.classSelected) return [];
-    const target = nodeById.get(targetId);
-    if (!target || target.k === KIND_CLASS_START || target.k === KIND_ASCEND_START ||
-        target.k === KIND_MASTERY || target.mc || allocatedSet.has(targetId)) {
-      return [];
-    }
-
-    const parent = new Map();
-    const dist = new Map();
-    const deque = [];
-
-    if (!target.asc) {
-      const seeds = buildActiveNormalSeeds();
-      for (const nid of allocatedSet) {
-        const n = nodeById.get(nid);
-        if (n && isNormalSpendable(n)) {
-          dist.set(nid, 0);
-          parent.set(nid, 0);
-          deque.unshift(nid);
-        }
-      }
-      for (const s of seeds) {
-        if (!dist.has(s)) {
-          dist.set(s, 1);
-          parent.set(s, 0);
-          deque.push(s);
-        }
-      }
-
-      while (deque.length > 0) {
-        const cur = deque.shift();
-        if (cur === targetId) break;
-        const curDist = dist.get(cur);
-        const node = nodeById.get(cur);
-        if (!node || !Array.isArray(node.adj)) continue;
-        for (const nb of node.adj) {
-          const nbNode = nodeById.get(nb);
-          if (!nbNode || !isNormalSpendable(nbNode)) continue;
-          const stepCost = allocatedSet.has(nb) ? 0 : 1;
-          const nextDist = curDist + stepCost;
-          const prevDist = dist.get(nb);
-          if (prevDist !== undefined && prevDist <= nextDist) continue;
-          dist.set(nb, nextDist);
-          parent.set(nb, cur);
-          if (stepCost === 0) deque.unshift(nb);
-          else deque.push(nb);
-        }
-      }
-      if (!dist.has(targetId)) return [];
-      const path = [];
-      for (let cur = targetId; cur !== 0 && cur !== undefined; cur = parent.get(cur)) {
-        if (!allocatedSet.has(cur)) path.push(cur);
-      }
-      path.reverse();
-      return path;
-    }
-
-    // 전직 트리 0-1 BFS
-    if (!treeState.ascendancyId || target.asc !== treeState.ascendancyId) return [];
-    const ascDef = ascById.get(treeState.ascendancyId);
-    if (!ascDef || !ascDef.startNodeId) return [];
-
-    dist.set(ascDef.startNodeId, 0);
-    parent.set(ascDef.startNodeId, 0);
-    deque.unshift(ascDef.startNodeId);
-    for (const nid of allocatedSet) {
-      const n = nodeById.get(nid);
-      if (n && isAscSpendable(n) && n.asc === treeState.ascendancyId && !dist.has(nid)) {
-        dist.set(nid, 0);
-        parent.set(nid, 0);
-        deque.unshift(nid);
-      }
-    }
-
-    while (deque.length > 0) {
-      const cur = deque.shift();
-      if (cur === targetId) break;
-      const curDist = dist.get(cur);
-      const node = nodeById.get(cur);
-      if (!node || !Array.isArray(node.adj)) continue;
-      for (const nb of node.adj) {
-        const nbNode = nodeById.get(nb);
-        if (!nbNode || nbNode.asc !== treeState.ascendancyId) continue;
-        if (node.mc) {
-          const unlocked = isHubUnlocked(cur);
-          if (unlocked && nbNode.mco) continue;
-          if (!unlocked && !nbNode.mco) continue;
-        }
-        if (node.mco && nbNode.mc) continue;
-
-        const stepCost = (nbNode.mc || nb === ascDef.startNodeId || allocatedSet.has(nb)) ? 0 : 1;
-        const nextDist = curDist + stepCost;
-        const prevDist = dist.get(nb);
-        if (prevDist !== undefined && prevDist <= nextDist) continue;
-        dist.set(nb, nextDist);
-        parent.set(nb, cur);
-        if (stepCost === 0) deque.unshift(nb);
-        else deque.push(nb);
-      }
-    }
-    if (!dist.has(targetId)) return [];
-    const path = [];
-    for (let cur = targetId; cur !== 0 && cur !== undefined; cur = parent.get(cur)) {
-      const n = nodeById.get(cur);
-      if (n && isAscSpendable(n) && !allocatedSet.has(cur)) path.push(cur);
-    }
-    path.reverse();
-    return path;
+    return rules.computeShortestPath(treeState, targetId, allocatedSet);
   }
 
-  // ---- 벡터 아이콘 그리기 (결정 154: 자체 SVG/Canvas 벡터 심볼) ----
+  function isMasteryUnlocked(node) {
+    return hasMasteries && rules.isMasteryUnlocked(node, treeState, allocatedSet);
+  }
   function catAccentColor(cat) {
     switch (cat) {
       case "str": case "life": case "fire": case "attack": case "melee": return "#e06254";
@@ -635,6 +844,9 @@
       c.lineTo(n.x, n.y + r);
       c.lineTo(n.x - r, n.y);
       c.closePath();
+    } else if (n.k === KIND_ATTRIBUTE) {
+      const half = r / Math.SQRT2;
+      c.rect(n.x - half, n.y - half, half * 2, half * 2);
     } else if (n.mc) {
       for (let i = 0; i < 6; i++) {
         const a = (i * Math.PI) / 3 - Math.PI / 6;
@@ -817,7 +1029,7 @@
     const isVisuallyActive = (id) => {
       if (allocatedSet.has(id) || activeStartIds.has(id)) return true;
       const n = nodeById.get(id);
-      return Boolean(n && n.mc && isHubUnlocked(id));
+      return Boolean(n && n.mc && rules.isHubUnlocked(id, allocatedSet));
     };
 
     const pad = 160;
@@ -867,12 +1079,12 @@
           const r = n.mc ? 40 : (NODE_RADIUS[n.k] || 27);
           const isAlloc = allocatedSet.has(n.id);
           const isStart = activeStartIds.has(n.id);
-          const isMasteryAlloc = n.k === KIND_MASTERY && mSel[String(n.id)] !== undefined;
+          const isMasteryAlloc = hasMasteries && n.k === KIND_MASTERY && mSel[n.id] !== undefined;
           const isMasteryOpen = n.k === KIND_MASTERY && !isMasteryAlloc && isMasteryUnlocked(n);
-          const socketedJ = n.k === KIND_SOCKET ? jSel[String(n.id)] : undefined;
+          const socketedJ = rules.isJewelSocket(n) ? jSel[n.id] : undefined;
           const isPreview = hoverPathSet.has(n.id);
           const isMatch = searchMatchSet.has(n.id);
-          const isHubOpen = n.mc && isHubUnlocked(n.id);
+          const isHubOpen = n.mc && rules.isHubUnlocked(n.id, allocatedSet);
 
           if (isAlloc || isStart || isMasteryAlloc || isHubOpen) {
             const fill = isStart ? "#3d2c14" : "#2e2313";
@@ -905,6 +1117,16 @@
             if (effZoom >= 0.08) {
               drawCategoryGlyph(ctx, n.x, n.y, r, "mastery", "#8ee8ff");
             }
+          } else if (lockedNodes.has(n.id)) {
+            drawNodeShape(ctx, n, r, "#251a25", "#946177", 8);
+            if (effZoom >= 0.06) {
+              ctx.strokeStyle = "#d4a2b5";
+              ctx.lineWidth = 5;
+              ctx.strokeRect(n.x - 11, n.y - 1, 22, 17);
+              ctx.beginPath();
+              ctx.arc(n.x, n.y - 1, 8, Math.PI, 2 * Math.PI);
+              ctx.stroke();
+            }
           }
 
           if (isMatch) {
@@ -925,17 +1147,19 @@
 
           // 클래스 시작점 이름 라벨
           if (n.k === KIND_CLASS_START && effZoom >= 0.06) {
-            ctx.font = "700 44px 'Malgun Gothic', sans-serif";
+            const labelSize = wideTree ? Math.max(44, 10 / effZoom) : 44;
+            ctx.font = `700 ${labelSize}px 'Malgun Gothic', sans-serif`;
             ctx.textAlign = "center";
             ctx.textBaseline = "top";
             ctx.fillStyle = isStart ? "#ffe28c" : "#cbb896";
-            ctx.fillText(n.nameKo || n.name, n.x, n.y + r + 14);
+            const classes = classStartLabels.get(n.id);
+            ctx.fillText(classes ? classes.map(localizedName).join(" / ") : localizedName(n), n.x, n.y + r + 14);
           } else if (n.k === KIND_ASCEND_START && effZoom >= 0.08) {
             ctx.font = "700 36px 'Malgun Gothic', sans-serif";
             ctx.textAlign = "center";
             ctx.textBaseline = "top";
             ctx.fillStyle = isStart ? "#8ee4ff" : "#a79a84";
-            ctx.fillText(n.nameKo || n.name, n.x, n.y + r + 10);
+            ctx.fillText(localizedName(rules.resolveNode(n, treeState)), n.x, n.y + r + 10);
           }
         }
       }
@@ -973,35 +1197,42 @@
   function updateTooltip() {
     if (!hoveredNode || !isActive || !classModal.classList.contains("hidden") ||
         !masteryModal.classList.contains("hidden") ||
+        !attributeModal.classList.contains("hidden") ||
         (jewelModal && !jewelModal.classList.contains("hidden"))) {
       tooltipEl.classList.add("hidden");
       return;
     }
     const n = hoveredNode;
+    const view = rules.resolveNode(n, treeState);
+    const startClasses = classStartLabels.get(n.id);
+    const isSocket = rules.isJewelSocket(n);
     tooltipEl.textContent = "";
 
     const head = document.createElement("div");
     head.className = "tt-head";
     const title = document.createElement("span");
     title.className = "tt-title";
-    title.textContent = n.nameKo || n.name;
+    title.textContent = startClasses ? startClasses.map(localizedName).join(" / ") : localizedName(view);
     head.appendChild(title);
-    if (n.deferred && n.k !== KIND_SOCKET) {
+    if (view.deferred) {
       const tag = document.createElement("span");
       tag.className = "tt-deferred";
-      tag.textContent = "추후 적용";
+      tag.textContent = "[추후 적용]";
       head.appendChild(tag);
     }
     tooltipEl.appendChild(head);
 
     const sub = document.createElement("div");
     sub.className = "tt-sub";
-    const kindLabels = ["소형 패시브", "주요 패시브", "핵심(키스톤)", "마스터리", "주얼 소켓", "클래스 시작점", "전직 시작점"];
-    const enSub = (n.nameKo && n.nameKo !== n.name) ? ` · ${n.name}` : "";
-    sub.textContent = `${kindLabels[n.k] || "패시브"}${n.asc ? ` (${n.asc})` : ""}${enSub}`;
+    const kindLabels = ["소형 패시브", "주요 패시브", "핵심(키스톤)", "마스터리", "주얼 소켓", "클래스 시작점", "전직 시작점", "능력치 선택"];
+    const asc = ascById.get(view.asc);
+    const displayNames = startClasses || [view];
+    const enSub = displayNames.some((entry) => entry.nameKo && entry.nameKo !== entry.name)
+      ? ` · ${displayNames.map((entry) => entry.name).join(" / ")}` : "";
+    sub.textContent = `${kindLabels[n.k] || "패시브"}${asc ? ` (${localizedName(asc)})` : ""}${enSub}`;
     tooltipEl.appendChild(sub);
 
-    if (n.k === KIND_MASTERY) {
+    if (n.k === KIND_MASTERY && hasMasteries) {
       const selEffId = (treeState.masterySelections || {})[String(n.id)];
       if (selEffId !== undefined) {
         const eff = masteryEffects[String(selEffId)];
@@ -1020,14 +1251,22 @@
         : (isMasteryUnlocked(n) ? "좌클릭: 마스터리 효과 선택 (1 포인트)" : "같은 그룹의 주요 패시브 1개 이상 할당 시 해금");
       tooltipEl.appendChild(note);
     } else {
-      const lines = (Array.isArray(n.statsKo) && n.statsKo.length > 0) ? n.statsKo : (n.stats || []);
-      for (const s of lines) {
+      for (const [index, s] of localizedStats(view).entries()) {
         const lineEl = document.createElement("div");
         lineEl.className = "tt-stat";
         lineEl.textContent = s;
+        const support = view.statSupport?.[index];
+        if (support && support.status !== "full") {
+          lineEl.classList.add("tt-stat-inactive");
+          const reason = document.createElement("div");
+          reason.className = "tt-stat-reason";
+          const label = { partial: "일부 적용", mappingOnly: "매핑만", unsupported: "미적용" }[support.status];
+          reason.textContent = support.reason ? `${label} · ${support.reason}` : label;
+          lineEl.appendChild(reason);
+        }
         tooltipEl.appendChild(lineEl);
       }
-      if (n.k === KIND_SOCKET) {
+      if (isSocket) {
         const sockJ = ((treeState && treeState.socketedJewels) || {})[String(n.id)];
         if (sockJ) {
           const jHead = document.createElement("div");
@@ -1044,7 +1283,23 @@
           }
         }
       }
-      if (n.mc) {
+      if (n.freeAlloc || (isSocket && n.k !== KIND_SOCKET)) {
+        const note = document.createElement("div");
+        note.className = "tt-note";
+        note.textContent = [n.freeAlloc ? "소비 포인트 0" : "",
+          isSocket && n.k !== KIND_SOCKET ? "주얼 소켓" : ""].filter(Boolean).join(" · ");
+        tooltipEl.appendChild(note);
+      }
+      if (lockedNodes.has(n.id) || n.alias) {
+        const note = document.createElement("div");
+        note.className = "tt-note tt-locked";
+        const required = (n.unlock || []).filter((id) => !allocatedSet.has(id)).map((id) => {
+          const node = nodeById.get(id);
+          return node ? localizedName(rules.resolveNode(node, treeState)) : `#${id}`;
+        });
+        note.textContent = n.alias ? "별칭 소켓 · 직접 할당할 수 없습니다." : `잠김 · 필요 노드 ${required.join(", ")}`;
+        tooltipEl.appendChild(note);
+      } else if (n.mc) {
         const note = document.createElement("div");
         note.className = "tt-note";
         note.textContent = "다중 선택 허브 (0 포인트): 연결된 하위 선택지 중 1개만 고를 수 있습니다.";
@@ -1052,17 +1307,18 @@
       } else if (allocatedSet.has(n.id)) {
         const note = document.createElement("div");
         note.className = "tt-note";
-        const freeRefund = Boolean(panelData && panelData.freePassiveRefund);
-        const nodeCost = freeRefund ? 0 : refundCostFor(n.id);
+        const nodeCost = refundCostFor(n.id);
         const costSuffix = nodeCost === null ? "" : (nodeCost > 0 ? ` (후회의 오브 ${nodeCost}개)` : " (무료)");
-        note.textContent = n.k === KIND_SOCKET
-          ? `할당됨 · 좌클릭: 주얼 장착/회수 · 우클릭: 소켓 회수${costSuffix}`
-          : `할당됨 · 우클릭으로 회수${costSuffix}`;
+        const action = isSocket ? " · 좌클릭: 주얼 장착/회수" : n.k === KIND_ATTRIBUTE ? " · 좌클릭: 능력치 변경" : "";
+        const blocked = refundBlockMessage(n.id);
+        note.textContent = `할당됨${action} · ${blocked || `우클릭: 노드 회수${costSuffix}`}`;
+        note.classList.toggle("tt-locked", Boolean(blocked));
         tooltipEl.appendChild(note);
       } else if (hoverPath.length > 0) {
         const note = document.createElement("div");
         note.className = "tt-note";
-        note.textContent = `좌클릭으로 최단 경로 할당 (${hoverPath.length} ${n.asc ? "전직 " : ""}포인트)`;
+        const cost = hoverPath.reduce((sum, id) => sum + (nodeById.get(id).freeAlloc ? 0 : 1), 0);
+        note.textContent = `좌클릭으로 최단 경로 할당 (${cost} ${rules.ascendancyOf(n, treeState) ? "전직 " : ""}포인트)`;
         tooltipEl.appendChild(note);
       }
     }
@@ -1098,9 +1354,9 @@
         return;
       }
     }
-    camX = 0;
-    camY = 0;
-    camZoom = 0.095;
+    camX = wideTree ? (bounds.minX + bounds.maxX) / 2 : 0;
+    camY = wideTree ? (bounds.minY + bounds.maxY) / 2 : 0;
+    camZoom = wideTree ? 0.05 : 0.095;
     requestRedraw();
   }
 
@@ -1127,14 +1383,17 @@
 
       const ascs = document.createElement("div");
       ascs.className = "class-card-ascs";
-      ascs.textContent = "전직: " + (cls.ascendancies || []).map((x) => x.nameKo || x.name).join(", ");
+      ascs.textContent = "전직 " + (cls.ascendancies || []).map((asc) => {
+        const alternateNames = (asc.replacements || []).map(localizedName);
+        return [localizedName(asc), ...alternateNames].join(" / ");
+      }).join(", ");
       card.appendChild(ascs);
 
       card.onclick = () => {
         window.poeSendCommand({
           op: "treeSelectClass",
           reqId: window.poeNextReqId(),
-          classId: cls.id,
+          classContentId: cls.contentId || `cls.${cls.name}`,
         });
         classModal.classList.add("hidden");
         centerOnNode(cls.startNodeId, 0.14);
@@ -1199,6 +1458,82 @@
     tooltipEl.classList.add("hidden");
   }
 
+  function closeAttributeModal() {
+    attributeRequest = null;
+    attributeModal.classList.add("hidden");
+  }
+
+  function openAttributeModal(path, changingNode = null) {
+    const nodes = changingNode ? [changingNode] : path.map((id) => nodeById.get(id))
+      .filter((node) => node.k === KIND_ATTRIBUTE);
+    const choices = new Map();
+    const current = changingNode ? treeState.attributeSelections?.[changingNode.id] : undefined;
+    if (current !== undefined) choices.set(changingNode.id, current);
+    const request = { path, changingNode, choices, current, expectedRegretCost: 0 };
+    attributeRequest = request;
+    attributeTitle.textContent = changingNode ? "능력치 변경" : "경로에 할당할 능력치 선택";
+    attributeList.textContent = "";
+
+    function updateApply() {
+      const ready = choices.size === nodes.length;
+      btnAttributeApply.disabled = !ready;
+      if (changingNode && ready) {
+        const cost = rules.attributeChangeCost(treeState, changingNode.id, choices.get(changingNode.id),
+          Boolean(panelData?.freePassiveRefund));
+        request.expectedRegretCost = cost;
+        btnAttributeApply.textContent = cost ? `변경 (후회의 오브 ${cost}개)` : "변경 (무료)";
+      } else {
+        btnAttributeApply.textContent = "할당";
+      }
+    }
+
+    for (const [index, node] of nodes.entries()) {
+      const group = document.createElement("fieldset");
+      group.className = "tree-attribute-choice";
+      const title = document.createElement("legend");
+      title.textContent = nodes.length === 1 ? localizedName(node)
+        : `${index + 1}. ${localizedName(node)} (#${node.id})`;
+      group.appendChild(title);
+      for (const option of node.attrOptions) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = `tree-attribute-${node.id}`;
+        input.checked = option.id === choices.get(node.id);
+        input.onchange = () => {
+          choices.set(node.id, option.id);
+          updateApply();
+        };
+        label.appendChild(input);
+        label.append(localizedStats(option).join(" / ") || localizedName(option));
+        group.appendChild(label);
+      }
+      attributeList.appendChild(group);
+    }
+    updateApply();
+    attributeModal.classList.remove("hidden");
+    tooltipEl.classList.add("hidden");
+  }
+
+  btnAttributeClose.onclick = closeAttributeModal;
+  btnAttributeApply.onclick = () => {
+    if (!attributeRequest || btnAttributeApply.disabled) return;
+    const { path, changingNode, choices, current, expectedRegretCost } = attributeRequest;
+    closeAttributeModal();
+    if (changingNode) {
+      if (treeState.attributeSelections?.[changingNode.id] !== current) return;
+      window.poeSendCommand({
+        op: "treeSetAttribute", reqId: window.poeNextReqId(),
+        nodeId: changingNode.id, optionId: choices.get(changingNode.id), expectedRegretCost,
+      });
+    } else {
+      window.poeSendCommand({
+        op: "treeAllocatePath", reqId: window.poeNextReqId(), nodes: path,
+        attributeChoices: [...choices].map(([nodeId, optionId]) => ({ nodeId, optionId })),
+      });
+    }
+  };
+
   // ---- 검색 (한글/영문 + SimpleIME 연동) ----
   function runSearch(query) {
     searchQuery = (query || "").trim().toLowerCase();
@@ -1206,8 +1541,12 @@
     searchMatchSet = new Set();
     searchFocusIdx = -1;
     if (searchQuery.length > 0) {
+      const nodeId = /^#\d+$/.test(searchQuery) ? Number(searchQuery.slice(1)) : null;
       for (const n of TREE.nodes) {
-        if (n._search && n._search.includes(searchQuery)) {
+        const view = n.variants ? rules.resolveNode(n, treeState) : n;
+        const text = view === n ? searchText.get(n.id)
+          : [view.name, view.nameKo, ...(view.stats || []), ...(view.statsKo || [])].join(" ").toLowerCase();
+        if (nodeId === null ? text.includes(searchQuery) : n.id === nodeId) {
           searchMatches.push(n);
           searchMatchSet.add(n.id);
         }
@@ -1253,12 +1592,31 @@
   let pendingRefundConfirm = null; // { key: string, expiresAt: number }
 
   // 재검수 R-7: 회수·교체 비용은 C++(PassiveTree::GetRefundNodeCost / GetSelectMasterySwapCost)가 계산해 보낸 값을 쓴다.
-  // 값이 없으면(구버전 페이로드 등) 비용을 모르는 것이므로 확인을 거치도록 null을 돌려준다.
+  function validRefundCost(value) {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
   function refundCostFor(nodeId) {
-    const costs = (treeState && treeState.refundNodeCosts) || null;
-    if (!costs) return null;
-    const v = costs[String(nodeId)];
-    return (v === undefined || v === null) ? null : Number(v);
+    return validRefundCost(treeState?.refundNodeCosts?.[nodeId]);
+  }
+  function refundBlockMessage(nodeId) {
+    const blockedBy = treeState?.refundNodeCosts?.[nodeId]?.blockedBy;
+    if (!blockedBy?.length) return "";
+    const names = blockedBy.map((id) => {
+      const node = nodeById.get(id);
+      return node ? `${localizedName(rules.resolveNode(node, treeState))} (#${id})` : `#${id}`;
+    });
+    return `먼저 회수할 노드 · ${names.join(", ")}`;
+  }
+  function requestRefund(command, cost, label) {
+    if (cost === null) {
+      window.poeShowToast?.(false, "회수 비용을 확인할 수 없습니다. 트리를 새로 고쳐 주세요.");
+      return;
+    }
+    const key = `${command.op}:${command.nodeId ?? command.ascendancyOnly}`;
+    confirmOrProceedRefund(key, cost, label, () => {
+      window.poeSendCommand({ ...command, reqId: window.poeNextReqId(), expectedRegretCost: cost });
+      if (command.nodeId === openMasteryNodeId) masteryModal.classList.add("hidden");
+    });
   }
   function masterySwapCostFor(nodeId) {
     const costs = (treeState && treeState.masterySwapCosts) || null;
@@ -1316,14 +1674,14 @@
       : "전체 회수";
 
     // C-31: 서버 측 트리 데이터 미로드 시 오류 배너 표시
-    const treeNotLoaded = treeState && treeState.loaded === false;
+    const treeNotLoaded = treeState.loaded === false || (treeState.classSelected && !rules.canUseTree(treeState));
     let errBanner = canvasWrap ? canvasWrap.querySelector(".tree-error-banner") : null;
     if (treeNotLoaded && canvasWrap) {
       if (!errBanner) {
         errBanner = document.createElement("div");
         errBanner.className = "tree-error-banner";
         errBanner.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(12,10,14,0.82);color:#f5c06f;font-size:15px;padding:24px;text-align:center;z-index:20;";
-        errBanner.textContent = "서버 패시브 트리 데이터(tree_3_30.json)를 불러오지 못했습니다.";
+        errBanner.textContent = "게임의 패시브 트리 데이터와 화면을 동기화하지 못했습니다.";
         canvasWrap.appendChild(errBanner);
       }
     } else if (errBanner) {
@@ -1336,8 +1694,8 @@
       ? (asc ? `${cls.nameKo || cls.name} · ${asc.nameKo || asc.name}` : (cls.nameKo || cls.name))
       : "클래스 미선택";
 
-    const spentTotal = (treeState.spentNormalPoints || 0) + (treeState.spentAscendancyPoints || 0);
-    btnChangeClass.disabled = treeState.classSelected && spentTotal > 0;
+    btnChangeClass.disabled = treeState.classSelected &&
+      (allocatedSet.size > 0 || Object.keys(treeState.masterySelections || {}).length > 0);
 
     // 전직 드롭다운 갱신
     ascSelectEl.textContent = "";
@@ -1347,16 +1705,22 @@
     ascSelectEl.appendChild(optEmpty);
     if (cls) {
       for (const a of cls.ascendancies || []) {
-        const opt = document.createElement("option");
-        opt.value = a.id;
-        opt.textContent = `${a.nameKo || a.name} (${a.name})`;
-        ascSelectEl.appendChild(opt);
+        for (const entry of [a, ...(a.replacements || [])]) {
+          const opt = document.createElement("option");
+          opt.value = entry.id;
+          opt.textContent = `${localizedName(entry)} (${entry.name})${entry === a ? "" : ` · ${localizedName(a)} 대체`}`;
+          ascSelectEl.appendChild(opt);
+        }
       }
       ascSelectEl.value = treeState.ascendancyId || "";
     }
-    ascSelectEl.disabled = !cls;
+    const hasAscNodes = (treeState.allocatedNodes || []).some((id) => {
+      const node = nodeById.get(id);
+      return node && rules.ascendancyOf(node, treeState);
+    });
+    ascSelectEl.disabled = !cls || (treeState.earnedAscendancyPoints || 0) < 2 || hasAscNodes;
     btnFocusAsc.disabled = !asc;
-    btnClearAsc.disabled = !asc || (treeState.spentAscendancyPoints || 0) > 0;
+    btnClearAsc.disabled = !asc || hasAscNodes;
 
     // 우측 스탯 요약
     treeStatsGrid.textContent = "";
@@ -1373,8 +1737,13 @@
         ["번개 저항", `${s.lightningResist}% (상한 ${s.maxLightningResist ?? 75}%)`],
         ["카오스 저항", `${s.chaosResist}% (상한 ${s.maxChaosResist ?? 75}%)`],
         ["공격/주문 막기", `${s.attackBlock ?? 0}% / ${s.spellBlock ?? 0}%`],
-        ["주문 억제/회피", `${s.spellSuppression ?? 0}% / ${s.spellDodge ?? 0}%`],
-        ["MoM 흡수", `${s.momRatio ?? 0}%`],
+        ["주문 회피", `${s.spellDodge ?? 0}%`],
+        ["편향", s.deflectionRating ?? 0],
+        ["화염/냉기/번개 관통", `${s.penetrationPct?.fire ?? 0}% / ${s.penetrationPct?.cold ?? 0}% / ${s.penetrationPct?.lightning ?? 0}%`],
+        ["카오스 관통", `${s.penetrationPct?.chaos ?? 0}%`],
+        ["공격 원소 관통", `${s.attackElementalPenetrationPct ?? 0}%`],
+        ["이동 속도 증가", s.movementSpeedApplied ? `${s.incMovementSpeedPct ?? 0}%` : "세대 1부터"],
+        ["마나 우선 피해 흡수", `${s.momRatio ?? 0}%`],
       ];
       for (const [k, v] of rows) {
         const row = document.createElement("div");
@@ -1397,7 +1766,7 @@
     for (const nid of allocatedSet) {
       const n = nodeById.get(nid);
       if (n && n.k === KIND_KEYSTONE) {
-        activeKs.push(n.nameKo || n.name);
+        activeKs.push(localizedName(rules.resolveNode(n, treeState)));
       }
     }
     if (activeKs.length === 0) {
@@ -1473,17 +1842,12 @@
   btnCenter.onclick = () => centerOnClassStart();
   btnChangeClass.onclick = () => openClassModal();
   btnRefundAsc.onclick = () => {
-    // 비용 필드가 없으면(다른 판의 DLL) 비용을 모르는 것이므로 null로 확인을 거친다(Codex 지적 22).
-    const cost = treeState.refundAscCost === undefined || treeState.refundAscCost === null ? null : Number(treeState.refundAscCost);
-    confirmOrProceedRefund("refundAsc", cost, "전직 전체 회수", () => {
-      window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: true });
-    });
+    requestRefund({ op: "treeRefundAll", ascendancyOnly: true },
+      validRefundCost(treeState.refundAscCost), "전직 전체 회수");
   };
   btnRefundAll.onclick = () => {
-    const cost = treeState.refundAllCost === undefined || treeState.refundAllCost === null ? null : Number(treeState.refundAllCost);
-    confirmOrProceedRefund("refundAll", cost, "패시브 전체 회수", () => {
-      window.poeSendCommand({ op: "treeRefundAll", reqId: window.poeNextReqId(), ascendancyOnly: false });
-    });
+    requestRefund({ op: "treeRefundAll", ascendancyOnly: false },
+      validRefundCost(treeState.refundAllCost), "패시브 전체 회수");
   };
   btnClassModalClose.onclick = () => {
     classModalDismissed = true;
@@ -1541,11 +1905,11 @@
 
     jewelBagList.textContent = "";
     const bagItems = (panelData && panelData.gear && panelData.gear.bagItems) || [];
-    const jewels = bagItems.filter((b) => Boolean(b.isJewel));
+    const jewels = bagItems.filter((b) => b.isJewel && (!rules.isPhylactery(node.id) || b.rarity !== "unique"));
     if (jewels.length === 0) {
       const empty = document.createElement("div");
       empty.className = "section-sub";
-      empty.textContent = "가방에 보유 중인 주얼이 없습니다.";
+      empty.textContent = "가방에 장착할 수 있는 주얼이 없습니다.";
       jewelBagList.appendChild(empty);
     } else {
       for (const jw of jewels) {
@@ -1578,14 +1942,7 @@
   btnMasteryRefund.onclick = () => {
     if (openMasteryNodeId > 0) {
       const targetId = openMasteryNodeId;
-      confirmOrProceedRefund(`mastery:${targetId}`, refundCostFor(targetId), "마스터리 회수", () => {
-        window.poeSendCommand({
-          op: "treeRefundNode",
-          reqId: window.poeNextReqId(),
-          nodeId: targetId,
-        });
-        masteryModal.classList.add("hidden");
-      });
+      requestRefund({ op: "treeRefundNode", nodeId: targetId }, refundCostFor(targetId), "마스터리 회수");
     } else {
       masteryModal.classList.add("hidden");
     }
@@ -1626,6 +1983,7 @@
     if (
       !classModal.classList.contains("hidden") ||
       !masteryModal.classList.contains("hidden") ||
+      !attributeModal.classList.contains("hidden") ||
       (jewelModal && !jewelModal.classList.contains("hidden"))
     ) {
       return;
@@ -1668,7 +2026,8 @@
       openClassModal();
       return;
     }
-    if (hit.k === KIND_MASTERY) {
+    if (!rules.canUseTree(treeState)) return;
+    if (hasMasteries && hit.k === KIND_MASTERY) {
       if (isMasteryUnlocked(hit) || (treeState.masterySelections || {})[String(hit.id)] !== undefined) {
         openMasteryModal(hit);
       } else if (window.poeShowToast) {
@@ -1676,12 +2035,20 @@
       }
       return;
     }
-    if (hit.k === KIND_SOCKET && allocatedSet.has(hit.id)) {
+    if (rules.isJewelSocket(hit) && allocatedSet.has(hit.id)) {
       openJewelModal(hit);
+      return;
+    }
+    if (hit.k === KIND_ATTRIBUTE && allocatedSet.has(hit.id)) {
+      openAttributeModal([], hit);
       return;
     }
     const path = computeShortestPath(hit.id);
     if (path.length > 0) {
+      if (path.some((id) => nodeById.get(id).k === KIND_ATTRIBUTE)) {
+        openAttributeModal(path);
+        return;
+      }
       window.poeSendCommand({
         op: "treeAllocatePath",
         reqId: window.poeNextReqId(),
@@ -1692,23 +2059,21 @@
 
   canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    if (!isActive) return;
+    if (!isActive || !rules.canUseTree(treeState)) return;
     const rect = canvas.getBoundingClientRect();
     const world = screenCssToWorld(e.clientX - rect.left, e.clientY - rect.top);
     const hit = findNodeAtWorld(world.x, world.y);
     if (!hit) return;
 
-    const hasMastery = hit.k === KIND_MASTERY && (treeState.masterySelections || {})[String(hit.id)] !== undefined;
+    const hasMastery = hasMasteries && hit.k === KIND_MASTERY && treeState.masterySelections?.[hit.id] !== undefined;
     if (allocatedSet.has(hit.id) || hasMastery) {
-      const cost = refundCostFor(hit.id);
-      const label = `${hit.nameKo || hit.name || ("#" + hit.id)} 회수`;
-      confirmOrProceedRefund(`node:${hit.id}`, cost, label, () => {
-        window.poeSendCommand({
-          op: "treeRefundNode",
-          reqId: window.poeNextReqId(),
-          nodeId: hit.id,
-        });
-      });
+      const blocked = refundBlockMessage(hit.id);
+      if (blocked) {
+        window.poeShowToast?.(false, blocked);
+        return;
+      }
+      const label = `${localizedName(rules.resolveNode(hit, treeState)) || ("#" + hit.id)} 회수`;
+      requestRefund({ op: "treeRefundNode", nodeId: hit.id }, refundCostFor(hit.id), label);
     }
   });
 
@@ -1740,6 +2105,7 @@
 
   // ---- 외부 모듈 API (app.js에서 호출) ----
   window.poeTreeModule = {
+    rules,
     setActive(active) {
       isActive = Boolean(active);
       if (!isActive) {
@@ -1750,6 +2116,7 @@
         tooltipEl.classList.add("hidden");
         classModal.classList.add("hidden");
         masteryModal.classList.add("hidden");
+        closeAttributeModal();
         if (jewelModal) {
           openJewelNodeId = 0;
           jewelModal.classList.add("hidden");
@@ -1785,8 +2152,15 @@
       if (data && data.tree) {
         const wasSelected = treeState.classSelected;
         const prevClassId = treeState.classId;
+        const prevAscendancyId = treeState.ascendancyId;
         treeState = data.tree;
         allocatedSet = new Set(treeState.allocatedNodes || []);
+        lockedNodes.clear();
+        for (const node of conditionalNodes) {
+          if (!rules.requirementsMet(node, allocatedSet)) lockedNodes.add(node.id);
+        }
+        if (searchQuery && (prevClassId !== treeState.classId || prevAscendancyId !== treeState.ascendancyId ||
+            wasSelected !== treeState.classSelected)) runSearch(searchQuery);
         hasReceivedStateSinceOpen = true;
 
         if (treeState.classSelected) {

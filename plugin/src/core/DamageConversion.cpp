@@ -87,9 +87,9 @@ namespace SkyrimPoE::Core
         return RoundRulePercent(sign * (magnitude / (magnitude + rule.damageCoefficient * poeHit)) * 100.0);
     }
 
-    double ArmourPassRatio(double armour, double poeHit, double extraReductionPercent) noexcept
+    double ArmourPassRatio(double armour, double poeHit, double extraReductionPercent, double reductionCap) noexcept
     {
-        const double cap = ActiveRuleValues().armour.physicalReductionCapPercent;
+        const double cap = std::clamp(reductionCap, 0.0, ActiveRuleValues().armour.physicalReductionCapPercent);
         // PoB CalcDefence.lua:405, 440, 2408 floors the combined reduction at zero.
         return 1.0 - std::clamp(ArmourReductionPercent(armour, poeHit) + extraReductionPercent, 0.0, cap) / 100.0;
     }
@@ -183,6 +183,22 @@ namespace SkyrimPoE::Core
         return postDeflectionDamage >= std::max(50.0, maxHealth) * 0.05;
     }
 
+    bool PlayerHitMeetsAilmentThreshold(double damage, double maxHealth, const StatSnapshot& snapshot,
+        DamageType type, double skyrimMaximumEnergyShield) noexcept
+    {
+        if (type == DamageType::Physical || type == DamageType::Chaos) {
+            return PlayerHitMeetsAilmentThreshold(damage, maxHealth);
+        }
+        const auto& p = snapshot.passiveAilments;
+        const bool freeze = type == DamageType::Cold;
+        const double moreThreshold = p.elementalAilmentThresholdIncPct + (freeze ? p.freezeThresholdIncPct : 0.0);
+        const double esAsThreshold = p.esAsAilmentThresholdPct + (freeze ? p.esAsFreezeThresholdPct : 0.0);
+        const double effectiveLife = std::max(50.0, maxHealth);
+        const double extra = skyrimMaximumEnergyShield * esAsThreshold / 100.0;
+        const double threshold = (effectiveLife + extra) * std::max(0.0, 1.0 + moreThreshold / 100.0);
+        return damage >= threshold * 0.05;
+    }
+
     double EvasionHitChance(double evasion, double accuracy) noexcept
     {
         const auto& rule = ActiveRuleValues().hit;
@@ -208,6 +224,186 @@ namespace SkyrimPoE::Core
         const double miss = acc / (acc + rating * rule.ratingCoefficient) *
             rule.chanceScale - rule.chanceOffsetPercent;
         return std::clamp(rule.percentScale - RoundRulePercent(miss), rule.minPercent, rule.capPercent) / 100.0;
+    }
+
+    double ApplyRollBias(double chance, bool lucky, bool unlucky) noexcept
+    {
+        if (lucky == unlucky) return chance;
+        return lucky ? 1.0 - (1.0 - chance) * (1.0 - chance) : chance * chance;
+    }
+
+    double DeflectionReduction(const StatSnapshot& snapshot, bool critical) noexcept
+    {
+        const double extraCrit = critical ? snapshot.passiveAilments.deflectReductionCritBonusPct : 0.0;
+        return std::clamp((ActiveRuleValues().deflect.baseReductionPercent + snapshot.deflectReductionBonusPct + extraCrit) / 100.0,
+            0.0, 1.0);
+    }
+
+    void ConvertGlobalHitDamage(DamagePacket& damage, const PassiveStatTotals& passives, bool isFireSpell) noexcept
+    {
+        const double toFire = std::max(0.0, passives.convertToFirePct);
+        const double fireToChaos = isFireSpell ? std::max(0.0, passives.convertFireSpellToChaosPct) : 0.0;
+        if (toFire == 0.0 && fireToChaos == 0.0) {
+            return;
+        }
+
+        const auto fireIndex = static_cast<std::size_t>(DamageType::Fire);
+        const auto chaosIndex = static_cast<std::size_t>(DamageType::Chaos);
+        const auto original = damage.byType;
+        damage.byType = {};
+        for (std::size_t from = 0; from < original.size(); ++from) {
+            const double toChaos = from == fireIndex ? fireToChaos : 0.0;
+            const double total = toFire + toChaos;
+            const double scale = std::max(100.0, total);
+            const auto add = [&](std::size_t to, double share) {
+                damage.byType[to].min += original[from].min * share;
+                damage.byType[to].max += original[from].max * share;
+            };
+            // The global DamageConvertToFire modifier also participates for original fire.
+            add(fireIndex, toFire / scale);
+            add(chaosIndex, toChaos / scale);
+            add(from, std::max(0.0, 1.0 - total / scale));
+        }
+    }
+
+    void RestrictToFire(DamagePacket& damage) noexcept
+    {
+        const auto fireIndex = static_cast<std::size_t>(DamageType::Fire);
+        for (std::size_t type = 0; type < damage.byType.size(); ++type) {
+            if (type != fireIndex) damage.byType[type] = {};
+        }
+        for (std::size_t element = 1; element < damage.randomElementExtra.size(); ++element) {
+            damage.randomElementExtra[element] = {};
+            damage.targetAilmentExtra[element] = {};
+        }
+    }
+
+    void ScaleDamagePacket(DamagePacket& damage, const DamageTypeValues& multipliers) noexcept
+    {
+        const auto scale = [](DamageRange& range, double factor) {
+            range.min *= factor;
+            range.max *= factor;
+        };
+        for (std::size_t i = 0; i < damage.byType.size(); ++i) {
+            scale(damage.byType[i], multipliers[i]);
+        }
+        const auto fireIndex = static_cast<std::size_t>(DamageType::Fire);
+        for (std::size_t i = 0; i < damage.randomElementExtra.size(); ++i) {
+            scale(damage.randomElementExtra[i], multipliers[fireIndex + i]);
+            scale(damage.targetAilmentExtra[i], multipliers[fireIndex + i]);
+        }
+    }
+
+    void ConvertPassiveHitDamage(DamagePacket& damage, const PassiveStatTotals& passives, bool isFireSpell,
+        const ExtraDamageStats& extraDamage, const DamageTypeValues& increasedPct, const DamageTypeValues& moreMultipliers,
+        bool isAttack, TargetAilmentHitDamage* targetHit) noexcept
+    {
+        ConvertGlobalHitDamage(damage, passives, isFireSpell);
+        // Gain uses the converted base ranges simultaneously. An extra result cannot itself feed another gain.
+        const auto converted = damage.byType;
+        DamageRange total;
+        for (std::size_t from = 0; from < converted.size(); ++from) {
+            const auto& source = converted[from];
+            total.min += source.min;
+            total.max += source.max;
+            for (std::size_t to = 0; to < converted.size(); ++to) {
+                const double skillGain = isAttack ? extraDamage.attackGain[to] : extraDamage.spellGain[to];
+                const double gain = std::max(0.0, extraDamage.gain[from][to] + skillGain) / 100.0;
+                damage.byType[to].min += source.min * gain;
+                damage.byType[to].max += source.max * gain;
+            }
+        }
+        const double randomGain = std::max(0.0, extraDamage.randomElementGainPct) / 100.0;
+        const auto addAgainstAilment = [&](std::size_t destination, DamageType source, double percent) {
+            const auto& base = converted[static_cast<std::size_t>(source)];
+            const double factor = percent / 100.0;
+            damage.targetAilmentExtra[destination] = { base.min * factor, base.max * factor };
+        };
+        addAgainstAilment(0, DamageType::Cold, extraDamage.coldAsFireAgainstFrozenPct);
+        addAgainstAilment(1, DamageType::Physical, extraDamage.physicalAsColdAgainstShockedPct);
+        addAgainstAilment(2, DamageType::Physical, extraDamage.physicalAsLightningAgainstChilledPct);
+        for (auto& extra : damage.randomElementExtra) {
+            extra = { total.min * randomGain, total.max * randomGain };
+        }
+        if (passives.dealOnlyFire) {
+            RestrictToFire(damage);
+        }
+        ScaleDamagePacket(damage, moreMultipliers);
+        if (targetHit) {
+            *targetHit = {
+                .againstElementalAilmentsPct = passives.hitDamageIncAgainstElementalAilmentsPct,
+                .againstAnyAilmentsPct = passives.hitDamageIncAgainstAnyAilmentsPct,
+                .againstIgnitedPct = passives.hitDamageIncAgainstIgnitedPct,
+                .againstBurningPct = passives.hitDamageIncAgainstBurningPct,
+                .againstFrozenPct = passives.hitDamageIncAgainstFrozenPct,
+            };
+            if (targetHit->HasModifiers()) {
+                targetHit->basis = damage;
+                targetHit->increasedPct = increasedPct;
+            }
+        }
+        DamageTypeValues increaseMultipliers{};
+        for (std::size_t type = 0; type < increasedPct.size(); ++type) {
+            increaseMultipliers[type] = std::max(0.0, 1.0 + increasedPct[type] / 100.0);
+        }
+        ScaleDamagePacket(damage, increaseMultipliers);
+    }
+
+    bool HasRandomElementExtra(const DamagePacket& damage) noexcept
+    {
+        return std::ranges::any_of(damage.randomElementExtra, [](const auto& r) { return r.max > 0.0; });
+    }
+
+    DamagePacket ResolveRandomElementExtra(const DamagePacket& damage, std::size_t element) noexcept
+    {
+        DamagePacket result = damage;
+        if (element < damage.randomElementExtra.size()) {
+            auto& range = result.byType[static_cast<std::size_t>(DamageType::Fire) + element];
+            range.min += damage.randomElementExtra[element].min;
+            range.max += damage.randomElementExtra[element].max;
+        }
+        result.randomElementExtra = {};
+        return result;
+    }
+
+    RegenerationSplit SplitLifeRegeneration(double recovery, double missingLife, bool excessToEnergyShield) noexcept
+    {
+        const double amount = std::max(0.0, recovery);
+        const double restored = std::min(amount, std::max(0.0, missingLife));
+        return { restored, excessToEnergyShield ? amount - restored : 0.0 };
+    }
+
+    PlayerLifeConditions GetPlayerLifeConditions(double currentLife, double permanentMaxLife,
+        double currentMaxLife, const StatSnapshot& snapshot) noexcept
+    {
+        const double lowLifeMax = snapshot.poe2Passives ? currentMaxLife : permanentMaxLife;
+        const double lowLifeFraction = snapshot.poe2Passives ? ActiveRuleValues().lowLifeFraction : 0.50;
+        return {
+            !snapshot.chaosInoculation && lowLifeMax > 0.0 && currentLife <= lowLifeMax * lowLifeFraction,
+            snapshot.poe2Passives && currentMaxLife > 0.0 && currentLife >= currentMaxLife
+        };
+    }
+
+    RegenerationSplit ConvertLifeRegeneration(double recoveryPoe, double currentLife, double currentMaxLife,
+        double skyrimMaximumEnergyShield, const StatSnapshot& snapshot) noexcept
+    {
+        if (currentMaxLife <= 0.0 || snapshot.poeMaxLife <= 0.0) return {};
+        const double lifePerPoint = currentMaxLife / snapshot.poeMaxLife;
+        const auto split = SplitLifeRegeneration(recoveryPoe, (currentMaxLife - currentLife) / lifePerPoint,
+            snapshot.excessLifeRegenToEs);
+        const double esPerPoint = snapshot.poeMaxEnergyShield > 0.0
+            ? skyrimMaximumEnergyShield / snapshot.poeMaxEnergyShield : 0.0;
+        return { split.life * lifePerPoint, split.energyShield * esPerPoint };
+    }
+
+    double BlockedHitDamageFraction(const StatSnapshot& snapshot) noexcept
+    {
+        return std::clamp(snapshot.passiveAilments.blockedHitDamageTakenPct / 100.0, 0.0, 1.0);
+    }
+
+    double PlayerDamageBypassingEnergyShield(double damage, const StatSnapshot& snapshot) noexcept
+    {
+        return damage * std::clamp(snapshot.passiveAilments.energyShieldBypassPct / 100.0, 0.0, 1.0);
     }
 
     double BlockChanceLimit(double addedMaxPercent) noexcept
@@ -301,7 +497,8 @@ namespace SkyrimPoE::Core
         const double poePerSkyrim = c.monsterDamageMult * pack.MonsterDamage(lv) / dref;
         const double h = skyrimPreArmorD * poePerSkyrim;
 
-        const double pass = ArmourPassRatio(snapshot.armour, h, snapshot.physDamageReduction);
+        const double pass = ArmourPassRatio(snapshot.armour, h, snapshot.physDamageReduction,
+            snapshot.passiveAilments.maximumPhysicalReductionPct);
 
         const double meL = SafePositive(ExpectedPhysicalPass(lv, pack, config), 1.0);
         const double me1 = SafePositive(ExpectedPhysicalPass(1, pack, config), 1.0);
@@ -319,7 +516,8 @@ namespace SkyrimPoE::Core
         std::uint32_t exileLevel,
         const StatSnapshot& snapshot,
         const DataPack& pack,
-        const Config& config) noexcept
+        const Config& config,
+        bool isHit) noexcept
     {
         if (!std::isfinite(skyrimPreResistD) || skyrimPreResistD <= 0.0) {
             return 0.0;
@@ -361,6 +559,12 @@ namespace SkyrimPoE::Core
                 return skyrimPreResistD;
         }
         double pass = std::max(0.0, 1.0 - std::min(cap, resist) / 100.0);
+        const double armourFraction = snapshot.armourAppliesPct[static_cast<std::size_t>(damageType)] / 100.0;
+        if (isHit && armourFraction > 0.0) {
+            const double hitPoe = skyrimPreResistD * pass * pack.Constants().monsterDamageMult *
+                pack.MonsterDamage(lv) / SafePositive(config.defenseDref, 10.7);
+            pass *= ArmourPassRatio(snapshot.armour * armourFraction, hitPoe, 0.0);
+        }
         // PoE 3.30 인내 충전: 원소 피해 감소(저항 상한과 별도로 곱연산, 카오스 제외)
         if (damageType != DamageType::Chaos && snapshot.elementalDamageReduction > 0.0) {
             const double elemDr = std::clamp(snapshot.elementalDamageReduction, 0.0, 90.0);

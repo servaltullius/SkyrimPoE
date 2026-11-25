@@ -10,6 +10,7 @@
 #include "core/ItemFormatter.h"
 #include "core/LootTable.h"
 #include "core/MonsterModSystem.h"
+#include "core/RulesPack.h"
 #include "core/SkillSystem.h"
 #include "core/StatEngine.h"
 
@@ -327,6 +328,23 @@ POE_TEST("P2b physical spell hits use global bleed chance and exclude attack-onl
     POE_CHECK(!ailments.ApplyHitAilments(2, hit).appliedBleed);
     hit.bleedChancePct = snapshot->BleedChanceForHitPct(true);
     POE_CHECK(ailments.ApplyHitAilments(3, hit).appliedBleed);
+}
+
+POE_TEST("PoE2 chill applies increased effect before both limits")
+{
+    AilmentSystem ailments;
+    HitAilmentInput hit;
+    hit.targetAilmentThresholdPoe = 100.0;
+    hit.ailmentMagnitudeIncPct = 40.0;
+    const auto& rule = ActiveRuleValues().chill;
+
+    hit.coldHitPoe = 50.0 * hit.targetAilmentThresholdPoe / rule.effectMultiplier;
+    POE_CHECK(ailments.ApplyHitAilments(1, hit).appliedChill);
+    POE_CHECK_NEAR(ailments.ChillSlowRatio(1), 0.50, 1e-8);
+
+    hit.coldHitPoe = 25.0 * hit.targetAilmentThresholdPoe / rule.effectMultiplier;
+    POE_CHECK(ailments.ApplyHitAilments(2, hit).appliedChill);
+    POE_CHECK_NEAR(ailments.ChillSlowRatio(2), 0.35, 1e-8);
 }
 
 POE_TEST("Stage5 CharmSystem, AilmentSystem, MonsterModSystem, and MoltenShell Guard lifecycle")

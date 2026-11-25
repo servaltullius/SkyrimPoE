@@ -2,6 +2,7 @@
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/ModState.h"
 #include "runtime/AilmentRuntime.h"
+#include "runtime/CombatHooks.h"
 #include "runtime/CycloneRuntime.h"
 #include "runtime/DeathListener.h"
 #include "runtime/EquipmentSync.h"
@@ -3355,6 +3356,8 @@ namespace SkyrimPoE::Runtime
                     av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kMagicka,
                         -static_cast<float>(appliedMpDelta));
                 }
+                CombatHooks::ModifyPlayerRateValues(*av, -static_cast<float>(st.appliedSpeedMultDelta),
+                    -static_cast<float>(st.appliedMagickaRateMultDelta));
                 av->SetActorValue(RE::ActorValue::kVariable09, 0.0f);
             }
 
@@ -3370,6 +3373,8 @@ namespace SkyrimPoE::Runtime
                     state.virtualBeltBaseFormId = 0;
                     state.appliedHealthDelta = 0.0;
                     state.appliedMagickaDelta = 0.0;
+                    state.appliedSpeedMultDelta = 0.0;
+                    state.appliedMagickaRateMultDelta = 0.0;
                 } else {
                     for (std::size_t i = 0; i < state.slots.size(); ++i) {
                         if (!state.slots[i].occupied) {

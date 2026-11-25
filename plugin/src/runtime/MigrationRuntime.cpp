@@ -2,6 +2,7 @@
 #include "runtime/MigrationRuntime.h"
 
 #include "runtime/AilmentRuntime.h"
+#include "runtime/CombatHooks.h"
 #include "runtime/CycloneRuntime.h"
 #include "runtime/FormIds.h"
 #include "runtime/MonsterRuntime.h"
@@ -36,7 +37,7 @@ namespace SkyrimPoE::Runtime
 
         std::size_t DamagedCount(const LegacyReadReport& report)
         {
-            const std::array records{ report.coreFront, report.gemKeys, report.tree, report.items, report.gear,
+            const std::array records{ report.coreFront, report.playerRates, report.gemKeys, report.tree, report.items, report.gear,
                 report.spirit, report.atlas, report.maps, report.speedMods, report.worldDrops };
             return static_cast<std::size_t>(std::ranges::count(records, Damaged)) +
                 (report.coreFront != Damaged && report.slotsDamaged ? 1 : 0);
@@ -55,10 +56,11 @@ namespace SkyrimPoE::Runtime
                 return static_cast<std::size_t>(std::ranges::count(state.returns, kind, &ReturnEntry::kind));
             };
             return std::format(
-                "CORE 앞부분={}, 스킬 칸={}, GKEY={} (반환 보조 {}개), TREE={}, ITEM={}, GEAR={} (주얼·참·가상 슬롯), "
+                "CORE 앞부분={}, 스킬 칸={}, PRAT={}, GKEY={} (반환 보조 {}개), TREE={}, ITEM={}, GEAR={} (주얼·참·가상 슬롯), "
                 "SPRT={}, ATLS={}, MAPS={}, SPDM={}, WDRP={}, FormID 해석 실패 {}개 (MAPS {}개), 중복 제거 {}개",
                 describe(report.coreFront, 1),
                 describe(report.slotsDamaged ? Damaged : report.coreFront, count(SlottedGem)),
+                describe(report.playerRates, 2),
                 describe(report.gemKeys, report.gemKeyCount), count(BagSupport),
                 describe(report.tree, report.treeNodeCount), describe(report.items, report.itemCount),
                 describe(report.gear, count(Jewel) + count(Charm) + state.virtualRefs.size()),
@@ -131,6 +133,9 @@ namespace SkyrimPoE::Runtime
 
             StepOutcome RevertEngineState(MigrationState& state) override
             {
+                constexpr auto temporary = RE::ACTOR_VALUE_MODIFIER::kTemporary;
+                constexpr auto speed = RE::ActorValue::kSpeedMult;
+                constexpr auto magickaRate = RE::ActorValue::kMagickaRateMult;
                 auto& result = diagnostics_;
                 result.healthBefore = player_->GetActorValueModifier(kPermanent, kHealth);
                 result.magickaBefore = player_->GetActorValueModifier(kPermanent, kMagicka);
@@ -146,10 +151,22 @@ namespace SkyrimPoE::Runtime
                 if (std::abs(state.magickaDelta) > 1e-6) {
                     values_.ModActorValue(kPermanent, kMagicka, -static_cast<float>(state.magickaDelta));
                 }
+                const double speedBefore = player_->GetActorValueModifier(temporary, speed);
+                const double magickaRateBefore = player_->GetActorValueModifier(temporary, magickaRate);
+                CombatHooks::ModifyPlayerRateValues(values_, -static_cast<float>(state.speedMultDelta),
+                    -static_cast<float>(state.magickaRateMultDelta));
+                const bool speedReverted = state.speedMultDelta == 0.0 ||
+                    std::abs(player_->GetActorValueModifier(temporary, speed) - speedBefore + state.speedMultDelta) <=
+                        kLegacyDeltaTolerance;
+                const bool magickaRateReverted = state.magickaRateMultDelta == 0.0 ||
+                    std::abs(player_->GetActorValueModifier(temporary, magickaRate) - magickaRateBefore + state.magickaRateMultDelta) <=
+                        kLegacyDeltaTolerance;
                 result.healthAfter = player_->GetActorValueModifier(kPermanent, kHealth);
                 result.magickaAfter = player_->GetActorValueModifier(kPermanent, kMagicka);
                 state.healthDelta = 0.0;
                 state.magickaDelta = 0.0;
+                state.speedMultDelta = 0.0;
+                state.magickaRateMultDelta = 0.0;
                 state.deltasReverted = true;
 
                 ProxySpellRuntime::RemoveAllProxySpells(player_);
@@ -164,7 +181,8 @@ namespace SkyrimPoE::Runtime
                     kLegacyDeltaTolerance;
                 const bool magickaReverted = std::abs(result.magickaAfter - result.magickaBefore + result.magickaDelta) <=
                     kLegacyDeltaTolerance;
-                result.engineRevertMismatch = !healthReverted || !magickaReverted || !result.engineResidue.Empty();
+                result.engineRevertMismatch = !healthReverted || !magickaReverted ||
+                    !speedReverted || !magickaRateReverted || !result.engineResidue.Empty();
                 return StepOutcome::Done;
             }
 
@@ -377,11 +395,13 @@ namespace SkyrimPoE::Runtime
             return kEscapeFailed;
         }
         const auto& state = candidate_.state;
-        if (Core::JudgeLegacyDelta(state.healthDelta, player->GetActorValueModifier(kPermanent, kHealth)) !=
-                Core::DeltaTrust::Trusted ||
-            Core::JudgeLegacyDelta(state.magickaDelta, player->GetActorValueModifier(kPermanent, kMagicka)) !=
-                Core::DeltaTrust::Trusted) {
-            return "옛 체력·매지카 보정값을 확인할 수 없어 정리하지 않았습니다.";
+        constexpr auto temporary = RE::ACTOR_VALUE_MODIFIER::kTemporary;
+        const auto deltaFailure = Core::CheckLegacyActorDeltas(state,
+            player->GetActorValueModifier(kPermanent, kHealth), player->GetActorValueModifier(kPermanent, kMagicka),
+            player->GetActorValueModifier(temporary, RE::ActorValue::kSpeedMult),
+            player->GetActorValueModifier(temporary, RE::ActorValue::kMagickaRateMult));
+        if (!deltaFailure.empty()) {
+            return deltaFailure;
         }
         try {
             (void)Core::WriteMigrationRecord(state);

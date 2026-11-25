@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <bit>
 #include <deque>
-#include <limits>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -12,20 +11,47 @@ namespace SkyrimPoE::Core
 {
     namespace
     {
-        [[nodiscard]] bool IsNormalSpendable(const PassiveNodeDef& node) noexcept
+        [[nodiscard]] bool IsAllocatable(const PassiveNodeDef& node) noexcept
         {
-            return node.ascendancyId.empty() &&
-                node.kind != PassiveNodeKind::ClassStart &&
-                node.kind != PassiveNodeKind::Mastery &&
-                !node.isMultipleChoice;
+            return node.kind != PassiveNodeKind::ClassStart && node.kind != PassiveNodeKind::AscendancyStart &&
+                node.kind != PassiveNodeKind::Mastery && !node.isMultipleChoice && node.alias.empty();
         }
 
-        [[nodiscard]] bool IsAscendancySpendable(const PassiveNodeDef& node) noexcept
+        [[nodiscard]] const PassiveNodeVariant* FindVariant(
+            const PassiveNodeDef& node, const PassiveTreeState& state) noexcept
         {
-            return !node.ascendancyId.empty() &&
-                node.kind != PassiveNodeKind::AscendancyStart &&
-                node.kind != PassiveNodeKind::Mastery &&
-                !node.isMultipleChoice;
+            auto variant = node.variants.find(state.classContentId);
+            if (variant == node.variants.end()) {
+                variant = node.variants.find(state.ascendancyId);
+            }
+            return variant != node.variants.end() ? &variant->second : nullptr;
+        }
+
+        [[nodiscard]] std::string_view AscendancyOf(const PassiveNodeDef& node, const PassiveTreeState& state) noexcept
+        {
+            const auto* variant = FindVariant(node, state);
+            return variant && !variant->ascendancyId.empty() ? variant->ascendancyId : node.ascendancyId;
+        }
+
+        [[nodiscard]] bool HasUnlockRequirements(
+            const PassiveNodeDef& node, const std::unordered_set<std::uint32_t>& alloc)
+        {
+            return std::ranges::all_of(node.unlock, [&](auto id) { return alloc.contains(id); });
+        }
+
+        void PruneAttributeSelections(PassiveTreeState& state, const std::unordered_set<std::uint32_t>& alloc)
+        {
+            std::erase_if(state.attributeSelections, [&](const auto& selection) {
+                return !alloc.contains(selection.first);
+            });
+        }
+
+        [[nodiscard]] bool HasAllocatedAscendancyNodes(const PassiveTreeData& data, const PassiveTreeState& state)
+        {
+            return std::ranges::any_of(state.allocatedNodes, [&](auto id) {
+                const auto* node = data.FindNode(id);
+                return node && !AscendancyOf(*node, state).empty();
+            });
         }
 
         [[nodiscard]] std::unordered_set<std::uint32_t> BuildAllocatedSet(const PassiveTreeState& state)
@@ -103,97 +129,65 @@ namespace SkyrimPoE::Core
             return count;
         }
 
-        // 모든 남은 일반 노드가 활성 일반 시드에서 도달 가능하고, 모든 남은 전직 노드가 전직 시작점에서 도달 가능한지 검증
+        // 전직 시드와 전직에서 열린 일반 시작점까지 따라가며 할당된 노드의 도달 가능성을 검사한다.
+        [[nodiscard]] std::unordered_set<std::uint32_t> FindReachableAllocated(
+            const PassiveTreeData& data,
+            const PassiveTreeState& state,
+            const std::unordered_set<std::uint32_t>& alloc,
+            const std::unordered_set<std::uint32_t>& unlockedBy)
+        {
+            std::unordered_set<std::uint32_t> kept;
+            std::unordered_set<std::uint32_t> visited;
+            std::queue<std::uint32_t> queue;
+            const auto enqueue = [&](std::uint32_t id, std::string_view ascendancyId) {
+                if (visited.contains(id)) return;
+                const auto* node = data.FindNode(id);
+                if (!node || AscendancyOf(*node, state) != ascendancyId ||
+                    !HasUnlockRequirements(*node, unlockedBy)) return;
+                if (node->isMultipleChoice && !ascendancyId.empty() && IsHubUnlocked(data, id, alloc)) {
+                    visited.insert(id);
+                    queue.push(id);
+                } else if (alloc.contains(id) && IsAllocatable(*node)) {
+                    visited.insert(id);
+                    kept.insert(id);
+                    queue.push(id);
+                }
+            };
+
+            if (const auto* asc = data.FindAscendancy(state.ascendancyId)) {
+                if (const auto* start = data.FindNode(asc->startNodeId)) {
+                    for (const auto id : start->adjacency) {
+                        enqueue(id, asc->id);
+                    }
+                }
+                while (!queue.empty()) {
+                    const auto id = queue.front();
+                    queue.pop();
+                    for (const auto neighbor : data.FindNode(id)->adjacency) {
+                        enqueue(neighbor, asc->id);
+                    }
+                }
+            }
+
+            for (const auto id : BuildActiveNormalSeeds(data, state, kept)) {
+                enqueue(id, {});
+            }
+            while (!queue.empty()) {
+                const auto id = queue.front();
+                queue.pop();
+                for (const auto neighbor : data.FindNode(id)->adjacency) {
+                    enqueue(neighbor, {});
+                }
+            }
+            return kept;
+        }
+
         [[nodiscard]] bool VerifyConnectivity(
             const PassiveTreeData& data,
             const PassiveTreeState& state,
             const std::unordered_set<std::uint32_t>& alloc)
         {
-            // 1. 일반 트리 연결성
-            const auto normalSeeds = BuildActiveNormalSeeds(data, state, alloc);
-            std::unordered_set<std::uint32_t> visitedNormal;
-            std::queue<std::uint32_t> q;
-            for (const auto s : normalSeeds) {
-                if (alloc.contains(s) && visitedNormal.insert(s).second) {
-                    q.push(s);
-                }
-            }
-            while (!q.empty()) {
-                const auto cur = q.front();
-                q.pop();
-                const auto* node = data.FindNode(cur);
-                if (!node) continue;
-                for (const auto nb : node->adjacency) {
-                    if (!alloc.contains(nb) || visitedNormal.contains(nb)) continue;
-                    const auto* nbNode = data.FindNode(nb);
-                    if (nbNode && IsNormalSpendable(*nbNode)) {
-                        visitedNormal.insert(nb);
-                        q.push(nb);
-                    }
-                }
-            }
-            for (const auto nid : alloc) {
-                const auto* node = data.FindNode(nid);
-                if (!node) return false;
-                if (IsNormalSpendable(*node) && !visitedNormal.contains(nid)) {
-                    return false;
-                }
-            }
-
-            // 2. 전직 트리 연결성 (isMultipleChoice 허브는 해금된 경우에만 통과)
-            std::size_t ascNodeCount = 0;
-            for (const auto nid : alloc) {
-                const auto* node = data.FindNode(nid);
-                if (node && IsAscendancySpendable(*node)) {
-                    ++ascNodeCount;
-                    if (node->ascendancyId != state.ascendancyId) {
-                        return false;
-                    }
-                }
-            }
-            if (ascNodeCount == 0) {
-                return true;
-            }
-
-            const auto* ascDef = data.FindAscendancy(state.ascendancyId);
-            if (!ascDef || ascDef->startNodeId == 0) {
-                return false;
-            }
-
-            std::unordered_set<std::uint32_t> visitedAsc;
-            std::queue<std::uint32_t> aq;
-            visitedAsc.insert(ascDef->startNodeId);
-            aq.push(ascDef->startNodeId);
-            while (!aq.empty()) {
-                const auto cur = aq.front();
-                aq.pop();
-                const auto* node = data.FindNode(cur);
-                if (!node) continue;
-                for (const auto nb : node->adjacency) {
-                    if (visitedAsc.contains(nb)) continue;
-                    const auto* nbNode = data.FindNode(nb);
-                    if (!nbNode || nbNode->ascendancyId != state.ascendancyId) continue;
-
-                    if (nbNode->isMultipleChoice) {
-                        // 허브는 선택지 1개가 할당된 경우에만 진입·통과 가능
-                        if (IsHubUnlocked(data, nb, alloc)) {
-                            visitedAsc.insert(nb);
-                            aq.push(nb);
-                        }
-                    } else if (alloc.contains(nb)) {
-                        visitedAsc.insert(nb);
-                        aq.push(nb);
-                    }
-                }
-            }
-
-            for (const auto nid : alloc) {
-                const auto* node = data.FindNode(nid);
-                if (node && IsAscendancySpendable(*node) && !visitedAsc.contains(nid)) {
-                    return false;
-                }
-            }
-            return true;
+            return FindReachableAllocated(data, state, alloc, alloc).size() == alloc.size();
         }
 
         // 할당 가능 단일 단계 검증(이미 alloc에 포함된 집합에 nodeId 1개 추가)
@@ -226,13 +220,19 @@ namespace SkyrimPoE::Core
                 return false;
             }
 
-            if (node->ascendancyId.empty()) {
+            if (!node->alias.empty() || !HasUnlockRequirements(*node, alloc)) {
+                reasonOut = "이 노드의 할당 조건을 아직 충족하지 않았습니다.";
+                return false;
+            }
+            const auto ascendancyId = AscendancyOf(*node, state);
+            if (ascendancyId.empty()) {
                 const auto seeds = BuildActiveNormalSeeds(data, state, alloc);
                 if (seeds.contains(nodeId)) {
                     return true;
                 }
                 for (const auto nb : node->adjacency) {
-                    if (alloc.contains(nb)) {
+                    const auto* neighbor = data.FindNode(nb);
+                    if (alloc.contains(nb) && neighbor && AscendancyOf(*neighbor, state).empty()) {
                         return true;
                     }
                 }
@@ -241,7 +241,7 @@ namespace SkyrimPoE::Core
             }
 
             // 전직 노드
-            if (state.ascendancyId.empty() || node->ascendancyId != state.ascendancyId) {
+            if (state.ascendancyId.empty() || ascendancyId != state.ascendancyId) {
                 reasonOut = "현재 선택한 전직의 노드가 아닙니다.";
                 return false;
             }
@@ -254,7 +254,7 @@ namespace SkyrimPoE::Core
             if (node->isMultipleChoiceOption) {
                 const auto hubId = node->choiceParentId;
                 const auto* hub = data.FindNode(hubId);
-                if (!hub || !hub->isMultipleChoice) {
+                if (!hub || !hub->isMultipleChoice || !HasUnlockRequirements(*hub, alloc)) {
                     reasonOut = "잘못된 다중 선택지 노드입니다.";
                     return false;
                 }
@@ -280,11 +280,10 @@ namespace SkyrimPoE::Core
 
             // 일반 전직 노드: 인접 노드가 전직 시작점, 할당된 전직 노드, 또는 해금된 isMultipleChoice 허브여야 함
             for (const auto nb : node->adjacency) {
-                if (nb == ascDef->startNodeId || alloc.contains(nb)) {
-                    return true;
-                }
                 const auto* nbNode = data.FindNode(nb);
-                if (nbNode && nbNode->isMultipleChoice && IsHubUnlocked(data, nb, alloc)) {
+                if (nb == ascDef->startNodeId || (nbNode && AscendancyOf(*nbNode, state) == state.ascendancyId &&
+                    (alloc.contains(nb) || (nbNode->isMultipleChoice && HasUnlockRequirements(*nbNode, alloc) &&
+                        IsHubUnlocked(data, nb, alloc))))) {
                     return true;
                 }
             }
@@ -352,7 +351,7 @@ namespace SkyrimPoE::Core
     {
         std::int32_t spent = static_cast<std::int32_t>(state.masterySelections.size());
         for (const auto nid : state.allocatedNodes) {
-            if (const auto* node = data.FindNode(nid); node && IsNormalSpendable(*node)) {
+            if (const auto* node = data.FindNode(nid); node && IsAllocatable(*node) && AscendancyOf(*node, state).empty() && !node->freeAlloc) {
                 ++spent;
             }
         }
@@ -365,7 +364,7 @@ namespace SkyrimPoE::Core
     {
         std::int32_t spent = 0;
         for (const auto nid : state.allocatedNodes) {
-            if (const auto* node = data.FindNode(nid); node && IsAscendancySpendable(*node)) {
+            if (const auto* node = data.FindNode(nid); node && IsAllocatable(*node) && !AscendancyOf(*node, state).empty() && !node->freeAlloc) {
                 ++spent;
             }
         }
@@ -404,169 +403,86 @@ namespace SkyrimPoE::Core
         const PassiveTreeState& state,
         std::uint32_t targetNodeId)
     {
-        if (!state.classSelected) {
+        if (!state.classSelected || state.generation != data.Generation()) {
             return {};
         }
         const auto* target = data.FindNode(targetNodeId);
-        if (!target || target->kind == PassiveNodeKind::ClassStart ||
-            target->kind == PassiveNodeKind::AscendancyStart ||
-            target->kind == PassiveNodeKind::Mastery ||
-            target->isMultipleChoice) {
+        const auto alloc = BuildAllocatedSet(state);
+        if (!target || !IsAllocatable(*target) || alloc.contains(targetNodeId) ||
+            !HasUnlockRequirements(*target, alloc)) {
             return {};
         }
 
-        const auto alloc = BuildAllocatedSet(state);
-        if (alloc.contains(targetNodeId)) {
+        const auto ascendancyId = AscendancyOf(*target, state);
+        const auto* ascendancy = ascendancyId.empty() ? nullptr : data.FindAscendancy(state.ascendancyId);
+        if (!ascendancyId.empty() && (!ascendancy || ascendancyId != ascendancy->id || !ascendancy->startNodeId)) {
             return {};
         }
 
         std::unordered_map<std::uint32_t, std::uint32_t> parent;
-
-        if (target->ascendancyId.empty()) {
-            // 일반 트리 최단 경로 0-1 BFS:
-            // 이미 할당된 노드는 비용 0, 미할당 시작 인접(seed)과 미할당 일반 노드는 비용 1.
-            std::unordered_map<std::uint32_t, std::uint32_t> dist;
-            std::deque<std::uint32_t> dq;
-            const auto seeds = BuildActiveNormalSeeds(data, state, alloc);
-
-            for (const auto nid : alloc) {
-                const auto* n = data.FindNode(nid);
-                if (n && IsNormalSpendable(*n)) {
-                    dist[nid] = 0;
-                    parent[nid] = 0;
-                    dq.push_front(nid);
-                }
+        std::unordered_map<std::uint32_t, std::uint32_t> distance;
+        std::deque<std::uint32_t> queue;
+        const auto enqueue = [&](std::uint32_t id, std::uint32_t from, std::uint32_t cost) {
+            const auto* node = data.FindNode(id);
+            if (!node || AscendancyOf(*node, state) != ascendancyId || !HasUnlockRequirements(*node, alloc)) {
+                return;
             }
-            for (const auto s : seeds) {
-                if (!dist.contains(s)) {
-                    dist[s] = 1;
-                    parent[s] = 0;
-                    dq.push_back(s);
-                }
+            const bool isStart = ascendancy && id == ascendancy->startNodeId;
+            if (!IsAllocatable(*node) && !isStart && !(ascendancy && node->isMultipleChoice)) {
+                return;
             }
+            const std::uint32_t step = isStart || node->isMultipleChoice || node->freeAlloc || alloc.contains(id) ? 0u : 1u;
+            const auto next = cost + step;
+            if (const auto old = distance.find(id); old != distance.end() && old->second <= next) {
+                return;
+            }
+            distance[id] = next;
+            parent[id] = from;
+            if (step == 0) {
+                queue.push_front(id);
+            } else {
+                queue.push_back(id);
+            }
+        };
 
-            while (!dq.empty()) {
-                const auto cur = dq.front();
-                dq.pop_front();
-                if (cur == targetNodeId) {
-                    break;
-                }
-                const auto curDist = dist[cur];
-                const auto* node = data.FindNode(cur);
-                if (!node) continue;
-                for (const auto nb : node->adjacency) {
-                    const auto* nbNode = data.FindNode(nb);
-                    if (!nbNode || !IsNormalSpendable(*nbNode)) continue;
-                    const std::uint32_t stepCost = alloc.contains(nb) ? 0u : 1u;
-                    const std::uint32_t nextDist = curDist + stepCost;
-                    const auto it = dist.find(nb);
-                    if (it != dist.end() && it->second <= nextDist) {
-                        continue;
-                    }
-                    dist[nb] = nextDist;
-                    parent[nb] = cur;
-                    if (stepCost == 0u) {
-                        dq.push_front(nb);
-                    } else {
-                        dq.push_back(nb);
+        for (const auto id : alloc) {
+            enqueue(id, 0, 0);
+        }
+        if (ascendancy) {
+            enqueue(ascendancy->startNodeId, 0, 0);
+        } else {
+            for (const auto id : BuildActiveNormalSeeds(data, state, alloc)) {
+                enqueue(id, 0, 0);
+            }
+        }
+
+        while (!queue.empty()) {
+            const auto id = queue.front();
+            queue.pop_front();
+            if (id == targetNodeId) {
+                std::vector<std::uint32_t> path;
+                for (auto current = id; current != 0; current = parent.at(current)) {
+                    if (IsAllocatable(*data.FindNode(current)) && !alloc.contains(current)) {
+                        path.push_back(current);
                     }
                 }
+                std::reverse(path.begin(), path.end());
+                return path;
             }
-            if (!dist.contains(targetNodeId)) {
-                return {};
-            }
-            std::vector<std::uint32_t> path;
-            for (std::uint32_t cur = targetNodeId; cur != 0; cur = parent[cur]) {
-                if (!alloc.contains(cur)) {
-                    path.push_back(cur);
+
+            const auto& node = *data.FindNode(id);
+            for (const auto neighborId : node.adjacency) {
+                const auto* neighbor = data.FindNode(neighborId);
+                if (!neighbor) continue;
+                if (node.isMultipleChoice) {
+                    const bool unlocked = IsHubUnlocked(data, id, alloc);
+                    if (unlocked == neighbor->isMultipleChoiceOption) continue;
                 }
-            }
-            std::reverse(path.begin(), path.end());
-            return path;
-        }
-
-        // 전직 트리 최단 경로 0-1 BFS (전직 시작점·할당 노드·0점 허브는 비용 0, 미할당 소비 노드는 비용 1)
-        if (state.ascendancyId.empty() || target->ascendancyId != state.ascendancyId) {
-            return {};
-        }
-        const auto* ascDef = data.FindAscendancy(state.ascendancyId);
-        if (!ascDef || ascDef->startNodeId == 0) {
-            return {};
-        }
-
-        std::unordered_map<std::uint32_t, std::uint32_t> dist;
-        std::deque<std::uint32_t> dq;
-        dist[ascDef->startNodeId] = 0;
-        parent[ascDef->startNodeId] = 0;
-        dq.push_front(ascDef->startNodeId);
-        for (const auto nid : alloc) {
-            const auto* n = data.FindNode(nid);
-            if (n && IsAscendancySpendable(*n) && n->ascendancyId == state.ascendancyId) {
-                if (!dist.contains(nid)) {
-                    dist[nid] = 0;
-                    parent[nid] = 0;
-                    dq.push_front(nid);
-                }
+                if (node.isMultipleChoiceOption && neighbor->isMultipleChoice) continue;
+                enqueue(neighborId, id, distance.at(id));
             }
         }
-
-        while (!dq.empty()) {
-            const auto cur = dq.front();
-            dq.pop_front();
-            if (cur == targetNodeId) {
-                break;
-            }
-            const auto curDist = dist[cur];
-            const auto* node = data.FindNode(cur);
-            if (!node) continue;
-
-            for (const auto nb : node->adjacency) {
-                const auto* nbNode = data.FindNode(nb);
-                if (!nbNode || nbNode->ascendancyId != state.ascendancyId) continue;
-
-                if (node->isMultipleChoice) {
-                    // 허브에서 나가는 간선:
-                    // - 이미 해금된 허브: 비선택지 후속 노드(예: Passive Point)로만 진행(중복 옵션 차단)
-                    // - 미해금 허브: 선택지 옵션(isMultipleChoiceOption)으로만 진행(옵션 없이 통과 차단)
-                    const bool unlocked = IsHubUnlocked(data, cur, alloc);
-                    if (unlocked && nbNode->isMultipleChoiceOption) continue;
-                    if (!unlocked && !nbNode->isMultipleChoiceOption) continue;
-                }
-
-                // 선택지 옵션 노드에서는 허브를 통해 되돌아가 다른 옵션으로 새지 않도록 차단
-                if (node->isMultipleChoiceOption && nbNode->isMultipleChoice) {
-                    continue;
-                }
-
-                const std::uint32_t stepCost =
-                    (nbNode->isMultipleChoice || nb == ascDef->startNodeId || alloc.contains(nb)) ? 0u : 1u;
-                const std::uint32_t nextDist = curDist + stepCost;
-                const auto it = dist.find(nb);
-                if (it != dist.end() && it->second <= nextDist) {
-                    continue;
-                }
-                dist[nb] = nextDist;
-                parent[nb] = cur;
-                if (stepCost == 0u) {
-                    dq.push_front(nb);
-                } else {
-                    dq.push_back(nb);
-                }
-            }
-        }
-
-        if (!dist.contains(targetNodeId)) {
-            return {};
-        }
-        std::vector<std::uint32_t> path;
-        for (std::uint32_t cur = targetNodeId; cur != 0; cur = parent[cur]) {
-            const auto* n = data.FindNode(cur);
-            if (n && IsAscendancySpendable(*n) && !alloc.contains(cur)) {
-                path.push_back(cur);
-            }
-        }
-        std::reverse(path.begin(), path.end());
-        return path;
+        return {};
     }
 
     bool PassiveTree::IsMasteryUnlocked(
@@ -574,7 +490,7 @@ namespace SkyrimPoE::Core
         const PassiveTreeState& state,
         std::uint32_t masteryNodeId) noexcept
     {
-        if (!state.classSelected) {
+        if (!state.classSelected || state.generation != data.Generation()) {
             return false;
         }
         const auto* node = data.FindNode(masteryNodeId);
@@ -593,6 +509,58 @@ namespace SkyrimPoE::Core
         return false;
     }
 
+    PassiveNodeView PassiveTree::ResolveNode(const PassiveNodeDef& node, const PassiveTreeState& state) noexcept
+    {
+        if (const auto choice = state.attributeSelections.find(node.id); choice != state.attributeSelections.end()) {
+            if (const auto* option = node.FindAttributeOption(choice->second)) {
+                return { option->name, option->stats, node.ascendancyId };
+            }
+        }
+        if (const auto* variant = FindVariant(node, state)) {
+            return { variant->name, variant->stats,
+                variant->ascendancyId.empty() ? node.ascendancyId : variant->ascendancyId };
+        }
+        return { node.name, node.stats, node.ascendancyId };
+    }
+
+    bool PassiveTree::IsAllocatedJewelSocket(
+        const PassiveTreeData& data, const PassiveTreeState& state, std::uint32_t nodeId) noexcept
+    {
+        const auto* node = data.FindNode(nodeId);
+        return state.generation == data.Generation() && node && node->alias.empty() &&
+            (node->kind == PassiveNodeKind::Socket || node->jewelSocket) && state.IsAllocated(nodeId);
+    }
+
+    bool PassiveTree::IsPhylactery(std::uint32_t generation, std::uint32_t nodeId) noexcept
+    {
+        return generation == 1 && nodeId == kPhylacteryNodeId;
+    }
+
+    unsigned PassiveTree::JewelEffectCopies(
+        const PassiveTreeData& data, const PassiveTreeState& state, std::uint32_t nodeId) noexcept
+    {
+        if (!IsAllocatedJewelSocket(data, state, nodeId)) {
+            return 0;
+        }
+        return IsPhylactery(data.Generation(), nodeId) ? 2 : 1;
+    }
+
+    std::vector<std::uint32_t> PassiveTree::RefundDependents(
+        const PassiveTreeData& data, const PassiveTreeState& state, std::uint32_t nodeId)
+    {
+        std::vector<std::uint32_t> dependents;
+        if (data.Generation() != state.generation) {
+            return dependents;
+        }
+        for (const auto id : state.allocatedNodes) {
+            const auto* node = data.FindNode(id);
+            if (node && std::ranges::find(node->unlock, nodeId) != node->unlock.end()) {
+                dependents.push_back(id);
+            }
+        }
+        return dependents;
+    }
+
     PassiveTreeOpResult PassiveTree::SelectClass(
         const PassiveTreeData& data,
         PassiveTreeState& state,
@@ -602,16 +570,26 @@ namespace SkyrimPoE::Core
         if (!cls) {
             return { false, "잘못된 클래스 번호입니다.", 0 };
         }
-        if (state.classSelected &&
-            (ComputeSpentNormalPoints(data, state) > 0 || ComputeSpentAscendancyPoints(data, state) > 0)) {
+        if (!state.allocatedNodes.empty() || !state.masterySelections.empty()) {
             return { false, "할당한 노드를 모두 회수해야 클래스를 변경할 수 있습니다.", 0 };
         }
         state.classSelected = true;
         state.classId = classId;
+        state.classContentId = cls->contentId;
+        state.generation = data.Generation();
         state.ascendancyId.clear();
-        state.allocatedNodes.clear();
-        state.masterySelections.clear();
+        state.attributeSelections.clear();
         return { true, cls->name + " 클래스를 선택했습니다.", 0 };
+    }
+
+    PassiveTreeOpResult PassiveTree::SelectClass(
+        const PassiveTreeData& data, PassiveTreeState& state, std::string_view classContentId)
+    {
+        const auto* cls = data.FindClassByContentId(classContentId);
+        if (!cls) {
+            return { false, "잘못된 클래스 ID입니다.", 0 };
+        }
+        return SelectClass(data, state, cls->id);
     }
 
     PassiveTreeOpResult PassiveTree::SelectAscendancy(
@@ -620,7 +598,7 @@ namespace SkyrimPoE::Core
         std::string_view ascendancyId,
         const Config& config)
     {
-        if (!state.classSelected) {
+        if (!state.classSelected || state.generation != data.Generation()) {
             return { false, "먼저 시작 클래스를 선택해야 합니다.", 0 };
         }
         const auto* asc = data.FindAscendancy(ascendancyId);
@@ -630,7 +608,7 @@ namespace SkyrimPoE::Core
         if (ComputeEarnedAscendancyPoints(state, config) < 2) {
             return { false, "전직 포인트가 부족합니다(1차 보스 이정표 달성 필요).", 0 };
         }
-        if (ComputeSpentAscendancyPoints(data, state) > 0 && state.ascendancyId != asc->id) {
+        if (state.ascendancyId != asc->id && HasAllocatedAscendancyNodes(data, state)) {
             return { false, "할당한 전직 노드를 모두 회수해야 전직을 변경할 수 있습니다.", 0 };
         }
         state.ascendancyId = asc->id;
@@ -641,7 +619,7 @@ namespace SkyrimPoE::Core
         const PassiveTreeData& data,
         PassiveTreeState& state)
     {
-        if (ComputeSpentAscendancyPoints(data, state) > 0) {
+        if (state.generation != data.Generation() || HasAllocatedAscendancyNodes(data, state)) {
             return { false, "할당한 전직 노드를 모두 회수해야 전직을 해제할 수 있습니다.", 0 };
         }
         state.ascendancyId.clear();
@@ -654,9 +632,10 @@ namespace SkyrimPoE::Core
         const std::vector<std::uint32_t>& nodeIds,
         std::uint32_t exileLevel,
         const Config& config,
-        std::uint16_t atlasCompletedTierMask)
+        std::uint16_t atlasCompletedTierMask,
+        const std::unordered_map<std::uint32_t, std::uint32_t>& attributeChoices)
     {
-        if (!state.classSelected) {
+        if (!state.classSelected || state.generation != data.Generation()) {
             return { false, "먼저 시작 클래스를 선택해야 합니다.", 0 };
         }
         if (nodeIds.empty()) {
@@ -683,15 +662,21 @@ namespace SkyrimPoE::Core
                 return { false, std::move(reason), 0 };
             }
 
-            const bool isAsc = !node->ascendancyId.empty();
-            WriteSortedAllocated(working, alloc);
-            if (isAsc) {
-                if (ComputeAvailableAscendancyPoints(data, working, config) < 1) {
-                    return { false, "전직 포인트가 부족합니다.", 0 };
+            if (node->kind == PassiveNodeKind::Attribute) {
+                const auto choice = attributeChoices.find(nid);
+                if (choice == attributeChoices.end() || !node->FindAttributeOption(choice->second)) {
+                    return { false, "할당할 노드의 능력치를 선택해야 합니다.", 0 };
                 }
-            } else {
-                if (ComputeAvailableNormalPoints(data, working, exileLevel, config, atlasCompletedTierMask) < 1) {
-                    return { false, "패시브 포인트가 부족합니다.", 0 };
+                working.attributeSelections[nid] = choice->second;
+            }
+
+            if (!node->freeAlloc) {
+                const bool isAsc = !AscendancyOf(*node, working).empty();
+                WriteSortedAllocated(working, alloc);
+                const auto available = isAsc ? ComputeAvailableAscendancyPoints(data, working, config)
+                    : ComputeAvailableNormalPoints(data, working, exileLevel, config, atlasCompletedTierMask);
+                if (available < 1) {
+                    return { false, isAsc ? "전직 포인트가 부족합니다." : "패시브 포인트가 부족합니다.", 0 };
                 }
             }
             alloc.insert(nid);
@@ -713,13 +698,33 @@ namespace SkyrimPoE::Core
         return { true, "패시브 노드를 할당했습니다.", 0 };
     }
 
+    PassiveTreeOpResult PassiveTree::ChangeAttribute(
+        const PassiveTreeData& data, PassiveTreeState& state, std::uint32_t nodeId,
+        std::uint32_t optionId, const Config& config, std::uint32_t availableRegretOrbs)
+    {
+        const auto* node = data.FindNode(nodeId);
+        const auto current = state.attributeSelections.find(nodeId);
+        if (!state.classSelected || state.generation != data.Generation() || !node ||
+            node->kind != PassiveNodeKind::Attribute || !node->FindAttributeOption(optionId) ||
+            !state.IsAllocated(nodeId) || current == state.attributeSelections.end()) {
+            return { false, "할당한 능력치 노드의 선택지만 변경할 수 있습니다." };
+        }
+        // PoE2는 일반 회수보다 낮은 금화 비용을 받는다. 여기서는 최소 결제 단위가 오브 1개다.
+        const std::uint32_t cost = config.freePassiveRefund || current->second == optionId ? 0u : 1u;
+        if (availableRegretOrbs < cost) {
+            return { false, "능력치를 변경하려면 후회의 오브가 1개 필요합니다." };
+        }
+        current->second = optionId;
+        return { true, "능력치 선택을 변경했습니다.", 0, cost };
+    }
+
     std::uint32_t PassiveTree::GetRefundNodeCost(
         const PassiveTreeData& data,
         const PassiveTreeState& state,
         std::uint32_t nodeId,
         const Config& config)
     {
-        if (config.freePassiveRefund || !state.classSelected) {
+        if (config.freePassiveRefund || !state.classSelected || state.generation != data.Generation()) {
             return 0;
         }
         if (state.masterySelections.contains(nodeId)) {
@@ -730,10 +735,10 @@ namespace SkyrimPoE::Core
             return 0;
         }
         const auto* node = data.FindNode(nodeId);
-        if (!node) {
+        if (!node || node->freeAlloc) {
             return 0;
         }
-        if (!IsNormalSpendable(*node)) {
+        if (!AscendancyOf(*node, state).empty()) {
             return std::max<std::uint32_t>(1, config.ascendancyRefundCost);
         }
         auto nextAlloc = alloc;
@@ -749,15 +754,15 @@ namespace SkyrimPoE::Core
         bool ascendancyOnly,
         const Config& config)
     {
-        if (config.freePassiveRefund || !state.classSelected) {
+        if (config.freePassiveRefund || !state.classSelected || state.generation != data.Generation()) {
             return 0;
         }
         const std::uint32_t ascUnit = std::max<std::uint32_t>(1, config.ascendancyRefundCost);
         std::uint32_t cost = 0;
         for (const auto nid : state.allocatedNodes) {
             const auto* node = data.FindNode(nid);
-            if (!node) continue;
-            if (IsNormalSpendable(*node)) {
+            if (!node || node->freeAlloc) continue;
+            if (AscendancyOf(*node, state).empty()) {
                 if (!ascendancyOnly) {
                     cost += 1;
                 }
@@ -797,7 +802,7 @@ namespace SkyrimPoE::Core
         std::uint32_t availableRegretOrbs,
         std::uint16_t atlasCompletedTierMask)
     {
-        if (!state.classSelected) {
+        if (!state.classSelected || state.generation != data.Generation()) {
             return { false, "먼저 시작 클래스를 선택해야 합니다.", 0, 0 };
         }
         const auto* node = data.FindNode(masteryNodeId);
@@ -846,7 +851,7 @@ namespace SkyrimPoE::Core
         std::uint32_t availableRegretOrbs,
         std::uint16_t atlasCompletedTierMask)
     {
-        if (!state.classSelected) {
+        if (!state.classSelected || state.generation != data.Generation()) {
             return { false, "선택된 클래스가 없습니다.", 0, 0 };
         }
 
@@ -869,7 +874,11 @@ namespace SkyrimPoE::Core
         if (!targetNode) {
             return { false, "존재하지 않는 노드입니다.", 0, 0 };
         }
+        if (!RefundDependents(data, state, nodeId).empty()) {
+            return { false, "이 노드가 해금한 패시브를 먼저 회수해야 합니다.", 0, 0 };
+        }
         alloc.erase(nodeId);
+        working.attributeSelections.erase(nodeId);
 
         if (!VerifyConnectivity(data, working, alloc)) {
             return { false, "다른 할당 노드와의 연결이 끊어져 회수할 수 없습니다.", 0, 0 };
@@ -887,8 +896,8 @@ namespace SkyrimPoE::Core
         }
 
         std::uint32_t orbCost = 0;
-        if (!config.freePassiveRefund) {
-            if (!IsNormalSpendable(*targetNode)) {
+        if (!config.freePassiveRefund && !targetNode->freeAlloc) {
+            if (!AscendancyOf(*targetNode, state).empty()) {
                 orbCost = std::max<std::uint32_t>(1, config.ascendancyRefundCost);
             } else {
                 orbCost = static_cast<std::uint32_t>(1 + autoRefunded);
@@ -916,7 +925,7 @@ namespace SkyrimPoE::Core
         std::uint32_t availableRegretOrbs,
         std::uint16_t atlasCompletedTierMask)
     {
-        if (!state.classSelected) {
+        if (!state.classSelected || state.generation != data.Generation()) {
             return { false, "선택된 클래스가 없습니다.", 0, 0 };
         }
 
@@ -926,6 +935,7 @@ namespace SkyrimPoE::Core
                 return { false, "후회의 오브가 부족합니다 (필요: " + std::to_string(orbCost) + "개).", 0, 0 };
             }
             state.allocatedNodes.clear();
+            state.attributeSelections.clear();
             state.masterySelections.clear();
             state.ascendancyId.clear();
             return { true, "모든 패시브 노드를 회수했습니다.", 0, orbCost };
@@ -936,7 +946,7 @@ namespace SkyrimPoE::Core
         std::unordered_set<std::uint32_t> remaining;
         for (const auto nid : working.allocatedNodes) {
             const auto* node = data.FindNode(nid);
-            if (node && IsNormalSpendable(*node)) {
+            if (node && AscendancyOf(*node, working).empty()) {
                 remaining.insert(nid);
             }
         }
@@ -945,6 +955,7 @@ namespace SkyrimPoE::Core
             return { false, "전직 시작점에 연결된 일반 노드를 먼저 회수하거나 전체 회수를 사용해 주세요.", 0, 0 };
         }
         WriteSortedAllocated(working, remaining);
+        PruneAttributeSelections(working, remaining);
         const std::int32_t availBefore = ComputeAvailableNormalPoints(data, state, exileLevel, config, atlasCompletedTierMask);
         const std::int32_t availAfter = ComputeAvailableNormalPoints(data, working, exileLevel, config, atlasCompletedTierMask);
         if (availAfter < availBefore && availAfter < 0) {
@@ -958,106 +969,62 @@ namespace SkyrimPoE::Core
         return { true, "전직 노드를 모두 회수했습니다.", 0, orbCost };
     }
 
-    void PassiveTree::SanitizeLoadedState(
+    bool PassiveTree::SanitizeLoadedState(
         const PassiveTreeData& data,
         PassiveTreeState& state)
     {
-        if (!data.IsLoaded()) {
-            return;
+        if (!data.IsLoaded() || state.generation != data.Generation()) {
+            return false;
         }
-        if (!state.classSelected) {
-            state.allocatedNodes.clear();
-            state.masterySelections.clear();
-            state.ascendancyId.clear();
-            return;
+        const PassiveClassDef* cls = nullptr;
+        if (state.classSelected) {
+            cls = state.classContentId.empty() && state.generation == 0 ? data.FindClass(state.classId)
+                : data.FindClassByContentId(state.classContentId);
         }
-        if (!data.FindClass(state.classId)) {
+        if (!cls) {
             state.classSelected = false;
             state.classId = 0;
+            state.classContentId.clear();
             state.ascendancyId.clear();
             state.allocatedNodes.clear();
+            state.attributeSelections.clear();
             state.masterySelections.clear();
-            return;
+            return true;
         }
-        if (!state.ascendancyId.empty()) {
-            const auto* asc = data.FindAscendancy(state.ascendancyId);
-            if (!asc || asc->classId != state.classId) {
-                state.ascendancyId.clear();
-            }
-        }
+        state.classId = cls->id;
+        state.classContentId = cls->contentId;
+        const auto* asc = data.FindAscendancy(state.ascendancyId);
+        state.ascendancyId = asc && asc->classId == state.classId ? asc->id : std::string{};
 
-        // 유효 노드만 필터링 + 허브당 옵션 최대 1개 유지
         std::unordered_set<std::uint32_t> alloc;
         std::unordered_set<std::uint32_t> usedHubs;
         for (const auto nid : state.allocatedNodes) {
             const auto* node = data.FindNode(nid);
-            if (!node) continue;
-            if (!IsNormalSpendable(*node) && !IsAscendancySpendable(*node)) continue;
-            if (!node->ascendancyId.empty() && node->ascendancyId != state.ascendancyId) continue;
-            if (node->isMultipleChoiceOption) {
-                if (node->choiceParentId == 0 || !usedHubs.insert(node->choiceParentId).second) {
-                    continue;
-                }
+            if (!node || alloc.contains(nid) || !IsAllocatable(*node)) continue;
+            const auto ascendancyId = AscendancyOf(*node, state);
+            if (!ascendancyId.empty() && ascendancyId != state.ascendancyId) continue;
+            if (node->kind == PassiveNodeKind::Attribute) {
+                const auto choice = state.attributeSelections.find(nid);
+                if (choice == state.attributeSelections.end() || !node->FindAttributeOption(choice->second)) continue;
+            }
+            if (node->isMultipleChoiceOption &&
+                (node->choiceParentId == 0 || !usedHubs.insert(node->choiceParentId).second)) {
+                continue;
             }
             alloc.insert(nid);
         }
 
-        // 도달 가능한 부분집합만 유지(전직 먼저 -> 활성 일반 시드 확정 -> 일반 BFS)
+        // Only reachable prerequisites can open a locked node, including across the two trees.
         std::unordered_set<std::uint32_t> kept;
-        if (const auto* asc = data.FindAscendancy(state.ascendancyId); asc && asc->startNodeId != 0) {
-            std::unordered_set<std::uint32_t> vis;
-            std::queue<std::uint32_t> q;
-            vis.insert(asc->startNodeId);
-            q.push(asc->startNodeId);
-            while (!q.empty()) {
-                const auto cur = q.front();
-                q.pop();
-                const auto* node = data.FindNode(cur);
-                if (!node) continue;
-                for (const auto nb : node->adjacency) {
-                    if (vis.contains(nb)) continue;
-                    const auto* nbNode = data.FindNode(nb);
-                    if (!nbNode || nbNode->ascendancyId != state.ascendancyId) continue;
-                    if (nbNode->isMultipleChoice) {
-                        if (IsHubUnlocked(data, nb, alloc)) {
-                            vis.insert(nb);
-                            q.push(nb);
-                        }
-                    } else if (alloc.contains(nb)) {
-                        vis.insert(nb);
-                        kept.insert(nb);
-                        q.push(nb);
-                    }
-                }
-            }
+        while (true) {
+            auto next = FindReachableAllocated(data, state, alloc, kept);
+            if (next == kept) break;
+            kept = std::move(next);
         }
-
-        const auto normalSeeds = BuildActiveNormalSeeds(data, state, kept);
-        std::unordered_set<std::uint32_t> visN;
-        std::queue<std::uint32_t> qn;
-        for (const auto s : normalSeeds) {
-            if (alloc.contains(s) && visN.insert(s).second) {
-                kept.insert(s);
-                qn.push(s);
-            }
-        }
-        while (!qn.empty()) {
-            const auto cur = qn.front();
-            qn.pop();
-            const auto* node = data.FindNode(cur);
-            if (!node) continue;
-            for (const auto nb : node->adjacency) {
-                if (!alloc.contains(nb) || visN.contains(nb)) continue;
-                const auto* nbNode = data.FindNode(nb);
-                if (nbNode && IsNormalSpendable(*nbNode)) {
-                    visN.insert(nb);
-                    kept.insert(nb);
-                    qn.push(nb);
-                }
-            }
-        }
-
         WriteSortedAllocated(state, kept);
+        std::erase_if(state.attributeSelections, [&](const auto& selection) {
+            return !kept.contains(selection.first) || data.FindNode(selection.first)->kind != PassiveNodeKind::Attribute;
+        });
 
         // 마스터리 유효성 + 전역 effectId 중복 제거 + 근거 주요 패시브 존재 검증
         std::unordered_set<std::uint32_t> usedEffects;
@@ -1078,5 +1045,6 @@ namespace SkyrimPoE::Core
             }
         }
         (void)PruneOrphanedMasteries(data, state, kept);
+        return true;
     }
 }

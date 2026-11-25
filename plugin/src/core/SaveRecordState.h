@@ -18,13 +18,15 @@ namespace SkyrimPoE::Runtime
         std::uint32_t exileLevel = 1;
         std::uint64_t exileXp = 0;
         std::uint32_t unallocatedPassivePoints = 0;
-        std::string className = "Scion";
+        std::string className;
         bool starterGemsGiven = false;
         bool starterCurrencyGiven = false;  // 4단계: 'ITEM' 헤더에 저장(CORE v2 하위 호환 유지)
         bool starterStage5GemsGiven = false; // 5단계: 'SPRT' v1에 저장(4단계 세이브 업그레이드용)
         std::uint64_t nextGemInstanceId = 1;
         double appliedHealthDelta = 0.0;   // kPermanent 체력 보정 누적치(세이브 왕복 드리프트 방지)
         double appliedMagickaDelta = 0.0;  // kPermanent 매지카 보정 누적치(세이브 왕복 드리프트 방지)
+        double appliedSpeedMultDelta = 0.0;       // kTemporary SpeedMult 보정 누적치
+        double appliedMagickaRateMultDelta = 0.0; // kTemporary MagickaRateMult 보정 누적치
         std::array<Core::SkillSlot, Core::kSkillSlotCount> slots{};
         Core::PassiveTreeState tree{};
 

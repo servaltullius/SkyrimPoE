@@ -5,6 +5,35 @@
 
 namespace SkyrimPoE::Core
 {
+    bool SkillResourceCost::CanPayMagicka(double currentMagicka) const noexcept
+    {
+        return magicka <= 0.0 || (std::isfinite(currentMagicka) && currentMagicka + 1e-6 >= magicka);
+    }
+
+    bool SkillResourceCost::CanPayHealth(double currentHealth) const noexcept
+    {
+        return health <= 0.0 || (std::isfinite(currentHealth) && currentHealth - health >= 1.0);
+    }
+
+    SkillResourceCost ComputeSkillResourceCost(
+        const ComputedSkillStats& stats, const StatSnapshot& snapshot, double baseSkyrimMaxMagicka,
+        double skyrimMaxHealth, double magickaCostMultiplier) noexcept
+    {
+        // Legacy Blood Magic stores its life cost in the original mana field.
+        const double poeLife = snapshot.bloodMagic && !snapshot.poe2Passives && stats.poeLifeCost == 0.0
+            ? stats.poeManaCost : stats.poeLifeCost;
+        SkillResourceCost costs;
+        costs.health = ComputeBloodMagicLifeCost(skyrimMaxHealth, snapshot.poeMaxLife, poeLife);
+        if (!snapshot.bloodMagic) {
+            costs.magicka = ComputeMagickaScaling(baseSkyrimMaxMagicka, snapshot.poeMaxMana,
+                stats.poeManaCost, snapshot.expectedPoeMana).skyrimSkillCost;
+            if (std::isfinite(magickaCostMultiplier) && magickaCostMultiplier > 0.0) {
+                costs.magicka *= magickaCostMultiplier;
+            }
+        }
+        return costs;
+    }
+
     void SkillSystem::TickCooldowns(double deltaSec, bool gamePaused)
     {
         if (gamePaused || !std::isfinite(deltaSec) || deltaSec <= 0.0) {
@@ -98,26 +127,10 @@ namespace SkyrimPoE::Core
                 continue;
             }
 
-            // 비용 확인: Blood Magic이면 생명력 비용 + 1 HP 자살 방지 가드, 아니면 매지카 비용(결정 125, 144)
-            double magickaCost = 0.0;
-            double healthCost = 0.0;
-            const bool usesHealth = snapshot.bloodMagic;
-            if (usesHealth) {
-                healthCost = ComputeBloodMagicLifeCost(skyrimMaxHealth, snapshot.poeMaxLife, stats.poeManaCost);
-                if ((currentSkyrimHealth - healthCost) < (1.0 - 1e-6)) {
-                    return std::nullopt;
-                }
-            } else {
-                const auto manaScale = ComputeMagickaScaling(
-                    baseSkyrimMaxMagicka,
-                    snapshot.poeMaxMana,
-                    stats.poeManaCost,
-                    snapshot.expectedPoeMana);
-                magickaCost = manaScale.skyrimSkillCost;
-                // 결정 126, 127: 매지카가 부족하면 발동 폐기, 순환 차례 유지, 쿨다운 미소모!
-                if (currentSkyrimMagicka + 1e-6 < magickaCost) {
-                    return std::nullopt;
-                }
+            // 비용이 부족하면 순환 차례와 쿨다운을 보존한다(결정 126, 127).
+            const auto costs = ComputeSkillResourceCost(stats, snapshot, baseSkyrimMaxMagicka, skyrimMaxHealth);
+            if (!costs.CanPayHealth(currentSkyrimHealth) || !costs.CanPayMagicka(currentSkyrimMagicka)) {
+                return std::nullopt;
             }
 
             // 통과: 개별 쿨다운 즉시 시작(max(0.15, 주문 자체 쿨다운)), 순환 차례 전진
@@ -133,11 +146,12 @@ namespace SkyrimPoE::Core
             cast.gemId = stats.gemId;
             cast.exileLevel = snapshot.exileLevel;
             cast.poeBaseHitDamage = stats.baseHitDamage;
+            cast.targetAilmentHitDamage = stats.targetAilmentHitDamage;
             cast.effectiveCritChancePct = stats.EffectiveCritChancePct();
             cast.critMultiplierPct = stats.critMultiplierPct;
-            cast.skyrimMagickaCost = magickaCost;
-            cast.skyrimHealthCost = healthCost;
-            cast.usesHealthCost = usesHealth;
+            cast.skyrimMagickaCost = costs.magicka;
+            cast.skyrimHealthCost = costs.health;
+            cast.usesHealthCost = snapshot.bloodMagic || costs.health > 0.0;
             cast.skyrimHitDamage = skyrimDmg;
             cast.areaMult = stats.areaMult;
             cast.cooldownAppliedSec = appliedCd;
@@ -151,6 +165,13 @@ namespace SkyrimPoE::Core
             cast.igniteChancePct = stats.igniteChancePct;
             cast.arcRemainingChainMorePct = stats.arcRemainingChainMorePct;
             cast.starforgeShock = snapshot.starforgeShock;
+            cast.projectilePierceChancePct = stats.projectilePierceChancePct;
+            cast.additionalSpellProjectilesChancePct = stats.additionalSpellProjectilesChancePct;
+            cast.additionalProjectileChancePct = stats.additionalProjectileChancePct;
+            cast.additionalChainChancePct = stats.additionalChainChancePct;
+            cast.additionalForkProjectileChancePct = stats.additionalForkProjectileChancePct;
+            cast.projectileSpeedMult = stats.projectileSpeedMult;
+            cast.projectileAilmentChanceIncPct = stats.projectileAilmentChanceIncPct;
             return cast;
         }
 
@@ -166,7 +187,8 @@ namespace SkyrimPoE::Core
         const DataPack& pack,
         const Config& config,
         double currentSkyrimHealth,
-        double skyrimMaxHealth)
+        double skyrimMaxHealth,
+        double magickaCostMultiplier)
     {
         if (slotIndex >= kSkillSlotCount) {
             return std::nullopt;
@@ -187,24 +209,10 @@ namespace SkyrimPoE::Core
             return std::nullopt;
         }
 
-        double magickaCost = 0.0;
-        double healthCost = 0.0;
-        const bool usesHealth = snapshot.bloodMagic;
-        if (usesHealth) {
-            healthCost = ComputeBloodMagicLifeCost(skyrimMaxHealth, snapshot.poeMaxLife, stats.poeManaCost);
-            if ((currentSkyrimHealth - healthCost) < (1.0 - 1e-6)) {
-                return std::nullopt;
-            }
-        } else {
-            const auto manaScale = ComputeMagickaScaling(
-                baseSkyrimMaxMagicka,
-                snapshot.poeMaxMana,
-                stats.poeManaCost,
-                snapshot.expectedPoeMana);
-            magickaCost = manaScale.skyrimSkillCost;
-            if (currentSkyrimMagicka + 1e-6 < magickaCost) {
-                return std::nullopt;
-            }
+        const auto costs = ComputeSkillResourceCost(stats, snapshot, baseSkyrimMaxMagicka,
+            skyrimMaxHealth, magickaCostMultiplier);
+        if (!costs.CanPayHealth(currentSkyrimHealth) || !costs.CanPayMagicka(currentSkyrimMagicka)) {
+            return std::nullopt;
         }
 
         if (stats.cooldownSec > 0.0) {
@@ -219,11 +227,12 @@ namespace SkyrimPoE::Core
         cast.gemId = stats.gemId;
         cast.exileLevel = snapshot.exileLevel;
         cast.poeBaseHitDamage = stats.baseHitDamage;
+        cast.targetAilmentHitDamage = stats.targetAilmentHitDamage;
         cast.effectiveCritChancePct = stats.EffectiveCritChancePct();
         cast.critMultiplierPct = stats.critMultiplierPct;
-        cast.skyrimMagickaCost = magickaCost;
-        cast.skyrimHealthCost = healthCost;
-        cast.usesHealthCost = usesHealth;
+        cast.skyrimMagickaCost = costs.magicka;
+        cast.skyrimHealthCost = costs.health;
+        cast.usesHealthCost = snapshot.bloodMagic || costs.health > 0.0;
         cast.skyrimHitDamage = skyrimDmg;
         cast.areaMult = stats.areaMult;
         cast.cooldownAppliedSec = stats.cooldownSec;
@@ -237,6 +246,13 @@ namespace SkyrimPoE::Core
         cast.igniteChancePct = stats.igniteChancePct;
         cast.arcRemainingChainMorePct = stats.arcRemainingChainMorePct;
         cast.starforgeShock = snapshot.starforgeShock;
+        cast.projectilePierceChancePct = stats.projectilePierceChancePct;
+        cast.additionalSpellProjectilesChancePct = stats.additionalSpellProjectilesChancePct;
+        cast.additionalProjectileChancePct = stats.additionalProjectileChancePct;
+        cast.additionalChainChancePct = stats.additionalChainChancePct;
+        cast.additionalForkProjectileChancePct = stats.additionalForkProjectileChancePct;
+        cast.projectileSpeedMult = stats.projectileSpeedMult;
+        cast.projectileAilmentChanceIncPct = stats.projectileAilmentChanceIncPct;
         return cast;
     }
 
@@ -278,26 +294,14 @@ namespace SkyrimPoE::Core
             return res;
         }
 
-        double magickaCost = 0.0;
-        double healthCost = 0.0;
-        const bool usesHealth = snapshot.bloodMagic;
-        if (usesHealth) {
-            healthCost = ComputeBloodMagicLifeCost(skyrimMaxHealth, snapshot.poeMaxLife, stats.poeManaCost);
-            if ((currentSkyrimHealth - healthCost) < (1.0 - 1e-6)) {
-                res.failReason = "생명력이 부족합니다.";
-                return res;
-            }
-        } else {
-            const auto manaScale = ComputeMagickaScaling(
-                baseSkyrimMaxMagicka,
-                snapshot.poeMaxMana,
-                stats.poeManaCost,
-                snapshot.expectedPoeMana);
-            magickaCost = manaScale.skyrimSkillCost;
-            if (currentSkyrimMagicka + 1e-6 < magickaCost) {
-                res.failReason = "매지카가 부족합니다.";
-                return res;
-            }
+        const auto costs = ComputeSkillResourceCost(stats, snapshot, baseSkyrimMaxMagicka, skyrimMaxHealth);
+        if (!costs.CanPayHealth(currentSkyrimHealth)) {
+            res.failReason = "생명력이 부족합니다.";
+            return res;
+        }
+        if (!costs.CanPayMagicka(currentSkyrimMagicka)) {
+            res.failReason = "매지카가 부족합니다.";
+            return res;
         }
 
         const double capSkyrim = std::max(1.0,
@@ -323,9 +327,9 @@ namespace SkyrimPoE::Core
         guardReflectPerAbsorbedSkyrim_ = (capSkyrim > 1e-6) ? (fullReflectOffenseSkyrim / capSkyrim) : 0.0;
 
         res.ok = true;
-        res.skyrimMagickaCost = magickaCost;
-        res.skyrimHealthCost = healthCost;
-        res.usesHealthCost = usesHealth;
+        res.skyrimMagickaCost = costs.magicka;
+        res.skyrimHealthCost = costs.health;
+        res.usesHealthCost = snapshot.bloodMagic || costs.health > 0.0;
         res.bonusFlatArmour = stats.moltenShellFlatArmour;
         res.maxShieldSkyrim = capSkyrim;
         return res;

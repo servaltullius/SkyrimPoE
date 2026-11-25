@@ -27,12 +27,15 @@
 #include "core/RulesPack.h"
 #include "core/UiBuildCheck.h"
 
+#include <algorithm>
 #include <bitset>
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 
 namespace SkyrimPoE::Runtime
 {
@@ -532,14 +535,20 @@ namespace SkyrimPoE::Runtime
             RE::PlayerCharacter* player_ = nullptr;
         };
 
-        json SerializeComputedStats(const Core::ComputedSkillStats& cs)
+        json SerializeComputedStats(const Core::ComputedSkillStats& cs, const Core::StatSnapshot& snap,
+            bool triggered = false)
         {
+            const auto lifeCost = snap.bloodMagic && !snap.poe2Passives && cs.poeLifeCost == 0.0
+                ? cs.poeManaCost : cs.poeLifeCost;
+            const auto cooldown = cs.kind == Core::GemKind::Guard ? std::max(4.0, cs.cooldownSec)
+                : triggered ? std::max(Core::SkillSystem::kMinTriggerCooldownSec, cs.cooldownSec) : cs.cooldownSec;
             return json{
                 { "avgDamage", std::round(cs.baseHitDamage.TotalAverage() * 10.0) / 10.0 },
                 { "critPct", std::round(cs.EffectiveCritChancePct() * 10.0) / 10.0 },
-                { "manaCost", std::round(cs.poeManaCost * 10.0) / 10.0 },
+                { "manaCost", snap.bloodMagic ? 0.0 : std::round(cs.poeManaCost * 10.0) / 10.0 },
+                { "lifeCost", std::round(lifeCost * 10.0) / 10.0 },
                 { "areaMult", std::round(cs.areaMult * 100.0) / 100.0 },
-                { "cooldownSec", std::round(cs.cooldownSec * 100.0) / 100.0 },
+                { "cooldownSec", cooldown },
                 { "spiritCost", cs.spiritCost },
                 { "auraActive", cs.auraActive },
                 { "requirementMet", cs.requirementMet },
@@ -572,7 +581,7 @@ namespace SkyrimPoE::Runtime
             // 발동 젬 안 주문(IceNova/ShockNova)의 사전 계산 스탯도 함께 직렬화해 UI에 표시한다.
             if (snap) {
                 if (const auto it = snap->triggeredSpellStats.find(gem.instanceId); it != snap->triggeredSpellStats.end()) {
-                    j["computed"] = SerializeComputedStats(it->second);
+                    j["computed"] = SerializeComputedStats(it->second, *snap, true);
                 }
             }
 
@@ -725,10 +734,17 @@ namespace SkyrimPoE::Runtime
 
             json treeJ;
             treeJ["loaded"] = treeLoaded;
+            treeJ["generation"] = state.tree.generation;
             treeJ["classSelected"] = state.tree.classSelected;
             treeJ["classId"] = state.tree.classId;
+            treeJ["classContentId"] = state.tree.classContentId;
             treeJ["ascendancyId"] = state.tree.ascendancyId;
             treeJ["allocatedNodes"] = state.tree.allocatedNodes;
+            json attributeSelections = json::object();
+            for (const auto& [nodeId, optionId] : state.tree.attributeSelections) {
+                attributeSelections[std::to_string(nodeId)] = optionId;
+            }
+            treeJ["attributeSelections"] = std::move(attributeSelections);
             json mSel = json::object();
             for (const auto& [mNode, mEff] : state.tree.masterySelections) {
                 mSel[std::to_string(mNode)] = mEff;
@@ -763,8 +779,13 @@ namespace SkyrimPoE::Runtime
             json refundNodeCosts = json::object();
             if (treeLoaded) {
                 for (const auto nid : state.tree.allocatedNodes) {
-                    refundNodeCosts[std::to_string(nid)] =
-                        Core::PassiveTree::GetRefundNodeCost(*g_treeData, state.tree, nid, *g_config);
+                    auto dependents = Core::PassiveTree::RefundDependents(*g_treeData, state.tree, nid);
+                    if (dependents.empty()) {
+                        refundNodeCosts[std::to_string(nid)] =
+                            Core::PassiveTree::GetRefundNodeCost(*g_treeData, state.tree, nid, *g_config);
+                    } else {
+                        refundNodeCosts[std::to_string(nid)] = { { "blockedBy", std::move(dependents) } };
+                    }
                 }
                 for (const auto& [mNode, mEff] : state.tree.masterySelections) {
                     refundNodeCosts[std::to_string(mNode)] =
@@ -818,6 +839,14 @@ namespace SkyrimPoE::Runtime
                 st["esMax"] = std::round(es.max);
                 st["armour"] = std::round(snap->armour);
                 st["evasion"] = std::round(snap->evasion);
+                st["deflectionRating"] = std::round(snap->deflectionRating);
+                st["penetrationPct"] = {
+                    { "fire", snap->penetrationPct[static_cast<std::size_t>(Core::DamageType::Fire)] },
+                    { "cold", snap->penetrationPct[static_cast<std::size_t>(Core::DamageType::Cold)] },
+                    { "lightning", snap->penetrationPct[static_cast<std::size_t>(Core::DamageType::Lightning)] },
+                    { "chaos", snap->penetrationPct[static_cast<std::size_t>(Core::DamageType::Chaos)] },
+                };
+                st["attackElementalPenetrationPct"] = snap->attackElementalPenetrationPct;
                 st["fireResist"] = std::round(snap->fireResist);
                 st["coldResist"] = std::round(snap->coldResist);
                 st["lightningResist"] = std::round(snap->lightningResist);
@@ -836,6 +865,7 @@ namespace SkyrimPoE::Runtime
                 st["lifeRegenPerSec"] = std::round(snap->lifeRegenPerSec * 10.0) / 10.0;
                 st["incManaRegenPct"] = std::round(snap->incManaRegenPct);
                 st["incMovementSpeedPct"] = std::round(snap->incMovementSpeedPct);
+                st["movementSpeedApplied"] = snap->poe2Passives;
                 st["bloodMagic"] = snap->bloodMagic;
                 st["chaosInoculation"] = snap->chaosInoculation;
                 st["resoluteTechnique"] = snap->resoluteTechnique;
@@ -861,7 +891,7 @@ namespace SkyrimPoE::Runtime
                 if (s.occupied) {
                     sj["gem"] = SerializeGemInstance(s.gem, snap.get());
                     if (snap && snap->slotStats[i].gemId == s.gem.gemId) {
-                        sj["computed"] = SerializeComputedStats(snap->slotStats[i]);
+                        sj["computed"] = SerializeComputedStats(snap->slotStats[i], *snap);
                     }
                 }
                 slotsArr.push_back(std::move(sj));
@@ -1713,14 +1743,29 @@ namespace SkyrimPoE::Runtime
                         return;
                     }
                     if (op == "treeRefundNode") {
-                        std::int64_t nidVal = 0;
+                        std::int64_t nidVal = 0, expectedCost = 0;
                         Core::PassiveTreeOpResult treeRes;
                         if (!ReadBoundedInt(cmd, "nodeId", 1, 0xFFFFFFFFLL, nidVal)) {
                             treeRes = { false, "잘못된 노드 번호입니다.", 0, 0 };
+                        } else if (!ReadBoundedInt(cmd, "expectedRegretCost", 0, 0xFFFFFFFFLL, expectedCost)) {
+                            treeRes = { false, "노드 회수 비용을 다시 확인해 주세요." };
                         } else {
-                            treeRes = CraftingRuntime::RefundPassiveNodeWithRegret(static_cast<std::uint32_t>(nidVal));
-                            if (treeRes.ok) {
-                                (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                            const auto nodeId = static_cast<std::uint32_t>(nidVal);
+                            const auto state = SaveLoad::GetStateCopy();
+                            const auto dependents = Core::PassiveTree::RefundDependents(*g_treeData, state.tree, nodeId);
+                            if (!dependents.empty()) {
+                                treeRes.message = "이 노드가 해금한 패시브를 먼저 회수해야 합니다.";
+                                for (const auto id : dependents) {
+                                    treeRes.message += " #" + std::to_string(id);
+                                }
+                            } else if (expectedCost != Core::PassiveTree::GetRefundNodeCost(
+                                *g_treeData, state.tree, nodeId, *g_config)) {
+                                treeRes.message = "노드 회수 비용이 달라졌습니다. 다시 확인해 주세요.";
+                            } else {
+                                treeRes = CraftingRuntime::RefundPassiveNodeWithRegret(nodeId);
+                                if (treeRes.ok) {
+                                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                                }
                             }
                         }
                         PushToastToJs(treeRes.ok, treeRes.message);
@@ -1728,11 +1773,23 @@ namespace SkyrimPoE::Runtime
                         return;
                     }
                     if (op == "treeRefundAll") {
-                        const bool ascOnly = cmd.contains("ascendancyOnly") && cmd["ascendancyOnly"].is_boolean() &&
-                            cmd["ascendancyOnly"].get<bool>();
-                        const auto treeRes = CraftingRuntime::RefundAllPassivesWithRegret(ascOnly);
-                        if (treeRes.ok) {
-                            (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                        const auto scope = cmd.find("ascendancyOnly");
+                        std::int64_t expectedCost = 0;
+                        Core::PassiveTreeOpResult treeRes;
+                        if (scope == cmd.end() || !scope->is_boolean() ||
+                            !ReadBoundedInt(cmd, "expectedRegretCost", 0, 0xFFFFFFFFLL, expectedCost)) {
+                            treeRes.message = "회수 범위와 비용을 다시 확인해 주세요.";
+                        } else {
+                            const bool ascOnly = scope->get<bool>();
+                            const auto state = SaveLoad::GetStateCopy();
+                            if (expectedCost != Core::PassiveTree::GetRefundAllCost(*g_treeData, state.tree, ascOnly, *g_config)) {
+                                treeRes.message = "전체 회수 비용이 달라졌습니다. 다시 확인해 주세요.";
+                            } else {
+                                treeRes = CraftingRuntime::RefundAllPassivesWithRegret(ascOnly);
+                                if (treeRes.ok) {
+                                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                                }
+                            }
                         }
                         PushToastToJs(treeRes.ok, treeRes.message);
                         PushPanelStateToJs();
@@ -1747,12 +1804,23 @@ namespace SkyrimPoE::Runtime
                             0, CraftingRuntime::CountCurrency(player, Core::CurrencyKind::Regret)));
                         PersistentState working = SaveLoad::GetStateCopy();
                         if (op == "treeSelectClass") {
-                            std::int64_t clsVal = -1;
-                            if (!ReadBoundedInt(cmd, "classId", 0, Core::kClassCount - 1, clsVal)) {
-                                treeRes = { false, "잘못된 클래스 번호입니다.", 0, 0 };
-                                return;
+                            if (const auto id = cmd.find("classContentId"); id != cmd.end()) {
+                                if (!id->is_string()) {
+                                    treeRes = { false, "잘못된 클래스 ID입니다." };
+                                    return;
+                                }
+                                treeRes = Core::PassiveTree::SelectClass(
+                                    *g_treeData, working.tree, id->get_ref<const std::string&>());
+                            } else {
+                                std::int64_t clsVal = -1;
+                                if (!ReadBoundedInt(cmd, "classId", 0,
+                                    static_cast<std::int64_t>(g_treeData->Classes().size()) - 1, clsVal)) {
+                                    treeRes = { false, "잘못된 클래스 번호입니다." };
+                                    return;
+                                }
+                                treeRes = Core::PassiveTree::SelectClass(
+                                    *g_treeData, working.tree, static_cast<std::uint8_t>(clsVal));
                             }
-                            treeRes = Core::PassiveTree::SelectClass(*g_treeData, working.tree, static_cast<std::uint8_t>(clsVal));
                             if (treeRes.ok) {
                                 if (const auto* cls = g_treeData->FindClass(working.tree.classId)) {
                                     working.className = cls->name;
@@ -1766,15 +1834,52 @@ namespace SkyrimPoE::Runtime
                             treeRes = Core::PassiveTree::ClearAscendancy(*g_treeData, working.tree);
                         } else if (op == "treeAllocatePath") {
                             std::vector<std::uint32_t> nodes;
-                            if (cmd.contains("nodes") && cmd["nodes"].is_array() && cmd["nodes"].size() <= 256) {
-                                for (const auto& nv : cmd["nodes"]) {
-                                    if (nv.is_number_unsigned()) {
-                                        nodes.push_back(nv.get<std::uint32_t>());
+                            if (!cmd.contains("nodes") || !cmd["nodes"].is_array() || cmd["nodes"].size() > 256) {
+                                treeRes = { false, "잘못된 패시브 경로입니다." };
+                                return;
+                            }
+                            for (const auto& value : cmd["nodes"]) {
+                                if (!value.is_number_unsigned() || value.get<std::uint64_t>() == 0 ||
+                                    value.get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max()) {
+                                    treeRes = { false, "잘못된 패시브 노드 번호입니다." };
+                                    return;
+                                }
+                                nodes.push_back(value.get<std::uint32_t>());
+                            }
+                            std::unordered_map<std::uint32_t, std::uint32_t> attributeChoices;
+                            if (const auto choices = cmd.find("attributeChoices"); choices != cmd.end()) {
+                                if (!choices->is_array() || choices->size() > nodes.size()) {
+                                    treeRes = { false, "잘못된 능력치 선택 요청입니다." };
+                                    return;
+                                }
+                                for (const auto& choice : *choices) {
+                                    std::int64_t nodeId = 0, optionId = 0;
+                                    if (!ReadBoundedInt(choice, "nodeId", 1, 0xFFFFFFFFLL, nodeId) ||
+                                        !ReadBoundedInt(choice, "optionId", 1, 0xFFFFFFFFLL, optionId) ||
+                                        std::ranges::find(nodes, static_cast<std::uint32_t>(nodeId)) == nodes.end() ||
+                                        !attributeChoices.emplace(static_cast<std::uint32_t>(nodeId),
+                                            static_cast<std::uint32_t>(optionId)).second) {
+                                        treeRes = { false, "잘못된 능력치 선택 요청입니다." };
+                                        return;
                                     }
                                 }
                             }
                             treeRes = Core::PassiveTree::AllocatePath(
-                                *g_treeData, working.tree, nodes, working.exileLevel, *g_config, working.atlas.completedTierMask);
+                                *g_treeData, working.tree, nodes, working.exileLevel, *g_config,
+                                working.atlas.completedTierMask, attributeChoices);
+                        } else if (op == "treeSetAttribute") {
+                            std::int64_t nodeId = 0, optionId = 0, expectedCost = 0;
+                            if (!ReadBoundedInt(cmd, "nodeId", 1, 0xFFFFFFFFLL, nodeId) ||
+                                !ReadBoundedInt(cmd, "optionId", 1, 0xFFFFFFFFLL, optionId) ||
+                                !ReadBoundedInt(cmd, "expectedRegretCost", 0, 1, expectedCost)) {
+                                treeRes = { false, "잘못된 능력치 변경 요청입니다." };
+                                return;
+                            }
+                            treeRes = Core::PassiveTree::ChangeAttribute(*g_treeData, working.tree,
+                                static_cast<std::uint32_t>(nodeId), static_cast<std::uint32_t>(optionId), *g_config, availOrbs);
+                            if (treeRes.ok && expectedCost != treeRes.regretOrbsConsumed) {
+                                treeRes = { false, "능력치 변경 비용이 달라졌습니다. 다시 확인해 주세요." };
+                            }
                         } else if (op == "treeSelectMastery") {
                             std::int64_t mNodeVal = 0;
                             std::int64_t effVal = 0;

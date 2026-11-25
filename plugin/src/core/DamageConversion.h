@@ -65,6 +65,8 @@ namespace SkyrimPoE::Core
     [[nodiscard]] EnemyArmourBreaks& ActiveEnemyArmourBreaks() noexcept;
     [[nodiscard]] double PhysicalDamageFraction(const DamagePacket& packet) noexcept;
     [[nodiscard]] bool PlayerHitMeetsAilmentThreshold(double postDeflectionDamage, double maxHealth) noexcept;
+    [[nodiscard]] bool PlayerHitMeetsAilmentThreshold(double damage, double maxHealth, const StatSnapshot& snapshot,
+        DamageType type, double skyrimMaximumEnergyShield) noexcept;
 
     // 결정 62, 64, 92, 93, 142, 143: 주는 피해(타격당) 환산
     [[nodiscard]] double ExpectedHitDamage(
@@ -90,9 +92,41 @@ namespace SkyrimPoE::Core
 
     // 기대 방어·저항·생명력·마나(결정 69, 70, 74, 84, 144)
     [[nodiscard]] double ArmourReductionPercent(double armour, double poeHit) noexcept;
-    [[nodiscard]] double ArmourPassRatio(double armour, double poeHit, double extraReductionPercent = 0.0) noexcept;
+    [[nodiscard]] double ArmourPassRatio(double armour, double poeHit, double extraReductionPercent = 0.0,
+        double reductionCap = 100.0) noexcept;
     [[nodiscard]] double EvasionHitChance(double evasion, double accuracy) noexcept;
     [[nodiscard]] double DeflectionChance(double rating, double accuracy) noexcept;
+    [[nodiscard]] double ApplyRollBias(double chance, bool lucky, bool unlucky) noexcept;
+    [[nodiscard]] double DeflectionReduction(const StatSnapshot& snapshot, bool critical = false) noexcept;
+    void ConvertGlobalHitDamage(DamagePacket& damage, const PassiveStatTotals& passives, bool isFireSpell) noexcept;
+    void RestrictToFire(DamagePacket& damage) noexcept;
+    void ScaleDamagePacket(DamagePacket& damage, const DamageTypeValues& multipliers) noexcept;
+    void ConvertPassiveHitDamage(DamagePacket& damage, const PassiveStatTotals& passives, bool isFireSpell,
+        const ExtraDamageStats& extraDamage, const DamageTypeValues& increasedPct, const DamageTypeValues& moreMultipliers,
+        bool isAttack, TargetAilmentHitDamage* targetHit = nullptr) noexcept;
+    [[nodiscard]] bool HasRandomElementExtra(const DamagePacket& damage) noexcept;
+    [[nodiscard]] DamagePacket ResolveRandomElementExtra(const DamagePacket& damage, std::size_t element) noexcept;
+
+    struct RegenerationSplit
+    {
+        double life = 0.0;
+        double energyShield = 0.0;
+    };
+    [[nodiscard]] RegenerationSplit SplitLifeRegeneration(double recovery, double missingLife,
+        bool excessToEnergyShield) noexcept;
+
+    struct PlayerLifeConditions
+    {
+        bool lowLife = false;
+        bool fullLife = false;
+    };
+
+    [[nodiscard]] PlayerLifeConditions GetPlayerLifeConditions(double currentLife, double permanentMaxLife,
+        double currentMaxLife, const StatSnapshot& snapshot) noexcept;
+    [[nodiscard]] RegenerationSplit ConvertLifeRegeneration(double recoveryPoe, double currentLife,
+        double currentMaxLife, double skyrimMaximumEnergyShield, const StatSnapshot& snapshot) noexcept;
+    [[nodiscard]] double BlockedHitDamageFraction(const StatSnapshot& snapshot) noexcept;
+    [[nodiscard]] double PlayerDamageBypassingEnergyShield(double damage, const StatSnapshot& snapshot) noexcept;
     [[nodiscard]] double BlockChanceLimit(double addedMaxPercent) noexcept;
     [[nodiscard]] double SpellHitBlockChance(const StatSnapshot& snapshot, bool isProjectile) noexcept;
     [[nodiscard]] AilmentKind EnergyShieldBypassAilment(AilmentKind ailment, bool shavronneChaosEs) noexcept;
@@ -136,7 +170,8 @@ namespace SkyrimPoE::Core
         std::uint32_t exileLevel,
         const StatSnapshot& snapshot,
         const DataPack& pack,
-        const Config& config) noexcept;
+        const Config& config,
+        bool isHit = true) noexcept;
 
     // 결정 67, 70, 125, 144: 생명력·에너지 실드·매지카 풀 및 비용 환산
     [[nodiscard]] double ComputeSkyrimMaxHealth(

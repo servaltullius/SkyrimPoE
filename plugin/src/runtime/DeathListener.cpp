@@ -213,6 +213,21 @@ namespace SkyrimPoE::Runtime
                     }
                     // 5단계(결정 163, 164): 전령 폭발과 참 충전
                     if (allowKillEffects) {
+                        if (snap && snap->poe2Passives) {
+                            const auto& passives = snap->passiveAilments;
+                            auto* player = RE::PlayerCharacter::GetSingleton();
+                            auto* values = player && !player->IsDead() ? player->AsActorValueOwner() : nullptr;
+                            if (values) {
+                                const double maxLife = values->GetPermanentActorValue(RE::ActorValue::kHealth);
+                                const double life = maxLife * (passives.lifeRecoveryOnKillPct / 100.0 +
+                                    passives.lifeOnKill / std::max(1.0, snap->poeMaxLife));
+                                const double mana = snap->poeMaxMana > 0.0
+                                    ? values->GetPermanentActorValue(RE::ActorValue::kMagicka) * passives.manaRecoveryOnKillPct / 100.0
+                                    : 0.0;
+                                if (life > 0.0) values->RestoreActorValue(RE::ActorValue::kHealth, static_cast<float>(life));
+                                if (mana > 0.0) values->RestoreActorValue(RE::ActorValue::kMagicka, static_cast<float>(mana));
+                            }
+                        }
                         if (victim && snap) {
                             if (snap->heraldOfIceActive && wasChilledOrFrozen) {
                                 ProjectileRuntime::TriggerHeraldOfIceBurst(victim->GetPosition(), *snap);

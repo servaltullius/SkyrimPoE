@@ -9,6 +9,7 @@
 #include "core/Config.h"
 #include "core/ItemCrafting.h"
 #include "core/MapSystem.h"
+#include "core/PassiveTree.h"
 #include "core/RulesPack.h"
 
 #include <algorithm>
@@ -1514,16 +1515,10 @@ namespace SkyrimPoE::Runtime
             res.message = "유효한 패시브 주얼 또는 트리 데이터가 아닙니다.";
             return res;
         }
-        const auto* node = g_treeData->FindNode(nodeId);
-        if (!node || node->kind != Core::PassiveNodeKind::Socket) {
-            res.message = "선택한 패시브 노드는 주얼 소켓이 아닙니다.";
-            return res;
-        }
-
         SaveLoad::RunSerializedTransaction([&]() {
             PersistentState working = SaveLoad::GetStateCopy();
-            if (!working.tree.IsAllocated(nodeId)) {
-                res.message = "먼저 해당 주얼 소켓 패시브 노드를 할당해야 합니다.";
+            if (!Core::PassiveTree::IsAllocatedJewelSocket(*g_treeData, working.tree, nodeId)) {
+                res.message = "장착할 수 있는 주얼 소켓을 먼저 할당해야 합니다.";
                 return;
             }
 
@@ -1560,6 +1555,12 @@ namespace SkyrimPoE::Runtime
                 jewelRec.itemLevel = std::clamp<std::uint32_t>(working.exileLevel, 1, Core::kMaxExileLevel);
                 jewelRec.slotGroup = Core::TokenSlotGroup::Jewel;
                 jewelRec.jewelColor = *colorOpt;
+            }
+
+            if (Core::PassiveTree::IsPhylactery(g_treeData->Generation(), nodeId) &&
+                (jewelRec.slotGroup != Core::TokenSlotGroup::Jewel || jewelRec.rarity == Core::ItemRarity::Unique)) {
+                res.message = "성물함에는 고유 등급이 아닌 기본 주얼만 장착할 수 있습니다.";
+                return;
             }
 
             // 검수 C4: 기존 소켓 주얼이 있으면 반환 성공을 먼저 확인한 뒤에만 교체(실패 시 롤백해 영구 소실 차단)

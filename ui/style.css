@@ -655,6 +655,10 @@ html, body {
   color: #e7c97f;
 }
 
+.tt-locked {
+  color: #f0b0c9;
+}
+
 .tt-deferred {
   display: inline-block;
   padding: 1px 5px;
@@ -663,6 +667,15 @@ html, body {
   background: rgba(168, 92, 24, 0.42);
   border: 1px solid #d4893b;
   color: #ffd9a8;
+}
+
+.tt-stat-inactive {
+  opacity: 0.72;
+}
+
+.tt-stat-reason {
+  color: #b3a28b;
+  font-size: 0.9em;
 }
 
 .tree-sidebar {
@@ -756,6 +769,27 @@ html, body {
 
 .tree-mastery-modal-card {
   width: min(560px, 92%);
+}
+
+.tree-attribute-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tree-attribute-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0;
+  border: 1px solid #5d4e42;
+  color: #e9dbc3;
+}
+
+.tree-attribute-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
 }
 
 .tree-modal-head {

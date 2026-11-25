@@ -114,7 +114,7 @@
           </div>
 
           <div class="tree-search-box">
-            <input id="tree-search-input" class="tree-search-input" type="text" placeholder="노드·스탯 검색 (한글/영문)..." autocomplete="off" />
+            <input id="tree-search-input" class="tree-search-input" type="text" placeholder="노드·스탯·#번호 검색..." autocomplete="off" />
             <span id="tree-search-count" class="tree-search-count"></span>
             <button id="btn-tree-search-next" class="btn" type="button" title="다음 검색 결과로 이동">다음</button>
             <button id="btn-tree-search-clear" class="btn" type="button" title="검색 지우기">✕</button>
@@ -141,7 +141,7 @@
                   <h2>시작 클래스 선택</h2>
                   <button id="btn-class-modal-close" class="btn" type="button">닫기</button>
                 </div>
-                <p class="tree-modal-sub">7개 클래스 중 하나를 선택하세요. 할당 노드가 0개일 때 언제든 변경할 수 있습니다.</p>
+                <p class="tree-modal-sub">시작 클래스를 선택하세요. 모든 노드를 회수한 뒤 변경할 수 있습니다.</p>
                 <div id="tree-class-grid" class="tree-class-grid"></div>
               </div>
             </div>
@@ -157,6 +157,19 @@
                 <div id="tree-mastery-list" class="tree-mastery-list"></div>
                 <div class="tree-modal-foot">
                   <button id="btn-mastery-refund" class="btn btn-danger hidden" type="button">이 마스터리 회수</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="tree-attribute-modal" class="tree-modal hidden">
+              <div class="tree-modal-card tree-mastery-modal-card">
+                <div class="tree-modal-head">
+                  <h2 id="tree-attribute-title">능력치 선택</h2>
+                  <button id="btn-attribute-close" class="btn" type="button">닫기</button>
+                </div>
+                <div id="tree-attribute-list" class="tree-attribute-list"></div>
+                <div class="tree-modal-foot">
+                  <button id="btn-attribute-apply" class="btn btn-primary" type="button" disabled>할당</button>
                 </div>
               </div>
             </div>

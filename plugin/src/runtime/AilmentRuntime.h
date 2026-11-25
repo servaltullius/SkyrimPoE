@@ -39,17 +39,26 @@ namespace SkyrimPoE::Runtime
             Spell,   // 손 시전·발동 주문, 투사체 주문
         };
 
+        struct SpellDamage : Core::DamagePacket
+        {
+            bool fireSpell = false;
+            double projectileAilmentChanceIncPct = 0.0;
+        };
+
         struct SpellHit
         {
-            Core::DamagePacket poeDamage;
+            SpellDamage poeDamage;
+            double skyrimDamagePerPoe = 0.0;
             double skyrimDamage = 0.0;
             double igniteChancePct = 0.0;
             bool isCrit = false;
             bool starforgeShock = false;
+            std::optional<Core::DamageType> resolvedDominantType;
         };
 
         [[nodiscard]] static SpellHit RollSpellHit(const Core::TriggeredSpellCast& cast,
             double damageRoll01, double critRoll01, double damageMultiplier = 1.0) noexcept;
+        static bool ResolveTargetAilmentExtra(RE::Actor* target, Core::DamagePacket& packet);
         static bool DealSpellHit(RE::Actor* target, const SpellHit& hit, Core::DamageType dominantType, bool isDirectHit);
         static std::size_t ExecuteSpellNova(const RE::NiPoint3& origin, float radius, const SpellHit& hit,
             RE::FormID vfxId, Core::DamageType dominantType);
@@ -65,7 +74,12 @@ namespace SkyrimPoE::Runtime
             bool starforgeShock = false,
             double bleedChancePct = 0.0,
             double poisonChancePct = 0.0,
-            double shockChancePct = 0.0);
+            double shockChancePct = 0.0,
+            bool fireSpell = false,
+            double projectileAilmentChanceIncPct = 0.0);
+        static Core::AilmentApplyResult ApplyPlayerHitAilments(
+            RE::Actor* target, const SpellDamage& damage, bool isCrit, HitKind kind,
+            double igniteChancePct, bool starforgeShock);
 
         struct PlayerAilmentOutcome
         {
