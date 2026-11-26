@@ -3,6 +3,7 @@
 #include "runtime/AilmentRuntime.h"
 #include "runtime/CombatHooks.h"
 #include "runtime/FormIds.h"
+#include "runtime/HitReaction.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 
@@ -328,6 +329,10 @@ namespace SkyrimPoE::Runtime
         const double confirmedLoss = std::max(hitRes.absorbedByEs, actualHpLoss);
         if (g_killTracker && confirmedLoss > 0.0) {
             g_killTracker->ConfirmDamageContribution(targetId, confirmedLoss);
+        }
+        // 결정 236~238: 실제로 들어간 타격(지속 피해 틱 제외)의 적대 전환·적중 이벤트·움찔은 주 갱신에서
+        if (confirmedLoss > 0.0 && !isDamageOverTime) {
+            HitReaction::OnSkillHit(target, hitRes.absorbedByEs + actualHpLoss);
         }
         return confirmedLoss > 0.0;
     }

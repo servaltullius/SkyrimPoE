@@ -15,7 +15,7 @@ param(
     # cleanup이면 PoE1 세이브 정리와 임시 슬롯 재로드(C0~C7)만 돈다.
     # gems이면 세대 0 Spark, PoE1 정리, 세대 1 젬 장착·시전·저장 시험만 돈다.
     # 기존 위치 인자 호출(다섯 번째가 TimeoutSec)이 깨지지 않게 맨 뒤에 둔다.
-    [ValidateSet("", "h27", "es", "save", "cleanup", "gems", "firstinstall")]
+    [ValidateSet("", "h27", "es", "react", "save", "cleanup", "gems", "firstinstall")]
     [string]$Only = ""
 )
 
@@ -61,7 +61,7 @@ switch ($Action) {
             throw "Parameter -TempSave cannot be empty."
         }
         Assert-AutoTestSaveSlots $cleanSave $cleanTemp $Only
-        if ($Only -in "cleanup", "gems", "firstinstall" -and -not $Quit) {
+        if ($Only -in "cleanup", "gems", "firstinstall", "react" -and -not $Quit) {
             throw "Refusing to arm AutoTest: -Only $Only requires -Quit:`$true."
         }
         $lines = @(

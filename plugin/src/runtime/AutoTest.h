@@ -54,6 +54,8 @@ namespace SkyrimPoE::Runtime
             bool routeOnly = false;
             // 결정 185 확인용 단축 실행. "es"이면 기준 세이브를 불러온 뒤 적 ES 표시 시험(ES1~ES5)만 돌고 끝낸다.
             bool enemyEsOnly = false;
+            // 결정 236~238 확인용 단축 실행("react"): 스킬 타격 반응(적중 이벤트·전투·움찔·강한 기절·폭행 경보)만 본다.
+            bool reactOnly = false;
             bool saveOnly = false;
             bool cleanupOnly = false;
             bool gemsOnly = false;
@@ -292,17 +294,19 @@ namespace SkyrimPoE::Runtime
                         continue;
                     }
                     if (mode != "h27" && mode != "es" && mode != "save" && mode != "cleanup" && mode != "gems" &&
-                        mode != "firstinstall") {
+                        mode != "firstinstall" && mode != "react") {
                         return std::nullopt;
                     }
                     const bool gemsWorld = mode == "gems" || mode == "firstinstall";
                     if ((out.cleanupOnly && mode != "cleanup") || (out.gemsOnly && !out.firstInstall && mode != "gems") ||
-                        (out.firstInstall && mode != "firstinstall") ||
-                        ((mode == "cleanup" || gemsWorld) && (out.routeOnly || out.enemyEsOnly || out.saveOnly))) {
+                        (out.firstInstall && mode != "firstinstall") || (out.reactOnly && mode != "react") ||
+                        (mode == "react" && (out.routeOnly || out.enemyEsOnly || out.saveOnly)) ||
+                        ((mode == "cleanup" || gemsWorld) && (out.routeOnly || out.enemyEsOnly || out.saveOnly || out.reactOnly))) {
                         return std::nullopt;
                     }
                     out.routeOnly = mode == "h27";
                     out.enemyEsOnly = mode == "es";
+                    out.reactOnly = mode == "react";
                     out.saveOnly = mode == "save";
                     out.cleanupOnly = mode == "cleanup";
                     out.gemsOnly = gemsWorld;
@@ -317,6 +321,10 @@ namespace SkyrimPoE::Runtime
                     } catch (...) {
                     }
                 }
+            }
+            // 타격 반응 시험은 현상금·교전을 남기므로 끝나면 반드시 게임을 끈다.
+            if (out.reactOnly && !out.quitWhenDone) {
+                return std::nullopt;
             }
             if (out.cleanupOnly || out.gemsOnly) {
                 if (!out.quitWhenDone) {

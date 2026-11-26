@@ -272,5 +272,12 @@ namespace SkyrimPoE::Core
         std::uint32_t mapPanelKey = 0x16;        // U (controlmap.txt 비충돌)
         bool mapDeathInterceptEnabled = true;    // 지도 인스턴스 내 치명타 클램프 귀환 (타 사망 대체 모드 병존 토글)
         std::uint32_t mapBasePackCount = 3;      // 기본 무리 수(1무리 = 3마리, PackSize %로 총수 스케일)
+
+        // [Reactions] (결정 237·238: 우리 스킬에 맞았을 때의 반응. 기본값은 Claude 제안, 사용자 확인 전)
+        bool sendSkillHitEvents = true;          // 직접 피해마다 엔진 적중 이벤트(TESHitEvent)를 보냄
+        double skillFlinchMinLifeRatio = 0.10;   // 이 비율(타격 ÷ 대상 최대 체력) 이상이면 작은 경직
+        double skillFlinchCooldownSec = 1.0;     // 같은 대상의 작은 경직 사이 최소 시간
+        double skillFlinchMagnitude = 0.25;      // 작은 경직의 staggerMagnitude
+        double heavyStunStaggerMagnitude = 1.0;  // PoE2 강한 기절이 찼을 때의 staggerMagnitude
     };
 }

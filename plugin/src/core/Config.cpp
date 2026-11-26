@@ -380,6 +380,21 @@ namespace SkyrimPoE::Core
                 } else {
                     warnInvalid();
                 }
+            } else if (section == "Reactions") {
+                double d = 0.0;
+                if (key == "SendSkillHitEvents") {
+                    if (!ParseBool(val, c.sendSkillHitEvents)) warnInvalid();
+                } else if (key == "SkillFlinchMinLifeRatio") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.skillFlinchMinLifeRatio = d; else warnInvalid();
+                } else if (key == "SkillFlinchCooldownSec") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 10.0) c.skillFlinchCooldownSec = d; else warnInvalid();
+                } else if (key == "SkillFlinchMagnitude") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.skillFlinchMagnitude = d; else warnInvalid();
+                } else if (key == "HeavyStunStaggerMagnitude") {
+                    if (ParseDouble(val, d) && d >= 0.0 && d <= 1.0) c.heavyStunStaggerMagnitude = d; else warnInvalid();
+                } else {
+                    warnInvalid();
+                }
             } else {
                 // C-11: 알 수 없는 INI 섹션(오타 등)은 조용히 무시하지 않고 경고를 남긴다.
                 result.warnings.emplace_back("Unknown INI section [" + section + "] for key " + std::string(key));

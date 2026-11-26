@@ -7,6 +7,7 @@
 #include "runtime/EquipmentSync.h"
 #include "runtime/FormIds.h"
 #include "runtime/GemInventory.h"
+#include "runtime/HitReaction.h"
 #include "runtime/ItemTracker.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/MapPackRuntime.h"
@@ -208,6 +209,7 @@ namespace SkyrimPoE::Runtime
             ScenarioH_UninstallPrepare,
             ScenarioH_UninstallVerifyWait,
             EnemyEsOnly,
+            ReactOnly,
             GemsOnly,
             QuitDelay,
             Done,
@@ -329,6 +331,7 @@ namespace SkyrimPoE::Runtime
             case Phase::ScenarioH_UninstallPrepare: return "ScenarioH_UninstallPrepare";
             case Phase::ScenarioH_UninstallVerifyWait: return "ScenarioH_UninstallVerifyWait";
             case Phase::EnemyEsOnly: return "EnemyEsOnly";
+            case Phase::ReactOnly: return "ReactOnly";
             case Phase::GemsOnly: return "GemsOnly";
             case Phase::QuitDelay: return "QuitDelay";
             case Phase::Done: return "Done";
@@ -360,6 +363,75 @@ namespace SkyrimPoE::Runtime
             "ES3_NoEsEngagedHides", "ES6_IncomingHitTarget", "ES7_DamageOverTimeKeepsTarget", "ES4_DeadTargetHides",
             "ES5_EngagedHoldExpires" };
         constexpr int kEnemyEsOnlyChecks = static_cast<int>(kEnemyEsCheckNames.size());
+
+        // 결정 236~238 단축 시험(-Only react). 적대 스키버 S(AI 끔, 체력 +2500)와 화이트런 경비병 G를 세우고
+        // 플레이어 직접 피해와 강한 기절 누적을 넣어 HitReaction의 반응을 본다. 저장하지 않는다.
+        constexpr std::array<const char*, 5> kReactCheckNames{ "R1_HitEventSent", "R2_HostileCombatStarted",
+            "R3_FlinchRule", "R4_HeavyStunStagger", "R5_NeutralAssaultAlarm" };
+        constexpr RE::FormID kWhiterunGuardId = 0x00099CE5;  // GuardWhiterunCityGeneric (Skyrim.esm, CrimeFactionWhiterun, 레벨 템플릿)
+        struct ReactTestState
+        {
+            int step = 0;
+            double stepStarted = 0.0;
+            RE::ActorHandle s{};
+            RE::ActorHandle g{};
+            std::optional<bool> godModeBefore;
+            HitReaction::Stats base{};
+            std::uint64_t sinkHitsAtStart = 0;
+            std::uint64_t flinchAfterSmall = 0;
+            std::uint64_t flinchAfterBig = 0;
+            int heavyTries = 0;
+            double staggeredSec = 0.0;
+            bool staggerSeen = false;
+            bool flinchStaggerSeen = false;
+            bool bigHitsLanded = true;
+            double lastSample = 0.0;
+            std::uint32_t crimeGoldBefore = 0;
+            std::set<std::string_view> reported;
+        };
+        ReactTestState g_reactTest{};
+
+        // 시험 동안만 등록하는 적중 이벤트 수집기(플레이어가 원인인 이벤트만 센다)
+        class ReactHitSink final : public RE::BSTEventSink<RE::TESHitEvent>
+        {
+        public:
+            static ReactHitSink& Get()
+            {
+                static ReactHitSink instance;
+                return instance;
+            }
+            RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* event, RE::BSTEventSource<RE::TESHitEvent>*) override
+            {
+                if (event && event->cause && event->cause->IsPlayerRef() && event->target) {
+                    std::scoped_lock lk(mutex_);
+                    ++hits_[event->target->GetFormID()];
+                    lastSource_ = event->source;
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+            std::uint64_t HitsOn(RE::FormID id)
+            {
+                std::scoped_lock lk(mutex_);
+                const auto it = hits_.find(id);
+                return it != hits_.end() ? it->second : 0;
+            }
+            RE::FormID LastSource()
+            {
+                std::scoped_lock lk(mutex_);
+                return lastSource_;
+            }
+            void Clear()
+            {
+                std::scoped_lock lk(mutex_);
+                hits_.clear();
+                lastSource_ = 0;
+            }
+        private:
+            std::mutex mutex_;
+            std::map<RE::FormID, std::uint64_t> hits_;
+            RE::FormID lastSource_ = 0;
+        };
+        bool g_reactSinkRegistered = false;
         constexpr double kScenarioASaveTimeoutSec = 25.0;
         enum class SaveCheck : std::size_t { Content, Baseline, Write, Reload, State, Preserved };
         constexpr std::array kSaveCheckNames{ "S0_ContentCheckPassed", "S1_LoadBaselineNormal",
@@ -579,6 +651,31 @@ namespace SkyrimPoE::Runtime
                 *handle = {};
             }
         }
+        void SetPlayerGodModeFlag(bool enable);
+
+        // react 단축 시험의 액터를 죽이고 끄고, 적중 이벤트 수집기를 떼고 무적을 되돌린다.
+        void CleanupReactTest()
+        {
+            for (auto* handle : { &g_reactTest.s, &g_reactTest.g }) {
+                if (auto actor = handle->get()) {
+                    if (!actor->IsDead()) {
+                        actor->KillImmediate();
+                    }
+                    actor->Disable();
+                }
+                *handle = {};
+            }
+            if (g_reactSinkRegistered) {
+                if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
+                    holder->RemoveEventSink<RE::TESHitEvent>(&ReactHitSink::Get());
+                }
+                g_reactSinkRegistered = false;
+            }
+            if (const auto god = std::exchange(g_reactTest.godModeBefore, std::nullopt)) {
+                SetPlayerGodModeFlag(*god);
+            }
+        }
+
         Core::InventoryItemKey g_fStarforgeKey{};
         std::uint32_t g_fSocketNodeId = 0;
         std::uint16_t g_fExpectedAuraMask = 0;
@@ -1292,7 +1389,7 @@ namespace SkyrimPoE::Runtime
         void ReportMissingHChecks(const std::string& reason)
         {
             // 적 ES와 세이브 단축 실행은 H를 돌지 않는다.
-            if (g_cfg.enemyEsOnly || g_cfg.saveOnly) {
+            if (g_cfg.enemyEsOnly || g_cfg.reactOnly || g_cfg.saveOnly) {
                 return;
             }
             for (std::size_t i = 0; i < kHChecks.size(); ++i) {
@@ -1338,6 +1435,9 @@ namespace SkyrimPoE::Runtime
         {
             if (g_cfg.enemyEsOnly) {
                 CleanupEnemyEsActors();
+            }
+            if (g_cfg.reactOnly) {
+                CleanupReactTest();
             }
             // 체크포인트 복원으로 돌아가기 전에 뺀다. 불러온 저장은 결투장 전 것이라 여유가 없다.
             ClearHArenaHealthBuffer(RE::PlayerCharacter::GetSingleton());
@@ -1520,11 +1620,13 @@ namespace SkyrimPoE::Runtime
                 g_cfg.gemsOnly ? static_cast<int>(kGemsChecks.size()) :
                 g_cfg.cleanupOnly ? static_cast<int>(kCleanupCheckNames.size()) :
                 g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
-                g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks : kExpectedAutoTestChecks;
+                g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks :
+                g_cfg.reactOnly ? static_cast<int>(kReactCheckNames.size()) : kExpectedAutoTestChecks;
             const char* modeDescription = g_cfg.firstInstall ? " (first-install run)" : g_cfg.gemsOnly ? " (gems-only run)" :
                 g_cfg.cleanupOnly ? " (cleanup-only migration run)" :
                 g_cfg.saveOnly ? " (save-only round-trip run)" :
-                g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" : "";
+                g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" :
+                g_cfg.reactOnly ? " (hit-reaction run)" : "";
             const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
             const auto summary = std::format(
                 "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={}{} ===",
@@ -3160,7 +3262,7 @@ namespace SkyrimPoE::Runtime
                 const bool gemsOn = g_config && g_config->giveStarterGems;
                 if (currencyOn && !state.starterCurrencyGiven && elapsed < 5.0) break;
                 if (!currencyOn && elapsed < 2.0) break;
-                const auto now = CaptureCleanupStarterItems(player);
+                const auto items = CaptureCleanupStarterItems(player);
                 std::map<RE::FormID, std::int32_t> expected = g_firstInstall.atLoad;
                 if (currencyOn) {
                     for (const auto& grant : CraftingRuntime::StarterCurrencyGrants()) {
@@ -3172,7 +3274,7 @@ namespace SkyrimPoE::Runtime
                     expected[gem.localFormId] += 1;
                 }
                 std::string differences;
-                for (const auto& [id, count] : now) {
+                for (const auto& [id, count] : items) {
                     const auto it = expected.find(id);
                     const auto want = it != expected.end() ? it->second : -1;
                     if (count != want) {
@@ -3182,13 +3284,13 @@ namespace SkyrimPoE::Runtime
                 const bool gemFlagsOk = state.starterGemsGiven == !starterGems.empty() &&
                     state.starterStage5GemsGiven == !starterGems.empty();
                 const bool ok = state.starterCurrencyGiven == currencyOn && gemFlagsOk && differences.empty() &&
-                    now.size() == expected.size();
+                    items.size() == expected.size();
                 CheckFirstInstall(FirstInstallCheck::Grant, ok, std::format(
                     "after {:.2f}s: INI gems/currency={}/{}, flags gems/stage5/currency={}/{}/{} (generation {} starter gems={}), "
                     "mismatches=[{} ], forms={}.",
                     elapsed, gemsOn, currencyOn, state.starterGemsGiven, state.starterStage5GemsGiven, state.starterCurrencyGiven,
-                    generation, starterGems.size(), differences, now.size()));
-                g_firstInstall.afterGrant = now;
+                    generation, starterGems.size(), differences, items.size()));
+                g_firstInstall.afterGrant = items;
                 g_firstInstall.flagsAfterGrant = state;
                 BeginGemsFinalSave();
                 break;
@@ -3201,9 +3303,9 @@ namespace SkyrimPoE::Runtime
                 const auto numberedCount = SumCounts(numbered);
                 if (numberedCount > 0 && elapsed < 5.0) break;
                 bool kept = true;
-                for (const auto& [form, before] : g_gems.totalBefore) {
+                for (const auto& [form, savedTotal] : g_gems.totalBefore) {
                     const auto it = totals.find(form);
-                    kept = kept && it != totals.end() && it->second >= before;
+                    kept = kept && it != totals.end() && it->second >= savedTotal;
                 }
                 std::int32_t sparkPlain = 0;
                 for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
@@ -3311,14 +3413,14 @@ namespace SkyrimPoE::Runtime
                             IsCleanupTarget(load.generation->value);
                         // 다시 불러온 뒤의 초기화(주 갱신 큐)가 끝날 시간을 둔다.
                         if (elapsed < 2.0) break;
-                        const auto now = CaptureCleanupStarterItems(player);
+                        const auto items = CaptureCleanupStarterItems(player);
                         const auto state = SaveLoad::GetStateCopy();
                         const auto& granted = g_firstInstall.flagsAfterGrant;
                         const bool flagsKept = state.starterGemsGiven == granted.starterGemsGiven &&
                             state.starterStage5GemsGiven == granted.starterStage5GemsGiven &&
                             state.starterCurrencyGiven == granted.starterCurrencyGiven;
                         std::string differences;
-                        for (const auto& [id, count] : now) {
+                        for (const auto& [id, count] : items) {
                             const auto it = g_firstInstall.afterGrant.find(id);
                             const auto saved = it != g_firstInstall.afterGrant.end() ? it->second : -1;
                             if (count != saved) differences += std::format(" {:06X}={}->{}", id, saved, count);
@@ -6482,6 +6584,12 @@ namespace SkyrimPoE::Runtime
                     g_saveAtNextMessage.reset();
                 }
                 EnterPhase(Phase::ScenarioA_SavePump);
+                break;
+            }
+            if (g_cfg.reactOnly) {
+                LogInfo("Hit-reaction run: skipping scenarios A-H and running R1-R5 only (no save).");
+                g_reactTest = {};
+                EnterPhase(Phase::ReactOnly);
                 break;
             }
             if (g_cfg.enemyEsOnly) {
@@ -11102,6 +11210,233 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             EnterPhase(Phase::ScenarioH_UninstallVerifyWait);
+            break;
+        }
+
+        case Phase::ReactOnly: {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                break;
+            }
+            auto& t = g_reactTest;
+            const double now = PhaseElapsedSec();
+            const double waited = now - t.stepStarted;
+            const auto next = [&](int step) {
+                t.step = step;
+                t.stepStarted = now;
+            };
+            const auto report = [&](const char* name, bool ok, const std::string& detail) {
+                t.reported.insert(name);
+                Check(name, ok, detail);
+            };
+            const auto finish = [&](std::string_view reason) {
+                for (const auto* name : kReactCheckNames) {
+                    if (!t.reported.contains(name)) {
+                        Check(name, false, std::string(reason));
+                    }
+                }
+                FinishAndScheduleQuit("Hit-reaction run finished.");
+            };
+            auto s = t.s.get();
+            auto g = t.g.get();
+            // S가 필요한 단계(2~7)에서 S가 사라지면(다른 모드의 정리 등) 실패로 끝낸다.
+            if (t.step >= 2 && t.step <= 7 && !s) {
+                finish("The skeever S disappeared during the run.");
+                break;
+            }
+            const auto stats = HitReaction::GetStatsForTest();
+            const auto hitS = [&](double raw) {
+                return s && SkillExecution::DealDirectSkillDamage(s.get(), raw, Core::DamageType::Physical, true, false);
+            };
+            const auto maxHealth = [](RE::Actor* actor) {
+                const auto* av = actor ? actor->AsActorValueOwner() : nullptr;
+                return av ? static_cast<double>(av->GetPermanentActorValue(RE::ActorValue::kHealth)) : 0.0;
+            };
+            const auto staggered = [](RE::Actor* actor) {
+                const auto* st = actor ? actor->AsActorState() : nullptr;
+                return st && st->IsStaggered();
+            };
+            switch (t.step) {
+            case 0:
+                t.godModeBefore = RE::PlayerCharacter::IsGodMode();
+                SetPlayerGodModeFlag(true);
+                if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton(); holder && !g_reactSinkRegistered) {
+                    ReactHitSink::Get().Clear();
+                    holder->AddEventSink<RE::TESHitEvent>(&ReactHitSink::Get());
+                    g_reactSinkRegistered = true;
+                }
+                t.s = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 0.0f, 300.0f, 2500.0f, false);
+                // 경비병은 플레이어 앞에서 마주 보게 세운다. 엔진은 피해자·목격자가 플레이어를 감지할 때만 폭행 범죄를 만든다(140670410).
+                t.g = SpawnNpcInFrontOfPlayer(player, kWhiterunGuardId, 400.0f, 0.0f, 0.0f, false);
+                next(1);
+                break;
+            case 1: {
+                const bool loaded = s && g && s->Is3DLoaded() && g->Is3DLoaded();
+                if (!loaded) {
+                    if (waited >= 8.0) finish("The test actors did not load within 8 s.");
+                    break;
+                }
+                // 스스로 플레이어를 찾아 전투에 들어가지 않게 S의 AI를 끄고, 전투를 풀어 둔다(R2가 우리 StartCombat만 보게).
+                s->EnableAI(false);
+                MonsterRuntime::ForcePromoteForTest(s.get(), Core::MonsterRarity::Normal, 0, -1.0);
+                s->StopCombat();
+                // R5를 먼저 돈다: 아무도 전투 중이 아닐 때의 폭행 경보(전투 밖 주민 타격과 같은 상황)를 본다.
+                next(8);
+                break;
+            }
+            case 2: {
+                if (waited < 0.5) break;
+                const bool inCombatBefore = s->IsInCombat();
+                t.base = stats;
+                t.sinkHitsAtStart = ReactHitSink::Get().HitsOn(s->GetFormID());
+                const double hp = maxHealth(s.get());
+                const bool hit = hitS(0.01 * hp);
+                LogInfo(std::format("React: S max health {:.1f}, in combat before the small hit={}, small hit ok={}.",
+                    hp, inCombatBefore, hit));
+                if (inCombatBefore || !hit) {
+                    finish(inCombatBefore ? "S was already in combat before the first hit." : "The small hit on S did not land.");
+                    break;
+                }
+                next(3);
+                break;
+            }
+            case 3: {
+                const auto sinkHits = ReactHitSink::Get().HitsOn(s->GetFormID()) - t.sinkHitsAtStart;
+                const bool started = stats.combatStarts > t.base.combatStarts && s->IsInCombat();
+                if ((sinkHits == 0 || !started) && waited < 2.0) break;
+                const auto* proxy = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[0]);
+                const auto source = ReactHitSink::Get().LastSource();
+                report("R1_HitEventSent", sinkHits == 1 && stats.hitEvents == t.base.hitEvents + 1 && proxy &&
+                        source == proxy->GetFormID(),
+                    std::format("TESHitEvent on S from the player={} (expected 1), reaction hit events {} -> {}, source={:08X} "
+                                "(expected proxy spell {:08X}).", sinkHits, t.base.hitEvents, stats.hitEvents, source,
+                        proxy ? proxy->GetFormID() : 0u));
+                report("R2_HostileCombatStarted", started,
+                    std::format("StartCombat count {} -> {}, S in combat={}, after {:.2f}s.", t.base.combatStarts,
+                        stats.combatStarts, s->IsInCombat(), waited));
+                // 경직 애니메이션이 돌게 S의 AI를 켠다(꺼 두면 그래프가 경직을 처리하지 않을 수 있음). 플레이어는 무적.
+                s->EnableAI(true);
+                t.flinchAfterSmall = stats.flinches;
+                t.bigHitsLanded = hitS(0.5 * maxHealth(s.get()));
+                next(4);
+                break;
+            }
+            case 4:
+                t.flinchStaggerSeen |= staggered(s.get());
+                if (waited < 0.5) break;
+                t.flinchAfterBig = stats.flinches;
+                LogInfo(std::format("React: after the big hit flinches {} -> {}, S staggered now={}.",
+                    t.flinchAfterSmall, stats.flinches, staggered(s.get())));
+                t.bigHitsLanded = hitS(0.5 * maxHealth(s.get())) && t.bigHitsLanded;
+                next(5);
+                break;
+            case 5: {
+                if (waited < 0.5) break;
+                const bool smallNone = t.flinchAfterSmall == t.base.flinches;
+                const bool bigOne = t.flinchAfterBig == t.flinchAfterSmall + 1;
+                const bool cooldownNone = stats.flinches == t.flinchAfterBig;
+                report("R3_FlinchRule", smallNone && bigOne && cooldownNone && t.bigHitsLanded && !s->IsDead(),
+                    std::format("flinches: small hit +{} (expected 0), big hit +{} (expected 1), second big hit within the cooldown +{} "
+                                "(expected 0); both big hits landed={}, S alive={}; S staggered seen within 0.5 s of the big hit={}.",
+                        t.flinchAfterSmall - t.base.flinches, t.flinchAfterBig - t.flinchAfterSmall, stats.flinches - t.flinchAfterBig,
+                        t.bigHitsLanded, !s->IsDead(), t.flinchStaggerSeen));
+                t.base = stats;
+                next(6);
+                break;
+            }
+            case 6: {
+                // 바로 앞 R3의 경직 뒤에는 경직 잠금 방지 모드가 새 경직을 막을 수 있어 3초 쉬고 시작한다(2026-11-26 관찰, 가설).
+                if (t.heavyTries == 0 && waited < 3.0) {
+                    break;
+                }
+                // PoE2 강한 기절 누적을 채운다(물리 큰 타격, 프레임마다 한 번). 찼다는 알림이 오면 그래프가 받든 말든 관찰로 넘어간다.
+                if (stats.heavyStunRequests > t.base.heavyStunRequests) {
+                    t.lastSample = now;
+                    next(7);
+                    break;
+                }
+                if (t.heavyTries >= 30) {
+                    report("R4_HeavyStunStagger", false, std::format("Heavy stun did not fill after {} hits.", t.heavyTries));
+                    finish("Hit-reaction run finished.");
+                    break;
+                }
+                ++t.heavyTries;
+                Core::DamagePacket packet{};
+                packet.byType[static_cast<std::size_t>(Core::DamageType::Physical)] = { 400.0, 400.0 };
+                (void)AilmentRuntime::ApplyPlayerHitAilments(s.get(), packet, false, AilmentRuntime::HitKind::Attack);
+                break;
+            }
+            case 7: {
+                // 큰 경직이 얼마나 이어지는지 잰다(규칙 팩의 적 강한 기절은 2초).
+                const bool isStaggered = staggered(s.get());
+                if (isStaggered) {
+                    t.staggerSeen = true;
+                    t.staggeredSec += now - t.lastSample;
+                }
+                t.lastSample = now;
+                if (waited < 3.0) break;
+                // 판정은 강한 기절 알림과 큰 경직 요청까지. 화면의 경직 상태는 이 모드팩의 경직 모드에 따라 보였다 말았다 해서
+                // 기록으로만 남긴다(2026-11-26 다섯 번 실행: 0.9~1.7초 보임 3번, 안 보임 2번).
+                report("R4_HeavyStunStagger", stats.heavyStunRequests == t.base.heavyStunRequests + 1 &&
+                        stats.heavyStuns == t.base.heavyStuns + 1,
+                    std::format("heavy stun requests {} -> {}, big staggers requested {} -> {}, graph returned false {} -> {}, after {} hit(s); "
+                                "S staggered seen={}, staggered for about {:.2f}s of 3 s (observation only).",
+                        t.base.heavyStunRequests, stats.heavyStunRequests, t.base.heavyStuns, stats.heavyStuns,
+                        t.base.staggersRejected, stats.staggersRejected, t.heavyTries, t.staggerSeen, t.staggeredSec));
+                finish("Hit-reaction run finished.");
+                break;
+            }
+            case 8: {
+                if (!g) {
+                    finish("The guard was not available.");
+                    break;
+                }
+                // 경비병이 플레이어를 감지할 때까지(최대 5초) 기다린다. 감지하지 못한 타격은 바닐라에서도 범죄가 아니다.
+                if (const auto level = g->RequestDetectionLevel(player); level <= 0 && waited < 5.0) {
+                    break;
+                }
+                const auto* faction = g->GetCrimeFaction();
+                t.crimeGoldBefore = faction ? player->GetCrimeGoldValue(faction) : 0;
+                t.base = stats;
+                const bool hostileBefore = SkillExecution::IsHostileForFirstHitReward(g.get(), player);
+                const bool hit = SkillExecution::DealDirectSkillDamage(g.get(), 1.0, Core::DamageType::Physical, true, false);
+                // 엔진의 폭행 범죄 함수(140670410)는 공격자가 플레이어일 때 PlayerFlags 4번째 바이트의 비트 2를 요구한다(디컴파일).
+                // 이 비트는 Game.SetPlayerReportCrime이 쓰는 "플레이어 범죄 신고" 플래그다(네이티브가 14072EE50으로 바로 점프).
+                const auto flags = player->GetPlayerFlags();
+                const auto flagByte4 = reinterpret_cast<const std::uint8_t*>(&flags)[4];
+                LogInfo(std::format("React: guard crime faction={:08X}, bounty before={}, hostile before={}, hit ok={}, "
+                                    "player flags byte 4=0x{:02X} (report crime={}), guard detection of the player={} after {:.2f}s.",
+                    faction ? faction->GetFormID() : 0u, t.crimeGoldBefore, hostileBefore, hit, flagByte4, (flagByte4 & 4) != 0,
+                    g->RequestDetectionLevel(player), waited));
+                if (hostileBefore || !hit) {
+                    report("R5_NeutralAssaultAlarm", false, hostileBefore ? "The guard was hostile before the hit." : "The hit on the guard did not land.");
+                    next(2);
+                    break;
+                }
+                next(9);
+                break;
+            }
+            case 9: {
+                const auto* faction = g ? g->GetCrimeFaction() : nullptr;
+                const auto bounty = faction ? player->GetCrimeGoldValue(faction) : 0;
+                const bool hostile = g && SkillExecution::IsHostileForFirstHitReward(g.get(), player);
+                const bool alarmed = stats.assaultAlarms == t.base.assaultAlarms + 1;
+                if ((!alarmed || bounty <= t.crimeGoldBefore || !hostile) && waited < 4.0) break;
+                report("R5_NeutralAssaultAlarm", alarmed && bounty > t.crimeGoldBefore && hostile,
+                    std::format("assault alarms {} -> {}, bounty {} -> {}, guard hostile now={}, in combat={}, alarmed={}, after {:.2f}s.",
+                        t.base.assaultAlarms, stats.assaultAlarms, t.crimeGoldBefore, bounty, hostile, g && g->IsInCombat(),
+                        g && g->IsAlarmed(), waited));
+                // 경비병을 치운 뒤 S 시험으로 간다(경비병이 S 시험 중 플레이어를 쫓지 않게).
+                if (g) {
+                    g->KillImmediate();
+                    g->Disable();
+                }
+                next(2);
+                break;
+            }
+            default:
+                break;
+            }
             break;
         }
 

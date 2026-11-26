@@ -33,6 +33,7 @@
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
+#include "runtime/HitReaction.h"
 #include "runtime/TrueHudBridge.h"
 #include "runtime/UiBridge.h"
 #include "runtime/WorldDropTracker.h"
@@ -326,6 +327,7 @@ namespace
         }
 
         Runtime::SkillExecution::Initialize(&g_killTracker, &g_statEngine);
+        Runtime::HitReaction::Initialize(&g_commandQueue, &g_config);
         Runtime::EquipmentSync::Initialize(&g_itemData, &g_charmSystem);
         Runtime::CraftingRuntime::Initialize(&g_itemData, &g_dataPack, &g_treeData, &g_config, &g_charmSystem, &g_statEngine);
         Runtime::WorldDropTracker::Initialize(&g_itemData, &g_config);

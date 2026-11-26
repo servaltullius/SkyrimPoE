@@ -66,6 +66,7 @@ add_library(skyrimpoe_core STATIC
     src/core/MapPack.cpp
     src/core/MapTravel.cpp
     src/core/EnemyEsHud.cpp
+    src/core/HitReaction.cpp
 )
 target_include_directories(skyrimpoe_core PUBLIC src)
 target_compile_definitions(skyrimpoe_core PUBLIC NOMINMAX)
@@ -102,6 +103,7 @@ add_commonlibsse_plugin(${PROJECT_NAME}
         src/runtime/MigrationRuntime.cpp
         src/runtime/ModState.cpp
         src/runtime/SkillExecution.cpp
+        src/runtime/HitReaction.cpp
         src/runtime/MapDeviceRuntime.cpp
         src/runtime/MapPackRuntime.cpp
         src/runtime/MonsterRuntime.cpp
@@ -151,6 +153,7 @@ add_executable(skyrimpoe_tests
     tests/test_items.cpp
     tests/test_stage5.cpp
     tests/test_world_stamp_link.cpp
+    tests/test_hit_reaction.cpp
     tests/test_stage6.cpp
     tests/test_map_difficulty.cpp
     tests/test_map_pack.cpp

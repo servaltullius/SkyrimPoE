@@ -129,6 +129,19 @@ POE_TEST("Gems marker rejects overwritten save names, missing baselines and quit
     POE_CHECK(!ParseMarker(firstStay));
     std::istringstream mixed("only=gems\nonly=firstinstall\nsave=Baseline\ntemp_save=Probe\nquit=true\n");
     POE_CHECK(!ParseMarker(mixed));
+
+    // 타격 반응 단축 실행(결정 236~238)은 기준 세이브만 쓰고 젬·정리 모드와 함께 켤 수 없다.
+    std::istringstream react("only=react\nsave=Baseline\n");
+    const auto reactParsed = ParseMarker(react);
+    POE_CHECK(reactParsed && reactParsed->reactOnly && !reactParsed->gemsOnly && !reactParsed->enemyEsOnly);
+    std::istringstream reactGems("only=react\nonly=gems\nsave=Baseline\ntemp_save=Probe\nquit=true\n");
+    POE_CHECK(!ParseMarker(reactGems));
+    std::istringstream reactEs("only=react\nonly=es\nsave=Baseline\n");
+    POE_CHECK(!ParseMarker(reactEs));
+    std::istringstream esReact("only=es\nonly=react\nsave=Baseline\n");
+    POE_CHECK(!ParseMarker(esReact));
+    std::istringstream reactStay("only=react\nsave=Baseline\nquit=false\n");
+    POE_CHECK(!ParseMarker(reactStay));
 }
 
 namespace

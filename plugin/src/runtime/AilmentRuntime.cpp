@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "runtime/AilmentRuntime.h"
+#include "runtime/HitReaction.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/SaveLoad.h"
@@ -429,6 +430,8 @@ namespace SkyrimPoE::Runtime
         in.coldHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Cold)].Average();
         in.lightningHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Lightning)].Average();
         in.chaosHitPoe = poeDamage.byType[static_cast<std::size_t>(Core::DamageType::Chaos)].Average();
+        // 결정 237: 맞은 피해 전체가 PoE2 강한 기절 누적에 들어간다(유형별 가중은 미확인이라 넣지 않음).
+        in.heavyStunHitPoe = poeDamage.TotalAverage();
         in.targetAilmentThresholdPoe = Core::MapSystem::AilmentThreshold(monsterLevel);
         in.targetPoiseThresholdPoe = Core::MapSystem::PoiseThreshold(monsterLevel);
         in.isCrit = isCrit;
@@ -507,6 +510,10 @@ namespace SkyrimPoE::Runtime
         }
         if (!target->IsDead() && (res.appliedChill || res.appliedFreeze)) {
             SyncActorSpeedFromAilment(target);
+        }
+        // 결정 237: 강한 기절이 찬 순간에만 참이므로(AddPoiseBuildup) 걸려 있는 동안 반복되지 않는다.
+        if (res.appliedHeavyStun) {
+            HitReaction::OnHeavyStun(target);
         }
         // 빙결이 시작될 때 경직 1회 유발(SpeedMult -95와 함께 적용).
         if (res.appliedFreeze && !wasFrozenBefore && target->Is3DLoaded() && !target->IsDead()) {

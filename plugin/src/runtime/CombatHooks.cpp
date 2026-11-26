@@ -97,11 +97,17 @@ namespace SkyrimPoE::Runtime
             bool isHitCrit, const Core::StatSnapshot* snap, const Core::MonsterIncomingResult& result,
             std::uint64_t generation, const Core::DamagePacket* convertedHit = nullptr)
         {
+            const bool anyAilmentChance = snap && (snap->BleedChanceForHitPct(true) > 0.0 || snap->poisonChancePct > 0.0 ||
+                snap->attackPoisonChancePct > 0.0 || snap->attackIgniteChancePct > 0.0 ||
+                snap->igniteChancePct > 0.0 || snap->shockChancePct > 0.0 || snap->starforgeShock);
+            // 결정 237: 공격 타격은 PoE2 강한 기절 누적이 늘 있으므로 다른 상태 이상 확률이 없어도 예약한다(마법 효과는 그대로).
             if (!Core::CanInflictPoEAilments(source) || !g_queue || !snap ||
                 (result.remainingHealthDamage <= 0.0 && result.absorbedByEs <= 0.0) ||
-                !(snap->BleedChanceForHitPct(true) > 0.0 || snap->poisonChancePct > 0.0 ||
-                  snap->attackPoisonChancePct > 0.0 || snap->attackIgniteChancePct > 0.0 ||
-                  snap->igniteChancePct > 0.0 || snap->shockChancePct > 0.0 || snap->starforgeShock)) {
+                (source != Core::VanillaHitSource::Attack && !anyAilmentChance)) {
+                return;
+            }
+            // 아군(동료·소환)에게는 상태 이상·강한 기절을 걸지 않는다.
+            if (const auto* player = RE::PlayerCharacter::GetSingleton(); !player || SkillExecution::IsAllyOfPlayer(player, target)) {
                 return;
             }
             const RE::ActorHandle targetHandle = target->GetHandle();
