@@ -118,6 +118,17 @@ POE_TEST("Gems marker rejects overwritten save names, missing baselines and quit
     }
     std::istringstream stay("only=gems\nsave=Baseline\nquit=false\n");
     POE_CHECK(!ParseMarker(stay));
+
+    // 처음 설치 시험은 젬 시험의 세대 1 시험 세계를 쓰므로 gemsOnly도 켜고, 같은 슬롯 보호를 받는다.
+    std::istringstream first("only=firstinstall\nsave=Baseline.ess\ntemp_save=Probe\nquit=true\n");
+    const auto firstParsed = ParseMarker(first);
+    POE_CHECK(firstParsed && firstParsed->gemsOnly && firstParsed->firstInstall && !firstParsed->cleanupOnly);
+    std::istringstream firstFinal("only=firstinstall\nsave=Probe_final\ntemp_save=Probe\nquit=true\n");
+    POE_CHECK(!ParseMarker(firstFinal));
+    std::istringstream firstStay("only=firstinstall\nsave=Baseline\nquit=false\n");
+    POE_CHECK(!ParseMarker(firstStay));
+    std::istringstream mixed("only=gems\nonly=firstinstall\nsave=Baseline\ntemp_save=Probe\nquit=true\n");
+    POE_CHECK(!ParseMarker(mixed));
 }
 
 namespace

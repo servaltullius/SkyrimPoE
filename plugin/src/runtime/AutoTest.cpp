@@ -416,13 +416,30 @@ namespace SkyrimPoE::Runtime
         };
         enum class GemsStep {
             Prepare, Menu, LegacyLoad, EquipWait, CastResult, CleanupLoad, CleanupCommit,
-            Save, Reload, Reject, Target, RestoreLoad, CastSite, BagPlain, IncomingPlain
+            Save, Reload, Reject, Target, RestoreLoad, CastSite, BagPlain, IncomingPlain, FirstGrant
         };
         constexpr std::array kGemsStepNames{
             "Prepare", "Menu", "LegacyLoad", "EquipWait", "CastResult", "CleanupLoad", "CleanupCommit",
-            "Save", "Reload", "Reject", "Target", "RestoreLoad", "CastSite", "BagPlain", "IncomingPlain"
+            "Save", "Reload", "Reject", "Target", "RestoreLoad", "CastSite", "BagPlain", "IncomingPlain", "FirstGrant"
         };
-        static_assert(kGemsStepNames.size() == static_cast<std::size_t>(GemsStep::IncomingPlain) + 1);
+        static_assert(kGemsStepNames.size() == static_cast<std::size_t>(GemsStep::FirstGrant) + 1);
+
+        // 처음 설치 시험(-Only firstinstall): 모드 기록 없는 세이브를 세대 1 시험 세계로 불러온 경로.
+        enum class FirstInstallCheck : std::size_t { Decision, Grant, Save, Reload };
+        constexpr std::array kFirstInstallChecks{
+            "F1_FirstInstallDecision", "F2_StarterGrantOnce", "F3_FinalSaveWritten", "F4_ReloadKeepsGrant"
+        };
+        struct FirstInstallTestState
+        {
+            std::array<bool, kFirstInstallChecks.size()> checked{};
+            // 로드 완료 메시지 때(초기 지급 예약이 돌기 전)의 시작 물건 수. 로드마다 새로 잰다.
+            std::map<RE::FormID, std::int32_t> atLoad;
+            std::map<RE::FormID, std::int32_t> afterGrant;
+            PersistentState flagsAfterGrant;
+            // 기준 세이브에 .skse가 있으면 SKSE가 OnLoad를 부르고(기록 0개), 없으면 로드 뒤 분기에서 처음 설치로 판정한다.
+            std::optional<bool> baselineHasCosave;
+        };
+        FirstInstallTestState g_firstInstall;
         static_assert(kGemsChecks.size() == static_cast<std::size_t>(GemsCheck::Restore) + 1);
         using AutoTestMarker::GemsRetry;
 
@@ -1364,13 +1381,32 @@ namespace SkyrimPoE::Runtime
         void CheckGems(GemsCheck check, bool passed, const std::string& detail)
         {
             const auto index = static_cast<std::size_t>(check);
+            if (g_cfg.firstInstall) {
+                // 처음 설치 시험은 젬 판정을 세지 않는다. 다만 공유 단계의 실패는 경고로 올려 요약을 FAIL로 만든다.
+                const auto line = std::format("First-install run: gems step {} {}: {}", kGemsChecks[index], passed ? "ok" : "failed", detail);
+                if (passed) {
+                    LogInfo(line);
+                } else {
+                    LogWarn(line);
+                }
+                return;
+            }
             if (!std::exchange(g_gems.checked[index], true)) {
                 Check(kGemsChecks[index], passed, detail);
             }
         }
 
+        void CheckFirstInstall(FirstInstallCheck check, bool passed, const std::string& detail)
+        {
+            const auto index = static_cast<std::size_t>(check);
+            if (!std::exchange(g_firstInstall.checked[index], true)) {
+                Check(kFirstInstallChecks[index], passed, detail);
+            }
+        }
+
         void ReleaseGemsCastState();
         void RestoreGemsSaveGuard();
+        std::map<RE::FormID, std::int32_t> CaptureCleanupStarterItems(RE::PlayerCharacter* player);
 
         // 결정 235 시험: 플레이어 가방의 번호 붙은 젬 묶음 수를 폼별로 센다. totals가 있으면 폼별 전체 수도 채운다.
         std::map<RE::FormID, std::int32_t> CountNumberedGems(
@@ -1441,8 +1477,14 @@ namespace SkyrimPoE::Runtime
                 if (g_config && std::exchange(g_hasSavedEnforceGemReq, false)) {
                     g_config->enforceGemRequirements = g_savedEnforceGemReq;
                 }
-                for (std::size_t i = 0; i < kGemsChecks.size(); ++i) {
-                    CheckGems(static_cast<GemsCheck>(i), false, std::format("Skipped. {}", reason));
+                if (g_cfg.firstInstall) {
+                    for (std::size_t i = 0; i < kFirstInstallChecks.size(); ++i) {
+                        CheckFirstInstall(static_cast<FirstInstallCheck>(i), false, std::format("Skipped. {}", reason));
+                    }
+                } else {
+                    for (std::size_t i = 0; i < kGemsChecks.size(); ++i) {
+                        CheckGems(static_cast<GemsCheck>(i), false, std::format("Skipped. {}", reason));
+                    }
                 }
             } else if (g_cfg.cleanupOnly) {
                 SaveLoad::SetCleanupTestTarget(false);
@@ -1474,11 +1516,12 @@ namespace SkyrimPoE::Runtime
             }
             // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
             // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
-            const int expectedChecks = g_cfg.gemsOnly ? static_cast<int>(kGemsChecks.size()) :
+            const int expectedChecks = g_cfg.firstInstall ? static_cast<int>(kFirstInstallChecks.size()) :
+                g_cfg.gemsOnly ? static_cast<int>(kGemsChecks.size()) :
                 g_cfg.cleanupOnly ? static_cast<int>(kCleanupCheckNames.size()) :
                 g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
                 g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks : kExpectedAutoTestChecks;
-            const char* modeDescription = g_cfg.gemsOnly ? " (gems-only run)" :
+            const char* modeDescription = g_cfg.firstInstall ? " (first-install run)" : g_cfg.gemsOnly ? " (gems-only run)" :
                 g_cfg.cleanupOnly ? " (cleanup-only migration run)" :
                 g_cfg.saveOnly ? " (save-only round-trip run)" :
                 g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" : "";
@@ -2893,13 +2936,22 @@ namespace SkyrimPoE::Runtime
                     break;
                 }
                 g_gems.buildId = base->buildId;
+                if (g_cfg.firstInstall) {
+                    const auto files = ObserveSaveFiles(g_cfg.baselineSave);
+                    if (!files || !files->essBefore) {
+                        fail("The first-install baseline save file was not found.");
+                        break;
+                    }
+                    g_firstInstall.baselineHasCosave = files->cosaveBefore.has_value();
+                }
                 SaveLoad::SetGemTestTarget({ "poe2", 1, Core::kStagedGemsGameVersion, base->buildId, base->dllVersion }, g_gems.finalSlot);
                 NextGems(Step::Menu);
                 break;
             }
             case Step::Menu:
                 if (elapsed >= 2 && engineIdle && (mainMenu || ready)) {
-                    BeginGemsLoad(Step::LegacyLoad);
+                    // 처음 설치 시험은 기준 세이브를 바로 세대 1 시험 세계로 부른다(CleanupLoad 단계의 시험 세계 로드).
+                    BeginGemsLoad(g_cfg.firstInstall ? Step::CleanupLoad : Step::LegacyLoad);
                 }
                 break;
             case Step::LegacyLoad:
@@ -3029,6 +3081,29 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             case Step::CleanupLoad:
+                if (g_cfg.firstInstall) {
+                    if (!signaled || !ready) break;
+                    BlockGemsManualSaves(*player);
+                    const auto load = SaveLoad::GetLastLoadDiagnostics();
+                    const bool firstInstall = load.decision && load.decision->disposition == Core::SaveDisposition::FirstInstall;
+                    const bool normal = ModState::Get()->mode == ModMode::Normal;
+                    const bool noCleanup = !SaveLoad::GetMigrationCandidate(player);
+                    // .skse가 있으면 OnLoad 경로, 없으면 로드 뒤 분기(SaveLoad의 !receivedLoad)를 지나야 한다.
+                    const bool branchOk = g_firstInstall.baselineHasCosave && load.receivedLoad == *g_firstInstall.baselineHasCosave;
+                    CheckFirstInstall(FirstInstallCheck::Decision, firstInstall && generation == 1 && normal && noCleanup && branchOk,
+                        std::format("decision={}, reason='{}', baseline .skse={}, receivedLoad(OnLoad called)={}, branch as expected={}, "
+                                    "collectionComplete={}, world generation={}, mode normal={}, cleanup candidate={}, starter items at load: {}.",
+                            load.decision ? SaveDispositionName(load.decision->disposition) : "none",
+                            load.decision ? load.decision->reason : "", g_firstInstall.baselineHasCosave.value_or(false),
+                            load.receivedLoad, branchOk, load.collectionComplete, generation, normal,
+                            !noCleanup, DescribeCounts(g_firstInstall.atLoad)));
+                    if (!firstInstall || generation != 1 || !normal) {
+                        fail("The baseline did not open as a first install in the generation-one test world.");
+                    } else {
+                        NextGems(Step::FirstGrant);
+                    }
+                    break;
+                }
                 if (signaled && ready) {
                     BlockGemsManualSaves(*player);
                     if (generation != 1 || !SaveLoad::GetMigrationCandidate(player)) {
@@ -3074,6 +3149,48 @@ namespace SkyrimPoE::Runtime
                     if (!committed) fail("The cleanup did not commit in the generation-one test world.");
                     else NextGems(Step::BagPlain);
                 }
+                break;
+            }
+            case Step::FirstGrant: {
+                // 결정 195: 처음 설치도 새 캐릭터와 같은 시작 물건을 한 번 받는다. 시작 화폐 지급이 끝날 때까지 기다린다.
+                if (!ready) break;
+                const auto state = SaveLoad::GetStateCopy();
+                // INI에서 끈 지급은 기대하지 않는다. 켠 화폐 지급이 있으면 그 플래그가 설 때까지(초기화 완료) 기다린다.
+                const bool currencyOn = g_config && g_config->giveStarterCurrency;
+                const bool gemsOn = g_config && g_config->giveStarterGems;
+                if (currencyOn && !state.starterCurrencyGiven && elapsed < 5.0) break;
+                if (!currencyOn && elapsed < 2.0) break;
+                const auto now = CaptureCleanupStarterItems(player);
+                std::map<RE::FormID, std::int32_t> expected = g_firstInstall.atLoad;
+                if (currencyOn) {
+                    for (const auto& grant : CraftingRuntime::StarterCurrencyGrants()) {
+                        expected[FormIds::CurrencyLocalFormId(grant.kind)] += grant.count;
+                    }
+                }
+                const auto starterGems = gemsOn ? Core::GemForms::StarterForms(generation) : decltype(Core::GemForms::StarterForms(generation)){};
+                for (const auto& gem : starterGems) {
+                    expected[gem.localFormId] += 1;
+                }
+                std::string differences;
+                for (const auto& [id, count] : now) {
+                    const auto it = expected.find(id);
+                    const auto want = it != expected.end() ? it->second : -1;
+                    if (count != want) {
+                        differences += std::format(" {:06X}={}(expected {})", id, count, want);
+                    }
+                }
+                const bool gemFlagsOk = state.starterGemsGiven == !starterGems.empty() &&
+                    state.starterStage5GemsGiven == !starterGems.empty();
+                const bool ok = state.starterCurrencyGiven == currencyOn && gemFlagsOk && differences.empty() &&
+                    now.size() == expected.size();
+                CheckFirstInstall(FirstInstallCheck::Grant, ok, std::format(
+                    "after {:.2f}s: INI gems/currency={}/{}, flags gems/stage5/currency={}/{}/{} (generation {} starter gems={}), "
+                    "mismatches=[{} ], forms={}.",
+                    elapsed, gemsOn, currencyOn, state.starterGemsGiven, state.starterStage5GemsGiven, state.starterCurrencyGiven,
+                    generation, starterGems.size(), differences, now.size()));
+                g_firstInstall.afterGrant = now;
+                g_firstInstall.flagsAfterGrant = state;
+                BeginGemsFinalSave();
                 break;
             }
             case Step::BagPlain: {
@@ -3166,8 +3283,14 @@ namespace SkyrimPoE::Runtime
                     write.generation && IsCleanupTarget(*write.generation) && write.generation->buildId == g_gems.buildId &&
                     std::ranges::find(write.recordTypes, Core::kRecordMigration) == write.recordTypes.end();
                 if (callback && !(ess && skse) && elapsed < kScenarioASaveTimeoutSec) break;
-                CheckGems(g_gems.gen1Cast ? CheckId::SparkSave : CheckId::CleanupSave, callback && ess && skse,
-                    std::format("callback={}, essUpdated={}, skseUpdated={}.", callback, ess, skse));
+                if (g_cfg.firstInstall) {
+                    CheckFirstInstall(FirstInstallCheck::Save, callback && ess && skse,
+                        std::format("callback={}, essUpdated={}, skseUpdated={}, wroteGeneration={}.", callback, ess, skse,
+                            write.wroteGeneration));
+                } else {
+                    CheckGems(g_gems.gen1Cast ? CheckId::SparkSave : CheckId::CleanupSave, callback && ess && skse,
+                        std::format("callback={}, essUpdated={}, skseUpdated={}.", callback, ess, skse));
+                }
                 if (!callback || !ess || !skse) fail("Final slot write failed.");
                 else BeginGemsLoad(Step::Reload);
                 break;
@@ -3177,6 +3300,34 @@ namespace SkyrimPoE::Runtime
                     BlockGemsManualSaves(*player);
                     if (generation != 1 || !ModState::AllowsGameplay() || !SaveLoad::GetLastLoadDiagnostics().collectionComplete) {
                         fail("Final slot did not load into the generation-one world.");
+                        break;
+                    }
+                    if (g_cfg.firstInstall) {
+                        // 다시 불러오면 모드 기록이 있는 세대 1 세이브로 정상 판정되고, 시작 물건은 더 주지 않는다.
+                        const auto load = SaveLoad::GetLastLoadDiagnostics();
+                        const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
+                            load.receivedLoad;
+                        const bool genr = load.generation && load.generation->status == Core::GenerationRecordStatus::Valid &&
+                            IsCleanupTarget(load.generation->value);
+                        // 다시 불러온 뒤의 초기화(주 갱신 큐)가 끝날 시간을 둔다.
+                        if (elapsed < 2.0) break;
+                        const auto now = CaptureCleanupStarterItems(player);
+                        const auto state = SaveLoad::GetStateCopy();
+                        const auto& granted = g_firstInstall.flagsAfterGrant;
+                        const bool flagsKept = state.starterGemsGiven == granted.starterGemsGiven &&
+                            state.starterStage5GemsGiven == granted.starterStage5GemsGiven &&
+                            state.starterCurrencyGiven == granted.starterCurrencyGiven;
+                        std::string differences;
+                        for (const auto& [id, count] : now) {
+                            const auto it = g_firstInstall.afterGrant.find(id);
+                            const auto saved = it != g_firstInstall.afterGrant.end() ? it->second : -1;
+                            if (count != saved) differences += std::format(" {:06X}={}->{}", id, saved, count);
+                        }
+                        CheckFirstInstall(FirstInstallCheck::Reload, normal && genr && flagsKept && differences.empty(),
+                            std::format("decision={}, receivedLoad={}, GENR valid poe2/1={}, flags kept={}, starter item changes=[{} ].",
+                                load.decision ? SaveDispositionName(load.decision->disposition) : "none", load.receivedLoad, genr, flagsKept,
+                                differences));
+                        FinishAndScheduleQuit("First-install run finished.");
                         break;
                     }
                     if (!g_gems.gen1Cast) {
@@ -6075,6 +6226,19 @@ namespace SkyrimPoE::Runtime
     {
         if (!IsEnabled()) {
             return;
+        }
+        {
+            std::scoped_lock lock(g_msgMutex);
+            if (!g_preLoadMatched) {
+                return;
+            }
+        }
+        if (succeeded && g_cfg.firstInstall) {
+            // 로드 완료 메시지는 초기 지급 예약(주 갱신 큐)보다 먼저 온다. 그래서 여기서 잰 수가 지급 전 기준이다.
+            // 엔진 인벤토리는 메시지 잠금 밖에서 읽는다.
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                g_firstInstall.atLoad = CaptureCleanupStarterItems(player);
+            }
         }
         std::scoped_lock lock(g_msgMutex);
         if (!std::exchange(g_preLoadMatched, false)) {

@@ -57,6 +57,9 @@ namespace SkyrimPoE::Runtime
             bool saveOnly = false;
             bool cleanupOnly = false;
             bool gemsOnly = false;
+            // "firstinstall": 모드 기록 없는 세이브로 세대 1 시험 세계에 처음 들어가는 경로. 젬 시험의 세대 1 시험 세계·저장 차단·
+            // 최종 슬롯 장치를 그대로 쓰므로 gemsOnly도 함께 켠다(판정은 따로).
+            bool firstInstall = false;
         };
 
         inline std::string Trim(std::string_view sv)
@@ -288,18 +291,22 @@ namespace SkyrimPoE::Runtime
                     if (mode.empty()) {
                         continue;
                     }
-                    if (mode != "h27" && mode != "es" && mode != "save" && mode != "cleanup" && mode != "gems") {
+                    if (mode != "h27" && mode != "es" && mode != "save" && mode != "cleanup" && mode != "gems" &&
+                        mode != "firstinstall") {
                         return std::nullopt;
                     }
-                    if ((out.cleanupOnly && mode != "cleanup") || (out.gemsOnly && mode != "gems") ||
-                        ((mode == "cleanup" || mode == "gems") && (out.routeOnly || out.enemyEsOnly || out.saveOnly))) {
+                    const bool gemsWorld = mode == "gems" || mode == "firstinstall";
+                    if ((out.cleanupOnly && mode != "cleanup") || (out.gemsOnly && !out.firstInstall && mode != "gems") ||
+                        (out.firstInstall && mode != "firstinstall") ||
+                        ((mode == "cleanup" || gemsWorld) && (out.routeOnly || out.enemyEsOnly || out.saveOnly))) {
                         return std::nullopt;
                     }
                     out.routeOnly = mode == "h27";
                     out.enemyEsOnly = mode == "es";
                     out.saveOnly = mode == "save";
                     out.cleanupOnly = mode == "cleanup";
-                    out.gemsOnly = mode == "gems";
+                    out.gemsOnly = gemsWorld;
+                    out.firstInstall = mode == "firstinstall";
                 } else if (key == "timeout_sec") {
                     try {
                         const double sec = std::stod(val);

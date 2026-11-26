@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,14 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static std::int32_t CountUniqueTokens(RE::TESObjectREFR* owner);
         [[nodiscard]] static std::array<std::int32_t, Core::kCharmKindCount> CountAllCharms(RE::TESObjectREFR* owner);
         static bool GrantCurrency(RE::TESObjectREFR* owner, Core::CurrencyKind kind, std::int32_t count);
+
+        // 시작 화폐 지급 목록(GiveStarterCurrency와 AutoTest가 같은 표를 쓴다)
+        struct StarterCurrencyGrant
+        {
+            Core::CurrencyKind kind;
+            std::int32_t count;
+        };
+        [[nodiscard]] static std::span<const StarterCurrencyGrant> StarterCurrencyGrants() noexcept;
         static bool ConsumeCurrency(RE::TESObjectREFR* owner, Core::CurrencyKind kind, std::int32_t count);
         static bool GrantToken(
             RE::TESObjectREFR* owner,

@@ -406,13 +406,9 @@ namespace SkyrimPoE::Runtime
         return true;
     }
 
-    std::size_t CraftingRuntime::GiveStarterCurrency(RE::PlayerCharacter* player)
+    std::span<const CraftingRuntime::StarterCurrencyGrant> CraftingRuntime::StarterCurrencyGrants() noexcept
     {
-        if (!player) {
-            return 0;
-        }
-        struct Grant { Core::CurrencyKind kind; std::int32_t count; };
-        constexpr std::array<Grant, 10> kStarterGrants = {{
+        static constexpr std::array<StarterCurrencyGrant, 10> kStarterGrants = {{
             { Core::CurrencyKind::ScrollOfWisdom, 10 },
             { Core::CurrencyKind::Transmutation,   4 },
             { Core::CurrencyKind::Augmentation,    2 },
@@ -424,6 +420,15 @@ namespace SkyrimPoE::Runtime
             { Core::CurrencyKind::Regret,          2 },
             { Core::CurrencyKind::Jeweller,        2 },
         }};
+        return kStarterGrants;
+    }
+
+    std::size_t CraftingRuntime::GiveStarterCurrency(RE::PlayerCharacter* player)
+    {
+        if (!player) {
+            return 0;
+        }
+        const auto kStarterGrants = StarterCurrencyGrants();
         std::size_t grantedKinds = 0;
         for (const auto& g : kStarterGrants) {
             if (GrantCurrency(player, g.kind, g.count)) {
