@@ -11,7 +11,7 @@ if (process.argv.length !== 3) {
 }
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const packDir = join(__dirname, "../../data/packs");
-const rulesByGeneration = ["tree_3_30.json", "gen1/tree.json"]
+const rulesByGeneration = ["gen0/tree.json", "gen1/tree.json"]
   .map((path) => createTreeRules(readJson(join(packDir, path))));
 const cases = readJson(process.argv[2]);
 assert.deepEqual(new Set(cases.map(({ packGeneration }) => packGeneration)), new Set([0, 1]));

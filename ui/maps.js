@@ -138,7 +138,7 @@
     if (btnReenter) {
       const canReenter = !maps.inPackCell && !act.isArena4 && !act.failed && !act.endRequested && portalsRem > 0;
       btnReenter.classList.toggle("hidden", !canReenter);
-      btnReenter.disabled = !canReenter || !maps.packAvailable || maps.travelInProgress;
+      btnReenter.disabled = !canReenter || !maps.packAvailable || maps.entryDisabled || maps.travelInProgress;
     }
     if (btnReturn) {
       const canReturn = inCell || (maps.canRetryReturn && !maps.inPackCell);
@@ -181,7 +181,7 @@
       arena4Status.classList.toggle("done", unlocked);
     }
     if (btnOpenArena4) {
-      btnOpenArena4.disabled = !canEnter || !maps.packAvailable || armed || act.active ||
+      btnOpenArena4.disabled = !canEnter || !maps.packAvailable || maps.entryDisabled || armed || act.active ||
         maps.inPackCell || maps.travelInProgress || trib <= 0;
     }
   }
@@ -262,7 +262,8 @@
 
       const openBtn = el("button", "btn btn-primary", "지도 열기");
       openBtn.type = "button";
-      openBtn.disabled = !maps.packAvailable || armed || act.active || maps.inPackCell || maps.travelInProgress;
+      openBtn.disabled = !maps.packAvailable || maps.entryDisabled || armed || act.active || maps.inPackCell ||
+        maps.travelInProgress;
       openBtn.onclick = () => {
         sendMapCommand({
           op: "mapOpen",
@@ -296,8 +297,10 @@
   function renderAll() {
     if (!lastMapsData) return;
     if (packStatus) {
-      packStatus.hidden = Boolean(lastMapsData.packAvailable);
-      packStatus.textContent = lastMapsData.packUnavailableReason || "";
+      packStatus.hidden = Boolean(lastMapsData.packAvailable) && !lastMapsData.entryDisabled;
+      packStatus.textContent = lastMapsData.entryDisabled
+        ? (lastMapsData.entryDisabledReason || "")
+        : (lastMapsData.packUnavailableReason || "");
     }
     if (travelStatus) {
       travelStatus.hidden = !lastMapsData.travelInProgress && !lastMapsData.unauthorizedInPackCell;

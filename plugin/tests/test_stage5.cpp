@@ -29,7 +29,7 @@ namespace
         if (!init) {
             init = true;
             std::string err;
-            const auto path = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "items_3_30.json";
+            const auto path = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "items.json";
             POE_CHECK(data.LoadFromFile(path, &err));
         }
         return data;
@@ -42,7 +42,7 @@ namespace
         if (!init) {
             init = true;
             std::string err;
-            const auto path = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json";
+            const auto path = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json";
             POE_CHECK(pack.LoadFromFile(path, &err));
         }
         return pack;

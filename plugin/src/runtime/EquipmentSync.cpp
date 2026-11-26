@@ -5,6 +5,7 @@
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/SaveLoad.h"
 
+#include "core/ContentFeatures.h"
 #include "core/ItemAffixParser.h"
 #include "core/ItemCrafting.h"
 
@@ -207,6 +208,14 @@ namespace SkyrimPoE::Runtime
 
         if (poeRecord && (!poeRecord->affixes.empty() || !poeRecord->implicitAffixes.empty() || !poeRecord->uniqueId.empty())) {
             out.stats = Core::ItemAffixParser::ParseItem(*poeRecord, itemData);
+        }
+        if (!Core::ActiveContentFeatures().equipmentStats) {
+            // 결정 244(4.1 W4 11): 세대 1은 P5까지 장비의 PoE 수치가 0이다. 무기·양손·점유 같은 장착 사실은 트리 조건이 쓰므로 남긴다.
+            // (빈 items에서 LookupWeaponBase가 돌려주는 기본 커브 10~18·치명타 5%·공격 속도 1.4와 슬롯 기본값을 쓰지 않는다.)
+            out.reqLevel = out.reqStr = out.reqDex = out.reqInt = 0;
+            out.baseArmour = out.baseEvasion = out.baseEnergyShield = out.baseBlockChance = 0.0;
+            out.baseWeaponPhysMin = out.baseWeaponPhysMax = out.baseWeaponCritChancePct = out.baseWeaponAttackRate = 0.0;
+            out.stats = {};
         }
         return out;
     }

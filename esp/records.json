@@ -1251,7 +1251,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "발동 젬: 치명타 시 시전"
+        "value": "(구판) 발동 젬: 치명타 시 시전"
       },
       {
         "field_path": "Model.File",
@@ -1273,7 +1273,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "스킬 젬: 얼음 회오리"
+        "value": "스킬 젬: 얼음 폭발"
       },
       {
         "field_path": "Model.File",
@@ -1295,7 +1295,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "스킬 젬: 충격 회오리"
+        "value": "(구판) 스킬 젬: 충격 회오리"
       },
       {
         "field_path": "Model.File",
@@ -1317,7 +1317,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 치명타 확률 증가"
+        "value": "(구판) 보조 젬: 치명타 확률 증가"
       },
       {
         "field_path": "Model.File",
@@ -1339,7 +1339,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 근접 물리 피해"
+        "value": "(구판) 보조 젬: 근접 물리 피해"
       },
       {
         "field_path": "Model.File",
@@ -1361,7 +1361,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 포악함"
+        "value": "(구판) 보조 젬: 포악함"
       },
       {
         "field_path": "Model.File",
@@ -1383,7 +1383,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 효과 범위 증가"
+        "value": "(구판) 보조 젬: 효과 범위 증가"
       },
       {
         "field_path": "Model.File",
@@ -1405,7 +1405,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 집중 효과"
+        "value": "(구판) 보조 젬: 집중 효과"
       },
       {
         "field_path": "Model.File",
@@ -3583,7 +3583,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "스킬 젬: 빙결 파동"
+        "value": "(구판) 스킬 젬: 빙결 파동"
       },
       {
         "field_path": "Model.File",
@@ -3649,7 +3649,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 상위 다중 투사체"
+        "value": "(구판) 보조 젬: 상위 다중 투사체"
       },
       {
         "field_path": "Model.File",
@@ -3671,7 +3671,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 연쇄"
+        "value": "(구판) 보조 젬: 연쇄"
       },
       {
         "field_path": "Model.File",
@@ -3693,7 +3693,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 분기"
+        "value": "보조 젬: 갈래"
       },
       {
         "field_path": "Model.File",
@@ -3715,7 +3715,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "보조 젬: 관통"
+        "value": "(구판) 보조 젬: 관통"
       },
       {
         "field_path": "Model.File",
@@ -3759,7 +3759,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "오라 젬: 결의"
+        "value": "(구판) 오라 젬: 결의"
       },
       {
         "field_path": "Model.File",
@@ -3781,7 +3781,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "오라 젬: 은총"
+        "value": "(구판) 오라 젬: 은총"
       },
       {
         "field_path": "Model.File",
@@ -3803,7 +3803,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "오라 젬: 단련"
+        "value": "(구판) 오라 젬: 단련"
       },
       {
         "field_path": "Model.File",
@@ -3825,7 +3825,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "오라 젬: 증오"
+        "value": "(구판) 오라 젬: 증오"
       },
       {
         "field_path": "Model.File",
@@ -3847,7 +3847,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "오라 젬: 진노"
+        "value": "(구판) 오라 젬: 진노"
       },
       {
         "field_path": "Model.File",
@@ -3869,7 +3869,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "오라 젬: 분노"
+        "value": "(구판) 오라 젬: 분노"
       },
       {
         "field_path": "Model.File",
@@ -3891,7 +3891,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "오라 젬: 원소의 순수함"
+        "value": "(구판) 오라 젬: 원소의 순수함"
       },
       {
         "field_path": "Model.File",
@@ -3957,7 +3957,7 @@
     "ops": [
       {
         "field_path": "Name",
-        "value": "가드 젬: 용암 방패"
+        "value": "(구판) 가드 젬: 용암 방패"
       },
       {
         "field_path": "Model.File",
@@ -5798,6 +5798,16 @@
       {
         "field_path": "Weight",
         "value": "0.1"
+      }
+    ]
+  },
+  {
+    "record_type": "GlobalShort",
+    "editorid": "SPOE_ContentGeneration",
+    "ops": [
+      {
+        "field_path": "Data",
+        "value": "1"
       }
     ]
   }

@@ -1,0 +1,720 @@
+{
+  "meta": {
+    "schema": "skyrimpoe.expectedDefense",
+    "schemaVersion": 1,
+    "game": "poe2",
+    "gameVersion": "0.5",
+    "pobVersion": "0.23.1",
+    "extractorVersion": "expected_defense/1",
+    "sourceSha256": {
+      "Data/Bases/body.lua": "e3310c1857cfff9c5df1866512e7e989b85420ef966fbeb5eda47a63213eb3b0",
+      "Data/Bases/boots.lua": "82239c0af41eff5153ddf5f841cc8c7ccc6c77d46f646a4a163f376fde6a580d",
+      "Data/Bases/gloves.lua": "3cff8527bb5afcdc34600ad5a6438c00e76fbb4289249a7b37876d027c0f0a86",
+      "Data/Bases/helmet.lua": "2a348479ad8289c9548407f09f5ffd40231fc0ab39c9304b18065e3410aeb185",
+      "Data/ModItem.lua": "04ae12361929cc9e0d765555fc51bfd39ff795b17cbcbcd4574b77408061cad2",
+      "manifest.xml": "850a36ad315ca510fa7a6cdc64a6b50a3d17eef0789c1e0f5c2ce3c95282f184"
+    }
+  },
+  "rows": [
+    {
+      "level": 1,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 70.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 2,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 70.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 3,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 70.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 4,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 70.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 5,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 77.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 6,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 77.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 7,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 77.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 8,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 77.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 9,
+      "bestArmour": 132.0,
+      "bestEvasion": 93.0,
+      "bestEnergyShield": 77.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 10,
+      "bestArmour": 132.0,
+      "bestEvasion": 132.0,
+      "bestEnergyShield": 87.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 11,
+      "bestArmour": 239.0,
+      "bestEvasion": 232.0,
+      "bestEnergyShield": 105.0,
+      "bestResistTier": 8.0
+    },
+    {
+      "level": 12,
+      "bestArmour": 290.0,
+      "bestEvasion": 232.0,
+      "bestEnergyShield": 111.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 13,
+      "bestArmour": 290.0,
+      "bestEvasion": 232.0,
+      "bestEnergyShield": 111.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 14,
+      "bestArmour": 290.0,
+      "bestEvasion": 232.0,
+      "bestEnergyShield": 111.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 15,
+      "bestArmour": 290.0,
+      "bestEvasion": 232.0,
+      "bestEnergyShield": 111.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 16,
+      "bestArmour": 372.0,
+      "bestEvasion": 317.0,
+      "bestEnergyShield": 134.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 17,
+      "bestArmour": 372.0,
+      "bestEvasion": 317.0,
+      "bestEnergyShield": 134.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 18,
+      "bestArmour": 372.0,
+      "bestEvasion": 317.0,
+      "bestEnergyShield": 134.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 19,
+      "bestArmour": 372.0,
+      "bestEvasion": 317.0,
+      "bestEnergyShield": 134.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 20,
+      "bestArmour": 400.0,
+      "bestEvasion": 317.0,
+      "bestEnergyShield": 134.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 21,
+      "bestArmour": 400.0,
+      "bestEvasion": 317.0,
+      "bestEnergyShield": 134.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 22,
+      "bestArmour": 400.0,
+      "bestEvasion": 357.0,
+      "bestEnergyShield": 144.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 23,
+      "bestArmour": 400.0,
+      "bestEvasion": 357.0,
+      "bestEnergyShield": 144.0,
+      "bestResistTier": 13.0
+    },
+    {
+      "level": 24,
+      "bestArmour": 400.0,
+      "bestEvasion": 357.0,
+      "bestEnergyShield": 144.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 25,
+      "bestArmour": 400.0,
+      "bestEvasion": 357.0,
+      "bestEnergyShield": 144.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 26,
+      "bestArmour": 400.0,
+      "bestEvasion": 426.0,
+      "bestEnergyShield": 161.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 27,
+      "bestArmour": 564.0,
+      "bestEvasion": 426.0,
+      "bestEnergyShield": 170.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 28,
+      "bestArmour": 564.0,
+      "bestEvasion": 491.0,
+      "bestEnergyShield": 180.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 29,
+      "bestArmour": 564.0,
+      "bestEvasion": 491.0,
+      "bestEnergyShield": 180.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 30,
+      "bestArmour": 564.0,
+      "bestEvasion": 491.0,
+      "bestEnergyShield": 180.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 31,
+      "bestArmour": 564.0,
+      "bestEvasion": 491.0,
+      "bestEnergyShield": 180.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 32,
+      "bestArmour": 564.0,
+      "bestEvasion": 491.0,
+      "bestEnergyShield": 180.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 33,
+      "bestArmour": 669.0,
+      "bestEvasion": 595.0,
+      "bestEnergyShield": 205.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 34,
+      "bestArmour": 669.0,
+      "bestEvasion": 595.0,
+      "bestEnergyShield": 205.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 35,
+      "bestArmour": 669.0,
+      "bestEvasion": 595.0,
+      "bestEnergyShield": 205.0,
+      "bestResistTier": 18.0
+    },
+    {
+      "level": 36,
+      "bestArmour": 683.0,
+      "bestEvasion": 615.0,
+      "bestEnergyShield": 205.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 37,
+      "bestArmour": 711.0,
+      "bestEvasion": 615.0,
+      "bestEnergyShield": 205.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 38,
+      "bestArmour": 711.0,
+      "bestEvasion": 636.0,
+      "bestEnergyShield": 205.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 39,
+      "bestArmour": 711.0,
+      "bestEvasion": 636.0,
+      "bestEnergyShield": 205.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 40,
+      "bestArmour": 711.0,
+      "bestEvasion": 636.0,
+      "bestEnergyShield": 225.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 41,
+      "bestArmour": 711.0,
+      "bestEvasion": 636.0,
+      "bestEnergyShield": 225.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 42,
+      "bestArmour": 711.0,
+      "bestEvasion": 636.0,
+      "bestEnergyShield": 225.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 43,
+      "bestArmour": 711.0,
+      "bestEvasion": 636.0,
+      "bestEnergyShield": 225.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 44,
+      "bestArmour": 711.0,
+      "bestEvasion": 636.0,
+      "bestEnergyShield": 225.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 45,
+      "bestArmour": 878.0,
+      "bestEvasion": 792.0,
+      "bestEnergyShield": 256.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 46,
+      "bestArmour": 878.0,
+      "bestEvasion": 792.0,
+      "bestEnergyShield": 256.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 47,
+      "bestArmour": 878.0,
+      "bestEvasion": 792.0,
+      "bestEnergyShield": 256.0,
+      "bestResistTier": 23.0
+    },
+    {
+      "level": 48,
+      "bestArmour": 912.0,
+      "bestEvasion": 823.0,
+      "bestEnergyShield": 265.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 49,
+      "bestArmour": 912.0,
+      "bestEvasion": 823.0,
+      "bestEnergyShield": 266.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 50,
+      "bestArmour": 926.0,
+      "bestEvasion": 832.0,
+      "bestEnergyShield": 268.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 51,
+      "bestArmour": 982.0,
+      "bestEvasion": 889.0,
+      "bestEnergyShield": 282.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 52,
+      "bestArmour": 1000.0,
+      "bestEvasion": 906.0,
+      "bestEnergyShield": 286.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 53,
+      "bestArmour": 1000.0,
+      "bestEvasion": 906.0,
+      "bestEnergyShield": 286.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 54,
+      "bestArmour": 1035.0,
+      "bestEvasion": 937.0,
+      "bestEnergyShield": 294.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 55,
+      "bestArmour": 1035.0,
+      "bestEvasion": 937.0,
+      "bestEnergyShield": 294.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 56,
+      "bestArmour": 1035.0,
+      "bestEvasion": 959.0,
+      "bestEnergyShield": 294.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 57,
+      "bestArmour": 1049.0,
+      "bestEvasion": 959.0,
+      "bestEnergyShield": 294.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 58,
+      "bestArmour": 1077.0,
+      "bestEvasion": 959.0,
+      "bestEnergyShield": 305.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 59,
+      "bestArmour": 1122.0,
+      "bestEvasion": 1020.0,
+      "bestEnergyShield": 316.0,
+      "bestResistTier": 28.0
+    },
+    {
+      "level": 60,
+      "bestArmour": 1122.0,
+      "bestEvasion": 1020.0,
+      "bestEnergyShield": 316.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 61,
+      "bestArmour": 1122.0,
+      "bestEvasion": 1020.0,
+      "bestEnergyShield": 316.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 62,
+      "bestArmour": 1143.0,
+      "bestEvasion": 1040.0,
+      "bestEnergyShield": 321.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 63,
+      "bestArmour": 1143.0,
+      "bestEvasion": 1040.0,
+      "bestEnergyShield": 321.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 64,
+      "bestArmour": 1143.0,
+      "bestEvasion": 1040.0,
+      "bestEnergyShield": 321.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 65,
+      "bestArmour": 1301.0,
+      "bestEvasion": 1117.0,
+      "bestEnergyShield": 374.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 66,
+      "bestArmour": 1301.0,
+      "bestEvasion": 1117.0,
+      "bestEnergyShield": 374.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 67,
+      "bestArmour": 1301.0,
+      "bestEvasion": 1117.0,
+      "bestEnergyShield": 374.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 68,
+      "bestArmour": 1326.0,
+      "bestEvasion": 1117.0,
+      "bestEnergyShield": 374.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 69,
+      "bestArmour": 1326.0,
+      "bestEvasion": 1117.0,
+      "bestEnergyShield": 374.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 70,
+      "bestArmour": 1363.0,
+      "bestEvasion": 1218.0,
+      "bestEnergyShield": 389.0,
+      "bestResistTier": 33.0
+    },
+    {
+      "level": 71,
+      "bestArmour": 1363.0,
+      "bestEvasion": 1218.0,
+      "bestEnergyShield": 389.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 72,
+      "bestArmour": 1363.0,
+      "bestEvasion": 1218.0,
+      "bestEnergyShield": 389.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 73,
+      "bestArmour": 1363.0,
+      "bestEvasion": 1218.0,
+      "bestEnergyShield": 389.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 74,
+      "bestArmour": 1363.0,
+      "bestEvasion": 1218.0,
+      "bestEnergyShield": 389.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 75,
+      "bestArmour": 1399.0,
+      "bestEvasion": 1252.0,
+      "bestEnergyShield": 403.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 76,
+      "bestArmour": 1399.0,
+      "bestEvasion": 1252.0,
+      "bestEnergyShield": 403.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 77,
+      "bestArmour": 1399.0,
+      "bestEvasion": 1252.0,
+      "bestEnergyShield": 403.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 78,
+      "bestArmour": 1399.0,
+      "bestEvasion": 1252.0,
+      "bestEnergyShield": 403.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 79,
+      "bestArmour": 1399.0,
+      "bestEvasion": 1252.0,
+      "bestEnergyShield": 403.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 80,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 81,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 38.0
+    },
+    {
+      "level": 82,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 83,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 84,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 85,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 86,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 87,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 88,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 89,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 90,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 91,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 92,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 93,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 94,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 95,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 96,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 97,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 98,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 99,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    },
+    {
+      "level": 100,
+      "bestArmour": 1436.0,
+      "bestEvasion": 1284.0,
+      "bestEnergyShield": 417.0,
+      "bestResistTier": 43.0
+    }
+  ]
+}

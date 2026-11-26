@@ -16,7 +16,7 @@ namespace
         static bool loaded = false;
         if (!loaded) {
             std::string err;
-            const std::filesystem::path p = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "tree_3_30.json";
+            const std::filesystem::path p = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "tree.json";
             POE_CHECK(tree.LoadFromFile(p, &err));
             loaded = true;
         }
@@ -39,7 +39,7 @@ namespace
     }
 }
 
-POE_TEST("PassiveTreeData: loads real tree_3_30.json with 7 classes, 19 ascendancies, 2678 nodes, 353 masteries")
+POE_TEST("PassiveTreeData: loads real tree.json with 7 classes, 19 ascendancies, 2678 nodes, 353 masteries")
 {
     const auto& tree = LoadRealTree();
     POE_CHECK(tree.IsLoaded());

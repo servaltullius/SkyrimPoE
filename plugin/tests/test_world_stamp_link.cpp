@@ -256,7 +256,7 @@ POE_TEST("WorldStampLink: save-boundary restore relinks once and re-equips via r
 {
     DataPack pack;
     std::string err;
-    const auto packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json";
+    const auto packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json";
     POE_CHECK(pack.LoadFromFile(packPath, &err));
 
     // 1. 젬 X를 바닥에 버려 (kGroundRefA:0x7F22) 스탬프 기록 후, 주운 직후(재바인딩 전) 저장·로드 경계 시뮬레이션

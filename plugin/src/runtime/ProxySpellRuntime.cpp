@@ -54,6 +54,9 @@ namespace SkyrimPoE::Runtime
         std::unordered_map<const RE::MagicCaster*, PendingCastAuth> g_pendingAuthByCaster;
         std::atomic<std::uint64_t> g_handCastCount{ 0 };
         std::atomic<std::uint64_t> g_guardActivationCount{ 0 };
+        std::atomic<std::uint64_t> g_dllMagickaChargeCount{ 0 };
+        std::atomic<double> g_lastDllMagickaCharge{ 0.0 };
+        std::atomic<std::uint8_t> g_lastDllMagickaChargeSlot{ 0 };
         bool g_hooksInstalled = false;
         double g_lastSyncedGuardArmour = 0.0;
         std::uint64_t g_lastSyncedSnapVersion = 0;
@@ -583,8 +586,11 @@ namespace SkyrimPoE::Runtime
                 -static_cast<float>(castOpt->skyrimHealthCost));
         }
         if (payMagicka && castOpt->skyrimMagickaCost > 0.0) {
-            av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka,
-                -static_cast<float>(castOpt->skyrimMagickaCost));
+            const float charged = static_cast<float>(castOpt->skyrimMagickaCost);
+            av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kMagicka, -charged);
+            g_lastDllMagickaCharge.store(static_cast<double>(charged), std::memory_order_relaxed);
+            g_lastDllMagickaChargeSlot.store(slotIndex, std::memory_order_relaxed);
+            g_dllMagickaChargeCount.fetch_add(1, std::memory_order_release);
         }
 
         RE::NiPoint3 origin{}, dir{};
@@ -680,6 +686,16 @@ namespace SkyrimPoE::Runtime
     std::uint64_t ProxySpellRuntime::GuardActivationCount() noexcept
     {
         return g_guardActivationCount.load(std::memory_order_relaxed);
+    }
+
+    ProxySpellRuntime::MagickaChargeDiagnostics ProxySpellRuntime::GetMagickaChargeDiagnostics() noexcept
+    {
+        const auto count = g_dllMagickaChargeCount.load(std::memory_order_acquire);
+        return {
+            count,
+            g_lastDllMagickaCharge.load(std::memory_order_relaxed),
+            g_lastDllMagickaChargeSlot.load(std::memory_order_relaxed)
+        };
     }
 
     void ProxySpellRuntime::ResetOnRevert()

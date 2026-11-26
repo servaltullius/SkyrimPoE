@@ -84,9 +84,35 @@ namespace SkyrimPoE::Core
     {
         try {
             const auto root = nlohmann::json::parse(jsonText.begin(), jsonText.end());
+            if (root.is_object() && root.contains("meta") && root["meta"].is_object() &&
+                root["meta"].value("contentGeneration", nlohmann::json()) == 1) {
+                // 결정 239·244: 세대 1 items(schemaVersion 3)는 메타만 있는 빈 팩이다. 다른 키가 있으면 거부한다.
+                const auto& meta = root["meta"];
+                const auto version = meta.value("schemaVersion", nlohmann::json());
+                if (root.size() != 1 || meta.value("schema", std::string()) != "skyrimpoe.items" ||
+                    !version.is_number_integer() || version != 3 || meta.value("game", std::string()) != "poe2") {
+                    if (errorOut) {
+                        *errorOut = "세대 1 items.json은 meta만 있는 빈 팩(skyrimpoe.items 3, poe2)이어야 합니다.";
+                    }
+                    return false;
+                }
+                affixes_.clear();
+                byId_.clear();
+                currencies_.clear();
+                beltBases_.clear();
+                charms_.clear();
+                monsterMods_.clear();
+                uniques_.clear();
+                uniqueById_.clear();
+                armorCurves_.clear();
+                weaponCurves_.clear();
+                generation_ = 1;
+                loaded_ = true;
+                return true;
+            }
             if (!root.is_object() || !root.contains("affixes") || !root["affixes"].is_array()) {
                 if (errorOut) {
-                    *errorOut = "items_3_30.json에 affixes 배열이 없습니다.";
+                    *errorOut = "items.json에 affixes 배열이 없습니다.";
                 }
                 return false;
             }
@@ -317,11 +343,12 @@ namespace SkyrimPoE::Core
             uniqueById_ = std::move(loadedUniqueById);
             armorCurves_ = std::move(loadedArmorCurves);
             weaponCurves_ = std::move(loadedWeaponCurves);
+            generation_ = 0;
             loaded_ = !affixes_.empty();
             return loaded_;
         } catch (const std::exception& ex) {
             if (errorOut) {
-                *errorOut = std::string("items_3_30.json 파싱 실패: ") + ex.what();
+                *errorOut = std::string("items.json 파싱 실패: ") + ex.what();
             }
             return false;
         }

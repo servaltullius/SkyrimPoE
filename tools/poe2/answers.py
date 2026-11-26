@@ -428,7 +428,7 @@ def conversion_cases(rules, ini):
     life_table = rules["levelTables"]["life"]
     k = config.getfloat("OffenseK")
     rollback = config.getfloat("OffenseRollback")
-    classes = {entry["name"]: entry for entry in json.loads((ROOT / "data/packs/core_3_30.json").read_bytes())["classes"]}
+    classes = {entry["name"]: entry for entry in json.loads((ROOT / "data/packs/gen0/core.json").read_bytes())["classes"]}
     scion = classes["Scion"]
     for level in (1, 20, 50, 80, 100):
         cases.append(case(f"offense-life-lv{level}", {"level": level, "offenseK": k, "offenseRollback": rollback},

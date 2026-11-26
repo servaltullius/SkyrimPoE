@@ -36,7 +36,7 @@ POE_TEST("Stage6 MapSystem: T1-T16 monster levels and 16 map affixes")
 
     ItemData items;
     std::string err;
-    POE_CHECK(items.LoadFromFile(DataDir() / "packs" / "items_3_30.json", &err));
+    POE_CHECK(items.LoadFromFile(DataDir() / "packs" / "gen0" / "items.json", &err));
 
     // 지도 어픽스 16종 제작 격리 검증: 일반 장비 어픽스가 섞이지 않아야 함(검수 M-3)
     std::mt19937_64 rng(60601);
@@ -73,7 +73,7 @@ POE_TEST("Stage6 Atlas & PassiveTree: 123 normal points (99 + 16 atlas + 8 miles
 {
     PassiveTreeData tree;
     std::string err;
-    POE_CHECK(tree.LoadFromFile(DataDir() / "packs" / "tree_3_30.json", &err));
+    POE_CHECK(tree.LoadFromFile(DataDir() / "packs" / "gen0" / "tree.json", &err));
 
     Config cfg;
     PassiveTreeState state;
@@ -121,7 +121,7 @@ POE_TEST("Stage6 StatEngine: exile level, map penalties, and 4th milestone Spiri
 {
     DataPack pack;
     std::string err;
-    POE_CHECK(pack.LoadFromFile(DataDir() / "packs" / "core_3_30.json", &err));
+    POE_CHECK(pack.LoadFromFile(DataDir() / "packs" / "gen0" / "core.json", &err));
 
     Config cfg;
     StatEngine engine;
@@ -220,7 +220,7 @@ POE_TEST("Stage6 Portal Transactions, Arena4 3-Phase Boss Clamp, and Map/Tribute
     // 4. LootTable: T6 지도 보스 처치 시 지도 확정 드랍 + 첫 T6+ 공물 확정 드랍 + 오픈월드 Lv49 미드랍 / Lv50+ T1 드랍
     ItemData items;
     std::string err;
-    POE_CHECK(items.LoadFromFile(DataDir() / "packs" / "items_3_30.json", &err));
+    POE_CHECK(items.LoadFromFile(DataDir() / "packs" / "gen0" / "items.json", &err));
     Config cfg;
     std::mt19937_64 rng(12345);
     const auto drops = LootTable::RollKillDrops(73, true, false, cfg, items, rng, MonsterRarity::Rare, 6, 40.0, 30.0, true);

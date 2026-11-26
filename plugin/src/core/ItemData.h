@@ -143,6 +143,9 @@ namespace SkyrimPoE::Core
         bool LoadFromJsonString(std::string_view jsonText, std::string* errorOut = nullptr);
 
         [[nodiscard]] bool IsLoaded() const noexcept { return loaded_; }
+        // 결정 239·244: 세대 1 items는 메타만 있는 빈 팩이다. 적재는 정상이지만 아이템 내용이 없다.
+        [[nodiscard]] bool HasItemContent() const noexcept { return loaded_ && !affixes_.empty(); }
+        [[nodiscard]] std::uint32_t Generation() const noexcept { return generation_; }
         [[nodiscard]] const std::vector<AffixDefinition>& AllAffixes() const noexcept { return affixes_; }
         [[nodiscard]] const AffixDefinition* FindAffix(std::string_view id) const;
         [[nodiscard]] const std::vector<CurrencyMetadata>& AllCurrencies() const noexcept { return currencies_; }
@@ -195,6 +198,7 @@ namespace SkyrimPoE::Core
 
     private:
         bool loaded_ = false;
+        std::uint32_t generation_ = 0;
         std::vector<AffixDefinition> affixes_;
         std::unordered_map<std::string, std::size_t> byId_;
         std::vector<CurrencyMetadata> currencies_;

@@ -38,13 +38,13 @@ namespace
     const SaveGeneration kGen0{ "poe1", 0, "3.30", "legacy", "0.1.0" };
     const SaveGeneration kGen1{ "poe2", 1, "0.5", "content", "0.1.0" };
 
-    DataPack LoadCatalogs()
+    DataPack LoadPack(std::uint32_t generation)
     {
         DataPack pack;
         std::string error;
         const std::filesystem::path data(POE_TEST_DATA_DIR);
-        if (!pack.LoadFromFile(data / "packs/core_3_30.json", &error) ||
-            !pack.LoadGen1GemsFromFile(data / "packs/gen1/gems.json", &error)) {
+        const auto rel = generation == 0 ? "packs/gen0/core.json" : "packs/gen1/core.json";
+        if (!pack.LoadFromFile(data / rel, &error)) {
             throw std::runtime_error(error);
         }
         return pack;
@@ -133,7 +133,8 @@ POE_TEST("Gem form tables round trip each legacy key, content ID and physical fo
         if (!physical.legacyId.empty()) POE_CHECK(LegacyReturnForm(physical.legacyId) == physical.localFormId);
         if (!physical.contentId.empty()) POE_CHECK(FindContent(physical.contentId)->localFormId == physical.localFormId);
     }
-    POE_CHECK(!kGenerationGlobal.has_value());
+    // G1(결정 204·231): houseCARL이 차례로 준 세대 GLOB 번호를 장부에서 생성한다.
+    POE_CHECK(kGenerationGlobal == 0x8E2u);
 }
 
 POE_TEST("Gem consumers keep the generation-zero IDs and apply the generation-one sets")
@@ -181,13 +182,15 @@ POE_TEST("Gem consumers keep the generation-zero IDs and apply the generation-on
     }
 }
 
-POE_TEST("Gem catalog loads uninfused Spark from gen1 JSON and keeps the legacy catalog independent")
+POE_TEST("Gem catalog loads uninfused Spark from gen1 core and keeps the legacy catalog independent")
 {
-    const auto pack = LoadCatalogs();
-    for (const auto& key : kContentKeys) POE_CHECK(pack.FindGem(std::string(key.contentId), 1));
-    POE_CHECK(pack.AllGems().size() == 28 && pack.FindGem("Spark", 0));
-    POE_CHECK(!pack.FindGem("Spark", 1) && !pack.FindGem("gem.Spark", 0));
-    const auto* spark = pack.FindGem("gem.Spark", 1);
+    const auto pack0 = LoadPack(0);
+    const auto pack1 = LoadPack(1);
+    for (const auto& key : kContentKeys) POE_CHECK(pack1.FindGem(std::string(key.contentId), 1));
+    POE_CHECK(pack0.AllGems().size() == 28 && pack0.FindGem("Spark", 0));
+    POE_CHECK(pack1.AllGems().size() == 43);
+    POE_CHECK(!pack1.FindGem("Spark", 1) && !pack0.FindGem("gem.Spark", 0) && !pack1.FindGem("gem.Spark", 0));
+    const auto* spark = pack1.FindGem("gem.Spark", 1);
     POE_CHECK(spark && spark->kind == GemKind::Spell);
     const auto* level = spark->GetLevel(1);
     POE_CHECK(level && level->manaCost == 5);
@@ -196,71 +199,17 @@ POE_TEST("Gem catalog loads uninfused Spark from gen1 JSON and keeps the legacy 
     POE_CHECK(level->GetStat("base_number_of_projectiles") == 4);
 }
 
-POE_TEST("Staged gem validation binds the exact catalog bytes to the current build")
-{
-    namespace fs = std::filesystem;
-    using nlohmann::json;
-    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    const auto root = fs::temp_directory_path() / ("skyrimpoe-staged-gems-" + std::to_string(nonce));
-    POE_CHECK(fs::create_directory(root));
-    struct ScratchCleanup
-    {
-        fs::path path;
-        ~ScratchCleanup()
-        {
-            std::error_code error;
-            fs::remove_all(path, error);
-        }
-    } cleanup{ root };
-    const auto catalogPath = root / kStagedGemsPath;
-    const auto manifestPath = root / kContentManifestPath;
-    fs::create_directories(catalogPath.parent_path());
-
-    const std::string build = "1234567890abcdef";
-    auto catalog = json::parse(ReadContentFile(fs::path(POE_TEST_DATA_DIR) / "packs/gen1/gems.json"));
-    catalog["meta"]["buildId"] = build;
-    const auto valid = catalog.dump();
-    auto write = [](const fs::path& path, const std::string& contents) {
-        std::ofstream out(path, std::ios::binary);
-        POE_CHECK(static_cast<bool>(out << contents));
-    };
-    const auto manifest = [&](std::string_view bytes) {
-        write(manifestPath, json{
-            { "manifestVersion", 1 }, { "buildId", build },
-            { "staged", json::array({ { { "path", kStagedGemsPath }, { "sha256", ContentSha256(bytes) } } }) }
-        }.dump());
-    };
-    POE_CHECK(ContentSha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    manifest(valid);
-    DataPack pack;
-    std::string error;
-    POE_CHECK(!LoadStagedGems(pack, root, build, error));  // Missing catalog.
-    POE_CHECK(!pack.FindGem("gem.Spark", 1));
-    write(catalogPath, valid);
-    POE_CHECK(LoadStagedGems(pack, root, build, error));
-    POE_CHECK(pack.FindGem("gem.Spark", 1));
-
-    write(catalogPath, valid + " ");
-    POE_CHECK(!LoadStagedGems(pack, root, build, error));
-    POE_CHECK(error.contains("SHA-256"));
-    catalog["meta"]["buildId"] = "0000000000000000";
-    const auto otherBuild = catalog.dump();
-    write(catalogPath, otherBuild);
-    manifest(otherBuild);
-    POE_CHECK(!LoadStagedGems(pack, root, build, error));
-    POE_CHECK(error.contains("catalog buildId"));
-    POE_CHECK(pack.FindGem("gem.Spark", 1));
-}
-
 POE_TEST("Spark hand cast takes cost, lightning range and projectile count from the world catalog")
 {
-    const auto pack = LoadCatalogs();
+    const auto pack0 = LoadPack(0);
+    const auto pack1 = LoadPack(1);
     Config config;
     config.enforceGemRequirements = true;
     StatEngine stats;
     SkillSystem skills;
     constexpr double baseMagicka = 100.0;
     for (std::uint32_t generation : { 0u, 1u, 0u }) {
+        const auto& pack = generation == 0 ? pack0 : pack1;
         Layer1Input input;
         input.gemGeneration = generation;
         input.passives.resoluteTechnique = true;
@@ -313,15 +262,16 @@ POE_TEST("Gem use distinguishes legacy, not-ready and available while recognizin
 
 POE_TEST("Generation-one equip and socket reject before touching the inventory or slots")
 {
-    const auto pack = LoadCatalogs();
+    const auto pack0 = LoadPack(0);
+    const auto pack1 = LoadPack(1);
     std::array<SkillSlot, kSkillSlotCount> slots{};
     std::uint64_t nextId = 1;
     Inventory inventory;
-    POE_CHECK(GemTransaction::EquipSkillGem(slots, nextId, 0, {}, "gem.Spark", 0, pack, inventory, 1).ok);
+    POE_CHECK(GemTransaction::EquipSkillGem(slots, nextId, 0, {}, "gem.Spark", 0, pack1, inventory, 1).ok);
     for (const auto id : { "ShockNova", "gem.FrostBolt", "SupportChain", "sup.Chain1" }) {
         const auto expected = UseReasonText(ClassifyUse(1, id).reason);
-        const auto equip = GemTransaction::EquipSkillGem(slots, nextId, 0, {}, id, 0, pack, inventory, 1);
-        const auto socket = GemTransaction::SocketSubGem(slots, nextId, 0, -1, {}, id, 0, pack, inventory, 1);
+        const auto equip = GemTransaction::EquipSkillGem(slots, nextId, 0, {}, id, 0, pack1, inventory, 1);
+        const auto socket = GemTransaction::SocketSubGem(slots, nextId, 0, -1, {}, id, 0, pack1, inventory, 1);
         POE_CHECK(!equip.ok && equip.message == expected && !socket.ok && socket.message == expected);
         POE_CHECK(inventory.takes == 1 && inventory.returns == 0 && nextId == 2);
         POE_CHECK(slots[0].gem.gemId == "gem.Spark" && slots[0].gem.instanceId == 1 && slots[0].gem.socketedGems.empty());
@@ -331,14 +281,14 @@ POE_TEST("Generation-one equip and socket reject before touching the inventory o
     slots[1] = { .occupied = true, .gem = { .instanceId = 2, .gemId = "SupportCastOnCriticalStrike" } };
     slots[2] = { .occupied = true, .gem = { .instanceId = 3, .gemId = "Cyclone" } };
     const auto legacyText = UseReasonText(GemUseReason::Legacy);
-    const auto legacyTrigger = GemTransaction::LinkTriggerAttack(slots, 1, 2, pack, 1);
+    const auto legacyTrigger = GemTransaction::LinkTriggerAttack(slots, 1, 2, pack1, 1);
     POE_CHECK(!legacyTrigger.ok && legacyTrigger.message == legacyText && slots[1].linkedAttackSlot == -1);
-    POE_CHECK(GemTransaction::LinkTriggerAttack(slots, 1, 2, pack, 0).ok && slots[1].linkedAttackSlot == 2);
+    POE_CHECK(GemTransaction::LinkTriggerAttack(slots, 1, 2, pack0, 0).ok && slots[1].linkedAttackSlot == 2);
 }
 
 POE_TEST("Generation-one execution rejects before cost and cooldown, including stale computed stats")
 {
-    const auto pack = LoadCatalogs();
+    const auto pack = LoadPack(1);
     const Config config;
     SkillSystem skills;
     StatEngine stats;

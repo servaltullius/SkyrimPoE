@@ -58,6 +58,12 @@ namespace SkyrimPoE::Runtime
             unsigned hits = 0;
             double firstHpLost = 0.0;
             bool crit = false;
+            // 진단: 피해 적용 전 충돌 결과(표적·다른 액터·지형)와 표적 피해 적용 실패 수, 마지막 표적 피해 계산값.
+            unsigned targetImpacts = 0;
+            unsigned otherActorImpacts = 0;
+            unsigned nonActorImpacts = 0;
+            unsigned targetDealFailures = 0;
+            double lastTargetSkyrimDamage = 0.0;
         };
         static void SetHitTargetForTest(RE::FormID actorId);
         [[nodiscard]] static TestHitResult GetHitForTest();

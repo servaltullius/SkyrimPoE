@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace SkyrimPoE::Runtime
 {
@@ -41,6 +42,9 @@ namespace SkyrimPoE::Runtime
 
         // 6단계(결정 166): 아틀라스 영구 진행 상태(T1~T16 첫 클리어 +16 패시브, 첫 공물 지급)
         Core::AtlasState atlas{};
+
+        // 7단계 G1(결정 240·247): 세대 1 이상 시작 물건 지급 기록('STRT' v1). 지급한 순서를 유지한다.
+        std::vector<std::string> starterGrantedIds;
 
         PersistentState()
         {

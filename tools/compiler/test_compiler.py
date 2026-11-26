@@ -58,7 +58,7 @@ class TestStage2Compiler(unittest.TestCase):
         self.assertEqual((marauder["baseStr"], marauder["baseDex"], marauder["baseInt"]), (32, 14, 14))
 
     def test_map_level_life_multipliers(self) -> None:
-        pack_path = self.out_dir / "packs" / "core_3_30.json"
+        pack_path = self.out_dir / "packs" / "gen0" / "core.json"
         table = json.loads(pack_path.read_text(encoding="utf-8"))["tables"]["mapLevelLifeMult"]
         self.assertEqual(len(table), 25)
         self.assertEqual(table["66"], 1.01)

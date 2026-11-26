@@ -262,17 +262,23 @@ namespace SkyrimPoE::Runtime
             auto has = [&](Core::CharmKind k) {
                 return (missingMask & static_cast<std::uint8_t>(1u << static_cast<std::uint8_t>(k))) != 0;
             };
+            const auto& resistance = Core::ActiveRuleValues().resistance;
+            const double resistCap = resistance.capPercent;
+            // 계산 전 스냅숏의 최대 저항은 NaN이다(StatEngine.h). 그때는 규칙의 기본 최대값에서 올린다.
+            const auto raiseMax = [&](double current) {
+                return std::min(resistCap, (std::isfinite(current) ? current : resistance.baseMaxPercent) + 2.0);
+            };
             if (has(Core::CharmKind::Ruby)) {
                 effectiveSnap.fireResist += 25.0;
-                effectiveSnap.maxFireResist = std::min(90.0, effectiveSnap.maxFireResist + 2.0);
+                effectiveSnap.maxFireResist = raiseMax(effectiveSnap.maxFireResist);
             }
             if (has(Core::CharmKind::Sapphire)) {
                 effectiveSnap.coldResist += 25.0;
-                effectiveSnap.maxColdResist = std::min(90.0, effectiveSnap.maxColdResist + 2.0);
+                effectiveSnap.maxColdResist = raiseMax(effectiveSnap.maxColdResist);
             }
             if (has(Core::CharmKind::Topaz)) {
                 effectiveSnap.lightningResist += 25.0;
-                effectiveSnap.maxLightningResist = std::min(90.0, effectiveSnap.maxLightningResist + 2.0);
+                effectiveSnap.maxLightningResist = raiseMax(effectiveSnap.maxLightningResist);
             }
             if (has(Core::CharmKind::Amethyst)) {
                 effectiveSnap.chaosResist += 25.0;

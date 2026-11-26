@@ -383,6 +383,18 @@ namespace SkyrimPoE::Runtime
             auto refPtr = hitHandle.get();
             auto* ref = refPtr.get();
             auto* hitActor = ref ? ref->As<RE::Actor>() : nullptr;
+            if (testHitTarget != 0 && shot.cast.gemId == "gem.Spark") {
+                std::scoped_lock lock(g_shotMutex);
+                if (g_testHitTarget == testHitTarget) {
+                    if (!hitActor) {
+                        ++g_testHitResult.nonActorImpacts;
+                    } else if (hitActor->GetFormID() == testHitTarget) {
+                        ++g_testHitResult.targetImpacts;
+                    } else {
+                        ++g_testHitResult.otherActorImpacts;
+                    }
+                }
+            }
 
             // 프로토타입 6 핵심 규약: AddImpact 3번째 인자는 진행 방향 반대 벡터이므로 반드시 부호 반전!
             const auto travelDir = NormalizeVec(RE::NiPoint3{ -backwardVel.x, -backwardVel.y, -backwardVel.z });
@@ -443,6 +455,15 @@ namespace SkyrimPoE::Runtime
                 ? hitActor->AsActorValueOwner() : nullptr;
             const double hpBefore = watchedValues ? watchedValues->GetActorValue(RE::ActorValue::kHealth) : 0.0;
             const bool dealt = DealSpellHit(hitActor, hit, domType, shot.generation == 0 && shot.isAimedPrimary, targetHit);
+            if (watchedValues) {
+                std::scoped_lock lock(g_shotMutex);
+                if (g_testHitTarget == testHitTarget) {
+                    g_testHitResult.lastTargetSkyrimDamage = hit.skyrimDamage;
+                    if (!dealt) {
+                        ++g_testHitResult.targetDealFailures;
+                    }
+                }
+            }
             if (dealt && watchedValues) {
                 const double hpLost = hpBefore - watchedValues->GetActorValue(RE::ActorValue::kHealth);
                 std::scoped_lock lock(g_shotMutex);

@@ -8,10 +8,37 @@ set(POE_BUILD_ROOT "" CACHE PATH "빌드 산출물을 둘 폴더(프리셋에서
 set(POE_PACKAGE_DIR "${POE_BUILD_ROOT}/package" CACHE PATH "모드 폴더 모양으로 묶은 산출물")
 set(POE_COMMONLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../external/CommonLibSSE-NG" CACHE PATH "저장소의 CommonLibSSE-NG v16.4.0 서브모듈")
 set(POE_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../data" CACHE PATH "데이터 팩·언어 팩 폴더")
-set(POE_ESP_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../esp/SkyrimPoE.esp" CACHE FILEPATH "SkyrimPoE.esp 경로")
+set(POE_CONTENT_GENERATION "1" CACHE STRING "콘텐츠 세대 (0: PoE1, 1: PoE2)")
+set_property(CACHE POE_CONTENT_GENERATION PROPERTY STRINGS "0" "1")
+unset(POE_ESP_FILE CACHE)
 set(POE_MAPS_PACK_DIR "G:/skyrim-build/SkyrimPoE-maps" CACHE PATH "지도 팩 ESP와 목록 파일 폴더")
 set(POE_UI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ui" CACHE PATH "Prisma UI 화면 폴더")
 set(POE_OAR_PACKAGER "${CMAKE_CURRENT_SOURCE_DIR}/../tools/package_oar.py" CACHE FILEPATH "사이클론 OAR 패키징 스크립트")
+
+if(POE_CONTENT_GENERATION STREQUAL "0")
+    set(POE_ESP_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../esp/gen0/SkyrimPoE.esp")
+elseif(POE_CONTENT_GENERATION STREQUAL "1")
+    set(POE_ESP_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../esp/SkyrimPoE.esp")
+else()
+    message(FATAL_ERROR "POE_CONTENT_GENERATION은 0 또는 1이어야 합니다. 지정한 값: '${POE_CONTENT_GENERATION}'")
+endif()
+set(POE_PACK_SOURCE_DIR "${POE_DATA_DIR}/packs/gen${POE_CONTENT_GENERATION}")
+set(POE_RULES_PACK "${POE_DATA_DIR}/packs/rules.json")
+set(missing_content_files "")
+foreach(path IN ITEMS
+    "${POE_PACK_SOURCE_DIR}/core.json"
+    "${POE_PACK_SOURCE_DIR}/tree.json"
+    "${POE_PACK_SOURCE_DIR}/items.json"
+    "${POE_RULES_PACK}"
+    "${POE_ESP_FILE}"
+)
+    if(NOT EXISTS "${path}" OR IS_DIRECTORY "${path}")
+        string(APPEND missing_content_files "\n  ${path}")
+    endif()
+endforeach()
+if(NOT missing_content_files STREQUAL "")
+    message(FATAL_ERROR "콘텐츠 세대 ${POE_CONTENT_GENERATION} 빌드에 필요한 파일이 없습니다:${missing_content_files}")
+endif()
 
 if(NOT POE_BUILD_ROOT)
     message(FATAL_ERROR "POE_BUILD_ROOT가 비어 있습니다. CMakePresets.json의 프리셋으로 구성하세요.")
@@ -36,6 +63,7 @@ add_library(skyrimpoe_core STATIC
     src/core/Config.cpp
     src/core/DataPack.cpp
     src/core/ContentCheck.cpp
+    src/core/ContentFeatures.cpp
     src/core/RulesPack.cpp
     src/core/EspFormCheck.cpp
     src/core/SaveGeneration.cpp
@@ -154,6 +182,7 @@ add_executable(skyrimpoe_tests
     tests/test_stage5.cpp
     tests/test_world_stamp_link.cpp
     tests/test_hit_reaction.cpp
+    tests/test_content_features.cpp
     tests/test_stage6.cpp
     tests/test_map_difficulty.cpp
     tests/test_map_pack.cpp
@@ -172,6 +201,16 @@ target_compile_definitions(skyrimpoe_tests PRIVATE
 )
 target_link_libraries(skyrimpoe_tests PRIVATE skyrimpoe_core)
 add_test(NAME skyrimpoe_core_tests COMMAND skyrimpoe_tests)
+foreach(suite IN ITEMS compiler package esp poe2 save)
+    set(suite_dir "${CMAKE_CURRENT_SOURCE_DIR}/../tools/${suite}")
+    add_test(NAME skyrimpoe_python_${suite}
+        COMMAND "${Python3_EXECUTABLE}" -I -m pytest -q "${suite_dir}"
+        WORKING_DIRECTORY "${suite_dir}"
+    )
+endforeach()
+set_tests_properties(skyrimpoe_python_compiler PROPERTIES
+    ENVIRONMENT "POE_PLUGIN_TEST_EXE=$<TARGET_FILE:skyrimpoe_tests>"
+)
 
 # 4. 모드 폴더 모양 패키징 (DLL + INI + ESP + 데이터/언어 팩 + Prisma UI + 사이클론 OAR)
 # 결정 169, R4: package_mod 실행 시점에 ESP·목록이 한 쌍인지 확인한다.
@@ -224,6 +263,7 @@ endif()
 ]=])
 set(POE_PACKAGE_STAMP "${CMAKE_CURRENT_SOURCE_DIR}/../tools/package/stamp.py")
 add_custom_target(package_mod
+    # 이전 빌드의 팩이 섞이지 않도록 packs를 포함한 패키지 전체를 새로 만든다.
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${POE_PACKAGE_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${POE_PACKAGE_DIR}"
     COMMAND ${CMAKE_COMMAND}
@@ -280,17 +320,11 @@ add_custom_target(package_mod
         "${POE_PACKAGE_DIR}/PrismaUI/views/SkyrimPoE/maps.js"
     COMMAND "${Python3_EXECUTABLE}" "${POE_OAR_PACKAGER}" --package-dir "${POE_PACKAGE_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${POE_DATA_DIR}/packs/core_3_30.json"
-        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/core_3_30.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${POE_DATA_DIR}/packs/tree_3_30.json"
-        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${POE_DATA_DIR}/packs/items_3_30.json"
-        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/items_3_30.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${POE_DATA_DIR}/packs/rules.json"
-        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs/rules.json"
+        "${POE_PACK_SOURCE_DIR}/core.json"
+        "${POE_PACK_SOURCE_DIR}/tree.json"
+        "${POE_PACK_SOURCE_DIR}/items.json"
+        "${POE_RULES_PACK}"
+        "${POE_PACKAGE_DIR}/SKSE/Plugins/SkyrimPoE/packs"
     COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
         stamp --package "${POE_PACKAGE_DIR}" --esp-name SkyrimPoE.esp
     COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
@@ -299,6 +333,9 @@ add_custom_target(package_mod
         manifest --package "${POE_PACKAGE_DIR}"
     COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
         verify --release --package "${POE_PACKAGE_DIR}"
+    # G1 계획 C2·C4: 팩·ESP가 고른 세대의 원천·장부와 같은지 본다.
+    COMMAND "${Python3_EXECUTABLE}" -I "${POE_PACKAGE_STAMP}"
+        sources --package "${POE_PACKAGE_DIR}"
     DEPENDS SkyrimPoE
     VERBATIM
 )

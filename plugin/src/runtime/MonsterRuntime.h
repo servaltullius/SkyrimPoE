@@ -90,6 +90,15 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static std::size_t ActiveHeadhunterStackCount() noexcept;
         [[nodiscard]] static std::size_t PromotedActorCount() noexcept;
 
+        // 결정 259(B0): 자연 승격 게이트 검증용 누적 계측 카운터.
+        struct PromotionGateStats
+        {
+            std::uint64_t gen1GateRejections = 0;
+            std::uint64_t scanEntries = 0;
+            std::uint64_t rollEntries = 0;
+        };
+        [[nodiscard]] static PromotionGateStats GetPromotionGateStatsForTest() noexcept;
+
         // AutoTest F6 결정적 승격 헬퍼
         static void ForcePromoteForTest(
             RE::Actor* actor,

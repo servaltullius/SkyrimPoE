@@ -13,16 +13,7 @@ namespace SkyrimPoE::Core
 {
     struct PoEConstants
     {
-        double lifeBase = 38.0;
-        double lifePerLevel = 12.0;
-        double manaBase = 34.0;
-        double manaPerLevel = 6.0;
-        double resistCap = 75.0;
-        double esRechargeDelay = 2.0;
-        double esRechargeRate = 0.33;
         double monsterDamageMult = 1.5;
-        double armourMitigationCap = 0.90;
-        double minHitChance = 0.05;
     };
 
     struct ExpectedDefenseRow
@@ -100,10 +91,9 @@ namespace SkyrimPoE::Core
     public:
         bool LoadFromFile(const std::filesystem::path& path, std::string* errorOut = nullptr);
         bool LoadFromJsonString(std::string_view jsonText, std::string* errorOut = nullptr);
-        bool LoadGen1GemsFromJsonString(std::string_view jsonText, std::string* errorOut = nullptr);
-        bool LoadGen1GemsFromFile(const std::filesystem::path& path, std::string* errorOut = nullptr);
 
         [[nodiscard]] bool IsLoaded() const noexcept { return loaded_; }
+        [[nodiscard]] std::uint32_t Generation() const noexcept { return generation_; }
         [[nodiscard]] const PoEConstants& Constants() const noexcept { return constants_; }
         [[nodiscard]] double MonsterLife(std::uint32_t level) const noexcept;
         [[nodiscard]] double MonsterDamage(std::uint32_t level) const noexcept;
@@ -115,7 +105,7 @@ namespace SkyrimPoE::Core
         [[nodiscard]] const SkillEffectDefinition* FindGem(const std::string& gemId, std::uint32_t generation = 0) const;
         [[nodiscard]] const std::unordered_map<std::string, SkillEffectDefinition>& AllGems() const noexcept
         {
-            return gems_;
+            return generation_ == 1 ? gen1Gems_ : gems_;
         }
 
         // 보조 젬이 대상 스킬 젬(보조가 추가한 유형 포함)에 호환되는지 판정한다(6.1).
@@ -137,6 +127,7 @@ namespace SkyrimPoE::Core
 
     private:
         bool loaded_ = false;
+        std::uint32_t generation_ = 0;
         PoEConstants constants_;
         std::vector<ExpectedDefenseRow> expectedDefense_;
         std::unordered_map<std::string, ClassBase> classes_;

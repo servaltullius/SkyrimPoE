@@ -3,6 +3,7 @@
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/SkillExecution.h"
+#include "core/ContentFeatures.h"
 #include "core/DamageConversion.h"
 
 #include <algorithm>
@@ -55,6 +56,11 @@ namespace SkyrimPoE::Runtime
         std::atomic<bool> g_engagementTrace{ false };
         std::mutex g_engagementTraceMutex;
         EngagementTraceRun g_engagementTraceRun{};
+
+        // 결정 259(B0): 자연 승격 게이트 누적 계측 카운터.
+        std::atomic<std::uint64_t> g_promoGen1GateRejections{ 0 };
+        std::atomic<std::uint64_t> g_promoScanEntries{ 0 };
+        std::atomic<std::uint64_t> g_promoRollEntries{ 0 };
 
         std::string_view EngagementSourceName(MonsterRuntime::EngagementSource source) noexcept
         {
@@ -273,7 +279,12 @@ namespace SkyrimPoE::Runtime
         }
 
         // 2) 0.5초 주기로 고프로세스 적대 액터 선승격(워커 스레드 락/엔진 API 부하 회피)
+        // 결정 245: 세대 1 패키지는 자연 승격 추첨을 하지 않는다. 위의 적 ES 갱신은 그대로 둔다.
         if (!g_config || !g_config->enableMonsterPromotion) {
+            return;
+        }
+        if (!Core::ActiveContentFeatures().monsterPromotion) {
+            g_promoGen1GateRejections.fetch_add(1, std::memory_order_relaxed);
             return;
         }
         g_scanAccumSec += deltaSec;
@@ -287,6 +298,7 @@ namespace SkyrimPoE::Runtime
         if (!player || !lists || player->IsDead()) {
             return;
         }
+        g_promoScanEntries.fetch_add(1, std::memory_order_relaxed);
 
         for (const auto& handle : lists->highActorHandles) {
             auto actorPtr = handle.get();
@@ -316,6 +328,7 @@ namespace SkyrimPoE::Runtime
                 effCfg.magicMonsterChance = std::clamp(effCfg.magicMonsterChance * boost, 0.0, 0.80);
                 effCfg.rareMonsterChance = std::clamp(effCfg.rareMonsterChance * boost, 0.0, 0.45);
             }
+            g_promoRollEntries.fetch_add(1, std::memory_order_relaxed);
             auto prof = Core::MonsterModSystem::RollPromotion(isBoss, isDragon, maxHp, effCfg, MonsterRng());
             if (prof.rarity != Core::MonsterRarity::Normal) {
                 if (mapOwned && mapMods.forceHasted) {
@@ -707,5 +720,14 @@ namespace SkyrimPoE::Runtime
             g_scanAccumSec = 0.0;
         }
         SyncHeadhunterMaskIfChanged(0);
+    }
+
+    MonsterRuntime::PromotionGateStats MonsterRuntime::GetPromotionGateStatsForTest() noexcept
+    {
+        return {
+            g_promoGen1GateRejections.load(std::memory_order_relaxed),
+            g_promoScanEntries.load(std::memory_order_relaxed),
+            g_promoRollEntries.load(std::memory_order_relaxed),
+        };
     }
 }

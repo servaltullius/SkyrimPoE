@@ -9,6 +9,7 @@
 #include "runtime/SkillExecution.h"
 #include "runtime/WorldDropTracker.h"
 
+#include "core/ContentFeatures.h"
 #include "core/MapSystem.h"
 #include "core/Config.h"
 #include "core/RulesPack.h"
@@ -27,6 +28,7 @@ namespace SkyrimPoE::Runtime
         Core::CharmSystem* g_charmSystem = nullptr;
         RE::BGSKeyword* g_dragonKeyword = nullptr;
         bool g_installed = false;
+        std::atomic<std::uint64_t> g_charmRechargeGateRejections{ 0 };
 
         [[nodiscard]] bool IsDragonActor(const RE::Actor* actor)
         {
@@ -245,8 +247,12 @@ namespace SkyrimPoE::Runtime
                         }
 
                         if (g_charmSystem) {
-                            g_charmSystem->OnKillRecharge(killedProf.rarity, isBoss, isDragon);
-                            SaveLoad::PersistCharmSlotsFromSystem();
+                            if (Core::ActiveContentFeatures().charms) {
+                                g_charmSystem->OnKillRecharge(killedProf.rarity, isBoss, isDragon);
+                                SaveLoad::PersistCharmSlotsFromSystem();
+                            } else {
+                                g_charmRechargeGateRejections.fetch_add(1, std::memory_order_relaxed);
+                            }
                         }
                     }
 
@@ -439,5 +445,10 @@ namespace SkyrimPoE::Runtime
         g_installed = true;
         SKSE::log::info("DeathListener: TESDeathEvent & TESResetEvent sinks registered.");
         return true;
+    }
+
+    DeathListener::GateStats DeathListener::GetGateStatsForTest() noexcept
+    {
+        return { g_charmRechargeGateRejections.load(std::memory_order_relaxed) };
     }
 }

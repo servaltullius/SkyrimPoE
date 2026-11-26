@@ -9,7 +9,7 @@ POE_TEST("StatEngine: base maximum Spirit excludes INI overrides and equipment")
     using namespace SkyrimPoE::Core;
 
     DataPack pack;
-    POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json"));
+    POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json"));
     Config config;
     config.spiritBase = 140;
     config.spiritMilestoneRewards = std::array{ 12u, 12u, 12u, 12u };

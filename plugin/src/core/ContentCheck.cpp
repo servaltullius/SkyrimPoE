@@ -1,5 +1,4 @@
 #include "core/ContentCheck.h"
-#include "core/DataPack.h"
 
 #include <nlohmann/json.hpp>
 
@@ -59,37 +58,6 @@ namespace SkyrimPoE::Core
         return hex;
     }
 
-    bool LoadStagedGems(DataPack& pack, const std::filesystem::path& dataRoot,
-        std::string_view buildId, std::string& error)
-    {
-        try {
-            const auto manifest = nlohmann::json::parse(ReadContentFile(dataRoot / kContentManifestPath));
-            const auto& version = manifest.at("manifestVersion");
-            if (!version.is_number_integer() || version != 1 || manifest.at("buildId").get<std::string>() != buildId) {
-                throw std::runtime_error("staged manifest buildId or version mismatch");
-            }
-            const auto& staged = manifest.at("staged");
-            if (!staged.is_array() || staged.size() != 1 || staged.front().at("path") != kStagedGemsPath) {
-                throw std::runtime_error("manifest must list exactly the staged gem catalog");
-            }
-            const auto bytes = ReadContentFile(dataRoot / kStagedGemsPath);
-            if (staged.front().at("sha256") != ContentSha256(bytes)) {
-                throw std::runtime_error("staged gem catalog SHA-256 mismatch");
-            }
-            const auto root = nlohmann::json::parse(bytes);
-            if (root.at("meta").at("buildId").get<std::string>() != buildId) {
-                throw std::runtime_error("staged gem catalog buildId mismatch");
-            }
-            if (root.at("meta").at("gameVersion") != kStagedGemsGameVersion) {
-                throw std::runtime_error("staged gem catalog gameVersion mismatch");
-            }
-            return pack.LoadGen1GemsFromJsonString(bytes, &error);
-        } catch (const std::exception& e) {
-            error = std::format("{}: {}", kStagedGemsPath, e.what());
-            return false;
-        }
-    }
-
     namespace
     {
         using nlohmann::json;
@@ -104,13 +72,20 @@ namespace SkyrimPoE::Core
         {
             std::string_view game;
             std::uint32_t generation;
+            std::string_view gameVersion;
             std::array<PackSchema, 4> packs;
         };
 
+        // tools/package/stamp.py의 SUPPORTED_CONTENTS와 같아야 한다(test_stamp_sources.py가 대조).
         constexpr SupportedContent kSupportedContents[] = {
-            { "poe1", 0, {{
+            { "poe1", 0, "3.30", {{
                 { "skyrimpoe.core", 1 }, { "skyrimpoe.tree", 1 },
                 { "skyrimpoe.items", 2 }, { "skyrimpoe.rules", 1 },
+            }} },
+            // 7단계 G1(결정 204·239): 세대 1 core v2(결정 250), 트리 v2(P3), 빈 items v3(결정 239·244).
+            { "poe2", 1, "0.5", {{
+                { "skyrimpoe.core", 2 }, { "skyrimpoe.tree", 2 },
+                { "skyrimpoe.items", 3 }, { "skyrimpoe.rules", 1 },
             }} },
         };
 
@@ -299,6 +274,16 @@ namespace SkyrimPoE::Core
             }
             if (!common.buildId) {
                 common.buildId = fields.buildId;
+            }
+        }
+
+        if (common.game && common.generation && gameVersion) {
+            const auto supported = std::ranges::find_if(kSupportedContents, [&](const SupportedContent& content) {
+                return content.game == *common.game && content.generation == *common.generation;
+            });
+            if (supported != std::ranges::end(kSupportedContents) && supported->gameVersion != *gameVersion) {
+                reasons.push_back(std::format("packs: unsupported gameVersion {} for {} generation {} (expected {}).",
+                    *gameVersion, *common.game, *common.generation, supported->gameVersion));
             }
         }
 

@@ -27,6 +27,14 @@ namespace SkyrimPoE::Runtime
         std::size_t damagedRecords = 0;
         std::array<std::size_t, 4> returned{};
         std::array<std::size_t, 4> lostReturns{};
+        // 결정 255: 반환 단계 직전에 읽은 플레이어 가방 기준 수량(젬 62폼 + 화폐 12폼 + 반환 대상 폼, 런타임 FormID 기준)과
+        // 구판 반환 예정·실제 반환 수(폼별).
+        std::vector<std::pair<RE::FormID, std::int32_t>> preReturnCounts;
+        std::map<RE::FormID, std::size_t> plannedReturnsByForm;
+        std::map<RE::FormID, std::size_t> returnedByForm;
+        std::map<std::string, std::size_t> plannedSlottedGems;
+        std::size_t plannedReturnsTotal = 0;
+        std::size_t plannedWithoutForm = 0;
         std::map<RE::FormID, std::size_t> lostReturnsByForm;
         std::size_t lostReturnsWithoutForm = 0;
         std::uint32_t lostCount = 0;
@@ -47,6 +55,7 @@ namespace SkyrimPoE::Runtime
         MapResult map = MapResult::None;
         LegacyRunCloseResult mapClose;
         bool starterGranted = false;
+        Core::StarterGrantDiagnostics starterGrant;
         std::uint32_t tickThreadId = 0;
 
         [[nodiscard]] std::string Describe() const;
@@ -69,12 +78,16 @@ namespace SkyrimPoE::Runtime
     public:
         enum class Phase { None, AwaitingLoad, Escaping, Ready };
 
+        struct StarterGrantOutcome
+        {
+            Core::GemForms::StarterGrantReport report;
+            std::vector<std::string> recordedIds;
+        };
+
         [[nodiscard]] std::string Prepare(const Core::SaveRecordBatch& batch, const Core::SaveGeneration& target,
             const Core::FormIdResolver& resolve, std::uint64_t world);
         void Confirm(std::uint64_t world, RE::PlayerCharacter* player);
         void Reset();
-        void ReleaseForTest() noexcept { releasedForTest_ = true; }
-        [[nodiscard]] bool IsReleasedForTest() const noexcept { return releasedForTest_; }
         [[nodiscard]] Phase GetPhase() const noexcept { return phase_; }
         [[nodiscard]] bool IsForWorld(std::uint64_t world) const noexcept { return world_ == world; }
         [[nodiscard]] MigrationCandidateSnapshot Snapshot(RE::PlayerCharacter* player) const;
@@ -84,7 +97,9 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] std::string_view CheckCommitGate(RE::PlayerCharacter* player) const;
         [[nodiscard]] MigrationDiagnostics Execute(RE::PlayerCharacter* player, RE::ActorValueOwner& values,
             const std::function<MigrationSpeedResult(const Core::MigrationSpeedMod&)>& speed,
-            const std::function<void()>& clearCosave);
+            const std::function<void()>& clearCosave,
+            const std::function<StarterGrantOutcome(std::uint32_t targetGeneration)>& grantStarter,
+            std::uint64_t cleanupTickId);
 
         [[nodiscard]] static bool CanTick(RE::PlayerCharacter* player);
         [[nodiscard]] static RE::TESObjectMISC* ReturnForm(const Core::ReturnEntry& entry);
@@ -102,6 +117,5 @@ namespace SkyrimPoE::Runtime
         bool escapeAttempted_ = false;
         double escapeSeconds_ = 0.0;
         std::optional<std::chrono::steady_clock::time_point> lastEligible_;
-        bool releasedForTest_ = false;
     };
 }

@@ -485,6 +485,103 @@ namespace SkyrimPoE::Core
         return {};
     }
 
+    std::int32_t PassiveTree::ComputePathNormalPointCost(
+        const PassiveTreeData& data,
+        const PassiveTreeState& state,
+        std::span<const std::uint32_t> nodeIds)
+    {
+        const auto alloc = BuildAllocatedSet(state);
+        std::unordered_set<std::uint32_t> counted;
+        std::int32_t cost = 0;
+        for (const auto nid : nodeIds) {
+            if (alloc.contains(nid) || !counted.insert(nid).second) {
+                continue;
+            }
+            const auto* node = data.FindNode(nid);
+            if (!node || !IsAllocatable(*node) || !AscendancyOf(*node, state).empty() ||
+                node->isMultipleChoice || node->freeAlloc) {
+                continue;
+            }
+            ++cost;
+        }
+        return cost;
+    }
+
+    PassivePathPlan PassiveTree::FindNearestAttributeChoicePath(
+        const PassiveTreeData& data,
+        const PassiveTreeState& state)
+    {
+        PassivePathPlan plan;
+        if (!state.classSelected || state.generation != data.Generation()) {
+            return plan;
+        }
+        const auto alloc = BuildAllocatedSet(state);
+        std::unordered_map<std::uint32_t, std::uint32_t> parent;
+        std::unordered_map<std::uint32_t, std::uint32_t> distance;
+        std::deque<std::uint32_t> queue;
+        const auto enqueue = [&](std::uint32_t id, std::uint32_t from, std::uint32_t cost) {
+            const auto* node = data.FindNode(id);
+            if (!node || !AscendancyOf(*node, state).empty() || !HasUnlockRequirements(*node, alloc)) {
+                return;
+            }
+            if (!IsAllocatable(*node) && !alloc.contains(id) && !node->isMultipleChoice) {
+                return;
+            }
+            const std::uint32_t step = node->isMultipleChoice || node->freeAlloc || alloc.contains(id) ? 0u : 1u;
+            const auto next = cost + step;
+            if (const auto old = distance.find(id); old != distance.end() && old->second <= next) {
+                return;
+            }
+            distance[id] = next;
+            parent[id] = from;
+            if (step == 0) {
+                queue.push_front(id);
+            } else {
+                queue.push_back(id);
+            }
+        };
+
+        for (const auto id : alloc) {
+            enqueue(id, 0, 0);
+        }
+        for (const auto id : BuildActiveNormalSeeds(data, state, alloc)) {
+            enqueue(id, 0, 0);
+        }
+
+        while (!queue.empty()) {
+            const auto id = queue.front();
+            queue.pop_front();
+            const auto* node = data.FindNode(id);
+            if (!node) {
+                continue;
+            }
+            if (!alloc.contains(id) && IsAllocatable(*node) && !node->attrOptions.empty()) {
+                for (auto current = id; current != 0; current = parent.at(current)) {
+                    const auto* cur = data.FindNode(current);
+                    if (cur && IsAllocatable(*cur) && !alloc.contains(current)) {
+                        plan.nodes.push_back(current);
+                    }
+                }
+                std::reverse(plan.nodes.begin(), plan.nodes.end());
+                plan.targetNodeId = id;
+                plan.preferredAttrOptionId = node->attrOptions.back().id;
+                plan.pointCost = ComputePathNormalPointCost(data, state, plan.nodes);
+                return plan;
+            }
+            for (const auto neighborId : node->adjacency) {
+                const auto* neighbor = data.FindNode(neighborId);
+                if (!neighbor) continue;
+                if (node->isMultipleChoice) {
+                    const bool unlocked = IsHubUnlocked(data, id, alloc);
+                    if (unlocked == neighbor->isMultipleChoiceOption) continue;
+                }
+                if (node->isMultipleChoiceOption && neighbor->isMultipleChoice) continue;
+                enqueue(neighborId, id, distance.at(id));
+            }
+        }
+        return plan;
+    }
+
     bool PassiveTree::IsMasteryUnlocked(
         const PassiveTreeData& data,
         const PassiveTreeState& state,

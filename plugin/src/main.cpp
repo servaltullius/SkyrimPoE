@@ -4,6 +4,7 @@
 #include "core/CommandQueue.h"
 #include "core/Config.h"
 #include "core/ContentCheck.h"
+#include "core/ContentFeatures.h"
 #include "core/RulesPack.h"
 #include "core/DataPack.h"
 #include "core/EnergyShield.h"
@@ -50,9 +51,9 @@ namespace
     constexpr auto kConfigPath = "Data/SKSE/Plugins/SkyrimPoE.ini";
     constexpr auto kManifestPath = "Data/SKSE/Plugins/SkyrimPoE/manifest.json";
     constexpr std::array<std::string_view, 5> kContentPaths{
-        "SKSE/Plugins/SkyrimPoE/packs/core_3_30.json",
-        "SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json",
-        "SKSE/Plugins/SkyrimPoE/packs/items_3_30.json",
+        "SKSE/Plugins/SkyrimPoE/packs/core.json",
+        "SKSE/Plugins/SkyrimPoE/packs/tree.json",
+        "SKSE/Plugins/SkyrimPoE/packs/items.json",
         "SKSE/Plugins/SkyrimPoE/packs/rules.json",
         Runtime::FormIds::kPluginName
     };
@@ -141,7 +142,7 @@ namespace
             }
         };
         if (load(0, g_dataPack)) {
-            SKSE::log::info("DataPack loaded: gems={}.", g_dataPack.AllGems().size());
+            SKSE::log::info("DataPack loaded: generation={}, gems={}.", g_dataPack.Generation(), g_dataPack.AllGems().size());
         }
         if (load(1, g_treeData)) {
             SKSE::log::info("PassiveTreeData loaded: classes={}, nodes={}, masteryEffects={}.",
@@ -180,6 +181,7 @@ namespace
         }
         const auto& identity = *check.identity;
         g_activeRules.emplace(std::move(rules));
+        Core::SetActiveContentGeneration(identity.contentGeneration);
         SKSE::log::info("Content check passed: {} {}, generation {}, build {}.",
             identity.game, identity.gameVersion, identity.contentGeneration, identity.buildId);
         return Core::SaveGeneration{
@@ -405,7 +407,7 @@ namespace
                 OnDataLoaded();
                 break;
             case SKSE::MessagingInterface::kPreLoadGame: {
-                const bool notifyAutoTest = Runtime::ModState::AllowsGameplay() || (Runtime::AutoTest::IsCleanupOnly() || Runtime::AutoTest::IsGemsOnly());
+                const bool notifyAutoTest = Runtime::ModState::AllowsGameplay() || Runtime::AutoTest::UsesTestSession();
                 Runtime::SaveLoad::OnGameLoadStarted();
                 Runtime::MapDeviceRuntime::DisarmUninstallCleanup();
                 Runtime::UiBridge::ClosePanelOnMainThread();
@@ -418,9 +420,12 @@ namespace
             }
             case SKSE::MessagingInterface::kNewGame:
                 Runtime::SaveLoad::SchedulePostLoadOrNewGameInit(true);
+                if (Runtime::ModState::AllowsGameplay() || Runtime::AutoTest::UsesTestSession()) {
+                    Runtime::AutoTest::OnNewGame();
+                }
                 break;
             case SKSE::MessagingInterface::kPostLoadGame: {
-                const bool notifyAutoTest = std::exchange(g_autoTestLoadStarted, false) || (Runtime::AutoTest::IsCleanupOnly() || Runtime::AutoTest::IsGemsOnly());
+                const bool notifyAutoTest = std::exchange(g_autoTestLoadStarted, false) || Runtime::AutoTest::UsesTestSession();
                 Runtime::SaveLoad::OnGameLoadFinished(msg->data != nullptr);
                 if (notifyAutoTest) {
                     Runtime::AutoTest::OnPostLoadGame(msg->data != nullptr);
@@ -428,7 +433,7 @@ namespace
                 break;
             }
             case SKSE::MessagingInterface::kSaveGame:
-                if (Runtime::ModState::AllowsGameplay() || (Runtime::AutoTest::IsCleanupOnly() || Runtime::AutoTest::IsGemsOnly())) {
+                if (Runtime::ModState::AllowsGameplay() || Runtime::AutoTest::UsesTestSession()) {
                     Runtime::AutoTest::OnSaveGame(*msg);
                 }
                 break;

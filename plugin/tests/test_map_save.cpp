@@ -518,7 +518,7 @@ POE_TEST("MAPS v3 rejects a forbidden raw boss or spawn even when the raw ID doe
 POE_TEST("MAPS v3 validates complete affix rolls against the loaded item definitions")
 {
     ItemData data;
-    POE_CHECK(data.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "items_3_30.json"));
+    POE_CHECK(data.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "items.json"));
     std::vector<RolledAffix> rolls{ { "MapMod_Vulnerability", { 15.0 } }, { "MapMod_ExtraFire", { 60.0 } } };
     POE_CHECK(MapSystem::AreSavedMapRollsValid(data, {}));
     POE_CHECK(MapSystem::AreSavedMapRollsValid(data, rolls));

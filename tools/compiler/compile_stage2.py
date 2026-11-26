@@ -1,4 +1,4 @@
-r"""PoB 2.68.1 (PoE 3.30) 데이터를 2단계용 데이터 팩(core_3_30.json)과 언어 팩으로 변환한다.
+r"""PoB 2.68.1 (PoE 3.30) 데이터를 2단계용 데이터 팩(core.json)과 언어 팩으로 변환한다.
 
 사용법:
   python tools/compiler/compile_stage2.py [--pob G:\poe\PathOfBuilding-2.68.1] [--out data]
@@ -705,12 +705,12 @@ def compile_stage2(pob: Path, out_dir: Path) -> dict[str, Any]:
         "gems": gems_out,
     }
 
-    packs_dir = out_dir / "packs"
+    packs_dir = out_dir / "packs" / "gen0"
     lang_dir = out_dir / "lang"
     packs_dir.mkdir(parents=True, exist_ok=True)
     lang_dir.mkdir(parents=True, exist_ok=True)
 
-    (packs_dir / "core_3_30.json").write_text(
+    (packs_dir / "core.json").write_text(
         json.dumps(pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     ko, en = build_lang_packs()
@@ -733,7 +733,7 @@ def main() -> int:
     args = ap.parse_args()
     pack = compile_stage2(args.pob, args.out)
     print(
-        f"생성 완료: {args.out / 'packs' / 'core_3_30.json'} "
+        f"생성 완료: {args.out / 'packs' / 'gen0' / 'core.json'} "
         f"(gems={len(pack['gems'])}, classes={len(pack['classes'])}, levels=100)"
     )
     return 0

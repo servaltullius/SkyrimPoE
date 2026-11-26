@@ -314,7 +314,7 @@ POE_TEST("TREE v2 round trips class and ascendancy IDs, attribute choices, alloc
 
 POE_TEST("TREE v1 numeric class resolves through the real PoE1 pack and is saved as content IDs")
 {
-    const auto tree = LoadTree("tree_3_30.json");
+    const auto tree = LoadTree("gen0/tree.json");
     PassiveTreeState state;
     POE_CHECK(ReadTreeRecord(LegacyRangerTree(), state));
     POE_CHECK(state.generation == 0 && state.classSelected && state.classId == 2);
@@ -340,7 +340,7 @@ POE_TEST("Mismatched TREE generation preserves raw records and leaves allocation
 
     PassiveTreeState restored;
     POE_CHECK(ReadTreeRecord(TreeRecord(batch), restored));
-    POE_CHECK(!PassiveTree::SanitizeLoadedState(LoadTree("tree_3_30.json"), restored));
+    POE_CHECK(!PassiveTree::SanitizeLoadedState(LoadTree("gen0/tree.json"), restored));
     POE_CHECK(restored.allocatedNodes == state.allocatedNodes && restored.attributeSelections == state.attributeSelections);
     POE_CHECK(ReplaySaveRecords(batch, [&](const RawSaveRecord& record) {
         if (record.type == kRecordTree) {
@@ -365,7 +365,7 @@ POE_TEST("PoE2 Phylactery doubles socketed strength and updates mana cost when e
         AllocateTo(state, PassiveTree::kPhylacteryNodeId, config);
 
         DataPack pack;
-        POE_CHECK(pack.LoadFromFile(kPackDir / "core_3_30.json"));
+        POE_CHECK(pack.LoadFromFile(kPackDir / "gen0/core.json"));
         StatEngine engine;
         Layer1Input input;
         input.passives.poe2 = true;
@@ -408,7 +408,7 @@ POE_TEST("Tree class stats override the core pack for actual and expected life a
     const auto* cls = tree.FindClassByContentId("cls.Witch");
     POE_CHECK(cls);
     DataPack pack;
-    POE_CHECK(pack.LoadFromFile(kPackDir / "core_3_30.json"));
+    POE_CHECK(pack.LoadFromFile(kPackDir / "gen0/core.json"));
     const auto* coreWitch = pack.FindClass("Witch");
     POE_CHECK(coreWitch && coreWitch->baseInt != cls->baseInt);
 
@@ -424,7 +424,7 @@ POE_TEST("Tree class stats override the core pack for actual and expected life a
     POE_CHECK_NEAR(snap->poeMaxLife, snap->expectedPoeLife, 1e-9);
     POE_CHECK_NEAR(snap->poeMaxMana, snap->expectedPoeMana, 1e-9);
 
-    const auto gen0 = LoadTree("tree_3_30.json");
+    const auto gen0 = LoadTree("gen0/tree.json");
     for (const auto& oldClass : gen0.Classes()) {
         const auto* coreClass = pack.FindClass(oldClass.name);
         POE_CHECK(coreClass && coreClass->baseStr == oldClass.baseStr && coreClass->baseDex == oldClass.baseDex &&
@@ -559,7 +559,7 @@ namespace
             return allocated;
         };
 
-        const auto poe1 = LoadTree("tree_3_30.json");
+        const auto poe1 = LoadTree("gen0/tree.json");
         PassiveTreeState ranger;
         POE_CHECK(PassiveTree::SelectClass(poe1, ranger, "cls.Ranger").ok);
         ranger = probe("PoE1 Ranger path and locked mastery", poe1, ranger, 41137, 39821, 46761);
@@ -630,6 +630,116 @@ namespace
 POE_TEST("Passive UI parity fixture exercises both real tree packs")
 {
     POE_CHECK(BuildPassiveUiFixture().size() == 29);
+}
+
+POE_TEST("PassiveTree nearest attribute path and point cost handle available points, freeAlloc, and allocated nodes")
+{
+    // 1. 실제 세대 1(PoE2) 트리: Sorceress 기준 가장 가까운 능력치 선택 노드 경로와 비용 검증.
+    const auto& tree = PoE2Tree();
+    PassiveTreeState state;
+    POE_CHECK(PassiveTree::SelectClass(tree, state, "cls.Sorceress").ok);
+    Config config;
+    config.bonusPassivePoints = 0;
+
+    const auto plan = PassiveTree::FindNearestAttributeChoicePath(tree, state);
+    POE_CHECK(!plan.nodes.empty() && plan.targetNodeId != 0 && plan.preferredAttrOptionId != 0);
+    POE_CHECK(plan.pointCost >= 2);
+    POE_CHECK(PassiveTree::ComputePathNormalPointCost(tree, state, plan.nodes) == plan.pointCost);
+
+    // 가용 0점(Lv1)·1점(Lv2) < 필요 비용, 필요 비용과 같은 가용 점수면 할당 가능.
+    POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, state, 1, config) == 0);
+    POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, state, 2, config) == 1);
+    const auto neededLevel = static_cast<std::uint32_t>(plan.pointCost + 1);
+    POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, state, neededLevel, config) == plan.pointCost);
+
+    // 앞 노드 1개를 이미 할당한 상태: ComputePathNormalPointCost는 이미 할당된 노드와 중복을 0점으로 센다.
+    POE_CHECK(PassiveTree::AllocatePath(tree, state, { plan.nodes.front() }, 2, config).ok);
+    POE_CHECK(PassiveTree::ComputePathNormalPointCost(tree, state, plan.nodes) == plan.pointCost - 1);
+    std::vector<std::uint32_t> withDup = plan.nodes;
+    withDup.push_back(plan.nodes.back());
+    POE_CHECK(PassiveTree::ComputePathNormalPointCost(tree, state, withDup) == plan.pointCost - 1);
+    const auto remainingPlan = PassiveTree::FindNearestAttributeChoicePath(tree, state);
+    POE_CHECK(remainingPlan.targetNodeId == plan.targetNodeId && remainingPlan.pointCost == plan.pointCost - 1);
+
+    // 2. freeAlloc 노드가 포함된 합성 세대 1 트리: freeAlloc 노드는 0점으로 계산하고 더 낮은 비용 경로를 선택한다.
+    const std::string syntheticJson = R"({
+        "meta": { "contentGeneration": 1 },
+        "classes": [
+            { "id": 0, "name": "TestClass", "contentId": "cls.TestClass", "startNodeId": 1, "startNeighbors": [2, 4] }
+        ],
+        "nodes": [
+            { "id": 1, "k": 5, "name": "Start", "adj": [2, 4] },
+            { "id": 2, "k": 0, "name": "FreeBridge", "freeAlloc": true, "adj": [1, 3] },
+            { "id": 3, "k": 7, "name": "FreeAttr", "adj": [2], "attrOptions": [
+                { "id": 101, "name": "Intelligence", "stats": ["+5 to Intelligence"] },
+                { "id": 102, "name": "Dexterity", "stats": ["+5 to Dexterity"] }
+            ]},
+            { "id": 4, "k": 0, "name": "PaidBridge", "adj": [1, 5] },
+            { "id": 5, "k": 7, "name": "PaidAttr", "adj": [4], "attrOptions": [
+                { "id": 201, "name": "Strength", "stats": ["+5 to Strength"] }
+            ]}
+        ]
+    })";
+    PassiveTreeData synth;
+    std::string err;
+    POE_CHECK(synth.LoadFromJsonString(syntheticJson, &err));
+    POE_CHECK(synth.Generation() == 1);
+    PassiveTreeState synthState;
+    POE_CHECK(PassiveTree::SelectClass(synth, synthState, "cls.TestClass").ok);
+    const auto synthPlan = PassiveTree::FindNearestAttributeChoicePath(synth, synthState);
+    POE_CHECK((synthPlan.nodes == std::vector<std::uint32_t>{ 2, 3 }));
+    POE_CHECK(synthPlan.targetNodeId == 3 && synthPlan.preferredAttrOptionId == 102 && synthPlan.pointCost == 1);
+    const std::array<std::uint32_t, 2> paidPath{ 4, 5 };
+    POE_CHECK(PassiveTree::ComputePathNormalPointCost(synth, synthState, paidPath) == 2);
+    // 가용 1점(Lv2)이면 freeAlloc 포함 경로(비용 1)는 할당 가능하고, 유료 경로(비용 2)는 점수 부족으로 거부된다.
+    POE_CHECK(!PassiveTree::AllocatePath(synth, synthState, { 4, 5 }, 2, config, 0, { { 5, 201 } }).ok);
+    POE_CHECK(PassiveTree::AllocatePath(synth, synthState, synthPlan.nodes, 2, config, 0,
+        { { synthPlan.targetNodeId, synthPlan.preferredAttrOptionId } }).ok);
+    POE_CHECK(PassiveTree::ComputePathNormalPointCost(synth, synthState, synthPlan.nodes) == 0);
+}
+
+POE_TEST("All eight PoE2 classes allocate FindNearestAttributeChoicePath at exact pointCost and reject pointCost - 1")
+{
+    const auto& tree = PoE2Tree();
+    POE_CHECK(tree.Generation() == 1);
+    POE_CHECK(tree.Classes().size() == 8);
+    Config config;
+    config.bonusPassivePoints = 0;
+
+    for (const auto& cls : tree.Classes()) {
+        PassiveTreeState state;
+        POE_CHECK(PassiveTree::SelectClass(tree, state, cls.contentId).ok);
+        const auto plan = PassiveTree::FindNearestAttributeChoicePath(tree, state);
+        POE_CHECK(!plan.nodes.empty() && plan.targetNodeId != 0 && plan.preferredAttrOptionId != 0 && plan.pointCost >= 1);
+        POE_CHECK(PassiveTree::ComputePathNormalPointCost(tree, state, plan.nodes) == plan.pointCost);
+
+        std::unordered_map<std::uint32_t, std::uint32_t> choices;
+        for (const auto nid : plan.nodes) {
+            const auto* node = tree.FindNode(nid);
+            POE_CHECK(node != nullptr);
+            if (!node->attrOptions.empty()) {
+                choices.emplace(nid, nid == plan.targetNodeId ? plan.preferredAttrOptionId : node->attrOptions.front().id);
+            }
+        }
+
+        // pointCost - 1 가용 점수(레벨 == pointCost)에서는 AllocatePath가 거부해야 한다.
+        auto tooFewState = state;
+        const auto tooFewLevel = static_cast<std::uint32_t>(plan.pointCost);
+        POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, tooFewState, tooFewLevel, config, 0) == plan.pointCost - 1);
+        POE_CHECK(!PassiveTree::AllocatePath(tree, tooFewState, plan.nodes, tooFewLevel, config, 0, choices).ok);
+        POE_CHECK(tooFewState.allocatedNodes.empty());
+
+        // 정확히 pointCost 가용 점수(레벨 == pointCost + 1)에서는 UiBridge와 같은 AllocatePath가 성공하고 능력치 선택이 기록된다.
+        const auto exactLevel = static_cast<std::uint32_t>(plan.pointCost + 1);
+        POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, state, exactLevel, config, 0) == plan.pointCost);
+        POE_CHECK(PassiveTree::AllocatePath(tree, state, plan.nodes, exactLevel, config, 0, choices).ok);
+        for (const auto nid : plan.nodes) {
+            POE_CHECK(state.IsAllocated(nid));
+        }
+        const auto attrIt = state.attributeSelections.find(plan.targetNodeId);
+        POE_CHECK(attrIt != state.attributeSelections.end() && attrIt->second == plan.preferredAttrOptionId);
+        POE_CHECK(PassiveTree::ComputeAvailableNormalPoints(tree, state, exactLevel, config, 0) == 0);
+    }
 }
 
 int WritePassiveUiFixture(const std::filesystem::path& output)

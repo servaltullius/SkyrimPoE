@@ -113,7 +113,9 @@ namespace SkyrimPoE::Core
             const double pMin = std::max(0.0, (computedSlot.baseWeaponPhysMin + s.localFlatPhysMin) * physMult);
             const double pMax = std::max(pMin, (computedSlot.baseWeaponPhysMax + s.localFlatPhysMax) * physMult);
             const double crit = std::max(0.0, computedSlot.baseWeaponCritChancePct * std::max(0.0, 1.0 + s.localIncCritChancePct / 100.0));
-            const double aps = std::max(0.1, computedSlot.baseWeaponAttackRate * std::max(0.1, 1.0 + s.localIncAttackSpeedPct / 100.0));
+            const double aps = computedSlot.baseWeaponAttackRate > 0.0
+                ? std::max(0.1, computedSlot.baseWeaponAttackRate * std::max(0.1, 1.0 + s.localIncAttackSpeedPct / 100.0))
+                : 0.0;
             card.baseStatLines.push_back("물리 피해: " + FormatNumber(pMin, false) + "~" + FormatNumber(pMax, false));
             if (s.localFlatFireMax > 0.0) {
                 card.baseStatLines.push_back("화염 피해: " + FormatNumber(std::max(0.0, s.localFlatFireMin), false) + "~" + FormatNumber(s.localFlatFireMax, false));

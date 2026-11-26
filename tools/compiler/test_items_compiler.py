@@ -185,7 +185,7 @@ class TestItemsCompiler(unittest.TestCase):
         self.assertTrue(belts_by_id["StygianVise"]["bonusCharmSlot"])
 
         # Also ensure JSON on disk matches freshly compiled pack
-        disk = json.loads((ROOT / "data" / "packs" / "items_3_30.json").read_text(encoding="utf-8"))
+        disk = json.loads((ROOT / "data" / "packs" / "gen0" / "items.json").read_text(encoding="utf-8"))
         self.assertEqual(disk["meta"]["rollableAffixes"], self.pack["meta"]["rollableAffixes"])
 
 

@@ -26,14 +26,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "poe2"))
 from extract import InputFiles, json_bytes, returned, write_atomic  # noqa: E402
 from luadata import field, table_array, table_fields  # noqa: E402
+sys.path.insert(0, str(ROOT / "tools" / "compiler"))
+from id_baseline import BASELINE_PATH, GEM_KINDS, baseline_bytes, merge_owned  # noqa: E402
 
 DEFAULT_RAW = ROOT / "data/poe2/raw/0.5"
 DEFAULT_POB = Path("G:/poe/PathOfBuilding-PoE2-0.23.1")
 BUNDLE_PATH = ROOT / "data/poe2/gem-bundle.json"
-CORE_PATH = ROOT / "data/packs/core_3_30.json"
+CORE_PATH = ROOT / "data/packs/gen0/core.json"
 PACK_PATH = ROOT / "data/packs/gen1/gems.json"
 REPORT_PATH = ROOT / "data/poe2/reports/gem-table.json"
-BASELINE_PATH = ROOT / "data/poe2/id-baseline/gen1-gems.json"
 GEMS_FILE = "Data/Gems.lua"
 STAT_ENGINE = "plugin/src/core/StatEngine.cpp"
 DATA_PACK = "plugin/src/core/DataPack.cpp"
@@ -233,7 +234,7 @@ def compile_borrowed_gem(row: dict, core: dict) -> dict:
     effect = {
         **{key: value for key, value in source.items() if key not in ("id", "levels", "constantStats")},
         "grantedEffectId": source["id"], "levels": levels,
-        "source": {"file": "data/packs/core_3_30.json", "key": source["id"]},
+        "source": {"file": CORE_PATH.relative_to(ROOT).as_posix(), "key": source["id"]},
         "statSets": [{
             "index": 1, "label": source["name"], "stats": stats, "baseFlags": [],
             "constantStats": list(source["constantStats"].items()),
@@ -456,9 +457,13 @@ def rebuild(raw: Path = DEFAULT_RAW, pob: Path = DEFAULT_POB, bundle: Path = BUN
         "effectCounts": {status: sum(row["effectCounts"][status] for row in table) for status in STATUSES},
         "gems": table,
     }
-    baseline = {"contentGeneration": 1, "entries": ids}
+    # 한 기준선 파일에서 gem·sup만 이 생성기가 맡는다. 트리 종류는 그대로 두고, 있던 젬 ID의 삭제·의미 변경은 거부한다.
+    existing = json.loads(BASELINE_PATH.read_bytes())
+    if existing.get("contentGeneration") != 1:
+        raise ValueError(f"{BASELINE_PATH.relative_to(ROOT)} must be the generation-1 baseline")
+    baseline = merge_owned(existing, GEM_KINDS, ids)
     return {PACK_PATH: json_bytes(pack), REPORT_PATH: json_bytes(report, indent=2),
-            BASELINE_PATH: json_bytes(baseline, indent=2)}
+            BASELINE_PATH: baseline_bytes(baseline)}
 
 
 def main() -> None:

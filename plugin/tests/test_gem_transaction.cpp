@@ -14,9 +14,9 @@ namespace
     {
         DataPack pack;
         std::string err;
-        const std::filesystem::path packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json";
+        const std::filesystem::path packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json";
         if (!pack.LoadFromFile(packPath, &err)) {
-            throw std::runtime_error("Failed to load core_3_30.json: " + err);
+            throw std::runtime_error("Failed to load core.json: " + err);
         }
         return pack;
     }

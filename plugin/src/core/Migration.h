@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/GemForms.h"
 #include "core/SaveGeneration.h"
 #include "core/SaveRecords.h"
 #include "core/Types.h"
@@ -143,6 +144,29 @@ namespace SkyrimPoE::Core
         bool operator==(const MigrationState&) const = default;
     };
 
+    // 7단계 G1(결정 247): 정리 GrantStarter 직후·Normal 전환 전에 남기는 시작 지급 및 같은 틱 증거.
+    struct StarterGrantDiagnostics
+    {
+        GemForms::StarterGrantReport report;
+        std::vector<std::string> recordedIds;
+        std::vector<std::string> committedIds;     // 정리 커밋 뒤 g_state에서 다시 읽은 STRT ID
+        std::uint64_t grantCallsAtCommit = 0;      // 커밋 시점의 지급 함수 누적 호출 수
+        std::uint64_t cleanupTickId = 0;
+        std::uint64_t grantTickId = 0;
+        std::uint64_t cleanupFrame = 0;
+        std::uint64_t grantFrame = 0;
+        std::uint32_t grantThreadId = 0;
+        bool recordedBeforeNormal = false;
+
+        [[nodiscard]] bool RanInCleanupTick() const noexcept
+        {
+            return cleanupTickId != 0 && grantTickId == cleanupTickId && cleanupFrame != 0 &&
+                grantFrame == cleanupFrame && recordedBeforeNormal && committedIds == recordedIds;
+        }
+
+        bool operator==(const StarterGrantDiagnostics&) const = default;
+    };
+
     struct MigrationReadResult
     {
         MigrationRecordStatus status = MigrationRecordStatus::Damaged;
@@ -201,9 +225,6 @@ namespace SkyrimPoE::Core
     [[nodiscard]] LegacyMigrationResult BuildLegacyMigration(const SaveRecordBatch& batch, std::string_view targetGame,
         std::uint32_t targetGeneration, const FormIdResolver& resolver = {},
         LegacyReturnDestination destination = LegacyReturnDestination::SavedOwner);
-
-    [[nodiscard]] const SaveGeneration* SelectSaveTarget(const std::optional<SaveGeneration>& content,
-        const std::optional<SaveGeneration>& test, bool matchedCleanupLoad) noexcept;
 
     enum class DeltaTrust { Trusted, Untrusted };
     [[nodiscard]] DeltaTrust JudgeLegacyDelta(double delta, double modifier) noexcept;

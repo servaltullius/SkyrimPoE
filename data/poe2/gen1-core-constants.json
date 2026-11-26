@@ -1,0 +1,12 @@
+{
+  "meta": {
+    "schema": "skyrimpoe.coreConstants",
+    "schemaVersion": 1,
+    "provenance": {
+      "monsterDamageMult": "결정 94: 받는 타격 c(L) = 1.5 × monsterDamage(L) / Dref"
+    }
+  },
+  "constants": {
+    "monsterDamageMult": 1.5
+  }
+}

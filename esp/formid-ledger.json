@@ -4,7 +4,7 @@
   "masters": [
     "Skyrim.esm"
   ],
-  "contentGeneration": 0,
+  "contentGeneration": 1,
   "ranges": {
     "legacy": {
       "start": "0x000800",
@@ -290,7 +290,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000815",
@@ -299,11 +299,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportCastOnCriticalStrike",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "undecided",
-      "decidedIn": "U-6"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000816",
@@ -316,7 +316,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000817",
@@ -325,11 +325,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:ShockNova",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000818",
@@ -338,11 +338,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportIncreasedCriticalStrikes",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000819",
@@ -351,11 +351,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportMeleePhysicalDamage",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00081A",
@@ -364,11 +364,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportBrutality",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "undecided",
-      "decidedIn": "U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00081B",
@@ -377,11 +377,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportIncreasedAreaOfEffect",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "undecided",
-      "decidedIn": "U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00081C",
@@ -390,11 +390,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportConcentratedEffect",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4, U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00081D",
@@ -1655,7 +1655,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00087E",
@@ -1664,11 +1664,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:FreezingPulse",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00087F",
@@ -1681,7 +1681,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000880",
@@ -1694,7 +1694,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000881",
@@ -1703,11 +1703,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportGreaterMultipleProjectiles",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "undecided",
-      "decidedIn": "U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000882",
@@ -1716,11 +1716,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportChain",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "undecided",
-      "decidedIn": "U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000883",
@@ -1733,7 +1733,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4, U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000884",
@@ -1742,11 +1742,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:SupportPierce",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "undecided",
-      "decidedIn": "U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000885",
@@ -1759,7 +1759,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4, U-5"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000886",
@@ -1768,11 +1768,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:Determination",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000887",
@@ -1781,11 +1781,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:Grace",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000888",
@@ -1794,11 +1794,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:Discipline",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "undecided",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000889",
@@ -1807,11 +1807,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:Hatred",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00088A",
@@ -1820,11 +1820,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:Wrath",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00088B",
@@ -1833,11 +1833,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:Anger",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00088C",
@@ -1846,11 +1846,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:PurityOfElements",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00088D",
@@ -1863,7 +1863,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00088E",
@@ -1876,7 +1876,7 @@
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "keep-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x00088F",
@@ -1885,11 +1885,11 @@
       "category": "gem",
       "contentId": null,
       "legacyKey": "gem:MoltenShell",
-      "status": "active",
+      "status": "retired",
       "introducedGeneration": 0,
-      "retiredGeneration": null,
+      "retiredGeneration": 1,
       "firstPlan": "retire-candidate",
-      "decidedIn": "U-4"
+      "decidedIn": "결정 231"
     },
     {
       "formId": "0x000890",
@@ -2286,221 +2286,221 @@
       "editorId": "SPOE_Map_T1",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T1",
       "legacyKey": "map:T1",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008AF",
       "editorId": "SPOE_Map_T2",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T2",
       "legacyKey": "map:T2",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B0",
       "editorId": "SPOE_Map_T3",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T3",
       "legacyKey": "map:T3",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B1",
       "editorId": "SPOE_Map_T4",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T4",
       "legacyKey": "map:T4",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B2",
       "editorId": "SPOE_Map_T5",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T5",
       "legacyKey": "map:T5",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B3",
       "editorId": "SPOE_Map_T6",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T6",
       "legacyKey": "map:T6",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B4",
       "editorId": "SPOE_Map_T7",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T7",
       "legacyKey": "map:T7",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B5",
       "editorId": "SPOE_Map_T8",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T8",
       "legacyKey": "map:T8",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B6",
       "editorId": "SPOE_Map_T9",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T9",
       "legacyKey": "map:T9",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B7",
       "editorId": "SPOE_Map_T10",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T10",
       "legacyKey": "map:T10",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B8",
       "editorId": "SPOE_Map_T11",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T11",
       "legacyKey": "map:T11",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008B9",
       "editorId": "SPOE_Map_T12",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T12",
       "legacyKey": "map:T12",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008BA",
       "editorId": "SPOE_Map_T13",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T13",
       "legacyKey": "map:T13",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008BB",
       "editorId": "SPOE_Map_T14",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T14",
       "legacyKey": "map:T14",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008BC",
       "editorId": "SPOE_Map_T15",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T15",
       "legacyKey": "map:T15",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008BD",
       "editorId": "SPOE_Map_T16",
       "type": "MISC",
       "category": "map",
-      "contentId": null,
+      "contentId": "map.T16",
       "legacyKey": "map:T16",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008BE",
       "editorId": "SPOE_Tribute_Ascendancy4",
       "type": "MISC",
       "category": "tribute",
-      "contentId": null,
+      "contentId": "tribute.Ascendancy4",
       "legacyKey": "tribute:Ascendancy4",
       "status": "active",
       "introducedGeneration": 0,
       "retiredGeneration": null,
       "firstPlan": "undecided",
-      "decidedIn": "U-10"
+      "decidedIn": "결정 224·253"
     },
     {
       "formId": "0x0008BF",
@@ -2956,6 +2956,19 @@
       "retiredGeneration": null,
       "firstPlan": "keep",
       "decidedIn": "결정 229·231"
+    },
+    {
+      "formId": "0x0008E2",
+      "editorId": "SPOE_ContentGeneration",
+      "type": "GLOB",
+      "category": "marker",
+      "contentId": null,
+      "legacyKey": null,
+      "status": "active",
+      "introducedGeneration": 1,
+      "retiredGeneration": null,
+      "firstPlan": "keep",
+      "decidedIn": "결정 204·231"
     }
   ]
 }

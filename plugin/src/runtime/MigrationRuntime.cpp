@@ -5,11 +5,16 @@
 #include "runtime/CombatHooks.h"
 #include "runtime/CycloneRuntime.h"
 #include "runtime/FormIds.h"
+#include "runtime/MainUpdateHook.h"
+#include "runtime/MapPackRuntime.h"
+#include "runtime/ModState.h"
 #include "runtime/MonsterRuntime.h"
 #include "runtime/ProxySpellRuntime.h"
 #include "runtime/WorldDropTracker.h"
 
 #include <REX/W32/KERNEL32.h>
+
+#include <stdexcept>
 
 namespace SkyrimPoE::Runtime
 {
@@ -73,10 +78,32 @@ namespace SkyrimPoE::Runtime
             return {};
         }
 
-        void GivePoE2Starter(MigrationState& state)
+        std::string JoinStrings(const std::vector<std::string>& items)
         {
-            SKSE::log::info("MigrationRuntime: 세대 {} 시작 물건 정의 없음(결정 200).", state.targetGeneration);
-            state.starterGranted = true;
+            std::string out;
+            for (const auto& item : items) {
+                if (!out.empty()) {
+                    out += ", ";
+                }
+                out += item;
+            }
+            return out;
+        }
+
+        std::string JoinStarterEntries(const std::vector<GemForms::StarterGrantEntry>& entries,
+            GemForms::StarterGrantStatus status)
+        {
+            std::string out;
+            for (const auto& entry : entries) {
+                if (entry.status != status) {
+                    continue;
+                }
+                if (!out.empty()) {
+                    out += ", ";
+                }
+                out += std::format("{}({:+d})", entry.contentId, entry.countDelta);
+            }
+            return out;
         }
 
         class RuntimeCleanupOps final : public CleanupOps
@@ -86,12 +113,17 @@ namespace SkyrimPoE::Runtime
                 const ActiveMapState* run, RE::FormID cell, LegacyBossObservation bossAtConfirmation,
                 MigrationDiagnostics& diagnostics,
                 const std::function<MigrationSpeedResult(const MigrationSpeedMod&)>& speed,
-                const std::function<void()>& clearCosave)
+                const std::function<void()>& clearCosave,
+                const std::function<MigrationRuntime::StarterGrantOutcome(std::uint32_t)>& grantStarter)
                 : player_(player), values_(values), run_(run), cell_(cell), bossAtConfirmation_(bossAtConfirmation),
-                  diagnostics_(diagnostics), speed_(speed), clearCosave_(clearCosave) {}
+                  diagnostics_(diagnostics), speed_(speed), clearCosave_(clearCosave), grantStarter_(grantStarter) {}
 
             StepOutcome CloseMapRun(MigrationState& state) override
             {
+                if (run_ && !MapPackRuntime::UnavailableReason().empty()) {
+                    SKSE::log::warn("MigrationRuntime: map pack unavailable during cleanup ({}); "
+                        "the active run is closed without map-cell positional cleanup.", MapPackRuntime::UnavailableReason());
+                }
                 if (run_) {
                     auto& result = diagnostics_.mapClose;
                     result = MapDeviceRuntime::CloseLegacyRun(player_, *run_, cell_, bossAtConfirmation_, state.worldDrops);
@@ -234,7 +266,42 @@ namespace SkyrimPoE::Runtime
 
             StepOutcome GrantStarter(MigrationState& state) override
             {
-                GivePoE2Starter(state);
+                if (!grantStarter_) {
+                    // 지급 없이 정리를 끝내면 STRT가 빈 채로 저장되어 그 세이브는 시작 물건을 받지 못한 것으로 남는다.
+                    throw std::logic_error("정리의 시작 지급 콜백이 없습니다.");
+                }
+                auto outcome = grantStarter_(state.targetGeneration);
+                auto& diag = diagnostics_.starterGrant;
+                diag.report = std::move(outcome.report);
+                diag.recordedIds = std::move(outcome.recordedIds);
+                diag.grantTickId = diag.cleanupTickId;
+                diag.grantFrame = MainUpdateHook::EngineFrameCount();
+                diag.grantThreadId = REX::W32::GetCurrentThreadId();
+                diag.recordedBeforeNormal = ModState::Get()->mode == ModMode::CleanupPending;
+                state.starterGranted = true;
+                const auto grantedCount = diag.report.GrantedCount();
+                const auto failedCount = diag.report.FailedCount();
+                const auto disabledCount = diag.report.DisabledCount();
+                if (failedCount > 0) {
+                    SKSE::log::warn(
+                        "MigrationRuntime: 정리 틱 {} (프레임 {}) 세대 {} 시작 지급 일부 실패 — 지급 {} [{}], 실패 {} [{}], STRT=[{}].",
+                        diag.grantTickId, diag.grantFrame, state.targetGeneration,
+                        grantedCount, JoinStarterEntries(diag.report.entries, GemForms::StarterGrantStatus::Granted),
+                        failedCount, JoinStarterEntries(diag.report.entries, GemForms::StarterGrantStatus::Failed),
+                        JoinStrings(diag.recordedIds));
+                } else if (disabledCount > 0) {
+                    SKSE::log::info(
+                        "MigrationRuntime: 정리 틱 {} (프레임 {}) 세대 {} 시작 지급을 설정으로 건너뜀 — 제외 {} [{}], STRT=[{}].",
+                        diag.grantTickId, diag.grantFrame, state.targetGeneration,
+                        disabledCount, JoinStarterEntries(diag.report.entries, GemForms::StarterGrantStatus::DisabledByConfig),
+                        JoinStrings(diag.recordedIds));
+                } else {
+                    SKSE::log::info(
+                        "MigrationRuntime: 정리 틱 {} (프레임 {}) 세대 {} 시작 지급 완료 — 지급 {} [{}], STRT=[{}].",
+                        diag.grantTickId, diag.grantFrame, state.targetGeneration,
+                        grantedCount, JoinStarterEntries(diag.report.entries, GemForms::StarterGrantStatus::Granted),
+                        JoinStrings(diag.recordedIds));
+                }
                 return StepOutcome::Done;
             }
 
@@ -262,6 +329,7 @@ namespace SkyrimPoE::Runtime
                             if (player_->GetItemCount(form) > before) {
                                 entry.status = ReturnStatus::Done;
                                 ++diagnostics_.returned[index];
+                                ++diagnostics_.returnedByForm[formId];
                                 continue;
                             }
                         }
@@ -287,6 +355,7 @@ namespace SkyrimPoE::Runtime
             MigrationDiagnostics& diagnostics_;
             const std::function<MigrationSpeedResult(const MigrationSpeedMod&)>& speed_;
             const std::function<void()>& clearCosave_;
+            const std::function<MigrationRuntime::StarterGrantOutcome(std::uint32_t)>& grantStarter_;
         };
     }
 
@@ -413,7 +482,9 @@ namespace SkyrimPoE::Runtime
 
     MigrationDiagnostics MigrationRuntime::Execute(RE::PlayerCharacter* player, RE::ActorValueOwner& values,
         const std::function<MigrationSpeedResult(const Core::MigrationSpeedMod&)>& speed,
-        const std::function<void()>& clearCosave)
+        const std::function<void()>& clearCosave,
+        const std::function<StarterGrantOutcome(std::uint32_t targetGeneration)>& grantStarter,
+        std::uint64_t cleanupTickId)
     {
         auto& state = candidate_.state;
         MigrationDiagnostics diagnostics;
@@ -428,7 +499,41 @@ namespace SkyrimPoE::Runtime
         diagnostics.speedModsFiltered = candidate_.report.speedModsFiltered;
         diagnostics.speedModsUnresolved = candidate_.report.speedModsUnresolved;
         diagnostics.tickThreadId = REX::W32::GetCurrentThreadId();
-        RuntimeCleanupOps ops(player, values, run_ ? &*run_ : nullptr, legacyCell_, bossAtConfirmation_, diagnostics, speed, clearCosave);
+        diagnostics.starterGrant.cleanupTickId = cleanupTickId;
+        diagnostics.starterGrant.cleanupFrame = MainUpdateHook::EngineFrameCount();
+
+        // 결정 255: 반환 단계 직전에 플레이어 가방의 젬 62폼·화폐 12폼·반환 대상 폼 수량을 읽기 전용 진단에 남긴다.
+        std::unordered_set<RE::FormID> capturedForms;
+        const auto recordPreReturnForm = [&](RE::TESObjectMISC* form) {
+            if (!form) {
+                return;
+            }
+            const auto runtimeId = form->GetFormID();
+            if (runtimeId != 0 && capturedForms.insert(runtimeId).second) {
+                diagnostics.preReturnCounts.emplace_back(runtimeId, player->GetItemCount(form));
+            }
+        };
+        for (const auto& entry : Core::GemForms::kPhysicalForms) {
+            recordPreReturnForm(FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId));
+        }
+        for (const auto localId : FormIds::kCurrencyOrbForms) {
+            recordPreReturnForm(FormIds::Lookup<RE::TESObjectMISC>(localId));
+        }
+        diagnostics.plannedReturnsTotal = state.returns.size();
+        for (const auto& entry : state.returns) {
+            if (entry.kind == Core::ReturnKind::SlottedGem) {
+                ++diagnostics.plannedSlottedGems[entry.gemId];
+            }
+            if (auto* form = MigrationRuntime::ReturnForm(entry)) {
+                recordPreReturnForm(form);
+                ++diagnostics.plannedReturnsByForm[form->GetFormID()];
+            } else {
+                ++diagnostics.plannedWithoutForm;
+            }
+        }
+
+        RuntimeCleanupOps ops(player, values, run_ ? &*run_ : nullptr, legacyCell_, bossAtConfirmation_,
+            diagnostics, speed, clearCosave, grantStarter);
         if (Core::CompleteCleanup(state, ops) != Core::StepOutcome::Done) {
             throw std::logic_error("A migration operation did not finish in its commit tick.");
         }
@@ -492,7 +597,9 @@ namespace SkyrimPoE::Runtime
             "체력 원복={:.6f}->{:.6f} (델타 {:.6f}), 매지카 원복={:.6f}->{:.6f} (델타 {:.6f}), Variable09={}, 대리 주문={}, 파워={}, {}, "
             "지도={}, 회차 드랍 폐기={}, 폐기 실패={}, 스폰 정리 실패={}, 셀 리셋 예약={}, 입장 비용={}, 보스 판정 출처={}, "
             "SPDM 원본={}, [원복/이미 0/보류/포기/입력에서 걸러짐]={}/{}/{}/{}/{}, "
-            "WDRP[회수/이미 회수됨/이관/포기]={}/{}/{}/{}, 시작 지급 완료={}, tick thread={}",
+            "WDRP[회수/이미 회수됨/이관/포기]={}/{}/{}/{}, 시작 지급 완료={}, "
+            "시작 지급[지급/실패/설정제외]={}/{}/{} (지급=[{}], 실패=[{}], 설정제외=[{}], STRT=[{}], 틱={}/{}, 프레임={}/{}, Normal전={}), "
+            "tick thread={}",
             static_cast<unsigned>(step), step == Complete,
             returned[0], returned[1], returned[2], returned[3], lostReturns[0], lostReturns[1], lostReturns[2], lostReturns[3],
             lostForms, lostReturnsWithoutForm, lostCount, damagedRecords, candidateReport, healthBefore, healthAfter, healthDelta,
@@ -501,6 +608,15 @@ namespace SkyrimPoE::Runtime
             mapClose.dropsDiscarded, mapClose.dropsFailed, mapClose.spawnsFailed, mapClose.cellResetQueued,
             refundResults[static_cast<std::size_t>(mapClose.refund)], bossSource,
             speedInputCount, speedResults[0], speedResults[1], speedResults[2], speedResults[3], speedModsFiltered,
-            dropResults[0], dropResults[1], dropResults[2], dropResults[3], starterGranted, tickThreadId);
+            dropResults[0], dropResults[1], dropResults[2], dropResults[3], starterGranted,
+            starterGrant.report.GrantedCount(), starterGrant.report.FailedCount(), starterGrant.report.DisabledCount(),
+            JoinStarterEntries(starterGrant.report.entries, Core::GemForms::StarterGrantStatus::Granted),
+            JoinStarterEntries(starterGrant.report.entries, Core::GemForms::StarterGrantStatus::Failed),
+            JoinStarterEntries(starterGrant.report.entries, Core::GemForms::StarterGrantStatus::DisabledByConfig),
+            JoinStrings(starterGrant.recordedIds),
+            starterGrant.cleanupTickId, starterGrant.grantTickId,
+            starterGrant.cleanupFrame, starterGrant.grantFrame,
+            starterGrant.recordedBeforeNormal,
+            tickThreadId);
     }
 }

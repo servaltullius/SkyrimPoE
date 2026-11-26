@@ -97,7 +97,7 @@ def test_borrowed_cyclone_level_values_match_core(catalog):
     assert cyclone["borrowedFrom"] == "poe1-3.30"
     assert cyclone["naturalMaxLevel"] == cyclone["calculationLevelCount"] == 20
     effect, = cyclone["effects"]
-    assert effect["source"]["file"] == "data/packs/core_3_30.json"
+    assert effect["source"]["file"] == "data/packs/gen0/core.json"
     stat_set, = effect["statSets"]
     assert stat_set["levelValuesIncludeConstants"]
     for level, row in source["levels"].items():
@@ -247,9 +247,11 @@ def test_report_has_all_columns_with_counts_and_stat_evidence(bundle, report):
 def test_semantic_id_baseline_includes_every_gem(catalog):
     baseline = read_json(BASELINE_PATH)
     assert baseline["contentGeneration"] == 1
-    assert {key: len(entries) for key, entries in baseline["entries"].items()} == {"gem": 24, "sup": 19}
-    for kind, entries in baseline["entries"].items():
-        for content_id, (name, digest) in entries.items():
+    # 한 기준선 파일을 트리와 나눠 쓴다. 젬 생성기는 gem·sup만 맡는다(id_baseline.py).
+    assert list(baseline["entries"]) == ["cls", "asc", "node", "gem", "sup"]
+    assert {kind: len(baseline["entries"][kind]) for kind in ("gem", "sup")} == {"gem": 24, "sup": 19}
+    for kind in ("gem", "sup"):
+        for content_id, (name, digest) in baseline["entries"][kind].items():
             assert content_id.startswith(kind + ".")
             assert name == catalog[content_id]["name"]
             assert re.fullmatch(r"[0-9a-f]{64}", digest)

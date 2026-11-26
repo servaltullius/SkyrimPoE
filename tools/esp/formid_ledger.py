@@ -6,7 +6,7 @@ r"""SkyrimPoE.esp의 FormID 장부(esp/formid-ledger.json)를 만들고 ESP·rec
   records.json의 EditorID·타입과도 같은지 본다. 배포 기준선의 번호·저장 키·폐기 상태를 보존한다.
 
 사용:
-  python tools/esp/formid_ledger.py check                # 장부와 ESP·records.json 대조
+  python tools/esp/formid_ledger.py check                # 장부와 ESP·records.json·얼린 세대 0 ESP 대조
   python tools/esp/formid_ledger.py create --out <경로>  # ESP의 기준선 폼에서 세대 0 첫 장부 재생성
   python tools/esp/formid_ledger.py freeze --generation N  # 현재 장부의 배포 기준선을 고정
 """
@@ -24,11 +24,17 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ESP = ROOT / "esp" / "SkyrimPoE.esp"
+# 결정 246: 세대 0 회귀 패키지가 넣는 얼린 ESP와, 그 ESP를 만들 때의 장부·records.json(G1 전 상태).
+DEFAULT_GEN0_DIR = ROOT / "esp" / "gen0"
+DEFAULT_GEN0_ESP = DEFAULT_GEN0_DIR / "SkyrimPoE.esp"
+DEFAULT_GEN0_LEDGER = DEFAULT_GEN0_DIR / "formid-ledger.json"
+DEFAULT_GEN0_RECORDS = DEFAULT_GEN0_DIR / "records.json"
+ESP_NAME, LEDGER_NAME, RECORDS_NAME = "SkyrimPoE.esp", "formid-ledger.json", "records.json"
 DEFAULT_RECORDS = ROOT / "esp" / "records.json"
 DEFAULT_LEDGER = ROOT / "esp" / "formid-ledger.json"
 DEFAULT_PUBLISHED = ROOT / "esp" / "formid-ledger.published"
 DEFAULT_GEM_BUNDLE = ROOT / "data" / "poe2" / "gem-bundle.json"
-GEN0_CORE = ROOT / "data" / "packs" / "core_3_30.json"
+GEN0_CORE = ROOT / "data" / "packs" / "gen0" / "core.json"
 
 LEDGER_VERSION = 2
 PLUGIN_NAME = "SkyrimPoE.esp"
@@ -49,6 +55,9 @@ FORM_RANGES = {
 FIRST_PLANS = ("keep", "keep-candidate", "retire-candidate", "undecided")
 FORM_ID_PATTERN = re.compile(r"0x[0-9A-F]{6}")
 GEM_ID_PATTERN = re.compile(r"(?:gem|sup)\.[A-Za-z0-9._]+")
+# 계약 2.2 규칙 2: `종류.이름`, ASCII 영숫자·`.`·`_`, 64바이트 이하.
+CONTENT_ID_PATTERN = re.compile(r"[a-z]+\.[A-Za-z0-9._]+")
+RETIRED_NAME_PREFIX = "(구판) "
 
 # records.json의 record_type 이름 → ESP 레코드 시그니처
 RECORD_TYPE_SIGNATURES = {
@@ -59,7 +68,10 @@ RECORD_TYPE_SIGNATURES = {
     "Static": "STAT",
     "Projectile": "PROJ",
     "Global": "GLOB",
+    "GlobalShort": "GLOB",
 }
+# records.json의 GLOB 하위 타입 → ESP FNAM 문자
+GLOBAL_RECORD_TYPES = {"GlobalShort": "s"}
 
 # EditorID 접두 → 분류(계약 5.2). 먼저 맞는 것을 쓴다.
 CATEGORY_PREFIXES = [
@@ -518,7 +530,10 @@ def check_entry(
         problems.append(f"ESL 범위(0x800~0xFFF) 밖: {entry['formId']} {editor_id}")
 
 
-def check_records_json(records: Any, entries: dict[int, dict[str, Any]], problems: list[str]) -> None:
+def check_records_json(
+    records: Any, entries: dict[int, dict[str, Any]], problems: list[str],
+    esp_records: dict[str, EspRecord] | None = None,
+) -> None:
     if not isinstance(records, list):
         problems.append("records.json이 레코드 목록이 아님")
         return
@@ -538,6 +553,9 @@ def check_records_json(records: Any, entries: dict[int, dict[str, Any]], problem
             problems.append(f"records.json의 모르는 타입 {record_type!r}: {editor_id}")
             continue
         rec_types.setdefault(editor_id, signature)
+        esp_record = esp_records.get(editor_id) if esp_records is not None else None
+        if esp_record is not None:
+            check_record_spec(record, record_type, esp_record, problems)
     ledger_types = {entry["editorId"]: entry.get("type") for entry in entries.values()}
     for edid, sig in rec_types.items():
         if edid not in ledger_types:
@@ -547,6 +565,26 @@ def check_records_json(records: Any, entries: dict[int, dict[str, Any]], problem
     for edid in ledger_types:
         if edid not in rec_types:
             problems.append(f"장부에만 있음(records.json에 없음): {edid}")
+
+
+def check_record_spec(record: dict[str, Any], record_type: str, esp_record: EspRecord, problems: list[str]) -> None:
+    """records.json으로 ESP를 다시 만들면 같은 이름·세대 값이 나오는지 본다."""
+    editor_id = esp_record.editor_id
+    ops = [op for op in record.get("ops") or [] if isinstance(op, dict)]
+    names = [op.get("value") for op in ops if op.get("field_path") == "Name"]
+    if esp_record.full_name is not None and not names:
+        problems.append(f"records.json에 Name이 없음(ESP에는 FULL이 있음): {editor_id}")
+    elif names and names[-1] != esp_record.full_name:
+        problems.append(f"records.json 이름과 ESP FULL 다름: {editor_id} {names[-1]!r} / ESP {esp_record.full_name!r}")
+    if esp_record.signature != "GLOB":
+        return
+    global_type = GLOBAL_RECORD_TYPES.get(record_type)
+    if global_type is None or global_type != esp_record.global_type:
+        problems.append(f"records.json GLOB 타입이 ESP와 다름: {editor_id} {record_type} / FNAM {esp_record.global_type!r}")
+    values = [op.get("value") for op in ops if op.get("field_path") == "Data"]
+    expected = esp_record.global_value
+    if not values or expected is None or not expected.is_integer() or values[-1] != str(int(expected)):
+        problems.append(f"records.json GLOB 값이 ESP와 다름: {editor_id} {values[-1] if values else None!r} / {expected!r}")
 
 
 def read_published(published_dir: Path, problems: list[str]) -> dict[str, dict[int, dict[str, Any]]]:
@@ -602,6 +640,8 @@ def check_gem_content_ids(
         if content_id in seen_ids:
             problems.append(f"장부 contentId 중복: {content_id}")
         seen_ids.add(content_id)
+        if len(content_id) > 64 or CONTENT_ID_PATTERN.fullmatch(content_id) is None:
+            problems.append(f"장부 contentId 문법 오류: {entry['editorId']} {content_id!r}")
         if entry.get("category") == "gem":
             if not valid_gem_content_id(content_id):
                 problems.append(f"장부 젬 contentId 문법 오류: {entry['editorId']} {content_id!r}")
@@ -642,9 +682,84 @@ def check_gem_content_ids(
         problems.append(f"젬 묶음 밖 장부 contentId: 0x{form_id:06X} {ledger_gems[form_id][0]}")
 
 
+def check_frozen_gen0(
+    esp: Esp, ledger: Any, records: Any, current: Esp, entries: dict[int, dict[str, Any]], problems: list[str],
+) -> None:
+    """결정 246: 얼린 세대 0 ESP는 G1 전 장부·records.json과 그대로 맞고, 지금 장부는 그 폼을 보존한다."""
+    label = "얼린 세대 0 ESP"
+    if not isinstance(ledger, dict) or ledger.get("contentGeneration") != 0:
+        problems.append(f"{label}의 장부는 세대 0 장부여야 함")
+        return
+    frozen_entries = index_entries(ledger, f"{label} 장부", problems)
+    if esp.masters != current.masters or ledger.get("masters") != esp.masters:
+        problems.append(f"{label} 마스터 목록 다름: ESP {esp.masters} / 장부 {ledger.get('masters')!r} / "
+                        f"현재 ESP {current.masters}")
+    if not esp.flags & ESL_FLAG:
+        problems.append(f"{label}의 TES4 ESL 플래그가 꺼져 있음")
+    frozen = {}
+    for record in esp.records:
+        if record.local_id in frozen:
+            problems.append(f"{label}에 로컬 FormID 중복: 0x{record.local_id:06X}")
+        frozen[record.local_id] = record
+        if record.editor_id == GENERATION_EDITOR_ID or record.signature == "GLOB":
+            problems.append(f"{label}에 GLOB이 있음: 0x{record.local_id:06X} {record.editor_id}")
+        if (record.full_name or "").startswith(RETIRED_NAME_PREFIX):
+            problems.append(f"{label}에 폐기 이름 표시가 있음: {record.editor_id}")
+    for form_id in frozen.keys() - frozen_entries.keys():
+        problems.append(f"{label}에만 있음(G1 전 장부에 없음): 0x{form_id:06X} {frozen[form_id].editor_id}")
+    current_names = {record.local_id: record.full_name for record in current.records}
+    for form_id, old in sorted(frozen_entries.items()):
+        record = frozen.get(form_id)
+        if record is None:
+            problems.append(f"{label}에 없음: {old['formId']} {old['editorId']}")
+        elif record.editor_id != old["editorId"] or record.signature != old.get("type"):
+            problems.append(f"{label}의 EditorID·타입 다름: {old['formId']} {record.editor_id} {record.signature} / "
+                            f"장부 {old['editorId']} {old.get('type')}")
+        new = entries.get(form_id)
+        if new is None or any(new.get(key) != old.get(key) for key in ("editorId", "type", "category", "legacyKey")):
+            problems.append(f"지금 장부가 G1 전 폼을 보존하지 않음: {old['formId']} {old['editorId']}")
+            continue
+        name = current_names.get(form_id)
+        if record is not None and new.get("status") == "retired" and (name or "").startswith(RETIRED_NAME_PREFIX):
+            if record.full_name != name[len(RETIRED_NAME_PREFIX):]:
+                problems.append(f"{label}의 폐기 폼 이름이 현재 ESP 이름의 원래 이름과 다름: {old['editorId']} "
+                                f"{record.full_name!r} / {name!r}")
+    check_records_json(records, frozen_entries, problems, {r.editor_id: r for r in esp.records if r.editor_id})
+
+
+def check_generation_content(
+    generation: int | None, bundle: Any, entries: dict[int, dict[str, Any]], esp_by_id: dict[int, EspRecord],
+    problems: list[str],
+) -> None:
+    """세대 1 이상: 지도·공물 ID는 세대 0 저장 키에서(결정 253), 젬 FULL은 젬 묶음의 한국어 이름으로 끝난다."""
+    if generation is None or generation < 1:
+        return
+    for entry in entries.values():
+        category = entry.get("category")
+        if category in ("map", "tribute"):
+            legacy = entry.get("legacyKey")
+            expected = legacy.replace(":", ".", 1) if isinstance(legacy, str) else None
+            if entry.get("contentId") != expected:
+                problems.append(f"지도·공물 contentId가 세대 0 저장 키와 다름: {entry['editorId']} "
+                                f"{entry.get('contentId')!r}, 기대 {expected!r}")
+        elif category == "marker" and entry.get("contentId") is not None:
+            problems.append(f"marker에는 contentId가 없어야 함: {entry['editorId']}")
+    if not isinstance(bundle, list):
+        return
+    for row in bundle:
+        form = row.get("form") if isinstance(row, dict) else None
+        local_id = form.get("formId") if isinstance(form, dict) else None
+        if not isinstance(local_id, str) or not FORM_ID_PATTERN.fullmatch(local_id):
+            continue
+        record = esp_by_id.get(int(local_id, 16))
+        name = row.get("nameKo")
+        if record is not None and (not isinstance(name, str) or not (record.full_name or "").endswith(": " + name)):
+            problems.append(f"젬 FULL이 젬 묶음 이름으로 끝나지 않음: {record.editor_id} {record.full_name!r} / {name!r}")
+
+
 def check(
     ledger_path: Path, esp_path: Path, records_path: Path, published_dir: Path = DEFAULT_PUBLISHED,
-    gem_bundle_path: Path = DEFAULT_GEM_BUNDLE,
+    gem_bundle_path: Path = DEFAULT_GEM_BUNDLE, gen0_dir: Path | None = DEFAULT_GEN0_DIR,
 ) -> list[str]:
     """어긋난 점의 목록을 돌려준다(비어 있으면 통과)."""
     try:
@@ -717,7 +832,7 @@ def check(
             problems.append(f"EditorID 다름: {entry['formId']} 장부 {entry['editorId']} / ESP {record.editor_id}")
         if record.signature != entry.get("type"):
             problems.append(f"타입 다름: {entry['formId']} 장부 {entry.get('type')} / ESP {record.signature}")
-        if entry.get("status") == "retired" and not (record.full_name or "").startswith("(구판) "):
+        if entry.get("status") == "retired" and not (record.full_name or "").startswith(RETIRED_NAME_PREFIX):
             problems.append(f'폐기 폼 FULL이 "(구판) "으로 시작하지 않음: {entry["editorId"]}')
 
     marker_ids = [
@@ -745,7 +860,17 @@ def check(
             if marker.global_value != generation:
                 problems.append(f"세대 GLOB FLTV 값 다름: {marker.global_value!r}, 기대 {generation}")
 
-    check_records_json(records, entries, problems)
+    check_records_json(records, entries, problems, {r.editor_id: r for r in esp.records if r.editor_id})
+    check_generation_content(generation, gem_bundle, entries, esp_by_id, problems)
+    if gen0_dir is not None:
+        try:
+            frozen_esp = read_esp(gen0_dir / ESP_NAME)
+            frozen_ledger = read_json(gen0_dir / LEDGER_NAME)
+            frozen_records = read_json(gen0_dir / RECORDS_NAME)
+        except (OSError, ValueError, struct.error) as exc:
+            problems.append(f"얼린 세대 0 ESP·장부·records.json을 읽지 못함: {exc}")
+        else:
+            check_frozen_gen0(frozen_esp, frozen_ledger, frozen_records, esp, entries, problems)
     check_published(baselines, entries, problems)
     check_gem_content_ids(gem_bundle, entries, gen0_entries, problems)
     return problems
@@ -768,6 +893,8 @@ def main() -> int:
     c.add_argument("--esp", type=Path, default=DEFAULT_ESP)
     c.add_argument("--records", type=Path, default=DEFAULT_RECORDS)
     c.add_argument("--published-dir", type=Path, default=DEFAULT_PUBLISHED)
+    c.add_argument("--gen0-dir", type=Path, default=DEFAULT_GEN0_DIR,
+                   help="얼린 세대 0 ESP·장부·records.json 폴더(결정 246)")
     m = sub.add_parser("create")
     m.add_argument("--esp", type=Path, default=DEFAULT_ESP)
     m.add_argument("--out", type=Path, required=True)
@@ -803,13 +930,13 @@ def main() -> int:
         print(f"실패: {exc}", file=sys.stderr)
         return 1
 
-    problems = check(args.ledger, args.esp, args.records, args.published_dir)
+    problems = check(args.ledger, args.esp, args.records, args.published_dir, gen0_dir=args.gen0_dir)
     if problems:
         for problem in problems:
             print(f"불일치: {problem}")
         print(f"실패: {len(problems)}건")
         return 1
-    print("통과: 장부·ESP·records.json·배포 기준선 일치")
+    print("통과: 장부·ESP·records.json·배포 기준선·얼린 세대 0 ESP 일치")
     return 0
 
 

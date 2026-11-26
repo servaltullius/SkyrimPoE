@@ -19,7 +19,8 @@ import formid_ledger  # noqa: E402
 
 HEADER_SIZE = 24
 GENERATION_EDITOR_ID = "SPOE_ContentGeneration"
-RETIRED_FORM_ID = 0x816
+# 젬 묶음에 없는 세대 0 젬(G1에서 폐기). 0x816 IceNova는 G1에서 유지한다.
+RETIRED_FORM_ID = 0x817
 
 
 def rewrite_esp(data: bytes, edit_record: Callable[[bytes], bytes]) -> bytes:
@@ -109,9 +110,10 @@ class TestFormIdLedger(unittest.TestCase):
         self.ledger_path = self.temp_path / "formid-ledger.json"
         self.esp_path = self.temp_path / "SkyrimPoE.esp"
         self.records_path = self.temp_path / "records.json"
-        self.ledger = json.loads(formid_ledger.DEFAULT_LEDGER.read_text(encoding="utf-8"))
-        self.esp_bytes = formid_ledger.DEFAULT_ESP.read_bytes()
-        self.records = json.loads(formid_ledger.DEFAULT_RECORDS.read_text(encoding="utf-8"))
+        # 기본 고정값은 G1 전 세대 0 상태다(결정 246으로 얼린 ESP와 그때의 장부·records.json).
+        self.ledger = json.loads(formid_ledger.DEFAULT_GEN0_LEDGER.read_text(encoding="utf-8"))
+        self.esp_bytes = formid_ledger.DEFAULT_GEN0_ESP.read_bytes()
+        self.records = json.loads(formid_ledger.DEFAULT_GEN0_RECORDS.read_text(encoding="utf-8"))
 
     def entry(self, form_id: int) -> dict:
         return next(row for row in self.ledger["entries"] if row["formId"] == f"0x{form_id:06X}")
@@ -123,7 +125,9 @@ class TestFormIdLedger(unittest.TestCase):
 
     def check_copy(self, published_dir: Path = formid_ledger.DEFAULT_PUBLISHED) -> list[str]:
         self.persist()
-        return formid_ledger.check(self.ledger_path, self.esp_path, self.records_path, published_dir)
+        # 고정값 자체가 얼린 세대 0 ESP라서, 얼린 ESP 대조는 그 시험에서만 따로 건다.
+        return formid_ledger.check(self.ledger_path, self.esp_path, self.records_path, published_dir,
+                                   gen0_dir=None)
 
     def assert_problem(self, expected: str) -> None:
         problems = self.check_copy()
@@ -160,8 +164,25 @@ class TestFormIdLedger(unittest.TestCase):
     def add_generation_marker(
         self, value: float = 1, value_type: bytes = b"s", form_id: int = 0xC00,
     ) -> None:
-        self.add_form(form_id, GENERATION_EDITOR_ID, "GLOB", "marker", "Global",
+        self.add_form(form_id, GENERATION_EDITOR_ID, "GLOB", "marker", "GlobalShort",
                       field(b"FNAM", value_type) + field(b"FLTV", struct.pack("<f", value)))
+        spec = next(row for row in self.records if row["editorid"] == GENERATION_EDITOR_ID)
+        spec["ops"] = [{"field_path": "Data", "value": f"{value:g}"}]
+
+    def rename_form(self, form_id: int, name: str) -> None:
+        self.edit_esp_record(form_id, lambda record: edit_field(record, b"FULL", lambda _: zstring(name)))
+        editor_id = self.entry(form_id)["editorId"]
+        spec = next(row for row in self.records if row["editorid"] == editor_id)
+        next(op for op in spec["ops"] if op["field_path"] == "Name")["value"] = name
+
+    def promote_to_generation_one(self) -> None:
+        """G1 전 고정값을 세대 1 규칙에 맞게 올린다: 지도·공물 ID(결정 253), 유지 젬 이름(5.1)."""
+        self.ledger["contentGeneration"] = 1
+        for entry in self.ledger["entries"]:
+            if entry["category"] in ("map", "tribute"):
+                entry["contentId"] = entry["legacyKey"].replace(":", ".")
+        self.rename_form(0x816, "스킬 젬: 얼음 폭발")
+        self.rename_form(0x883, "보조 젬: 갈래")
 
     def retire_gem(self, *, update_name: bool = True) -> None:
         self.entry(RETIRED_FORM_ID).update(status="retired", retiredGeneration=1)
@@ -169,11 +190,18 @@ class TestFormIdLedger(unittest.TestCase):
             self.edit_esp_record(RETIRED_FORM_ID, lambda record: edit_field(
                 record, b"FULL", lambda name: "(구판) ".encode("utf-8") + name,
             ))
+            editor_id = self.entry(RETIRED_FORM_ID)["editorId"]
+            record = next(row for row in self.records if row["editorid"] == editor_id)
+            for op in record["ops"]:
+                if op["field_path"] == "Name":
+                    op["value"] = "(구판) " + op["value"]
 
     def add_new_currency(self) -> None:
         self.add_form(0x8E2, "SPOE_Orb_NewCurrency", "MISC", "currency", "MiscItem",
                       field(b"OBND", bytes(12)) + field(b"FULL", zstring("신규 화폐"))
                       + field(b"DATA", struct.pack("<If", 1, 0.0)), content_id="currency.NewCurrency")
+        spec = next(row for row in self.records if row["editorid"] == "SPOE_Orb_NewCurrency")
+        spec["ops"] = [{"field_path": "Name", "value": "신규 화폐"}]
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -190,7 +218,7 @@ class TestFormIdLedger(unittest.TestCase):
         esp = formid_ledger.read_esp(formid_ledger.DEFAULT_ESP)
         self.assertEqual(esp.flags, 0x200)
         self.assertEqual(esp.masters, ["Skyrim.esm"])
-        gem = next(record for record in esp.records if record.local_id == RETIRED_FORM_ID)
+        gem = next(record for record in esp.records if record.local_id == 0x816)
         self.assertEqual((gem.form_id, gem.flags, gem.signature, gem.editor_id),
                          (0x01000816, 0, "MISC", "SPOE_Gem_IceNova"))
         self.assertTrue(any(ord(char) > 127 for char in gem.full_name))
@@ -241,7 +269,8 @@ class TestFormIdLedger(unittest.TestCase):
         created = self.ledger_path.read_bytes()
         self.assertEqual(created, (formid_ledger.DEFAULT_PUBLISHED / "gen0.json").read_bytes())
         self.assertEqual(len(json.loads(created)["entries"]), 192)
-        self.assertEqual(len(formid_ledger.read_esp(formid_ledger.DEFAULT_ESP).records), 226)
+        # 226폼 + G1의 세대 GLOB(0x8E2). create는 세대 0 기준선 폼만 다시 만든다.
+        self.assertEqual(len(formid_ledger.read_esp(formid_ledger.DEFAULT_ESP).records), 227)
 
     def test_swapping_two_form_ids_in_esp_and_ledger_breaks_published_baseline(self) -> None:
         first, second = 0x802, 0x803
@@ -368,7 +397,7 @@ class TestFormIdLedger(unittest.TestCase):
         self.assert_problem("도입 세대 오류: SPOE_Gem_FrostBolt 0")
 
     def test_rejects_changing_published_introduced_generation(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker(form_id=0x8E2)
         self.entry(0x880)["introducedGeneration"] = 1
         self.assertEqual(self.check_copy(), [
@@ -447,7 +476,7 @@ class TestFormIdLedger(unittest.TestCase):
         self.assertTrue(any("배포 기준선 gen*.json이 없음" in problem for problem in problems), problems)
 
     def test_rejects_reactivating_form_retired_in_later_baseline(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker()
         baseline_dir = self.temp_path / "published"
         baseline_dir.mkdir()
@@ -478,44 +507,44 @@ class TestFormIdLedger(unittest.TestCase):
         self.assert_problem("세대 0에 SPOE_ContentGeneration GLOB이 있음")
 
     def test_rejects_missing_generation_marker(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.assert_problem("SPOE_ContentGeneration GLOB이 정확히 하나")
 
     def test_rejects_wrong_generation_marker_id(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker(form_id=0x8E2)
         self.edit_esp_record(0x8E2, lambda record: change_word(record, 12, 0x010008E3))
         self.assert_problem("SPOE_ContentGeneration FormID가 장부와 다름: ESP 0x0008E3 / 장부 0x0008E2")
 
     def test_accepts_generation_marker_with_ledger_id_other_than_c00(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker(form_id=0x8E2)
         self.assertEqual(self.check_copy(), [])
 
     def test_rejects_wrong_generation_global_value(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker(value=2)
         self.assert_problem("세대 GLOB FLTV 값 다름")
 
     def test_rejects_wrong_generation_global_type(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker(value_type=b"l")
         self.assert_problem("세대 GLOB FNAM 타입 다름")
 
     def test_rejects_retired_form_without_name_prefix(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker()
         self.retire_gem(update_name=False)
         self.assert_problem('폐기 폼 FULL이 "(구판) "으로 시작하지 않음')
 
     def test_accepts_retirement_with_name_prefix_and_generation_marker(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker()
         self.retire_gem()
         self.assertEqual(self.check_copy(), [])
 
     def test_accepts_new_form_in_approved_matching_range(self) -> None:
-        self.ledger["contentGeneration"] = 1
+        self.promote_to_generation_one()
         self.add_generation_marker(form_id=0x8E3)
         self.add_new_currency()
         self.assertEqual(self.check_copy(), [])
@@ -546,7 +575,9 @@ class TestFormIdLedger(unittest.TestCase):
         self.assertEqual(snapshot.read_bytes(), original)
 
     def test_freeze_rejects_mismatched_generation(self) -> None:
-        result = self.run_cli("freeze", "--generation", "1", "--published-dir", str(self.temp_path))
+        self.persist()
+        result = self.run_cli("freeze", "--generation", "1", "--ledger", str(self.ledger_path),
+                              "--published-dir", str(self.temp_path))
         self.assertEqual(result.returncode, 1)
         self.assertIn("contentGeneration 0 불일치", result.stderr)
         self.assertFalse((self.temp_path / "gen1.json").exists())
@@ -557,6 +588,233 @@ class TestFormIdLedger(unittest.TestCase):
                               "--records", str(self.records_path),
                               "--published-dir", str(formid_ledger.DEFAULT_PUBLISHED))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+
+# G1(결정 204·231·246·253)의 세대 1 장부를 장부 밖에서 정한 기대표와 대조한다.
+G1_RETIRED = {
+    "SPOE_Gem_CastOnCrit", "SPOE_Gem_ShockNova", "SPOE_Gem_SupIncCrit", "SPOE_Gem_SupMeleePhys",
+    "SPOE_Gem_SupBrutality", "SPOE_Gem_SupIncAoE", "SPOE_Gem_SupConcEffect", "SPOE_Gem_FreezingPulse",
+    "SPOE_Gem_SupGMP", "SPOE_Gem_SupChain", "SPOE_Gem_SupPierce", "SPOE_Gem_Determination",
+    "SPOE_Gem_Grace", "SPOE_Gem_Discipline", "SPOE_Gem_Hatred", "SPOE_Gem_Wrath", "SPOE_Gem_Anger",
+    "SPOE_Gem_PurityOfElements", "SPOE_Gem_MoltenShell",
+}
+G1_KEPT = {
+    "SPOE_Gem_Cyclone": ("gem.Cyclone", "스킬 젬: 사이클론"),
+    "SPOE_Gem_IceNova": ("gem.IceNova", "스킬 젬: 얼음 폭발"),
+    "SPOE_Gem_Fireball": ("gem.Fireball", "스킬 젬: 화염구"),
+    "SPOE_Gem_Arc": ("gem.Arc", "스킬 젬: 연쇄 번개"),
+    "SPOE_Gem_Spark": ("gem.Spark", "스킬 젬: 전기불꽃"),
+    "SPOE_Gem_SupFork": ("sup.Fork", "보조 젬: 갈래"),
+    "SPOE_Gem_SupSpellEcho": ("sup.SpellEcho", "보조 젬: 주문 메아리"),
+    "SPOE_Gem_HeraldOfIce": ("gem.HeraldOfIce", "전령 젬: 얼음의 전령"),
+    "SPOE_Gem_HeraldOfAsh": ("gem.HeraldOfAsh", "전령 젬: 재의 전령"),
+}
+G1_MAPS = {**{f"SPOE_Map_T{tier}": f"map.T{tier}" for tier in range(1, 17)},
+           "SPOE_Tribute_Ascendancy4": "tribute.Ascendancy4"}
+G1_MARKER_FORM_ID = 0x8E2
+
+
+class TestGenerationOneLedger(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ledger = json.loads(formid_ledger.DEFAULT_LEDGER.read_text(encoding="utf-8"))
+        self.by_editor = {entry["editorId"]: entry for entry in self.ledger["entries"]}
+        self.esp = {record.editor_id: record
+                    for record in formid_ledger.read_esp(formid_ledger.DEFAULT_ESP).records}
+        self.frozen = {record.editor_id: record
+                       for record in formid_ledger.read_esp(formid_ledger.DEFAULT_GEN0_ESP).records}
+        cache = Path(__file__).resolve().parent / "__pycache__"
+        cache.mkdir(exist_ok=True)
+        temp_dir = tempfile.TemporaryDirectory(dir=cache)
+        self.addCleanup(temp_dir.cleanup)
+        self.temp_path = Path(temp_dir.name)
+
+    def test_repository_check_includes_frozen_generation_zero_esp(self) -> None:
+        self.assertEqual(formid_ledger.check(
+            formid_ledger.DEFAULT_LEDGER, formid_ledger.DEFAULT_ESP, formid_ledger.DEFAULT_RECORDS,
+            gen0_dir=formid_ledger.DEFAULT_GEN0_DIR,
+        ), [])
+
+    def test_generation_and_marker(self) -> None:
+        self.assertEqual(self.ledger["contentGeneration"], 1)
+        marker = self.by_editor[GENERATION_EDITOR_ID]
+        self.assertEqual(
+            (marker["formId"], marker["type"], marker["category"], marker["status"], marker["introducedGeneration"]),
+            (f"0x{G1_MARKER_FORM_ID:06X}", "GLOB", "marker", "active", 1))
+        record = self.esp[GENERATION_EDITOR_ID]
+        self.assertEqual((record.local_id, record.global_type, record.global_value), (G1_MARKER_FORM_ID, "s", 1.0))
+        self.assertNotIn(GENERATION_EDITOR_ID, self.frozen)
+
+    def test_gem_retire_keep_and_new_sets(self) -> None:
+        gems = {editor: entry for editor, entry in self.by_editor.items() if entry["category"] == "gem"}
+        self.assertEqual(len(gems), 62)
+        retired = {editor for editor, entry in gems.items() if entry["status"] == "retired"}
+        self.assertEqual(retired, G1_RETIRED)
+        for editor in G1_RETIRED:
+            with self.subTest(editor=editor):
+                entry = gems[editor]
+                self.assertEqual((entry["retiredGeneration"], entry["contentId"], entry["introducedGeneration"]),
+                                 (1, None, 0))
+                self.assertEqual(self.esp[editor].full_name, "(구판) " + self.frozen[editor].full_name)
+        for editor, (content_id, name) in G1_KEPT.items():
+            with self.subTest(editor=editor):
+                entry = gems[editor]
+                self.assertEqual((entry["status"], entry["contentId"], entry["introducedGeneration"]),
+                                 ("active", content_id, 0))
+                self.assertEqual(self.esp[editor].full_name, name)
+        new = {editor: entry for editor, entry in gems.items() if entry["introducedGeneration"] == 1}
+        self.assertEqual(len(new), 34)
+        self.assertTrue(all(entry["status"] == "active" and entry["contentId"] and entry["legacyKey"] is None
+                            for entry in new.values()))
+        self.assertEqual(len(G1_RETIRED) + len(G1_KEPT) + len(new), len(gems))
+
+    def test_maps_and_tribute_are_kept_with_content_ids(self) -> None:
+        kept = {editor: entry for editor, entry in self.by_editor.items()
+                if entry["category"] in ("map", "tribute")}
+        self.assertEqual({editor: entry["contentId"] for editor, entry in kept.items()}, G1_MAPS)
+        for editor, entry in kept.items():
+            with self.subTest(editor=editor):
+                # 첫 분류는 P0의 이력으로 남는다(P6a 4.1).
+                self.assertEqual((entry["status"], entry["introducedGeneration"], entry["firstPlan"]),
+                                 ("active", 0, "undecided"))
+                self.assertEqual(entry["legacyKey"].replace(":", "."), entry["contentId"])
+
+    def check_with(
+        self, *, frozen_esp: bytes | None = None, frozen_ledger: dict | None = None, ledger: dict | None = None,
+        records: list | None = None, esp: bytes | None = None,
+    ) -> list[str]:
+        gen0 = self.temp_path / "gen0"
+        gen0.mkdir(exist_ok=True)
+        (gen0 / "SkyrimPoE.esp").write_bytes(
+            formid_ledger.DEFAULT_GEN0_ESP.read_bytes() if frozen_esp is None else frozen_esp)
+        write_json(gen0 / "formid-ledger.json", frozen_ledger if frozen_ledger is not None
+                   else json.loads(formid_ledger.DEFAULT_GEN0_LEDGER.read_text(encoding="utf-8")))
+        (gen0 / "records.json").write_bytes(formid_ledger.DEFAULT_GEN0_RECORDS.read_bytes())
+        ledger_path = formid_ledger.DEFAULT_LEDGER
+        if ledger is not None:
+            ledger_path = self.temp_path / "ledger.json"
+            write_json(ledger_path, ledger)
+        records_path = formid_ledger.DEFAULT_RECORDS
+        if records is not None:
+            records_path = self.temp_path / "records.json"
+            write_json(records_path, records)
+        esp_path = formid_ledger.DEFAULT_ESP
+        if esp is not None:
+            esp_path = self.temp_path / "SkyrimPoE.esp"
+            esp_path.write_bytes(esp)
+        return formid_ledger.check(ledger_path, esp_path, records_path, gen0_dir=gen0)
+
+    def assert_reports(self, problems: list[str], expected: str) -> None:
+        self.assertTrue(any(expected in problem for problem in problems), problems)
+
+    def current_records(self) -> list:
+        return json.loads(formid_ledger.DEFAULT_RECORDS.read_text(encoding="utf-8"))
+
+    def test_frozen_copy_matches_its_pre_g1_ledger(self) -> None:
+        self.assertEqual(self.check_with(), [])
+        frozen = json.loads(formid_ledger.DEFAULT_GEN0_LEDGER.read_text(encoding="utf-8"))
+        self.assertEqual((frozen["contentGeneration"], len(frozen["entries"])), (0, 226))
+
+    def test_a_later_generation_one_form_does_not_break_the_frozen_check(self) -> None:
+        # 세대 1에 폼을 더해도 얼린 ESP의 기대 집합은 G1 전 장부라서 그대로다(검토 지적 1).
+        esp = add_record(formid_ledger.DEFAULT_ESP.read_bytes(), game_record(
+            b"MISC", 0x8E3, field(b"EDID", zstring("SPOE_Orb_Later")) + field(b"OBND", bytes(12))
+            + field(b"FULL", zstring("나중 화폐")) + field(b"DATA", struct.pack("<If", 1, 0.0))))
+        ledger = copy.deepcopy(self.ledger)
+        ledger["entries"].append({
+            "formId": "0x0008E3", "editorId": "SPOE_Orb_Later", "type": "MISC", "category": "currency",
+            "contentId": "currency.Later", "legacyKey": None, "status": "active", "introducedGeneration": 1,
+            "retiredGeneration": None, "firstPlan": "keep", "decidedIn": "",
+        })
+        records = self.current_records()
+        records.append({"record_type": "MiscItem", "editorid": "SPOE_Orb_Later",
+                        "ops": [{"field_path": "Name", "value": "나중 화폐"}]})
+        self.assertEqual(self.check_with(ledger=ledger, records=records, esp=esp), [])
+
+    def test_rejects_frozen_esp_that_is_the_generation_one_esp(self) -> None:
+        problems = self.check_with(frozen_esp=formid_ledger.DEFAULT_ESP.read_bytes())
+        self.assert_reports(problems, "얼린 세대 0 ESP에 GLOB이 있음")
+        self.assert_reports(problems, "얼린 세대 0 ESP에 폐기 이름 표시가 있음")
+        self.assert_reports(problems, "얼린 세대 0 ESP에만 있음(G1 전 장부에 없음): 0x0008E2")
+
+    def test_rejects_frozen_esp_with_renamed_retired_form(self) -> None:
+        def rename(record: bytes) -> bytes:
+            if struct.unpack_from("<I", record, 12)[0] != 0x01000815:
+                return record
+            return edit_field(record, b"FULL", lambda _: zstring("다른 이름"))
+        problems = self.check_with(frozen_esp=rewrite_esp(formid_ledger.DEFAULT_GEN0_ESP.read_bytes(), rename))
+        self.assert_reports(problems, "폐기 폼 이름이 현재 ESP 이름의 원래 이름과 다름")
+        self.assert_reports(problems, "records.json 이름과 ESP FULL 다름: SPOE_Gem_CastOnCrit")
+
+    def test_rejects_frozen_esp_with_a_changed_editor_id(self) -> None:
+        def change(record: bytes) -> bytes:
+            if struct.unpack_from("<I", record, 12)[0] != 0x01000880:
+                return record
+            return edit_field(record, b"EDID", lambda _: zstring("SPOE_Other"))
+        problems = self.check_with(frozen_esp=rewrite_esp(formid_ledger.DEFAULT_GEN0_ESP.read_bytes(), change))
+        self.assert_reports(problems, "얼린 세대 0 ESP의 EditorID·타입 다름: 0x000880")
+
+    def test_rejects_frozen_ledger_that_the_current_ledger_does_not_preserve(self) -> None:
+        frozen = json.loads(formid_ledger.DEFAULT_GEN0_LEDGER.read_text(encoding="utf-8"))
+        next(entry for entry in frozen["entries"] if entry["formId"] == "0x000880")["legacyKey"] = "gem:Other"
+        self.assert_reports(self.check_with(frozen_ledger=frozen), "지금 장부가 G1 전 폼을 보존하지 않음: 0x000880")
+        frozen["contentGeneration"] = 1
+        self.assert_reports(self.check_with(frozen_ledger=frozen), "얼린 세대 0 ESP의 장부는 세대 0 장부여야 함")
+
+    def test_rejects_missing_frozen_files(self) -> None:
+        problems = formid_ledger.check(formid_ledger.DEFAULT_LEDGER, formid_ledger.DEFAULT_ESP,
+                                       formid_ledger.DEFAULT_RECORDS, gen0_dir=self.temp_path / "missing")
+        self.assert_reports(problems, "얼린 세대 0 ESP·장부·records.json을 읽지 못함")
+
+    def test_rejects_records_json_name_that_differs_or_is_missing(self) -> None:
+        records = self.current_records()
+        spark = next(row for row in records if row["editorid"] == "SPOE_Gem_Spark")
+        next(op for op in spark["ops"] if op["field_path"] == "Name")["value"] = "스킬 젬: 다른 이름"
+        problems = self.check_with(records=records)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("records.json 이름과 ESP FULL 다름: SPOE_Gem_Spark", problems[0])
+        records = self.current_records()
+        shock = next(row for row in records if row["editorid"] == "SPOE_Gem_ShockNova")
+        shock["ops"] = [op for op in shock["ops"] if op["field_path"] != "Name"]
+        self.assert_reports(self.check_with(records=records), "records.json에 Name이 없음(ESP에는 FULL이 있음): "
+                                                                 "SPOE_Gem_ShockNova")
+
+    def test_rejects_records_json_generation_global_that_differs_from_esp(self) -> None:
+        for record_type, value, expected in (("Global", "1", "GLOB 타입이 ESP와 다름"),
+                                             ("GlobalShort", "0", "GLOB 값이 ESP와 다름")):
+            with self.subTest(record_type=record_type, value=value):
+                records = self.current_records()
+                marker = next(row for row in records if row["editorid"] == GENERATION_EDITOR_ID)
+                marker["record_type"] = record_type
+                marker["ops"] = [{"field_path": "Data", "value": value}]
+                self.assert_reports(self.check_with(records=records), f"records.json {expected}: "
+                                                                       f"{GENERATION_EDITOR_ID}")
+
+    def test_rejects_map_content_id_that_is_not_the_legacy_key(self) -> None:
+        for value in (None, "gem.T1", "tribute.T1"):
+            with self.subTest(value=value):
+                ledger = copy.deepcopy(self.ledger)
+                next(entry for entry in ledger["entries"] if entry["editorId"] == "SPOE_Map_T1")["contentId"] = value
+                self.assert_reports(self.check_with(ledger=ledger),
+                                    "지도·공물 contentId가 세대 0 저장 키와 다름: SPOE_Map_T1")
+
+    def test_rejects_gem_full_that_does_not_end_with_the_bundle_name(self) -> None:
+        # 신규 34종을 포함한 43종 FULL이 젬 묶음의 nameKo로 끝나야 한다(검토 지적 4·5).
+        def rename(record: bytes) -> bytes:
+            if struct.unpack_from("<I", record, 12)[0] != 0x010008C0:
+                return record
+            return edit_field(record, b"FULL", lambda _: zstring("스킬 젬: 다른 젬"))
+        records = self.current_records()
+        frost = next(row for row in records if row["editorid"] == "SPOE_Gem_FrostBolt")
+        next(op for op in frost["ops"] if op["field_path"] == "Name")["value"] = "스킬 젬: 다른 젬"
+        problems = self.check_with(records=records, esp=rewrite_esp(formid_ledger.DEFAULT_ESP.read_bytes(), rename))
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("젬 FULL이 젬 묶음 이름으로 끝나지 않음: SPOE_Gem_FrostBolt", problems[0])
+
+    def test_rejects_non_gem_content_id_grammar(self) -> None:
+        ledger = copy.deepcopy(self.ledger)
+        next(entry for entry in ledger["entries"] if entry["editorId"] == "SPOE_Map_T1")["contentId"] = "Map T1"
+        self.assert_reports(self.check_with(ledger=ledger), "장부 contentId 문법 오류: SPOE_Map_T1")
 
 
 if __name__ == "__main__":

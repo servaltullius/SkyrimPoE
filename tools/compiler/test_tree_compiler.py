@@ -15,7 +15,7 @@ from compile_tree import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TREE_JSON = REPO_ROOT / "data" / "packs" / "tree_3_30.json"
+TREE_JSON = REPO_ROOT / "data" / "packs" / "gen0" / "tree.json"
 DEFAULT_POB_DIR = Path(r"G:\poe\PathOfBuilding-2.68.1")
 DEFAULT_KO_DIR = Path(r"G:\poe\POE1 한글 POB (2025.10.31)\Data\Translate\ko-KR")
 
@@ -169,9 +169,9 @@ class TestTreeCompiler(unittest.TestCase):
         # 재검수 R-27: 컴파일러를 바꾸고 데이터 재생성을 잊으면 잡는다(PoB 원본이 있을 때만).
         if not DEFAULT_POB_DIR.is_dir() or not DEFAULT_KO_DIR.is_dir():
             self.skipTest("PoB 원본이나 한글 사전이 없어 커밋된 팩과 같은 조건으로 컴파일할 수 없음")
-        self.assertTrue(TREE_JSON.is_file(), "data/packs/tree_3_30.json이 없음")
+        self.assertTrue(TREE_JSON.is_file(), "data/packs/gen0/tree.json이 없음")
         committed = json.loads(TREE_JSON.read_text(encoding="utf-8"))
-        self.assertEqual(committed, self.data, "data/packs/tree_3_30.json이 compile_tree.py 출력과 다름. 다시 생성하세요.")
+        self.assertEqual(committed, self.data, "data/packs/gen0/tree.json이 compile_tree.py 출력과 다름. 다시 생성하세요.")
 
 
 if __name__ == "__main__":

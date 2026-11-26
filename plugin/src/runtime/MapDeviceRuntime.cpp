@@ -18,6 +18,7 @@
 #include "runtime/UniqueIdUtil.h"
 #include "runtime/WorldDropTracker.h"
 
+#include "core/ContentFeatures.h"
 #include "core/GemTransaction.h"
 #include "core/ItemFormatter.h"
 #include "core/MapSystem.h"
@@ -2414,8 +2415,15 @@ namespace SkyrimPoE::Runtime
             }
         };
 
+        std::atomic<std::uint64_t> g_entryGateRejections{ 0 };
+
         std::string EntryUnavailable(RE::PlayerCharacter* player, MapTravelKind kind)
         {
+            // 결정 239·248: 세대 1 패키지는 P6b까지 새 지도 입장·결투장·재입장을 막는다(귀환·포기·탈출·안전 제거는 이 함수를 거치지 않음).
+            if (!Core::ActiveContentFeatures().mapEntry) {
+                g_entryGateRejections.fetch_add(1, std::memory_order_relaxed);
+                return "세대 1(PoE2)에서는 아직 지도에 들어갈 수 없습니다. 지도 기능은 P6b에서 다시 엽니다.";
+            }
             if (const auto& reason = MapPackRuntime::UnavailableReason(); !reason.empty()) {
                 return reason;
             }
@@ -2990,7 +2998,12 @@ namespace SkyrimPoE::Runtime
     RE::FormID MapDeviceRuntime::LegacyDungeonCell(const Core::ActiveMapState& run, RE::FormID legacyCell)
     {
         if (legacyCell != 0) {
-            return legacyCell;
+            return legacyCell;  // 구판 V1 회차의 바닐라 셀(지도 팩과 무관).
+        }
+        // G1 계획 4.1 W4: 지도 팩 검증이 실패하면 목록·EditorID로 셀을 찾지 않는다(위치 기반 정리를 하지 않음).
+        // 저장된 스폰 ID 처리와 자격 있는 환불은 셀 없이 계속한다(CloseLegacyRun).
+        if (!MapPackRuntime::UnavailableReason().empty()) {
+            return 0;
         }
         const auto* dungeon = MapPackRuntime::Manifest().Find(run.dungeonKey);
         auto* cell = dungeon ? MapPackRuntime::ResolveCell(*dungeon) : nullptr;
@@ -3251,7 +3264,7 @@ namespace SkyrimPoE::Runtime
         if (g_activeMapRun.load(std::memory_order_acquire)) {
             EndRunOnMainThread();
         }
-        WorldDropTracker::ReturnAllToCorpsesNow();
+        const auto dropsLeftOnGround = WorldDropTracker::ReturnAllToCorpsesNow();
         (void)WorldDropTracker::SweepOrphanBeamsNearPlayer();
 
         std::size_t returnedGems = 0;
@@ -3433,9 +3446,12 @@ namespace SkyrimPoE::Runtime
             msg += std::format(" 속도 원복 대기 NPC {}명. 이 NPC들이 로드될 때 DLL이 원복하므로 지금 모드를 제거하면 속도 변경이 남을 수 있습니다.",
                 pendingSpeedReverts);
         }
+        if (dropsLeftOnGround > 0) {
+            msg += std::format(" 시체에 돌려주지 못한 바닥 드롭 {}개가 그 자리에 남았습니다.", dropsLeftOnGround);
+        }
         RE::SendHUDMessage::ShowHUDMessage(msg.c_str());
-        SKSE::log::info("MapDeviceRuntime: SafeUninstallCleanup armed (gems={}, jewels={}, charms={}, hpDelta={:.1f}, mpDelta={:.1f}, pendingSpeedReverts={}).",
-            returnedGems, returnedJewels, returnedCharms, appliedHpDelta, appliedMpDelta, pendingSpeedReverts);
+        SKSE::log::info("MapDeviceRuntime: SafeUninstallCleanup armed (gems={}, jewels={}, charms={}, hpDelta={:.1f}, mpDelta={:.1f}, pendingSpeedReverts={}, dropsLeftOnGround={}).",
+            returnedGems, returnedJewels, returnedCharms, appliedHpDelta, appliedMpDelta, pendingSpeedReverts, dropsLeftOnGround);
         return { true, msg };
     }
 
@@ -4210,5 +4226,10 @@ namespace SkyrimPoE::Runtime
         g_deathEscapeRunId.store(0, std::memory_order_release);
         DisarmUninstallCleanup();
         RefreshAtomicsLocked();
+    }
+
+    MapDeviceRuntime::GateStats MapDeviceRuntime::GetGateStatsForTest() noexcept
+    {
+        return { g_entryGateRejections.load(std::memory_order_relaxed) };
     }
 }

@@ -1904,9 +1904,19 @@
     }
 
     jewelBagList.textContent = "";
+    // 결정 249: 세대 1은 P5까지 주얼을 새로 꽂지 않는다(위의 회수 버튼은 그대로).
+    if (panelData && panelData.contentFeatures && panelData.contentFeatures.jewelSocketing === false) {
+      const off = document.createElement("div");
+      off.className = "section-sub";
+      off.textContent = "세대 1(PoE2)에서는 아직 주얼을 장착할 수 없습니다. 장착된 주얼의 회수만 할 수 있습니다.";
+      jewelBagList.appendChild(off);
+    }
+    const socketingOff = Boolean(panelData && panelData.contentFeatures && panelData.contentFeatures.jewelSocketing === false);
     const bagItems = (panelData && panelData.gear && panelData.gear.bagItems) || [];
     const jewels = bagItems.filter((b) => b.isJewel && (!rules.isPhylactery(node.id) || b.rarity !== "unique"));
-    if (jewels.length === 0) {
+    if (socketingOff) {
+      // 장착 목록은 보이지 않고, 창은 회수 버튼을 위해 그대로 연다.
+    } else if (jewels.length === 0) {
       const empty = document.createElement("div");
       empty.className = "section-sub";
       empty.textContent = "가방에 장착할 수 있는 주얼이 없습니다.";

@@ -21,6 +21,15 @@ namespace SkyrimPoE::Runtime
         // 시험 진단용: 플레이어의 CheckCast·SpellCast 판정을 기록한다(AutoTest만 켬).
         static void SetCastTraceForTest(bool enabled);
 
+        // 시험 진단용(W8): ExecuteHandCastSlot이 DLL에서 직접 매지카를 차감한 횟수와 마지막 금액.
+        struct MagickaChargeDiagnostics
+        {
+            std::uint64_t chargeCount = 0;
+            double lastChargedAmount = 0.0;
+            std::uint8_t lastChargedSlot = 0;
+        };
+        [[nodiscard]] static MagickaChargeDiagnostics GetMagickaChargeDiagnostics() noexcept;
+
         // 대리 주문·파워 가운데 GetCostliestEffectItem()이 null인 수를 기록한다(다른 모드 호환 진단).
         static void EnsureProxyCostliestEffects();
 

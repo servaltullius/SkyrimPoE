@@ -26,6 +26,14 @@ namespace SkyrimPoE::Core
         std::string_view ascendancyId;
     };
 
+    struct PassivePathPlan
+    {
+        std::vector<std::uint32_t> nodes;
+        std::uint32_t targetNodeId = 0;
+        std::uint32_t preferredAttrOptionId = 0;
+        std::int32_t pointCost = 0;
+    };
+
     // 결정 8, 10, 151~153:
     // 패시브 트리 규칙 엔진(엔진 비의존).
     // - 포인트는 부호 있는 int32_t 파생 계산을 단일 진실 원천으로 사용해 언더플로 차단.
@@ -69,6 +77,17 @@ namespace SkyrimPoE::Core
             const PassiveTreeData& data,
             const PassiveTreeState& state,
             std::uint32_t targetNodeId);
+
+        // 주어진 노드 경로를 현재 상태에서 할당할 때 필요한 일반 패시브 점수 비용(freeAlloc·이미 할당된 노드·중복은 0점).
+        [[nodiscard]] static std::int32_t ComputePathNormalPointCost(
+            const PassiveTreeData& data,
+            const PassiveTreeState& state,
+            std::span<const std::uint32_t> nodeIds);
+
+        // 현재 상태에서 일반 패시브 점수 비용이 가장 적은 미할당 능력치 선택 노드와 그 경로·비용을 구한다.
+        [[nodiscard]] static PassivePathPlan FindNearestAttributeChoicePath(
+            const PassiveTreeData& data,
+            const PassiveTreeState& state);
 
         // 마스터리 노드 해금 여부(해당 그룹의 주요 패시브가 1개 이상 할당되어 있어야 함)
         [[nodiscard]] static bool IsMasteryUnlocked(

@@ -52,7 +52,9 @@ namespace SkyrimPoE::Runtime
         static std::size_t SweepOrphanBeamsNearPlayer();
 
         // 모든 활성 드랍을 즉시 시체로 회수/정리(AutoTest E7 검증용)
-        static void ReturnAllToCorpsesNow();
+        // 추적 중인 바닥 드롭을 모두 시체로 돌려준다. 바닥에 남은 드롭의 수를 돌려준다.
+        // 시체가 아직 로드되지 않은 것은 계속 추적하고, 시체가 사라진 것은 추적을 끝낸다.
+        [[nodiscard]] static std::size_t ReturnAllToCorpsesNow();
 
         enum class LegacyDropReturn { Returned, AlreadyGone, Deferred, Lost };
         [[nodiscard]] static LegacyDropReturn ReturnLegacyDrop(const SavedWorldDropEntry& entry);
@@ -68,5 +70,15 @@ namespace SkyrimPoE::Runtime
         static void RestoreFromSave(std::vector<SavedWorldDropEntry> entries);
         static void Clear();
         [[nodiscard]] static std::size_t ActiveCount();
+
+        // 결정 259(B0): 처치 드롭 게이트 검증용 누적 계측 카운터.
+        struct DropGateStats
+        {
+            std::uint64_t onKillAwardedCalls = 0;
+            std::uint64_t gen1GateRejections = 0;
+            std::uint64_t rollEntries = 0;
+            std::uint64_t physicalCreations = 0;
+        };
+        [[nodiscard]] static DropGateStats GetGateStatsForTest() noexcept;
     };
 }

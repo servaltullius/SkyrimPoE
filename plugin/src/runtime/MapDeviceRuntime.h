@@ -268,5 +268,12 @@ namespace SkyrimPoE::Runtime
         static void RestoreFromSave(Core::ActiveMapState saved, RE::FormID legacyCell, bool atlasDamaged, bool runDamaged);
         static void OnPostLoadRebind(bool keepCleanupRequests = false);
         static void ResetOnRevert(bool keepCleanupRequests = false);
+
+        // 결정 259(B0): 새 지도 입장 세대 1 게이트 거절 누적 카운터.
+        struct GateStats
+        {
+            std::uint64_t entryGateRejections = 0;
+        };
+        [[nodiscard]] static GateStats GetGateStatsForTest() noexcept;
     };
 }

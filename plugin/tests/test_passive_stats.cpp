@@ -26,7 +26,7 @@ namespace
         static bool loaded = false;
         if (!loaded) {
             std::string err;
-            const auto p = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json";
+            const auto p = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json";
             POE_CHECK(pack.LoadFromFile(p, &err));
             loaded = true;
         }
@@ -39,7 +39,7 @@ namespace
         static bool loaded = false;
         if (!loaded) {
             std::string err;
-            const auto p = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "tree_3_30.json";
+            const auto p = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "tree.json";
             POE_CHECK(tree.LoadFromFile(p, &err));
             loaded = true;
         }
@@ -714,7 +714,7 @@ POE_TEST("PassiveStatParser: parses core stat lines and skips conditional/weapon
     POE_CHECK(t.maxEnduranceBonus == 1);
 }
 
-POE_TEST("PassiveStatParser: AggregateTree recognizes all 10 Stage-3 keystones from real tree_3_30.json")
+POE_TEST("PassiveStatParser: AggregateTree recognizes all 10 Stage-3 keystones from real tree.json")
 {
     const auto& tree = LoadTree();
     PassiveTreeState state;
@@ -753,7 +753,7 @@ POE_TEST("PassiveStatParser: AggregateTree recognizes all 10 Stage-3 keystones f
     const auto ptTotals = PassiveStatParser::AggregateTree(tree, ptState);
     POE_CHECK(!ptTotals.resoluteTechnique);
 
-    // 검수 Major #1: 실제 tree_3_30.json의 3.30 영문 문구 5종 직접 검증
+    // 검수 Major #1: 실제 tree.json의 3.30 영문 문구 5종 직접 검증
     PassiveTreeState real330;
     real330.classSelected = true;
     real330.allocatedNodes = {
@@ -973,7 +973,7 @@ POE_TEST("Config: parses [PassiveTree] section from SkyrimPoE.ini")
     POE_CHECK(cfg.bonusAscendancyPoints == 0);
 }
 
-POE_TEST("PassiveStatParser: every ailment-chance line in real tree_3_30.json is parsed (review R-1)")
+POE_TEST("PassiveStatParser: every ailment-chance line in real tree.json is parsed (review R-1)")
 {
     // 재검수 R-1: 트리 원문의 상태이상 확률 줄(예: "Attacks have 15% chance to cause Bleeding")이
     // 하나도 빠짐없이 파싱되는지 실제 데이터로 확인한다. 시험용으로 지어낸 문구로는 이 결함을 잡지 못했다.

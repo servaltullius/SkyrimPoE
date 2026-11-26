@@ -140,5 +140,12 @@ namespace SkyrimPoE::Runtime
         [[nodiscard]] static Core::PassiveTreeOpResult SelectMasteryWithRegret(
             std::uint32_t masteryNodeId,
             std::uint32_t effectId);
+
+        // 결정 259(B0): 주얼 장착 세대 1 게이트 거절 누적 카운터.
+        struct GateStats
+        {
+            std::uint64_t jewelSocketGateRejections = 0;
+        };
+        [[nodiscard]] static GateStats GetGateStatsForTest() noexcept;
     };
 }

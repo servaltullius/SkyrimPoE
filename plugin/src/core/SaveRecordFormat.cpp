@@ -9,6 +9,7 @@
 #include <format>
 #include <iterator>
 #include <limits>
+#include <unordered_set>
 
 namespace SkyrimPoE::Core::SaveRecord
 {
@@ -401,6 +402,66 @@ namespace SkyrimPoE::Core::SaveRecord
         return true;
     }
 
+    bool IsValidStarterContentId(std::string_view id) noexcept
+    {
+        if (id.empty() || id.size() > kMaxStarterContentIdBytes) {
+            return false;
+        }
+        const auto dot = id.find('.');
+        if (dot == std::string_view::npos || dot == 0 || dot + 1 >= id.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < dot; ++i) {
+            const auto ch = static_cast<unsigned char>(id[i]);
+            if (ch < 'a' || ch > 'z') {
+                return false;
+            }
+        }
+        for (std::size_t i = dot + 1; i < id.size(); ++i) {
+            const auto ch = static_cast<unsigned char>(id[i]);
+            const bool alpha = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+            const bool digit = ch >= '0' && ch <= '9';
+            if (!alpha && !digit && ch != '.' && ch != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool ReadStarterRecord(const RawSaveRecord& record, std::vector<std::string>& out)
+    {
+        if (record.type != kRecordStarter || record.version != kStarterVersion ||
+            record.bytes.size() > kMaxSaveRecordBytes) {
+            return false;
+        }
+        std::span<const std::uint8_t> bytes = record.bytes;
+        std::uint32_t count = 0;
+        if (!ReadPod(bytes, count) || count > kMaxStarterGrantedIds) {
+            return false;
+        }
+        std::vector<std::string> ids;
+        ids.reserve(count);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            std::string id;
+            if (!ReadString(bytes, id) || !IsValidStarterContentId(id)) {
+                return false;
+            }
+            ids.push_back(std::move(id));
+        }
+        if (!bytes.empty()) {
+            return false;
+        }
+        std::unordered_set<std::string_view> seen;
+        seen.reserve(ids.size());
+        for (const auto& id : ids) {
+            if (!seen.insert(id).second) {
+                return false;
+            }
+        }
+        out = std::move(ids);
+        return true;
+    }
+
     bool AreValidPlayerRateDeltas(PlayerRateDeltas deltas) noexcept
     {
         const auto valid = [](double value) {
@@ -561,6 +622,14 @@ namespace SkyrimPoE::Core::SaveRecord
                 }) != batch.records.end() || !ReadCoreRecord(*core, decoded)) {
                 return { SaveDisposition::Preserve, "세대 1 이상 세이브에 온전한 CORE v3 레코드가 하나 있어야 합니다." };
             }
+            const auto starter = std::ranges::find(batch.records, kRecordStarter, &RawSaveRecord::type);
+            std::vector<std::string> starterIds;
+            if (starter == batch.records.end() ||
+                std::ranges::find_if(std::next(starter), batch.records.end(), [](const auto& record) {
+                    return record.type == kRecordStarter;
+                }) != batch.records.end() || !ReadStarterRecord(*starter, starterIds)) {
+                return { SaveDisposition::Preserve, "세대 1 이상 세이브에 온전한 STRT v1 레코드가 하나 있어야 합니다." };
+            }
         }
         if (normal || legacyCleanup) {
             const auto expected = legacyCleanup ? 0u : activeTreeGeneration.value_or(pack.contentGeneration);
@@ -588,6 +657,8 @@ namespace SkyrimPoE::Core::SaveRecord
                 } else if (!needsGenerationRecords && record.type == kRecordCore &&
                     record.version >= kCoreVersion) {
                     return { SaveDisposition::Preserve, "세대 0 세이브에 세대 1 이상의 CORE 레코드가 있습니다." };
+                } else if (!needsGenerationRecords && record.type == kRecordStarter) {
+                    return { SaveDisposition::Preserve, "세대 0 세이브에 세대 1 이상의 STRT 레코드가 있습니다." };
                 }
             }
             if (needsGenerationRecords && !sawTree) {
@@ -850,6 +921,27 @@ namespace SkyrimPoE::Core::SaveRecord
                 return intfc->WriteRecordData(data, size);
             }, savedMapState);
         });
+
+        // 7단계 G1(결정 247): 세대 1 이상 세이브에는 STRT v1을 정확히 하나 쓴다(비어 있어도 개수 0). 세대 0에는 쓰지 않는다.
+        if (generation.contentGeneration != 0) {
+            encode(kRecordStarter, kStarterVersion, [&](RecordBuffer* intfc) {
+                if (state.starterGrantedIds.size() > kMaxStarterGrantedIds) {
+                    return false;
+                }
+                const auto count = static_cast<std::uint32_t>(state.starterGrantedIds.size());
+                if (!intfc->WriteRecordData(&count, sizeof(count))) {
+                    return false;
+                }
+                std::unordered_set<std::string_view> seen;
+                seen.reserve(state.starterGrantedIds.size());
+                for (const auto& id : state.starterGrantedIds) {
+                    if (!IsValidStarterContentId(id) || !seen.insert(id).second || !WriteString(intfc, id)) {
+                        return false;
+                    }
+                }
+                return true;
+            });
+        }
 
         if (allWritten) {
             allWritten = emit({ kRecordGeneration, kGenerationRecordVersion, WriteGenerationRecord(generation) });

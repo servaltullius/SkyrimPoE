@@ -1,4 +1,5 @@
 #include "core/CharmSystem.h"
+#include "core/ContentFeatures.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,6 +66,11 @@ namespace SkyrimPoE::Core
 
     bool CharmSystem::TryConsumeAndActivateLocked(CharmKind targetKind) noexcept
     {
+        // 결정 239·248: 세대 1 패키지는 P5까지 참을 발동하지 않는다(세 발동 경로가 모두 여기를 지난다).
+        if (!ActiveContentFeatures().charms) {
+            triggerGateRejections_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         const auto kIdx = static_cast<std::size_t>(targetKind);
         if (kIdx >= kCharmKindCount) {
             return false;
@@ -91,6 +97,7 @@ namespace SkyrimPoE::Core
         if (!enableCharms || unlockedSlots_ == 0) {
             return false;
         }
+        triggerEntries_.fetch_add(1, std::memory_order_relaxed);
         switch (type) {
             case DamageType::Fire:      return TryConsumeAndActivateLocked(CharmKind::Ruby);
             case DamageType::Cold:      return TryConsumeAndActivateLocked(CharmKind::Sapphire);
@@ -106,6 +113,7 @@ namespace SkyrimPoE::Core
         if (!enableCharms || unlockedSlots_ == 0) {
             return false;
         }
+        triggerEntries_.fetch_add(1, std::memory_order_relaxed);
         if (kind == AilmentKind::Freeze || kind == AilmentKind::Chill || kind == AilmentKind::Bleed) {
             return TryConsumeAndActivateLocked(CharmKind::Purifying);
         }
@@ -118,6 +126,7 @@ namespace SkyrimPoE::Core
         if (!enableCharms || unlockedSlots_ == 0) {
             return false;
         }
+        triggerEntries_.fetch_add(1, std::memory_order_relaxed);
         if (!std::isfinite(projectedHealthRatio) || projectedHealthRatio > kLowLifeThresholdRatio) {
             return false;
         }
@@ -126,6 +135,10 @@ namespace SkyrimPoE::Core
 
     void CharmSystem::OnKillRecharge(MonsterRarity rarity, bool isBoss, bool isDragon)
     {
+        if (!ActiveContentFeatures().charms) {
+            rechargeGateRejections_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         std::scoped_lock lk(mutex_);
         double gain = 2.0;
         if (rarity == MonsterRarity::Magic) gain = 4.0;
@@ -163,8 +176,12 @@ namespace SkyrimPoE::Core
 
     CharmActiveBonuses CharmSystem::ComputeActiveBonuses() const
     {
-        std::scoped_lock lk(mutex_);
         CharmActiveBonuses b{};
+        // 이미 켜져 있던 타이머가 남아도 세대 1에서는 보너스·면역을 주지 않는다.
+        if (!ActiveContentFeatures().charms) {
+            return b;
+        }
+        std::scoped_lock lk(mutex_);
         auto isOn = [&](CharmKind k) {
             return activeTimers_[static_cast<std::size_t>(k)] > 0.0;
         };
@@ -198,5 +215,14 @@ namespace SkyrimPoE::Core
             b.activeMask |= static_cast<std::uint8_t>(1u << static_cast<std::uint8_t>(CharmKind::Bastion));
         }
         return b;
+    }
+
+    CharmSystem::GateStats CharmSystem::GetGateStatsForTest() const noexcept
+    {
+        return {
+            triggerEntries_.load(std::memory_order_relaxed),
+            triggerGateRejections_.load(std::memory_order_relaxed),
+            rechargeGateRejections_.load(std::memory_order_relaxed),
+        };
     }
 }

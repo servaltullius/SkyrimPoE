@@ -1,5 +1,6 @@
 #include "core/MonsterModSystem.h"
 #include "core/DamageConversion.h"
+#include "core/RulesPack.h"
 
 #include <algorithm>
 #include <cmath>
@@ -84,7 +85,7 @@ namespace SkyrimPoE::Core
             const auto type = static_cast<std::size_t>(dominantType);
             const double promotion = profile.HasMod(resistanceMods[type - 1]) ? 40.0 : 0.0;
             const double map = dominantType == DamageType::Chaos ? resistance.mapChaosPct : resistance.mapElementalPct;
-            const double combined = std::min(75.0, promotion + map);
+            const double combined = std::min(ActiveRuleValues().resistance.monsterBaseMaxPercent, promotion + map);
             const double penetration = resistance.isDamageOverTime ? 0.0 : resistance.penetrationPct[type];
             return mult * (1.0 - ApplyResistancePenetration(combined, penetration) / 100.0);
         }

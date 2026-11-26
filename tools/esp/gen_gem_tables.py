@@ -11,9 +11,9 @@ from formid_ledger import (DEFAULT_GEM_BUNDLE, DEFAULT_LEDGER, DEFAULT_PUBLISHED
 OUTPUT = ROOT / "plugin/src/runtime/GemFormTables.generated.h"
 
 
-def render() -> bytes:
-    ledger = read_json(DEFAULT_LEDGER)
-    bundle = read_json(DEFAULT_GEM_BUNDLE)
+def render(ledger_path: Path = DEFAULT_LEDGER, bundle_path: Path = DEFAULT_GEM_BUNDLE) -> bytes:
+    ledger = read_json(ledger_path)
+    bundle = read_json(bundle_path)
     problems = []
     entries = index_entries(ledger, "ledger", problems)
     baseline = index_entries(read_json(DEFAULT_PUBLISHED / "gen0.json"), "gen0", problems)
@@ -38,6 +38,13 @@ def render() -> bytes:
             status = "Staged"
         else:
             status = "Generation0" if row else "RetiringInGeneration1"
+        # 묶음에서 빠진 세대 0 젬은 세대 1 장부에서 세대 1에 폐기된 것이어야 하고(결정 231),
+        # G1 전(세대 0 장부)에는 아직 active다.
+        retiring = status == "RetiringInGeneration1" and ledger.get("contentGeneration", 0) >= 1
+        expected_state = ("retired", 1) if retiring else ("active", None)
+        if (entry["status"], entry["retiredGeneration"]) != expected_state:
+            raise ValueError(f"장부 상태가 젬 묶음과 맞지 않음: {entry['editorId']} "
+                             f"{entry['status']}/{entry['retiredGeneration']}, 기대 {expected_state[0]}/{expected_state[1]}")
         content_id = row["contentId"] if row else ""
         physical_rows.append(
             f'        {{ 0x{form_id:06X}, GemFormStatus::{status}, "{legacy.get(form_id, "")}", '

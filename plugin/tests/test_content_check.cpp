@@ -18,9 +18,9 @@ namespace
         std::array<json, 4> meta;
         json manifest;
         std::array<ContentFile, 5> files{{
-            { "SKSE/Plugins/SkyrimPoE/packs/core_3_30.json", std::string(64, 'a') },
-            { "SKSE/Plugins/SkyrimPoE/packs/tree_3_30.json", std::string(64, 'b') },
-            { "SKSE/Plugins/SkyrimPoE/packs/items_3_30.json", std::string(64, 'c') },
+            { "SKSE/Plugins/SkyrimPoE/packs/core.json", std::string(64, 'a') },
+            { "SKSE/Plugins/SkyrimPoE/packs/tree.json", std::string(64, 'b') },
+            { "SKSE/Plugins/SkyrimPoE/packs/items.json", std::string(64, 'c') },
             { "SKSE/Plugins/SkyrimPoE/packs/rules.json", std::string(64, 'e') },
             { "SkyrimPoE.esp", std::string(64, 'd') },
         }};
@@ -78,10 +78,17 @@ POE_TEST("ContentCheck: accepts stamped generation-0 packs and an ESP without it
 POE_TEST("ContentCheck: rejects a different pack game")
 {
     ContentFixture fixture;
-    fixture.meta[1]["game"] = "poe2";
-    const auto result = fixture.Check();
+    fixture.meta[1]["game"] = "poe3";
+    auto result = fixture.Check();
     POE_CHECK(!result.identity);
-    POE_CHECK(HasReason(result, fixture.files[1].path, "unsupported game 'poe2'"));
+    POE_CHECK(HasReason(result, fixture.files[1].path, "unsupported game 'poe3'"));
+    POE_CHECK(HasReason(result, fixture.files[1].path, "game mismatch"));
+
+    // G1부터 poe2는 허용표에 있지만 세대 1로만 있다.
+    fixture.meta[1]["game"] = "poe2";
+    result = fixture.Check();
+    POE_CHECK(!result.identity);
+    POE_CHECK(HasReason(result, fixture.files[1].path, "unsupported contentGeneration 0 for poe2"));
     POE_CHECK(HasReason(result, fixture.files[1].path, "game mismatch"));
 }
 
@@ -197,6 +204,71 @@ POE_TEST("ContentCheck: rejects unsupported pack schema names and versions")
     POE_CHECK(HasReason(result, fixture.files[0].path, "unsupported schema 'skyrimpoe.items'"));
     POE_CHECK(HasReason(result, fixture.files[1].path, "unsupported schemaVersion 2"));
     POE_CHECK(HasReason(result, fixture.files[2].path, "unsupported schemaVersion 1"));
+}
+
+namespace
+{
+    // G1(결정 204): 세대 1 패키지의 네 팩. core v2, 트리 v2, 빈 items v3, 공용 rules v1.
+    ContentFixture GenerationOneFixture()
+    {
+        ContentFixture fixture;
+        for (auto& meta : fixture.meta) {
+            meta.update({ { "game", "poe2" }, { "gameVersion", "0.5" }, { "contentGeneration", 1 } });
+        }
+        fixture.meta[0]["schemaVersion"] = 2;
+        fixture.meta[1]["schemaVersion"] = 2;
+        fixture.meta[2]["schemaVersion"] = 3;
+        fixture.manifest.update({ { "game", "poe2" }, { "gameVersion", "0.5" }, { "contentGeneration", 1 } });
+        return fixture;
+    }
+}
+
+POE_TEST("ContentCheck: accepts the generation-1 PoE2 package with its generation GLOB (G1)")
+{
+    const auto fixture = GenerationOneFixture();
+    const auto result = fixture.Check(1u);
+    POE_CHECK(result.reasons.empty());
+    POE_CHECK(result.identity && result.identity->game == "poe2" && result.identity->contentGeneration == 1 &&
+              result.identity->gameVersion == "0.5");
+    POE_CHECK(HasReason(fixture.Check(), "SkyrimPoE.esp", "ESP contentGeneration mismatch (packs 1, ESP 0)"));
+}
+
+POE_TEST("ContentCheck: a generation-1 package rejects generation-0 schema versions and a wrong game version")
+{
+    auto fixture = GenerationOneFixture();
+    fixture.meta[0]["schemaVersion"] = 1;
+    fixture.meta[1]["schemaVersion"] = 1;
+    fixture.meta[2]["schemaVersion"] = 2;
+    auto result = fixture.Check(1u);
+    POE_CHECK(!result.identity);
+    POE_CHECK(HasReason(result, fixture.files[0].path, "unsupported schemaVersion 1"));
+    POE_CHECK(HasReason(result, fixture.files[1].path, "unsupported schemaVersion 1"));
+    POE_CHECK(HasReason(result, fixture.files[2].path, "unsupported schemaVersion 2"));
+
+    fixture = GenerationOneFixture();
+    for (auto& meta : fixture.meta) meta["gameVersion"] = "0.4";
+    fixture.manifest["gameVersion"] = "0.4";
+    result = fixture.Check(1u);
+    POE_CHECK(!result.identity);
+    POE_CHECK(HasReason(result, "packs", "unsupported gameVersion 0.4 for poe2 generation 1 (expected 0.5)"));
+
+    // 세대 0 팩 하나를 섞은 묶음.
+    fixture = GenerationOneFixture();
+    fixture.meta[1].update({ { "game", "poe1" }, { "gameVersion", "3.30" }, { "contentGeneration", 0 },
+        { "schemaVersion", 1 } });
+    result = fixture.Check(1u);
+    POE_CHECK(!result.identity);
+    POE_CHECK(HasReason(result, fixture.files[1].path, "game mismatch (expected poe2, found poe1)"));
+}
+
+POE_TEST("ContentCheck: a generation-0 package keeps rejecting the PoE1 game version of another generation")
+{
+    ContentFixture fixture;
+    for (auto& meta : fixture.meta) meta["gameVersion"] = "0.5";
+    fixture.manifest["gameVersion"] = "0.5";
+    const auto result = fixture.Check();
+    POE_CHECK(!result.identity);
+    POE_CHECK(HasReason(result, "packs", "unsupported gameVersion 0.5 for poe1 generation 0 (expected 3.30)"));
 }
 
 POE_TEST("ContentCheck: collects malformed metadata, manifest format, duplicate entry and SHA errors")

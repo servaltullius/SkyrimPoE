@@ -49,11 +49,30 @@ namespace SkyrimPoE::Runtime
         {
             std::uint64_t sequence = 0;
             bool wroteGeneration = false;
+            bool replayed = false;
             std::size_t failedRecords = 0;
             bool complete = false;
             std::vector<std::uint32_t> recordTypes;
             std::optional<Core::SaveGeneration> generation;
             std::uint32_t threadId = 0;
+        };
+
+        // A2·A9: 주 갱신 스레드 PostLoadInit/NewGameInit 완료 진단(시험 검증용).
+        struct PostLoadInitDiagnostics
+        {
+            std::uint64_t sequence = 0;
+            std::uint64_t frame = 0;
+            bool isNewGame = false;
+            bool afterCleanup = false;
+            std::size_t starterGrantedCount = 0;
+            bool starterDeferredToPanel = false;
+        };
+
+        // 결정 263: 새 게임·일반 로드의 시작 젬 보충은 그 세션에서 PoE 패널을 처음 열 때 한다(최초 설치는 로드 때, 정리는 같은 틱).
+        struct PanelStarterGrantDiagnostics
+        {
+            std::uint64_t sequence = 0;
+            std::size_t grantedCount = 0;
         };
 
         static bool Install(
@@ -66,18 +85,25 @@ namespace SkyrimPoE::Runtime
             Core::CharmSystem* charmSystem = nullptr);
 
         static void SetContentCheck(std::optional<Core::SaveGeneration> generation, std::string reason);
-        static void SetCleanupTestTarget(bool enabled);
-        static void SetGemTestTarget(Core::SaveGeneration generation, std::string finalSlot);
-        static void ExpectGemTestLoad(std::string_view stem);
-        static void MatchGemTestLoad(std::string_view name) noexcept;
-        static void OnGemTestSave(std::string_view stem, bool requested);
-        static void EndGemTestWorld();
-        [[nodiscard]] static std::optional<Core::SaveGeneration> GetCleanupTestTarget();
-        static void ExpectCleanupTestLoad(std::string_view stem);
-        [[nodiscard]] static bool MatchCleanupTestLoad(std::string_view name) noexcept;
+        // 시험 세션 보호(C8): 허용된 출력 슬롯 외의 코세이브 쓰기를 거부하고, 중단·예상 밖 로드 시 보존 모드를 끈적하게 유지한다.
+        static void BeginTestSession(std::string allowedSaveSlot, bool allowPreserveSave = false);
+        [[nodiscard]] static bool SetTestSessionAllowedSlot(std::string allowedSaveSlot);
+        static void OnTestSessionSave(std::string_view stem, bool requested);
+        static void LockTestSessionForQuit(bool aborted);
         [[nodiscard]] static std::optional<MigrationCandidateSnapshot> GetMigrationCandidate(RE::PlayerCharacter* player);
         [[nodiscard]] static std::optional<MigrationDiagnostics> GetLastMigrationDiagnostics();
-        static void ReleaseForTest();
+        // 7단계 G1(결정 247): 세대 1 정리 뒤 초기화가 돈 엔진 프레임과 그때의 시작 지급 누적 호출 수(시험 진단용).
+        struct AfterCleanupInitDiagnostics
+        {
+            std::uint64_t frame = 0;
+            std::uint64_t grantCalls = 0;
+        };
+        [[nodiscard]] static AfterCleanupInitDiagnostics GetAfterCleanupInitDiagnostics() noexcept;
+        [[nodiscard]] static PostLoadInitDiagnostics GetLastPostLoadInitDiagnostics();
+        // 패널이 열린 직후 주 스레드에서 부른다. 대기 중이면 STRT에 없는 ready 젬을 거래 안에서 주고 준 수를 돌려준다.
+        static std::size_t GrantPendingStarterOnPanelOpen();
+        [[nodiscard]] static bool IsStarterGrantPendingForPanel() noexcept;
+        [[nodiscard]] static PanelStarterGrantDiagnostics GetLastPanelStarterGrantDiagnostics();
         static void TickMigration();
         static void OnGameLoadStarted();
         static void OnGameLoadFinished(bool succeeded);

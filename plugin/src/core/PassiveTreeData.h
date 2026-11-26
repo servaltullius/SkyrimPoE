@@ -93,7 +93,7 @@ namespace SkyrimPoE::Core
         std::vector<std::string> stats;
     };
 
-    // data/packs/tree_3_30.json 경량 로더(C++ 코어 전용: 좌표·원호·한글 필드는 스킵해 kDataLoaded 지연 최소화)
+    // tree.json 경량 로더(C++ 코어 전용: 좌표·원호·한글 필드는 스킵해 kDataLoaded 지연 최소화)
     class PassiveTreeData
     {
     public:

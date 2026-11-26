@@ -294,7 +294,7 @@ def test_generation_one_id_baseline(pack):
     baseline = json.loads(BASELINE_PATH.read_bytes())
     validate_id_baseline(pack, baseline)
     assert {kind: len(entries) for kind, entries in baseline["entries"].items()} == {
-        "cls": 8, "asc": 23, "node": 4544,
+        "cls": 8, "asc": 23, "node": 4544, "gem": 24, "sup": 19,
     }
 
     changed = deepcopy(pack)

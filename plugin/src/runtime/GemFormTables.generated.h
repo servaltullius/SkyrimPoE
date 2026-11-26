@@ -175,5 +175,5 @@ namespace SkyrimPoE::Core::GemForms
         { "sup.RapidCasting1", 0x0008E1, false, GemExecution::S11 },
     }};
 
-    inline constexpr std::optional<std::uint32_t> kGenerationGlobal = std::nullopt;
+    inline constexpr std::optional<std::uint32_t> kGenerationGlobal = 0x0008E2;
 }

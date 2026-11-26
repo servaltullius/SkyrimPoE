@@ -596,7 +596,8 @@
   function renderAll() {
     if (!lastData) return;
     const gear = lastData.gear;
-    if (!gear || !gear.loaded) {
+    const craftingOff = Boolean(lastData.contentFeatures && lastData.contentFeatures.crafting === false);
+    if (craftingOff || !gear || !gear.loaded) {
       equippedList.textContent = "";
       if (charmsListEl) charmsListEl.textContent = "";
       bagList.textContent = "";
@@ -605,7 +606,9 @@
       currencyGridEl.textContent = "";
       gearStatsGrid.textContent = "";
       itemCardEl.textContent = "";
-      itemCardEl.appendChild(el("div", "section-sub", "아이템 데이터(items_3_30.json)가 로드되지 않았습니다."));
+      itemCardEl.appendChild(el("div", "section-sub", craftingOff
+        ? "세대 1(PoE2)에는 아직 장비·제작 기능이 없습니다. 아이템과 제작은 P5에서 엽니다."
+        : "아이템 데이터(items.json)가 로드되지 않았습니다."));
       return;
     }
 

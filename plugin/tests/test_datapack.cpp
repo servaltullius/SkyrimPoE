@@ -2,11 +2,13 @@
 
 #include "core/Config.h"
 #include "core/DataPack.h"
+#include "core/GemForms.h"
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
+#include <utility>
 
 using namespace SkyrimPoE::Core;
 
@@ -16,25 +18,20 @@ namespace
     {
         DataPack pack;
         std::string err;
-        const std::filesystem::path packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json";
+        const std::filesystem::path packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json";
         const bool ok = pack.LoadFromFile(packPath, &err);
         if (!ok) {
-            throw std::runtime_error("Failed to load core_3_30.json: " + err);
+            throw std::runtime_error("Failed to load core.json: " + err);
         }
         return pack;
     }
 }
 
-POE_TEST("DataPack: loads core_3_30.json constants, classes, tables, and 28 gems")
+POE_TEST("DataPack: loads core.json constants, classes, tables, and 28 gems")
 {
     const DataPack pack = LoadStage2Pack();
     POE_CHECK(pack.IsLoaded());
-    POE_CHECK_NEAR(pack.Constants().lifeBase, 38.0, 1e-6);
-    POE_CHECK_NEAR(pack.Constants().lifePerLevel, 12.0, 1e-6);
-    POE_CHECK_NEAR(pack.Constants().manaBase, 34.0, 1e-6);
-    POE_CHECK_NEAR(pack.Constants().manaPerLevel, 6.0, 1e-6);
-    POE_CHECK_NEAR(pack.Constants().resistCap, 75.0, 1e-6);
-    POE_CHECK_NEAR(pack.Constants().esRechargeDelay, 2.0, 1e-6);
+    POE_CHECK_NEAR(pack.Constants().monsterDamageMult, 1.5, 1e-6);
 
     POE_CHECK(pack.AllGems().size() == 28);
     POE_CHECK(pack.FindGem("Cyclone") != nullptr);
@@ -73,6 +70,56 @@ POE_TEST("DataPack: loads core_3_30.json constants, classes, tables, and 28 gems
     POE_CHECK(lv1 != nullptr && lv20 != nullptr);
     POE_CHECK(lv1->GetStat("spell_minimum_base_cold_damage") > 10.0);
     POE_CHECK(lv20->GetStat("spell_minimum_base_cold_damage") > lv1->GetStat("spell_minimum_base_cold_damage") * 20.0);
+}
+
+POE_TEST("DataPack: expectedDefense requires 100 ordered levels and valid values")
+{
+    const auto packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json";
+    std::ifstream input(packPath, std::ios::binary);
+    auto json = nlohmann::json::parse(input);
+    auto& table = json.at("tables").at("expectedDefense");
+    const auto original = table;
+
+    DataPack pack;
+    POE_CHECK(pack.LoadFromJsonString(json.dump()));
+    for (std::uint32_t level = 1; level <= 100; ++level) {
+        POE_CHECK(pack.ExpectedDefense(level).level == level);
+    }
+
+    const auto checkRejected = [&pack](std::string_view jsonText, std::string_view reason) {
+        std::string error;
+        POE_CHECK(!pack.LoadFromJsonString(jsonText, &error));
+        POE_CHECK(error.find(reason) != std::string::npos);
+        POE_CHECK(pack.ExpectedDefense(1).level == 1);
+    };
+
+    table.erase(table.end() - 1);
+    checkRejected(json.dump(), "정확히 100행");
+    table = original;
+    table.push_back(original.back());
+    checkRejected(json.dump(), "정확히 100행");
+
+    table = original;
+    std::swap(table[0], table[1]);
+    checkRejected(json.dump(), "1번째 행에서 level");
+    table = original;
+    table[0]["level"] = 1.5;
+    checkRejected(json.dump(), "1번째 행에서 level");
+
+    for (const auto* key : { "bestArmour", "bestEvasion", "bestEnergyShield", "bestResistTier" }) {
+        table = original;
+        table[0][key] = -1.0;
+        checkRejected(json.dump(), "0 이상의 유한한 수");
+    }
+    table = original;
+    table[0]["bestArmour"] = "invalid value";
+    auto serialized = json.dump();
+    checkRejected(serialized, "type_error");
+    const std::string placeholder = "\"invalid value\"";
+    const auto offset = serialized.find(placeholder);
+    POE_CHECK(offset != std::string::npos);
+    serialized.replace(offset, placeholder.size(), "1e309");
+    checkRejected(serialized, "number overflow");
 }
 
 POE_TEST("DataPack: PoB RPN DoesTypeExpressionMatch logic")
@@ -191,7 +238,7 @@ PowerAttackInput = leftHand
 
 POE_TEST("DataPack: legacy monster tables are optional and do not affect the PoE2 tables")
 {
-    const auto packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json";
+    const auto packPath = std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json";
     std::ifstream input(packPath, std::ios::binary);
     auto json = nlohmann::json::parse(input);
     auto& tables = json.at("tables");
@@ -207,4 +254,81 @@ POE_TEST("DataPack: legacy monster tables are optional and do not affect the PoE
     POE_CHECK_NEAR(pack.MonsterLife(68), 8257.0, 1e-9);
     POE_CHECK_NEAR(pack.MonsterDamage(83), 364.0, 1e-9);
     POE_CHECK_NEAR(pack.MonsterAccuracy(1), 32.0, 1e-9);
+}
+
+POE_TEST("DataPack: generation-one core replaces the active catalog and expected defense")
+{
+    const std::filesystem::path data(POE_TEST_DATA_DIR);
+    auto pack = LoadStage2Pack();
+    POE_CHECK(pack.Generation() == 0 && pack.AllGems().size() == 28);
+    POE_CHECK(pack.FindGem("Spark", 0) && pack.FindClass("Scion"));
+
+    POE_CHECK(pack.LoadFromFile(data / "packs/gen1/core.json"));
+    POE_CHECK(pack.IsLoaded() && pack.Generation() == 1 && pack.AllGems().size() == 43);
+    for (const auto& key : GemForms::kContentKeys) {
+        POE_CHECK(pack.FindGem(std::string(key.contentId), 1));
+    }
+    POE_CHECK(pack.FindGem("Spark", 0) == nullptr);
+    POE_CHECK(pack.FindClass("Scion") == nullptr);
+    const auto* spark = pack.FindGem("gem.Spark", 1);
+    POE_CHECK(spark && spark->kind == GemKind::Spell);
+    const auto* level = spark->GetLevel(1);
+    POE_CHECK(level && level->manaCost == 5);
+    POE_CHECK(level->GetStat("spell_minimum_base_lightning_damage") == 1);
+    POE_CHECK(level->GetStat("spell_maximum_base_lightning_damage") == 10);
+    POE_CHECK(level->GetStat("base_number_of_projectiles") == 4);
+    POE_CHECK(pack.ExpectedDefense(38).bestArmour == 711);
+    POE_CHECK(pack.ExpectedDefense(1).bestResistTier == 8);
+    POE_CHECK(pack.Constants().monsterDamageMult == 1.5);
+
+    POE_CHECK(pack.LoadFromFile(data / "packs/gen0/core.json"));
+    POE_CHECK(pack.Generation() == 0 && pack.AllGems().size() == 28);
+    POE_CHECK(pack.FindGem("Spark", 0) && pack.FindGem("gem.Spark", 1) == spark);
+}
+
+POE_TEST("DataPack: invalid generation-one core leaves a previous load intact")
+{
+    using nlohmann::json;
+    const auto path = std::filesystem::path(POE_TEST_DATA_DIR) / "packs/gen1/core.json";
+    DataPack pack;
+    POE_CHECK(pack.LoadFromFile(path));
+    const auto* spark = pack.FindGem("gem.Spark", 1);
+    std::ifstream input(path, std::ios::binary);
+    auto candidate = json::parse(input);
+    candidate["constants"]["monsterDamageMult"] = 2.5;
+    candidate["tables"]["expectedDefense"][37]["bestArmour"] = 999.0;
+
+    const auto reject = [&](const json& invalid) {
+        std::string error;
+        POE_CHECK(!pack.LoadFromJsonString(invalid.dump(), &error));
+        POE_CHECK(!error.empty());
+        POE_CHECK(pack.IsLoaded() && pack.Generation() == 1 && pack.AllGems().size() == 43);
+        POE_CHECK(pack.FindGem("gem.Spark", 1) == spark);
+        POE_CHECK(pack.FindGem("Spark", 0) == nullptr && pack.FindClass("Scion") == nullptr);
+        POE_CHECK(pack.ExpectedDefense(38).bestArmour == 711 && pack.Constants().monsterDamageMult == 1.5);
+    };
+
+    auto invalid = candidate;
+    invalid["tiers"] = json::object();
+    reject(invalid);
+    invalid = candidate;
+    invalid["tables"]["monsterDamage"] = json::array();
+    reject(invalid);
+    invalid = candidate;
+    invalid["constants"]["resistCap"] = 75.0;
+    reject(invalid);
+    invalid = candidate;
+    invalid["classes"].push_back(json::object());
+    reject(invalid);
+    invalid = candidate;
+    invalid["meta"]["schemaVersion"] = 1;
+    reject(invalid);
+    invalid["meta"]["schemaVersion"] = 2.0;
+    reject(invalid);
+    invalid = candidate;
+    invalid["meta"]["game"] = "poe1";
+    reject(invalid);
+    invalid = candidate;
+    invalid["gems"].erase("gem.Spark");
+    reject(invalid);
 }

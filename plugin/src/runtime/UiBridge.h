@@ -58,5 +58,13 @@ namespace SkyrimPoE::Runtime
         static void ExecuteCommandForTestOnMainThread(std::string_view rawJson);
         [[nodiscard]] static std::pair<bool, std::string> ExecuteGemCommandForTestOnMainThread(std::string_view rawJson);
         [[nodiscard]] static std::string BuildPanelJsonForTestOnMainThread();
+
+        // 결정 259(B0): gear* 제작 명령 세대 1 게이트 거절·통과 누적 카운터.
+        struct GateStats
+        {
+            std::uint64_t gearGateRejections = 0;
+            std::uint64_t gearGatePasses = 0;
+        };
+        [[nodiscard]] static GateStats GetGateStatsForTest() noexcept;
     };
 }

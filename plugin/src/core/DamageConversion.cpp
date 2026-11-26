@@ -445,9 +445,9 @@ namespace SkyrimPoE::Core
         const Config& config) noexcept
     {
         const auto lv = ClampLevel(exileLevel);
-        const auto& c = pack.Constants();
         const auto& row = pack.ExpectedDefense(lv);
-        const double res = std::min(c.resistCap, std::max(0.0, config.expectedResistAffixes) * row.bestResistTier);
+        const auto& resistance = ActiveRuleValues().resistance;
+        const double res = std::min(resistance.baseMaxPercent, std::max(0.0, config.expectedResistAffixes) * row.bestResistTier);
         return std::max(0.01, 1.0 - res / 100.0);
     }
 
@@ -523,26 +523,27 @@ namespace SkyrimPoE::Core
             return 0.0;
         }
         const auto lv = ClampLevel(exileLevel);
+        const auto& resistance = ActiveRuleValues().resistance;
         double resist = 0.0;
-        double cap = pack.Constants().resistCap;
+        double maxResist;
         double meL = 1.0;
         double me1 = 1.0;
         switch (damageType) {
             case DamageType::Fire:
                 resist = snapshot.fireResist;
-                cap = std::clamp(snapshot.maxFireResist, 0.0, 90.0);
+                maxResist = snapshot.maxFireResist;
                 meL = ExpectedElementalPass(lv, pack, config);
                 me1 = ExpectedElementalPass(1, pack, config);
                 break;
             case DamageType::Cold:
                 resist = snapshot.coldResist;
-                cap = std::clamp(snapshot.maxColdResist, 0.0, 90.0);
+                maxResist = snapshot.maxColdResist;
                 meL = ExpectedElementalPass(lv, pack, config);
                 me1 = ExpectedElementalPass(1, pack, config);
                 break;
             case DamageType::Lightning:
                 resist = snapshot.lightningResist;
-                cap = std::clamp(snapshot.maxLightningResist, 0.0, 90.0);
+                maxResist = snapshot.maxLightningResist;
                 meL = ExpectedElementalPass(lv, pack, config);
                 me1 = ExpectedElementalPass(1, pack, config);
                 break;
@@ -551,13 +552,15 @@ namespace SkyrimPoE::Core
                     return 0.0;
                 }
                 resist = snapshot.chaosResist;
-                cap = std::clamp(snapshot.maxChaosResist, 0.0, 90.0);
+                maxResist = snapshot.maxChaosResist;
                 meL = ExpectedChaosPass(lv, pack, config);
                 me1 = ExpectedChaosPass(1, pack, config);
                 break;
             default:
                 return skyrimPreResistD;
         }
+        const double cap = std::clamp(std::isnan(maxResist) ? resistance.baseMaxPercent : maxResist,
+            0.0, resistance.capPercent);
         double pass = std::max(0.0, 1.0 - std::min(cap, resist) / 100.0);
         const double armourFraction = snapshot.armourAppliesPct[static_cast<std::size_t>(damageType)] / 100.0;
         if (isHit && armourFraction > 0.0) {

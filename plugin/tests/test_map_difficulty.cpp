@@ -15,7 +15,7 @@ namespace
     {
         DataPack pack;
         std::string error;
-        POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json", &error));
+        POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json", &error));
         return pack;
     }
 }

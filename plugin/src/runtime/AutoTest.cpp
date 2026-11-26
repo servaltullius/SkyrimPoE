@@ -9,6 +9,7 @@
 #include "runtime/GemInventory.h"
 #include "runtime/HitReaction.h"
 #include "runtime/ItemTracker.h"
+#include "runtime/MainUpdateHook.h"
 #include "runtime/MapDeviceRuntime.h"
 #include "runtime/MapPackRuntime.h"
 #include "runtime/ModState.h"
@@ -24,6 +25,7 @@
 #include "runtime/WorldDropTracker.h"
 
 #include "core/AilmentSystem.h"
+#include "core/CleanupVerification.h"
 #include "core/DamageConversion.h"
 #include "core/ContentCheck.h"
 #include "core/RulesPack.h"
@@ -83,12 +85,17 @@ namespace SkyrimPoE::Runtime
         constexpr unsigned kHCheckpointRestoreAttempts = 2;
 
         // houseCARL로 대조 검증한 바닐라 Skyrim.esm 폼 ID
+        constexpr RE::FormID kIronGreatswordId = 0x0001359D; // IronGreatsword (gen1gate 양손 무기)
         constexpr RE::FormID kIronSwordId = 0x00012EB7;      // IronSword
-        constexpr RE::FormID kIronDaggerId = 0x0001397E;     // IronDagger (E3 오브 왕복용)
+        constexpr RE::FormID kIronDaggerId = 0x0001397E;     // IronDagger (E3 오브 왕복·gen1gate 쌍수용)
+        constexpr RE::FormID kIronShieldId = 0x00012EB6;     // ArmorIronShield (gen1gate 방패, 슬롯 39)
+        constexpr RE::FormID kRightHandSlotId = 0x00013F42;  // Skyrim.esm RightHand BGSEquipSlot
+        constexpr RE::FormID kLeftHandSlotId = 0x00013F43;   // Skyrim.esm LeftHand BGSEquipSlot
         constexpr RE::FormID kIronWarAxeId = 0x00013790;     // IronWarAxe (E6 중복 베이스 격리용)
         constexpr RE::FormID kIronHelmetId = 0x00012E4D;     // IronHelmet (E4 장비 스탯 반영용)
         constexpr RE::FormID kEncSkeeverId = 0x00023AB7;     // EncSkeever (Skyrim.esm 순정, Aggressive, Lv1)
         constexpr RE::FormID kNeutralNpcId = 0x0010D13E;     // AADeleteWhenDoneTestJeremyRegular (순정, 무팩션·Unaggressive·NoCrime)
+        constexpr RE::FormID kGemsTargetNpcId = 0x00039D21;  // EncBandit06Melee1HNordM (Skyrim.esm, 결정 173 대조, Lv25, 사람 크기)
         constexpr RE::FormID kFireboltId = 0x00012FD0;       // Skyrim.esm Firebolt (프로토타입 6 대조 주문)
         // Skyrim.esm crSprigganPoisonClaw: 체력 값 변경(crSprigganClawFFContact, 독 저항) 2/초 10초, 조건 없음. 적 ES 진단용 지속 피해
         constexpr RE::FormID kSprigganPoisonClawId = 0x000F23D2;
@@ -211,13 +218,20 @@ namespace SkyrimPoE::Runtime
             EnemyEsOnly,
             ReactOnly,
             GemsOnly,
+            FirstInstallOnly,
+            NewGameOnly,
+            PreserveOnly,
+            Gen1GateOnly,
             QuitDelay,
             Done,
             SaveOnlyContent,
+            SaveOnly_EarnPassivePoints,
+            SaveOnly_SettleBeforeSnapshot,
             CleanupContent,
             CleanupAwaitCommit,
             CleanupSaveFinal,
-            CleanupReloadFinal
+            CleanupReloadFinal,
+            CleanupIncomingPlain
         };
 
         const char* PhaseName(Phase p) noexcept
@@ -225,10 +239,13 @@ namespace SkyrimPoE::Runtime
             switch (p) {
             case Phase::Inactive: return "Inactive";
             case Phase::SaveOnlyContent: return "SaveOnlyContent";
+            case Phase::SaveOnly_EarnPassivePoints: return "SaveOnly_EarnPassivePoints";
+            case Phase::SaveOnly_SettleBeforeSnapshot: return "SaveOnly_SettleBeforeSnapshot";
             case Phase::CleanupContent: return "CleanupContent";
             case Phase::CleanupAwaitCommit: return "CleanupAwaitCommit";
             case Phase::CleanupSaveFinal: return "CleanupSaveFinal";
             case Phase::CleanupReloadFinal: return "CleanupReloadFinal";
+            case Phase::CleanupIncomingPlain: return "CleanupIncomingPlain";
             case Phase::AwaitMainMenu: return "AwaitMainMenu";
             case Phase::MenuDelay: return "MenuDelay";
             case Phase::AwaitBaselineLoad: return "AwaitBaselineLoad";
@@ -333,6 +350,10 @@ namespace SkyrimPoE::Runtime
             case Phase::EnemyEsOnly: return "EnemyEsOnly";
             case Phase::ReactOnly: return "ReactOnly";
             case Phase::GemsOnly: return "GemsOnly";
+            case Phase::FirstInstallOnly: return "FirstInstallOnly";
+            case Phase::NewGameOnly: return "NewGameOnly";
+            case Phase::PreserveOnly: return "PreserveOnly";
+            case Phase::Gen1GateOnly: return "Gen1GateOnly";
             case Phase::QuitDelay: return "QuitDelay";
             case Phase::Done: return "Done";
             default: return "Unknown";
@@ -357,16 +378,16 @@ namespace SkyrimPoE::Runtime
         std::uint64_t g_fProjImpactsBefore = 0;
         RE::ActorHandle g_fTargetHandle{};
 
-        // 결정 185 적 ES 표시 단축 시험(-Only es). A(레어, ES 300)·B(매직, ES 300)·C(ES 없음)를 AI를 끈 채 세우고
+        // 결정 185 적 ES 표시 단축 시험(-Only es). 로드 판정 확인(ES0) 뒤 A(레어, ES 300)·B(매직, ES 300)·C(ES 없음)를 세워
         // 플레이어 직접 피해로 "마지막 교전 적"을 바꿔 가며 UiBridge가 마지막으로 보낸 표시 값을 본다. 조준점 경로는 보지 않는다.
-        constexpr std::array<const char*, 7> kEnemyEsCheckNames{ "ES1_EngagedRareTarget", "ES2_SwitchToSameEsTarget",
+        constexpr std::array<const char*, 8> kEnemyEsCheckNames{ "ES0_LoadNormal", "ES1_EngagedRareTarget", "ES2_SwitchToSameEsTarget",
             "ES3_NoEsEngagedHides", "ES6_IncomingHitTarget", "ES7_DamageOverTimeKeepsTarget", "ES4_DeadTargetHides",
             "ES5_EngagedHoldExpires" };
         constexpr int kEnemyEsOnlyChecks = static_cast<int>(kEnemyEsCheckNames.size());
 
-        // 결정 236~238 단축 시험(-Only react). 적대 스키버 S(AI 끔, 체력 +2500)와 화이트런 경비병 G를 세우고
+        // 결정 236~238 단축 시험(-Only react). 로드 판정 확인(R0) 뒤 적대 스키버 S(AI 끔, 체력 +2500)와 화이트런 경비병 G를 세우고
         // 플레이어 직접 피해와 강한 기절 누적을 넣어 HitReaction의 반응을 본다. 저장하지 않는다.
-        constexpr std::array<const char*, 5> kReactCheckNames{ "R1_HitEventSent", "R2_HostileCombatStarted",
+        constexpr std::array<const char*, 6> kReactCheckNames{ "R0_LoadNormal", "R1_HitEventSent", "R2_HostileCombatStarted",
             "R3_FlinchRule", "R4_HeavyStunStagger", "R5_NeutralAssaultAlarm" };
         constexpr RE::FormID kWhiterunGuardId = 0x00099CE5;  // GuardWhiterunCityGeneric (Skyrim.esm, CrimeFactionWhiterun, 레벨 템플릿)
         struct ReactTestState
@@ -443,12 +464,55 @@ namespace SkyrimPoE::Runtime
             PersistentState state;
             std::size_t trackedGems = 0;
             std::size_t trackedItems = 0;
+            std::map<RE::FormID, std::int32_t> bagCounts;
+            std::optional<std::uint8_t> equippedSparkSlot;
+            bool preparedGen1Ui = false;
         };
         SaveOnlySnapshot g_saveOnlyBefore;
 
-        enum class CleanupCheck : std::size_t { Content, Candidate, Committed, Items, Engine, State, Write, Reload };
-        constexpr std::array kCleanupCheckNames{ "C0_ContentCheckPassed", "C1_LoadLegacyCandidate", "C2_CleanupCommitted",
-            "C3_ItemsReturned", "C4_EngineReverted", "C5_StateCleared", "C6_SaveWritesTarget", "C7_ReloadNormal" };
+        // 결정 257(A1·A5·B2·B3): save 점수 얻기와 gen1gate 처치 게이트가 공유하는 적 처치 루프 상태.
+        struct HostileKillLoopState
+        {
+            RE::FormID enemyNpcId = 0;
+            std::uint32_t enemyLevel = 1;
+            RE::ActorHandle activeMob{};
+            RE::FormID mobFormId = 0;
+            bool firstHitSent = false;
+            bool killDealt = false;
+            Clock::time_point mobSince{};
+            std::optional<Clock::time_point> rewardClaimedAt;
+            std::optional<Clock::time_point> loadedAt;
+            std::uint32_t skippedNonHostile = 0;
+            std::vector<RE::ActorHandle> pendingDeleteMobs;
+            std::optional<Clock::time_point> pendingDeleteSince;
+        };
+
+        // 결정 257(F1·F2): 세대 1 save 모드에서 실제 처치(DeathListener->KillTracker)로 필요 패시브 점수를 얻는 상태.
+        struct SaveOnlyPointEarnState
+        {
+            Core::PassivePathPlan plan;
+            std::uint32_t startLevel = 1;
+            std::uint64_t startXp = 0;
+            std::uint32_t lastLevel = 1;
+            std::uint64_t lastXp = 0;
+            std::uint64_t totalXpGained = 0;
+            std::uint32_t kills = 0;
+            std::uint32_t playerLevel = 1;
+            std::optional<bool> godModeBefore;
+            HostileKillLoopState loop;
+            std::optional<std::uint8_t> pendingSparkSlot;
+        };
+        SaveOnlyPointEarnState g_saveEarn;
+
+        enum class CleanupCheck : std::size_t {
+            Content, Candidate, Committed, SameTick, Items, Engine, State, BagPlain, Write, Reload, IncomingPlain
+        };
+        constexpr std::array kCleanupCheckNames{
+            "C0_ContentCheckPassed", "C1_LoadLegacyCandidate", "C2_CleanupCommitted", "C2b_SameTickStarter",
+            "C3_ItemsReturned", "C4_EngineReverted", "C5_StateCleared", "C6_BagGemsPlain",
+            "C7_SaveWritesTarget", "C8_ReloadNormal", "C9_IncomingGemsPlain"
+        };
+        static_assert(kCleanupCheckNames.size() == static_cast<std::size_t>(CleanupCheck::IncomingPlain) + 1);
         constexpr double kCleanupCommitTimeoutSec = 90.0;
 
         struct SaveFiles
@@ -459,61 +523,272 @@ namespace SkyrimPoE::Runtime
             std::optional<fs::file_time_type> cosaveBefore;
         };
 
+        struct FileFingerprint
+        {
+            bool exists = false;
+            std::uintmax_t size = 0;
+            fs::file_time_type modified{};
+            std::string sha256;
+            bool readError = false;
+        };
+
+        struct BaselineSaveFingerprint
+        {
+            std::string stem;
+            fs::path essPath;
+            fs::path sksePath;
+            FileFingerprint essBefore;
+            FileFingerprint skseBefore;
+        };
+
+        // 시험 세션 보호 상태(C8): cleanup·firstinstall·save·gems·es·react·newgame·preserve 전 모드 공용.
+        struct TestSessionState
+        {
+            bool active = false;
+            bool completedNormally = false;
+            bool lockedForQuit = false;
+            std::string allowedSaveSlot;
+            AutoTestMarker::AutoSaveSettings autoSave;
+            bool autoSaveSuppressed = false;
+            std::optional<bool> engineSavingWasDisabled;
+            bool manualSaveGuardLost = false;
+            std::uint64_t saveGuardLoad = 0;
+            std::vector<BaselineSaveFingerprint> baselineSaves;
+            bool baselineCaptured = false;
+            std::optional<SaveFiles> pendingSaveFiles;
+            fs::file_time_type pendingSaveRequestedAt{};
+            bool integrityVerified = false;
+        };
+        TestSessionState g_session;
+        bool g_sessionSaveRequested = false;   // g_msgMutex
+        bool g_sessionUnexpectedSave = false;  // g_msgMutex
+        bool g_sessionUnexpectedLoad = false;  // g_msgMutex
+        std::uint64_t g_sessionLoadStarts = 0; // g_msgMutex
+        std::uint64_t g_newGameCount = 0;      // g_msgMutex
+        std::uint64_t g_newGameFrame = 0;      // g_msgMutex
+
         struct CleanupTestState
         {
             std::array<bool, kCleanupCheckNames.size()> reported{};
-            // The baseline is derived from the source candidate while the engine still holds its old inventory.
-            std::map<RE::FormID, std::pair<std::int32_t, std::size_t>> expectedItems;
-            std::size_t expectedReturns = 0;
-            std::size_t expectedWithoutForm = 0;
             std::optional<Clock::time_point> lastEligibleTick;
             double eligibleSeconds = 0.0;
             std::optional<MigrationDiagnostics> committed;
-            std::array<std::pair<bool, std::string>, 3> outcomeChecks{};
-            std::optional<SaveFiles> finalFiles;
-            fs::file_time_type finalSaveRequestedAt{};
+            std::size_t plannedSlottedSpark = 0;
+            std::size_t plannedOldChain = 0;
+            std::size_t plannedShockNova = 0;
+            bool orphanInjected = false;
+            std::map<RE::FormID, std::int32_t> numberedBefore;
+            std::map<RE::FormID, std::int32_t> totalBefore;
             std::map<RE::FormID, std::int32_t> starterItemsBeforeSave;
+            std::vector<std::string> starterIdsBeforeSave;
+            std::int32_t incomingSparkTotal = 0;
+            std::int32_t incomingSparkPlain = 0;
+            Clock::time_point incomingSince{};
         };
         CleanupTestState g_cleanupTest;
 
+        // 젬 시험(-Only gems): 전체 모드 G1~G5와 겹치지 않도록 GM 접두사를 쓴다.
         enum class GemsCheck : std::size_t {
-            Prepared, LegacyCast, Cleanup, CleanupSave, ChainReturns, BagPlain, IncomingPlain, NoDuplicate, LegacyRejected,
-            FrostboltRejected, FrostboltUi, SparkEquipped, Mana, Projectiles, Hit, SparkSave, SparkReload, Restore
+            ContentReady, LoadNormal, SparkEquipped,
+            LegacyChainRejected, LegacyShockNovaRejected, NotReadyFrostboltRejected, NotReadyUi,
+            EngineCostZero, DllManaBilled, FourProjectiles, LightningHit, FinalSaveWritten, SparkReload
         };
-        constexpr std::array kGemsChecks{
-            "G0_PreparedCatalog", "G0_LegacySparkHandCast", "G1_CleanupCommitted", "G1_FinalSaveWritten",
-            "G2_ChainReturns", "G2_BagGemsPlain", "G2_IncomingGemsPlain", "G2_NoDuplicateReturn", "G2_LegacyRejected", "G3_FrostboltRejected",
-            "G3_FrostboltUi", "G4_SparkEquipped", "G4_ManaBilled","G4_FourProjectiles", "G4_LightningHit",
-            "G4_FinalSaveWritten", "G4_SparkReload", "G5_WorldRestored"
+        constexpr std::array kGen1GemsChecks{
+            "GM0_ContentReady", "GM1_LoadNormal", "GM2_SparkEquipped",
+            "GM3a_LegacyChainRejected", "GM3b_LegacyShockNovaRejected", "GM3c_NotReadyFrostboltRejected",
+            "GM4_NotReadyUi", "GM5_EngineCostZero", "GM6_DllManaBilled",
+            "GM7_FourProjectiles", "GM8_LightningHit", "GM9_FinalSaveWritten", "GM10_SparkReload"
         };
+        static_assert(kGen1GemsChecks.size() == static_cast<std::size_t>(GemsCheck::SparkReload) + 1);
+        constexpr std::array kGen0GemsChecks{
+            "GM0_ContentReady", "GM1_LoadNormal", "GM2_LegacySparkCast"
+        };
+
         enum class GemsStep {
-            Prepare, Menu, LegacyLoad, EquipWait, CastResult, CleanupLoad, CleanupCommit,
-            Save, Reload, Reject, Target, RestoreLoad, CastSite, BagPlain, IncomingPlain, FirstGrant
+            Prepare, Menu, LoadInput, CastSite, EquipWait, CastResult, Target, Save, Reload
         };
         constexpr std::array kGemsStepNames{
-            "Prepare", "Menu", "LegacyLoad", "EquipWait", "CastResult", "CleanupLoad", "CleanupCommit",
-            "Save", "Reload", "Reject", "Target", "RestoreLoad", "CastSite", "BagPlain", "IncomingPlain", "FirstGrant"
+            "Prepare", "Menu", "LoadInput", "CastSite", "EquipWait", "CastResult", "Target", "Save", "Reload"
         };
-        static_assert(kGemsStepNames.size() == static_cast<std::size_t>(GemsStep::FirstGrant) + 1);
+        static_assert(kGemsStepNames.size() == static_cast<std::size_t>(GemsStep::Reload) + 1);
 
-        // 처음 설치 시험(-Only firstinstall): 모드 기록 없는 세이브를 세대 1 시험 세계로 불러온 경로.
-        enum class FirstInstallCheck : std::size_t { Decision, Grant, Save, Reload };
+        // 처음 설치 시험(-Only firstinstall): 세대 1 실제 패키지에서 모드 기록 없는 세이브(.skse 없음 / 타 모드 .skse만)를 검증.
+        enum class FirstInstallCheck : std::size_t { Content, Decision, Grant, Save, Reload };
         constexpr std::array kFirstInstallChecks{
-            "F1_FirstInstallDecision", "F2_StarterGrantOnce", "F3_FinalSaveWritten", "F4_ReloadKeepsGrant"
+            "F0_ContentCheckPassed", "F1_FirstInstallDecision", "F2_StarterGrantOnce",
+            "F3_FinalSaveWritten", "F4_ReloadKeepsGrant"
         };
+        static_assert(kFirstInstallChecks.size() == static_cast<std::size_t>(FirstInstallCheck::Reload) + 1);
+
+        enum class FirstInstallStep { Prepare, Menu, LoadInput, WaitGrant, Save, Reload };
+        constexpr std::array kFirstInstallStepNames{
+            "Prepare", "Menu", "LoadInput", "WaitGrant", "Save", "Reload"
+        };
+        static_assert(kFirstInstallStepNames.size() == static_cast<std::size_t>(FirstInstallStep::Reload) + 1);
+
+        using AutoTestMarker::GemsRetry;
+
         struct FirstInstallTestState
         {
+            FirstInstallStep step = FirstInstallStep::Prepare;
+            Clock::time_point since{};
+            Clock::time_point nextStatus{};
+            GemsRetry retry{ 3 };
+            std::uint64_t loadStartsAtStep = 0;
             std::array<bool, kFirstInstallChecks.size()> checked{};
-            // 로드 완료 메시지 때(초기 지급 예약이 돌기 전)의 시작 물건 수. 로드마다 새로 잰다.
+            // 로드 완료 메시지 때(초기 지급 예약이 돌기 전)의 62젬+12화폐 수량.
             std::map<RE::FormID, std::int32_t> atLoad;
             std::map<RE::FormID, std::int32_t> afterGrant;
-            PersistentState flagsAfterGrant;
-            // 기준 세이브에 .skse가 있으면 SKSE가 OnLoad를 부르고(기록 0개), 없으면 로드 뒤 분기에서 처음 설치로 판정한다.
+            std::vector<std::string> starterIdsAfterGrant;
             std::optional<bool> baselineHasCosave;
+            std::string buildId;
+            std::string finalSlot;
+            // 결정 263: 재로드 뒤 패널을 열어도 다시 주지 않는지(-1 = 패널 지급 확인이 돌지 않음).
+            bool reloadPanelChecked = false;
+            std::int64_t reloadPanelGranted = -1;
         };
         FirstInstallTestState g_firstInstall;
-        static_assert(kGemsChecks.size() == static_cast<std::size_t>(GemsCheck::Restore) + 1);
-        using AutoTestMarker::GemsRetry;
+
+        // 새 게임 진입 시험(-Only newgame, 결정 247·263·C6): 메인 메뉴의 StartNewGame 콜백으로 세대 1 새 게임 진입을 검증.
+        // 캐릭터 생성 창은 사람이 마쳐야 한다(시작 모드에 따라 흐름이 다름).
+        enum class NewGameCheck : std::size_t {
+            NewGameReceived, Decision, StarterGems, PoE1CurrencyZero, StarterRecord, TreeGenOne, SaveOut, ReloadOut
+        };
+        constexpr std::array kNewGameChecks{
+            "N0_NewGameReceived", "N1_NewGameDecision", "N2_StarterGems", "N3_PoE1CurrencyZero",
+            "N4_StarterRecord", "N5_TreeGenerationOne", "N6_SaveOut", "N7_ReloadOut"
+        };
+        static_assert(kNewGameChecks.size() == static_cast<std::size_t>(NewGameCheck::ReloadOut) + 1);
+
+        enum class NewGameStep { Prepare, Menu, AwaitWorld, WaitGrant, Save, Reload };
+        constexpr std::array kNewGameStepNames{
+            "Prepare", "Menu", "AwaitWorld", "WaitGrant", "Save", "Reload"
+        };
+        static_assert(kNewGameStepNames.size() == static_cast<std::size_t>(NewGameStep::Reload) + 1);
+
+        struct NewGameTestState
+        {
+            NewGameStep step = NewGameStep::Prepare;
+            Clock::time_point since{};
+            std::optional<Clock::time_point> mainMenuSince;
+            std::optional<Clock::time_point> worldReadySince;
+            GemsRetry retry{ 3 };
+            std::uint64_t loadStartsAtStep = 0;
+            std::uint64_t newGameCountBefore = 0;
+            std::uint64_t postLoadSeqBeforeReload = 0;
+            std::array<bool, kNewGameChecks.size()> checked{};
+            std::map<RE::FormID, std::int32_t> afterGrant;
+            std::vector<std::string> starterIdsAfterGrant;
+            std::string buildId;
+            std::string outSlot;
+            // 결정 263: 패널을 열기 전 지급 대기 확인과 패널 열기.
+            bool preOpenChecked = false;
+            bool preOpenOk = false;
+            std::string preOpenDetail;
+            bool panelOpened = false;
+            std::size_t panelGranted = 0;
+        };
+        NewGameTestState g_newGame;
+
+        // 보존 음성·세대 불일치 시험(-Only preserve, 결정 256): 입력 목록을 차례로 불러와 보존·무정리·무지급·<stem>_out 저장을 검증.
+        enum class PreserveStep { Prepare, Menu, LoadInput, Observe, SaveOut };
+        constexpr std::array kPreserveStepNames{
+            "Prepare", "Menu", "LoadInput", "Observe", "SaveOut"
+        };
+        static_assert(kPreserveStepNames.size() == static_cast<std::size_t>(PreserveStep::SaveOut) + 1);
+
+        struct PreserveTestState
+        {
+            PreserveStep step = PreserveStep::Prepare;
+            Clock::time_point since{};
+            GemsRetry retry{ 3 };
+            std::size_t index = 0;
+            std::uint64_t loadStartsAtStep = 0;
+            std::uint64_t grantCallsBeforeLoad = 0;
+            std::map<RE::FormID, std::int32_t> countsAtLoad;
+            std::set<std::string> reported;
+            std::vector<std::pair<std::string, std::string>> pairs;
+        };
+        PreserveTestState g_preserve;
+
+        // 세대 1 게이트 앞부분(-Only gen1gate, C5·결정 244·248·249·259) 및 세대 0 양성 대조.
+        enum class Gen1GateCheck : std::size_t {
+            LoadAndConfig, KillDropGate, DirectTributeGate, NaturalPromoAndEs, EquipmentSnapshots, StaleUi, SaveOutReload
+        };
+        constexpr std::array kGen1GateGen1Checks{
+            "GG0_LoadAndConfig", "GG1_KillDropGate", "GG2_DirectTributeAndBagDropGate",
+            "GG3_NaturalPromotionGateAndForceEs", "GG4_EquipmentFourSnapshots",
+            "GG5_StaleUiBuildMismatch", "GG6_SaveOutAndReload"
+        };
+        static_assert(kGen1GateGen1Checks.size() == static_cast<std::size_t>(Gen1GateCheck::SaveOutReload) + 1);
+
+        enum class Gen0GateCheck : std::size_t {
+            LoadAndConfig, KillDropPositive, NaturalPromoPositive
+        };
+        constexpr std::array kGen1GateGen0Checks{
+            "GP0_LoadAndConfig", "GP1_KillDropPositiveControl", "GP2_NaturalPromotionPositiveControl"
+        };
+        static_assert(kGen1GateGen0Checks.size() == static_cast<std::size_t>(Gen0GateCheck::NaturalPromoPositive) + 1);
+
+        enum class Gen1GateStep {
+            Prepare, Menu, LoadInput, KillDropGate, PromoNaturalWait, PromoForceEsWait,
+            EquipmentAndStaleUi, SaveOut, ReloadOut
+        };
+        constexpr std::array kGen1GateStepNames{
+            "Prepare", "Menu", "LoadInput", "KillDropGate", "PromoNaturalWait", "PromoForceEsWait",
+            "EquipmentAndStaleUi", "SaveOut", "ReloadOut"
+        };
+        static_assert(kGen1GateStepNames.size() == static_cast<std::size_t>(Gen1GateStep::ReloadOut) + 1);
+
+        struct Gen1GateTestState
+        {
+            Gen1GateStep step = Gen1GateStep::Prepare;
+            std::uint32_t packageGeneration = 1;
+            std::string buildId;
+            std::string outSlot;
+            Clock::time_point since{};
+            Clock::time_point lastTick{};
+            GemsRetry retry{ 3 };
+            std::uint64_t loadStartsAtStep = 0;
+            std::uint64_t postLoadSeqBeforeReload = 0;
+            std::array<bool, kGen1GateGen1Checks.size()> checked{};
+
+            // 원복해야 할 시험 임시 변경 상태(성공·실패·중단 모두 원복).
+            std::optional<bool> enableLootDropsBefore;
+            std::optional<bool> enableMonsterPromotionBefore;
+            std::optional<bool> godModeBefore;
+            std::vector<RE::FormID> tempGearAdded;
+
+            // G1 / GP1 처치·드롭 게이트 관측
+            HostileKillLoopState killLoop;
+            std::uint32_t kills = 0;
+            std::uint32_t xpIncreasedKills = 0;
+            std::uint32_t lastLevel = 1;
+            std::uint64_t lastXp = 0;
+            std::uint64_t totalXpGained = 0;
+            WorldDropTracker::DropGateStats dropBefore{};
+            std::size_t activeDropsBefore = 0;
+            std::map<RE::FormID, std::int32_t> bagBeforeKills;
+            bool firstTributeBeforeKills = false;
+            std::vector<RE::ActorHandle> killCorpses;
+
+            // G3 / GP2 승격 게이트 관측
+            MonsterRuntime::PromotionGateStats promoBefore{};
+            RE::ActorHandle naturalMob{};
+            RE::FormID naturalMobId = 0;
+            double naturalInCombatSec = 0.0;
+            bool naturalGateOk = false;
+            std::string naturalDetail;
+            RE::ActorHandle esMob{};
+            RE::FormID esMobId = 0;
+            bool forceEsApplied = false;
+            double esAfterHit = 0.0;
+
+            // G6 저장·재로드 비교 기준
+            std::map<RE::FormID, std::int32_t> bagBeforeSave;
+            std::vector<std::string> strtBeforeSave;
+        };
+        Gen1GateTestState g_gen1Gate;
 
         struct GemsTestState
         {
@@ -522,19 +797,17 @@ namespace SkyrimPoE::Runtime
             Clock::time_point nextStatus{};
             Clock::time_point nextDialogueClose{};
             GemsRetry retry{ 3 };
+            std::uint64_t loadStartsAtStep = 0;
             GemsRetry clearHands{ 5 };
             GemsRetry equipHand{ 5 };
             GemsRetry drawHand{ 5 };
-            std::array<bool, kGemsChecks.size()> checked{};
-            AutoTestMarker::AutoSaveSettings autoSave;
-            std::size_t restoredSettings = 0;
-            std::optional<bool> engineSavingWasDisabled;
-            std::uint64_t saveGuardLoad = 0;
-            bool gen1Cast = false;
+            std::array<bool, kGen1GemsChecks.size()> checked{};
+            std::uint32_t packageGeneration = 1;
             std::uint8_t slot = 0;
             std::uint64_t instance = 0;
             std::uint64_t castsBefore = 0;
             std::uint64_t launchesBefore = 0;
+            std::uint64_t dllChargeCountBefore = 0;
             std::uint64_t castQueueGeneration = 0;
             float initialMana = 0;
             float minimumMana = 0;
@@ -546,28 +819,11 @@ namespace SkyrimPoE::Runtime
             float magickaDelta = 0;
             std::optional<bool> godMode;
             RE::ActorHandle target{};
-            int oldChain = 0;
-            int newChain = 0;
-            int oldChainAfter = 0;
-            int newChainAfter = 0;
-            // 결정 235: 정리 전 가방의 번호 붙은 젬 묶음 수와 전체 수(폼별). 시험이 넣은 PoE1식 번호 Spark 하나를 포함한다.
-            std::map<RE::FormID, std::int32_t> numberedBefore;
-            std::map<RE::FormID, std::int32_t> totalBefore;
-            // 결정 235 유입 경로: 정상 모드에서 번호 Spark 하나를 넣기 전의 Spark 전체·일반 수
-            std::int32_t incomingSparkTotal = 0;
-            std::int32_t incomingSparkPlain = 0;
-            std::optional<SaveFiles> files;
-            fs::file_time_type requestedAt{};
+            bool frostboltAdded = false;
             std::string buildId;
             std::string finalSlot;
         };
         GemsTestState g_gems;
-        bool g_gemsSaveRequested = false;
-        bool g_gemsUnexpectedSave = false;
-        bool g_gemsUnexpectedLoad = false;
-        // 젬 시험 중 시작된 게임 로드 수. 저장 차단 플래그는 걸었던 같은 로드 안에서만 되돌린다
-        // (정리 커밋은 명령 큐 세대를 올리지만 플레이어 상태는 그대로라 큐 세대로는 구분할 수 없다).
-        std::uint64_t g_gemsLoadStarts = 0;
         constexpr double kEnemyEsWaitSec = 2.0;
         constexpr double kEnemyEsTestMaxEs = 300.0;
         // 결정 185의 유지 시간. 제품 상수(Core::kEnemyEsEngagedHoldSec)가 바뀌면 시험이 잡도록 따로 둔다.
@@ -1058,20 +1314,7 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        void ReportCleanupCommitChecks(std::uint32_t saveThread)
-        {
-            if (!g_cleanupTest.committed || g_cleanupTest.reported[static_cast<std::size_t>(CleanupCheck::Committed)]) {
-                return;
-            }
-            const auto& result = *g_cleanupTest.committed;
-            CheckCleanup(CleanupCheck::Committed, result.step == Core::CleanupStep::Complete && result.starterGranted,
-                std::format("{}; OnSave thread={}", result.Describe(),
-                    saveThread == 0 ? "unobserved" : std::to_string(saveThread)));
-            for (std::size_t i = 0; i < g_cleanupTest.outcomeChecks.size(); ++i) {
-                const auto& [passed, detail] = g_cleanupTest.outcomeChecks[i];
-                CheckCleanup(static_cast<CleanupCheck>(static_cast<std::size_t>(CleanupCheck::Items) + i), passed, detail);
-            }
-        }
+        std::map<RE::FormID, std::int32_t> CaptureAllGemAndCurrencyCounts(RE::PlayerCharacter* player);
 
         const char* SaveDispositionName(Core::SaveDisposition disposition)
         {
@@ -1103,9 +1346,13 @@ namespace SkyrimPoE::Runtime
             };
             const bool baseline = check == SaveCheck::Baseline;
             const bool legacyZero = missing && pack && pack->contentGeneration == 0;
-            const bool matchesPack = valid && pack && generation->value.game == pack->game &&
-                generation->value.contentGeneration == pack->contentGeneration && generation->value.buildId == pack->buildId;
-            const bool generationOk = baseline ? (legacyZero || valid) : matchesPack;
+            const bool matchesPackGameAndGen = valid && pack &&
+                generation->value.game == pack->game &&
+                generation->value.contentGeneration == pack->contentGeneration;
+            const bool matchesPackExact = matchesPackGameAndGen && generation->value.buildId == pack->buildId;
+            const bool generationOk = baseline
+                ? (pack && pack->contentGeneration == 0 ? (legacyZero || valid) : matchesPackGameAndGen)
+                : matchesPackExact;
             const bool ok = succeeded && normal && normalDecision && load.collectionComplete && generationOk;
             CheckSave(check, ok, std::format(
                 "save='{}', kPostLoadGame={}, decision={} ({}), normalMode={} ({}), "
@@ -1114,11 +1361,11 @@ namespace SkyrimPoE::Runtime
                 load.decision ? load.decision->reason : "", normal, mode->reason, recordStatus,
                 generation && !generation->value.game.empty() ? describeGeneration(generation->value) : "unavailable",
                 pack ? describeGeneration(*pack) : "unavailable", load.receivedLoad, load.collectionComplete,
-                ok && baseline ? (legacyZero ? " (missing GENR, normal generation 0)" : " (valid GENR, normal load)") : ""));
+                ok && baseline ? (legacyZero ? " (GENR 없음, 정상 세대 0)" : " (유효 GENR, 정상 로드)") : ""));
             return ok;
         }
 
-        SaveOnlySnapshot CaptureSaveOnlySnapshot()
+        SaveOnlySnapshot CaptureSaveOnlySnapshot(RE::PlayerCharacter* player)
         {
             SaveOnlySnapshot snapshot;
             SaveLoad::RunSerializedTransaction([&] {
@@ -1126,14 +1373,19 @@ namespace SkyrimPoE::Runtime
                 snapshot.trackedGems = GemInventory::CountTracked();
                 snapshot.trackedItems = ItemTracker::CountTracked();
             });
+            if (player) {
+                snapshot.bagCounts = CaptureAllGemAndCurrencyCounts(player);
+            }
             return snapshot;
         }
 
-        void CheckSaveOnlyRoundTrip()
+        void CheckSaveOnlyRoundTrip(RE::PlayerCharacter* player)
         {
-            const auto after = CaptureSaveOnlySnapshot();
+            const auto after = CaptureSaveOnlySnapshot(player);
             const auto& before = g_saveOnlyBefore.state;
             const auto& state = after.state;
+            const auto pack = SaveLoad::GetContentGeneration();
+            const bool isGen1 = pack && pack->contentGeneration == 1;
             std::string differences;
             const auto compare = [&](std::string_view name, const auto& original, const auto& restored) {
                 if (original != restored) {
@@ -1147,7 +1399,13 @@ namespace SkyrimPoE::Runtime
             compare("className", before.className, state.className);
             compare("classSelected", before.tree.classSelected, state.tree.classSelected);
             compare("classId", before.tree.classId, state.tree.classId);
-            compare("allocatedNodes.size", before.tree.allocatedNodes.size(), state.tree.allocatedNodes.size());
+            compare("classContentId", before.tree.classContentId, state.tree.classContentId);
+            const std::set<std::uint32_t> beforeNodes(before.tree.allocatedNodes.begin(), before.tree.allocatedNodes.end());
+            const std::set<std::uint32_t> afterNodes(state.tree.allocatedNodes.begin(), state.tree.allocatedNodes.end());
+            if (beforeNodes != afterNodes) {
+                std::format_to(std::back_inserter(differences), "{}allocatedNodes set mismatch (before={}, after={})",
+                    differences.empty() ? "" : ", ", beforeNodes.size(), afterNodes.size());
+            }
             compare("attributeSelections match", true, before.tree.attributeSelections == state.tree.attributeSelections);
             compare("trackedGems", g_saveOnlyBefore.trackedGems, after.trackedGems);
             compare("trackedItems", g_saveOnlyBefore.trackedItems, after.trackedItems);
@@ -1161,15 +1419,60 @@ namespace SkyrimPoE::Runtime
             for (std::size_t i = 0; i < state.slots.size(); ++i) {
                 const auto& original = before.slots[i];
                 const auto& restored = state.slots[i];
-                if (original.occupied != restored.occupied || (original.occupied && original.gem.gemId != restored.gem.gemId)) {
-                    std::format_to(std::back_inserter(differences), "{}slots[{}].gemId: {} -> {}",
+                if (original.occupied != restored.occupied ||
+                    (original.occupied && (original.gem.gemId != restored.gem.gemId ||
+                        original.gem.instanceId != restored.gem.instanceId ||
+                        original.gem.level != restored.gem.level ||
+                        original.gem.quality != restored.gem.quality))) {
+                    std::format_to(std::back_inserter(differences), "{}slots[{}]: {} -> {}",
                         differences.empty() ? "" : ", ", i,
-                        original.occupied ? std::format("'{}'", original.gem.gemId) : "<empty>",
-                        restored.occupied ? std::format("'{}'", restored.gem.gemId) : "<empty>");
+                        original.occupied ? std::format("'{}'(#{})", original.gem.gemId, original.gem.instanceId) : "<empty>",
+                        restored.occupied ? std::format("'{}'(#{})", restored.gem.gemId, restored.gem.instanceId) : "<empty>");
+                }
+            }
+            if (isGen1) {
+                if (!g_saveOnlyBefore.preparedGen1Ui) {
+                    differences += (differences.empty() ? "" : ", ") + std::string("세대 1 저장 전 UI 설정이 완료되지 않았습니다");
+                }
+                if (!state.tree.classSelected || !state.tree.classContentId.starts_with("cls.")) {
+                    differences += (differences.empty() ? "" : ", ") +
+                        std::format("classContentId='{}'가 cls.* 형식이 아닙니다", state.tree.classContentId);
+                }
+                if (afterNodes.empty()) {
+                    differences += (differences.empty() ? "" : ", ") + std::string("할당 노드 집합이 비어 있습니다");
+                }
+                if (state.tree.attributeSelections.empty()) {
+                    differences += (differences.empty() ? "" : ", ") + std::string("능력치 선택이 비어 있습니다");
+                }
+                if (before.starterGrantedIds != state.starterGrantedIds) {
+                    differences += (differences.empty() ? "" : ", ") +
+                        std::format("STRT 불일치 (before={}, after={})", before.starterGrantedIds.size(), state.starterGrantedIds.size());
+                }
+                if (g_saveOnlyBefore.equippedSparkSlot) {
+                    const auto& sparkSlot = state.slots[*g_saveOnlyBefore.equippedSparkSlot];
+                    if (!sparkSlot.occupied || sparkSlot.gem.gemId != "gem.Spark") {
+                        differences += (differences.empty() ? "" : ", ") + std::string("장착한 gem.Spark가 재로드 후 유지되지 않았습니다");
+                    }
+                }
+                if (g_saveOnlyBefore.bagCounts != after.bagCounts) {
+                    std::string bagDiff;
+                    for (const auto& [formId, countAfter] : after.bagCounts) {
+                        const auto it = g_saveOnlyBefore.bagCounts.find(formId);
+                        const auto countBefore = it != g_saveOnlyBefore.bagCounts.end() ? it->second : -1;
+                        if (countAfter != countBefore) {
+                            bagDiff += std::format(" {:08X}={}->{}", formId, countBefore, countAfter);
+                        }
+                    }
+                    differences += (differences.empty() ? "" : ", ") + std::format("가방 젬/화폐 수량 변화:[{} ]", bagDiff);
                 }
             }
             CheckSave(SaveCheck::State, differences.empty(),
-                differences.empty() ? "All captured state fields matched." : differences);
+                differences.empty()
+                    ? std::format("모든 상태 일치 (class='{}', nodes={}, attrs={}, STRT={}, bagForms={}).",
+                        state.tree.classContentId.empty() ? state.className : state.tree.classContentId,
+                        afterNodes.size(), state.tree.attributeSelections.size(),
+                        state.starterGrantedIds.size(), after.bagCounts.size())
+                    : differences);
         }
 
         void CheckSaveOnlyPreservedStore()
@@ -1481,18 +1784,13 @@ namespace SkyrimPoE::Runtime
         void CheckGems(GemsCheck check, bool passed, const std::string& detail)
         {
             const auto index = static_cast<std::size_t>(check);
-            if (g_cfg.firstInstall) {
-                // 처음 설치 시험은 젬 판정을 세지 않는다. 다만 공유 단계의 실패는 경고로 올려 요약을 FAIL로 만든다.
-                const auto line = std::format("First-install run: gems step {} {}: {}", kGemsChecks[index], passed ? "ok" : "failed", detail);
-                if (passed) {
-                    LogInfo(line);
-                } else {
-                    LogWarn(line);
-                }
+            const auto count = g_gems.packageGeneration == 0 ? kGen0GemsChecks.size() : kGen1GemsChecks.size();
+            if (index >= count) {
                 return;
             }
             if (!std::exchange(g_gems.checked[index], true)) {
-                Check(kGemsChecks[index], passed, detail);
+                const char* name = g_gems.packageGeneration == 0 ? kGen0GemsChecks[index] : kGen1GemsChecks[index];
+                Check(name, passed, detail);
             }
         }
 
@@ -1504,9 +1802,89 @@ namespace SkyrimPoE::Runtime
             }
         }
 
+        void CheckNewGame(NewGameCheck check, bool passed, const std::string& detail)
+        {
+            const auto index = static_cast<std::size_t>(check);
+            if (!std::exchange(g_newGame.checked[index], true)) {
+                Check(kNewGameChecks[index], passed, detail);
+            }
+        }
+
+        void CheckPreserve(const std::string& name, bool passed, const std::string& detail)
+        {
+            if (g_preserve.reported.insert(name).second) {
+                Check(name, passed, detail);
+            }
+        }
+
+        void CheckGen1Gate(std::size_t index, bool passed, const std::string& detail)
+        {
+            const std::size_t limit = g_gen1Gate.packageGeneration == 0
+                ? kGen1GateGen0Checks.size() : kGen1GateGen1Checks.size();
+            if (index >= limit) {
+                return;
+            }
+            if (!std::exchange(g_gen1Gate.checked[index], true)) {
+                const char* name = g_gen1Gate.packageGeneration == 0
+                    ? kGen1GateGen0Checks[index] : kGen1GateGen1Checks[index];
+                Check(name, passed, detail);
+            }
+        }
+
         void ReleaseGemsCastState();
-        void RestoreGemsSaveGuard();
-        std::map<RE::FormID, std::int32_t> CaptureCleanupStarterItems(RE::PlayerCharacter* player);
+        void ReleaseGen1GateState(bool removeTempGear);
+        bool BeginAutoTestSession(std::string allowedSaveSlot, bool allowPreserveSave = false);
+        void BlockSessionManualSaves(RE::PlayerCharacter& player);
+        bool ObserveAndEnforceManualSaveGuard();
+        bool RestoreSessionSaveGuard();
+        void HoldTestSessionForQuitDelay();
+        void FinalizeTestSessionBeforeQuit();
+        void ReleaseSaveEarnState();
+
+        void WriteSummaryAndCloseReport()
+        {
+            // A8: preserve 모드 요약 직전에 모든 PRESERVE_PAIR를 탭 구분으로 한 번 더 모아 출력한다.
+            if (g_cfg.preserveOnly && !g_preserve.pairs.empty()) {
+                for (const auto& [inStem, outStem] : g_preserve.pairs) {
+                    const auto pairLine = std::format("PRESERVE_PAIR\t{}\t{}", inStem, outStem);
+                    SKSE::log::info("AutoTest {}", pairLine);
+                    if (g_report.is_open()) {
+                        g_report << pairLine << '\n';
+                    }
+                }
+            }
+            // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
+            // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
+            const int expectedChecks = g_cfg.gen1GateOnly
+                ? static_cast<int>(g_gen1Gate.packageGeneration == 0 ? kGen1GateGen0Checks.size() : kGen1GateGen1Checks.size()) :
+                g_cfg.newGameOnly ? static_cast<int>(kNewGameChecks.size()) :
+                g_cfg.preserveOnly ? static_cast<int>(g_cfg.preserveSaves.size() * 4) :
+                g_cfg.firstInstall ? static_cast<int>(kFirstInstallChecks.size()) :
+                g_cfg.gemsOnly ? static_cast<int>(g_gems.packageGeneration == 0 ? kGen0GemsChecks.size() : kGen1GemsChecks.size()) :
+                g_cfg.cleanupOnly ? static_cast<int>(kCleanupCheckNames.size()) :
+                g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
+                g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks :
+                g_cfg.reactOnly ? static_cast<int>(kReactCheckNames.size()) : kExpectedAutoTestChecks;
+            const char* modeDescription = g_cfg.gen1GateOnly
+                ? (g_gen1Gate.packageGeneration == 0 ? " (gen1gate gen0 positive-control run)" : " (gen1gate gen1 run)") :
+                g_cfg.newGameOnly ? " (newgame-only run)" :
+                g_cfg.preserveOnly ? " (preserve-only run)" :
+                g_cfg.firstInstall ? " (first-install run)" : g_cfg.gemsOnly ? " (gems-only run)" :
+                g_cfg.cleanupOnly ? " (cleanup-only migration run)" :
+                g_cfg.saveOnly ? " (save-only round-trip run)" :
+                g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" :
+                g_cfg.reactOnly ? " (hit-reaction run)" : "";
+            const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
+            const auto summary = std::format(
+                "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={}{} ===",
+                g_passCount, expectedChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL", modeDescription);
+            SKSE::log::info("AutoTest {}", summary);
+            if (g_report.is_open()) {
+                g_report << summary << '\n';
+                g_report.flush();
+                g_report.close();
+            }
+        }
 
         // 결정 235 시험: 플레이어 가방의 번호 붙은 젬 묶음 수를 폼별로 센다. totals가 있으면 폼별 전체 수도 채운다.
         std::map<RE::FormID, std::int32_t> CountNumberedGems(
@@ -1566,41 +1944,73 @@ namespace SkyrimPoE::Runtime
             if (g_phase == Phase::QuitDelay || g_phase == Phase::Done) {
                 return;
             }
-            if (g_cfg.gemsOnly) {
+            if (g_cfg.gen1GateOnly) {
+                ReleaseGen1GateState(true);
+                const auto count = g_gen1Gate.packageGeneration == 0
+                    ? kGen1GateGen0Checks.size() : kGen1GateGen1Checks.size();
+                for (std::size_t i = 0; i < count; ++i) {
+                    CheckGen1Gate(i, false, std::format("건너뜀. {}", reason));
+                }
+            } else if (g_cfg.newGameOnly) {
+                for (std::size_t i = 0; i < kNewGameChecks.size(); ++i) {
+                    CheckNewGame(static_cast<NewGameCheck>(i), false, std::format("건너뜀. {}", reason));
+                }
+            } else if (g_cfg.preserveOnly) {
+                for (std::size_t i = 0; i < g_cfg.preserveSaves.size(); ++i) {
+                    const std::size_t n = i + 1;
+                    for (const auto* suffix : { "a_Decision", "b_NoCleanup", "c_NoGrant", "d_SavedOut" }) {
+                        CheckPreserve(std::format("P{}{}", n, suffix), false,
+                            std::format("건너뜀 (input='{}'). {}", g_cfg.preserveSaves[i], reason));
+                    }
+                }
+            } else if (g_cfg.firstInstall) {
+                for (std::size_t i = 0; i < kFirstInstallChecks.size(); ++i) {
+                    CheckFirstInstall(static_cast<FirstInstallCheck>(i), false, std::format("건너뜀. {}", reason));
+                }
+            } else if (g_cfg.gemsOnly) {
                 ReleaseGemsCastState();
-                RestoreGemsSaveGuard();
-                SaveLoad::EndGemTestWorld();
-                g_gems.restoredSettings += g_gems.autoSave.Restore();
-                LogInfo(std::format("Gems exit: world generation={}, gen0 Spark={}, restored autosave settings={}.",
-                    SaveLoad::WorldGemGeneration(), g_dataPack && g_dataPack->FindGem("Spark", SaveLoad::WorldGemGeneration()),
-                    g_gems.restoredSettings));
                 if (g_config && std::exchange(g_hasSavedEnforceGemReq, false)) {
                     g_config->enforceGemRequirements = g_savedEnforceGemReq;
                 }
-                if (g_cfg.firstInstall) {
-                    for (std::size_t i = 0; i < kFirstInstallChecks.size(); ++i) {
-                        CheckFirstInstall(static_cast<FirstInstallCheck>(i), false, std::format("Skipped. {}", reason));
-                    }
-                } else {
-                    for (std::size_t i = 0; i < kGemsChecks.size(); ++i) {
-                        CheckGems(static_cast<GemsCheck>(i), false, std::format("Skipped. {}", reason));
-                    }
+                const auto count = g_gems.packageGeneration == 0 ? kGen0GemsChecks.size() : kGen1GemsChecks.size();
+                for (std::size_t i = 0; i < count; ++i) {
+                    CheckGems(static_cast<GemsCheck>(i), false, std::format("건너뜀. {}", reason));
                 }
             } else if (g_cfg.cleanupOnly) {
-                SaveLoad::SetCleanupTestTarget(false);
-                ReportCleanupCommitChecks(0);
                 for (std::size_t i = 0; i < kCleanupCheckNames.size(); ++i) {
                     CheckCleanup(static_cast<CleanupCheck>(i), false,
-                        std::format("Skipped in {}. {}", PhaseName(g_phase), reason));
+                        std::format("건너뜀 ({}). {}", PhaseName(g_phase), reason));
                 }
             } else if (g_cfg.saveOnly) {
+                ReleaseSaveEarnState();
                 for (std::size_t i = 0; i < kSaveCheckNames.size(); ++i) {
                     if (!g_saveChecksReported[i]) {
-                        Check(kSaveCheckNames[i], false, std::format("Skipped in {}. {}", PhaseName(g_phase), reason));
+                        Check(kSaveCheckNames[i], false, std::format("건너뜀 ({}). {}", PhaseName(g_phase), reason));
                     }
                 }
-            } else if (!CleanUpScenariosBeforeFinish(reason)) {
-                return;
+            } else {
+                if (g_cfg.enemyEsOnly) {
+                    for (const auto* name : kEnemyEsCheckNames) {
+                        if (!g_esTest.reported.contains(name)) {
+                            g_esTest.reported.insert(name);
+                            Check(name, false, std::format("건너뜀 ({}). {}", PhaseName(g_phase), reason));
+                        }
+                    }
+                }
+                if (g_cfg.reactOnly) {
+                    for (const auto* name : kReactCheckNames) {
+                        if (!g_reactTest.reported.contains(name)) {
+                            g_reactTest.reported.insert(name);
+                            Check(name, false, std::format("건너뜀 ({}). {}", PhaseName(g_phase), reason));
+                        }
+                    }
+                }
+                if (!CleanUpScenariosBeforeFinish(reason)) {
+                    return;
+                }
+            }
+            if (g_cfg.UsesTestSession()) {
+                HoldTestSessionForQuitDelay();
             }
             {
                 std::scoped_lock lock(g_msgMutex);
@@ -1608,39 +2018,27 @@ namespace SkyrimPoE::Runtime
                 g_preLoadMatched = false;
                 g_expectedSaveStem.clear();
                 g_saveMatched = false;
+                g_sessionSaveRequested = false;
                 g_hWatchArenaCoSave = false;
             }
 
             if (!reason.empty()) {
                 LogInfo(reason);
             }
-            // T-1 + 6단계: 기대 건수 및 WARN=0까지 충족해야 RESULT=PASS 인정
-            // 경로 탐침만 도는 조사 실행은 H26·H27 두 건만 기대한다.
-            const int expectedChecks = g_cfg.firstInstall ? static_cast<int>(kFirstInstallChecks.size()) :
-                g_cfg.gemsOnly ? static_cast<int>(kGemsChecks.size()) :
-                g_cfg.cleanupOnly ? static_cast<int>(kCleanupCheckNames.size()) :
-                g_cfg.saveOnly ? static_cast<int>(kSaveCheckNames.size()) :
-                g_cfg.routeOnly ? 2 : g_cfg.enemyEsOnly ? kEnemyEsOnlyChecks :
-                g_cfg.reactOnly ? static_cast<int>(kReactCheckNames.size()) : kExpectedAutoTestChecks;
-            const char* modeDescription = g_cfg.firstInstall ? " (first-install run)" : g_cfg.gemsOnly ? " (gems-only run)" :
-                g_cfg.cleanupOnly ? " (cleanup-only migration run)" :
-                g_cfg.saveOnly ? " (save-only round-trip run)" :
-                g_cfg.routeOnly ? " (route-only investigation run)" : g_cfg.enemyEsOnly ? " (enemy-ES investigation run)" :
-                g_cfg.reactOnly ? " (hit-reaction run)" : "";
-            const bool overallOk = !g_runError && g_failCount == 0 && g_warnCount == 0 && g_passCount == expectedChecks;
-            const auto summary = std::format(
-                "=== SUMMARY: PASS={}/{} FAIL={} WARN={} RESULT={}{} ===",
-                g_passCount, expectedChecks, g_failCount, g_warnCount, overallOk ? "PASS" : "FAIL", modeDescription);
-            SKSE::log::info("AutoTest {}", summary);
-            if (g_report.is_open()) {
-                g_report << summary << '\n';
-                g_report.flush();
-                g_report.close();
-            }
 
             if (g_cfg.quitWhenDone) {
+                if (!g_cfg.UsesTestSession()) {
+                    WriteSummaryAndCloseReport();
+                } else if (g_report.is_open()) {
+                    // 시험 세션 모드는 QuitDelay 끝(종료 직전 틱)에 자동 저장 복구와 원본 지문 최종 검증 뒤 요약을 쓴다.
+                    g_report.flush();
+                }
                 EnterPhase(Phase::QuitDelay);
             } else {
+                if (g_cfg.UsesTestSession()) {
+                    FinalizeTestSessionBeforeQuit();
+                }
+                WriteSummaryAndCloseReport();
                 EnterPhase(Phase::Done);
                 g_enabled.store(false, std::memory_order_release);
             }
@@ -2510,36 +2908,811 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        bool RequestLoadSave(const std::string& saveStem, bool gemsWorld = false)
+        bool RequestLoadSave(const std::string& saveStem, std::string* reasonOut = nullptr)
         {
             auto* mgr = RE::BGSSaveLoadManager::GetSingleton();
             if (!mgr) {
+                if (reasonOut) {
+                    *reasonOut = "BGSSaveLoadManager singleton unavailable.";
+                }
                 return false;
             }
             {
                 std::scoped_lock lock(g_msgMutex);
-                g_expectedLoadStem = (g_cfg.cleanupOnly || g_cfg.gemsOnly) ? saveStem : ToLowerAscii(saveStem);
+                // F10: 이미 앞 요청의 kPreLoadGame이 도착한 로드가 진행 중이면 중복 로드를 발행하지 않는다.
+                if (g_cfg.UsesTestSession() && g_preLoadMatched) {
+                    if (reasonOut) {
+                        *reasonOut = "이미 로드가 시작됨 (kPreLoadGame 수신 상태).";
+                    }
+                    return false;
+                }
+                g_expectedLoadStem = g_cfg.UsesTestSession() ? saveStem : ToLowerAscii(saveStem);
                 g_preLoadMatched = false;
                 g_postLoadSignaled = false;
                 g_postLoadSucceeded = false;
             }
-            if (g_cfg.cleanupOnly) {
-                SaveLoad::ExpectCleanupTestLoad(saveStem);
-            }
-            if (gemsWorld) {
-                SaveLoad::ExpectGemTestLoad(saveStem);
-            }
-            if (g_cfg.gemsOnly) {
-                RestoreGemsSaveGuard();
+            if (g_cfg.UsesTestSession()) {
+                (void)RestoreSessionSaveGuard();
             }
             // 누락 모드 경고 모달로 멈추지 않도록 a_checkForMods=false로 로드한다.
             mgr->Load(saveStem.c_str(), false);
             return true;
         }
 
-        bool IsCleanupTarget(const Core::SaveGeneration& generation)
+        bool IsGen1Target(const Core::SaveGeneration& generation)
         {
             return generation.game == "poe2" && generation.contentGeneration == 1;
+        }
+
+        std::vector<std::string> ExpectedGen1StarterIds()
+        {
+            return Core::ExpectedGen1StarterIdsForConfig(g_config && g_config->giveStarterGems);
+        }
+
+        std::map<RE::FormID, std::int32_t> ExpectedGen1StarterByRuntimeForm(bool ignoreConfig = false)
+        {
+            std::map<RE::FormID, std::int32_t> expected;
+            if (ignoreConfig || (g_config && g_config->giveStarterGems)) {
+                for (const auto& item : Core::kGen1StarterExpectations) {
+                    if (auto* form = FormIds::Lookup<RE::TESObjectMISC>(item.localFormId)) {
+                        expected[form->GetFormID()] += item.count;
+                    }
+                }
+            }
+            return expected;
+        }
+
+        // 모든 실물 젬 62폼(kPhysicalForms)과 PoE1 화폐 12폼(kCurrencyOrbForms)의 가방 수량을 런타임 FormID로 읽는다.
+        std::map<RE::FormID, std::int32_t> CaptureAllGemAndCurrencyCounts(RE::PlayerCharacter* player)
+        {
+            std::map<RE::FormID, std::int32_t> counts;
+            if (!player) {
+                return counts;
+            }
+            for (const auto& entry : Core::GemForms::kPhysicalForms) {
+                if (auto* form = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId)) {
+                    counts.emplace(form->GetFormID(), player->GetItemCount(form));
+                }
+            }
+            for (const auto localId : FormIds::kCurrencyOrbForms) {
+                if (auto* form = FormIds::Lookup<RE::TESObjectMISC>(localId)) {
+                    counts.emplace(form->GetFormID(), player->GetItemCount(form));
+                }
+            }
+            return counts;
+        }
+
+        FileFingerprint CaptureFileFingerprint(const fs::path& path)
+        {
+            FileFingerprint fp;
+            std::error_code ec;
+            const auto status = fs::status(path, ec);
+            if (status.type() == fs::file_type::not_found) {
+                fp.exists = false;
+                return fp;
+            }
+            fp.exists = true;
+            if (ec || !fs::is_regular_file(status)) {
+                fp.readError = true;
+                return fp;
+            }
+            fp.size = fs::file_size(path, ec);
+            if (ec) {
+                fp.readError = true;
+                return fp;
+            }
+            fp.modified = fs::last_write_time(path, ec);
+            if (ec) {
+                fp.readError = true;
+                return fp;
+            }
+            try {
+                fp.sha256 = Core::ContentSha256(Core::ReadContentFile(path));
+            } catch (...) {
+                fp.readError = true;
+            }
+            return fp;
+        }
+
+        bool SameFingerprint(const FileFingerprint& a, const FileFingerprint& b) noexcept
+        {
+            if (a.readError || b.readError || a.exists != b.exists) {
+                return false;
+            }
+            if (!a.exists) {
+                return true;
+            }
+            return a.size == b.size && a.modified == b.modified && a.sha256 == b.sha256;
+        }
+
+        std::string DescribeFingerprint(const FileFingerprint& fp)
+        {
+            if (fp.readError) {
+                return "읽기 오류";
+            }
+            if (!fp.exists) {
+                return "없음";
+            }
+            return std::format("크기={}B, 수정시각={}, sha256={}",
+                fp.size, fp.modified.time_since_epoch().count(), fp.sha256);
+        }
+
+        using SaveDisableFlag = RE::PlayerCharacter::ByCharGenFlag;
+
+        bool SuppressSessionAutoSaves()
+        {
+            using AutoTestMarker::AutoSaveCollection;
+            constexpr std::array settings{
+                std::pair{ "bSaveOnRest", "bSaveOnRest:Main" },
+                std::pair{ "bSaveOnWait", "bSaveOnWait:Main" },
+                std::pair{ "bSaveOnTravel", "bSaveOnTravel:Main" },
+                std::pair{ "bSaveOnCharacterMenu", "bSaveOnCharacterMenu:Main" },
+                std::pair{ "bSaveOnPause", "bSaveOnPause:Main" },
+                std::pair{ "bAllowScriptedAutosave", "bAllowScriptedAutosave:SaveGame" },
+                std::pair{ "bAllowScriptedForceSave", "bAllowScriptedForceSave:SaveGame" },
+                std::pair{ "bAutoSaveOnUserStale", "bAutoSaveOnUserStale:SaveGame" },
+                std::pair{ "bDisableAutoSave", "bDisableAutoSave:SaveGame" }
+            };
+            bool masterFound = false;
+            auto* gameSettings = RE::GameSettingCollection::GetSingleton();
+            auto* preferences = RE::INIPrefSettingCollection::GetSingleton();
+            auto* iniSettings = RE::INISettingCollection::GetSingleton();
+            for (const auto& [gmst, ini] : settings) {
+                const bool master = std::string_view(gmst) == "bDisableAutoSave";
+                bool found = false;
+                if (auto* s = gameSettings ? gameSettings->GetSetting(gmst) : nullptr; s && s->GetType() == RE::Setting::Type::kBool) {
+                    g_session.autoSave.Set(AutoSaveCollection::GameSetting, gmst, s->data.b, master);
+                    found = true;
+                }
+                if (auto* s = preferences ? preferences->GetSetting(ini) : nullptr; s && s->GetType() == RE::Setting::Type::kBool) {
+                    g_session.autoSave.Set(AutoSaveCollection::IniPref, ini, s->data.b, master);
+                    found = true;
+                }
+                if (auto* s = iniSettings ? iniSettings->GetSetting(ini) : nullptr; s && s->GetType() == RE::Setting::Type::kBool) {
+                    g_session.autoSave.Set(AutoSaveCollection::IniSetting, ini, s->data.b, master);
+                    found = true;
+                }
+                masterFound |= master && found;
+            }
+            g_session.autoSaveSuppressed = masterFound;
+            LogInfo(std::format("시험 세션 자동 저장 억제: master={}, 변경 설정 {}개.",
+                masterFound, g_session.autoSave.CapturedCount()));
+            return masterFound;
+        }
+
+        std::optional<bool> ReadAutoSaveSettingFromCollection(
+            AutoTestMarker::AutoSaveCollection collection, std::string_view name)
+        {
+            const std::string key(name);
+            RE::Setting* setting = nullptr;
+            switch (collection) {
+            case AutoTestMarker::AutoSaveCollection::GameSetting:
+                if (auto* col = RE::GameSettingCollection::GetSingleton()) setting = col->GetSetting(key.c_str());
+                break;
+            case AutoTestMarker::AutoSaveCollection::IniPref:
+                if (auto* col = RE::INIPrefSettingCollection::GetSingleton()) setting = col->GetSetting(key.c_str());
+                break;
+            case AutoTestMarker::AutoSaveCollection::IniSetting:
+                if (auto* col = RE::INISettingCollection::GetSingleton()) setting = col->GetSetting(key.c_str());
+                break;
+            }
+            if (!setting || setting->GetType() != RE::Setting::Type::kBool) {
+                return std::nullopt;
+            }
+            return setting->data.b;
+        }
+
+        void BlockSessionManualSaves(RE::PlayerCharacter& player)
+        {
+            auto& flags = player.GetGameStatsData().byCharGenFlag;
+            if (!g_session.engineSavingWasDisabled) {
+                g_session.engineSavingWasDisabled = flags.any(SaveDisableFlag::kDisableSaving);
+                std::scoped_lock lock(g_msgMutex);
+                g_session.saveGuardLoad = g_sessionLoadStarts;
+            }
+            flags.set(SaveDisableFlag::kDisableSaving);
+        }
+
+        // 다음 세이브로 넘어가기 직전(RequestLoadSave)에만 이전 월드의 저장 플래그 추적을 비운다.
+        bool RestoreSessionSaveGuard()
+        {
+            const auto original = std::exchange(g_session.engineSavingWasDisabled, std::nullopt);
+            if (!original) {
+                return true;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            std::uint64_t currentLoads = 0;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                currentLoads = g_sessionLoadStarts;
+            }
+            if (!player || currentLoads != g_session.saveGuardLoad) {
+                return true;
+            }
+            auto& flags = player->GetGameStatsData().byCharGenFlag;
+            if (*original) flags.set(SaveDisableFlag::kDisableSaving);
+            else flags.reset(SaveDisableFlag::kDisableSaving);
+            return flags.any(SaveDisableFlag::kDisableSaving) == *original;
+        }
+
+        // A3(F3): kDisableSaving을 다시 세우기 전에 해제된 적이 있었는지 먼저 관측해 sticky 플래그로 남긴다.
+        bool ObserveAndEnforceManualSaveGuard()
+        {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                return !g_session.manualSaveGuardLost;
+            }
+            auto& flags = player->GetGameStatsData().byCharGenFlag;
+            if (g_session.engineSavingWasDisabled && !flags.any(SaveDisableFlag::kDisableSaving)) {
+                g_session.manualSaveGuardLost = true;
+            }
+            flags.set(SaveDisableFlag::kDisableSaving);
+            return !g_session.manualSaveGuardLost;
+        }
+
+        bool BeginAutoTestSession(std::string allowedSaveSlot, bool allowPreserveSave)
+        {
+            if (g_session.active) {
+                return g_session.autoSaveSuppressed && g_session.baselineCaptured;
+            }
+            // F7: 세션 시작 전 이미 예상 밖 로드·저장이 기록되어 있다면 지우지 않고 즉시 중단한다.
+            bool alreadyUnexpectedLoad = false;
+            bool alreadyUnexpectedSave = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_sessionSaveRequested = false;
+                alreadyUnexpectedLoad = g_sessionUnexpectedLoad;
+                alreadyUnexpectedSave = g_sessionUnexpectedSave;
+            }
+            if (alreadyUnexpectedLoad || alreadyUnexpectedSave) {
+                SaveLoad::LockTestSessionForQuit(true);
+                LogWarn(std::format("시험 세션 시작 거부: 이미 예상 밖 이벤트가 기록됨 (load={}, save={}).",
+                    alreadyUnexpectedLoad, alreadyUnexpectedSave));
+                return false;
+            }
+            g_session = {};
+            g_session.allowedSaveSlot = std::move(allowedSaveSlot);
+            std::vector<std::string> inputStems;
+            if (g_cfg.preserveOnly) {
+                inputStems = g_cfg.preserveSaves;
+            } else if (!g_cfg.baselineSave.empty()) {
+                inputStems.push_back(g_cfg.baselineSave);
+            }
+            bool allCaptured = true;
+            for (const auto& rawStem : inputStems) {
+                const fs::path stem{ std::u8string(rawStem.begin(), rawStem.end()) };
+                const auto base = SaveDirectory() / stem;
+                BaselineSaveFingerprint entry;
+                entry.stem = rawStem;
+                entry.essPath = base;
+                entry.essPath += ".ess";
+                entry.sksePath = base;
+                entry.sksePath += ".skse";
+                entry.essBefore = CaptureFileFingerprint(entry.essPath);
+                entry.skseBefore = CaptureFileFingerprint(entry.sksePath);
+                allCaptured &= !entry.essBefore.readError && !entry.skseBefore.readError;
+                LogInfo(std::format("시험 세션 원본 기준 기록('{}'): ess=[{}], skse=[{}].",
+                    entry.stem, DescribeFingerprint(entry.essBefore), DescribeFingerprint(entry.skseBefore)));
+                g_session.baselineSaves.push_back(std::move(entry));
+            }
+            if (inputStems.empty()) {
+                // A4: 입력 없음 허용은 newgame 모드에서만. 다른 세션 모드에서 입력이 비어 있으면 세션을 열지 않는다.
+                if (!g_cfg.newGameOnly) {
+                    LogWarn("시험 세션 시작 거부: 입력 세이브가 없습니다(입력 없음 허용은 newgame 전용).");
+                    g_session.baselineCaptured = false;
+                    return false;
+                }
+                LogInfo("시험 세션 원본 기준 기록: 입력 없음 (새 게임 모드).");
+            }
+            g_session.baselineCaptured = allCaptured;
+            const bool autoSaveOk = SuppressSessionAutoSaves();
+            SaveLoad::BeginTestSession(g_session.allowedSaveSlot, allowPreserveSave);
+            g_session.active = true;
+            return autoSaveOk && g_session.baselineCaptured;
+        }
+
+        bool RequestSessionSave(const std::string& stem)
+        {
+            auto* mgr = RE::BGSSaveLoadManager::GetSingleton();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const fs::path stemPath{ std::u8string(stem.begin(), stem.end()) };
+            g_session.pendingSaveFiles = ObserveSaveFiles(stemPath);
+            if (!mgr || !player || !g_session.pendingSaveFiles || !g_session.engineSavingWasDisabled) {
+                return false;
+            }
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = stem;
+                g_saveMatched = false;
+                g_saveAtNextMessage.reset();
+                g_sessionSaveRequested = true;
+            }
+            g_session.pendingSaveRequestedAt = fs::file_time_type::clock::now();
+            auto& flags = player->GetGameStatsData().byCharGenFlag;
+            flags.reset(SaveDisableFlag::kDisableSaving);
+            mgr->Save(stem.c_str());
+            flags.set(SaveDisableFlag::kDisableSaving);
+            return true;
+        }
+
+        bool HasUnexpectedSessionEvent(bool& unexpectedLoadOut, bool& unexpectedSaveOut)
+        {
+            std::scoped_lock lock(g_msgMutex);
+            unexpectedLoadOut = g_sessionUnexpectedLoad;
+            unexpectedSaveOut = g_sessionUnexpectedSave;
+            return unexpectedLoadOut || unexpectedSaveOut;
+        }
+
+        // 마지막 판정 뒤 QuitDelay 동안 코세이브 거부와 kDisableSaving을 유지하고, 중단 시 보존 모드를 끈적하게 잠근다.
+        void HoldTestSessionForQuitDelay()
+        {
+            if (g_session.lockedForQuit) {
+                return;
+            }
+            g_session.lockedForQuit = true;
+            bool unexpectedLoad = false;
+            bool unexpectedSave = false;
+            (void)HasUnexpectedSessionEvent(unexpectedLoad, unexpectedSave);
+            const bool aborted = unexpectedLoad || unexpectedSave || !g_session.completedNormally || g_runError;
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                if (g_session.engineSavingWasDisabled) {
+                    (void)ObserveAndEnforceManualSaveGuard();
+                } else {
+                    BlockSessionManualSaves(*player);
+                }
+            }
+            SaveLoad::LockTestSessionForQuit(aborted);
+            LogInfo(std::format("시험 세션 종료 대기 진입: 코세이브 거부·kDisableSaving 유지 (중단={}, 예상밖로드={}, 예상밖저장={}, 수동차단해제감지={}).",
+                aborted, unexpectedLoad, unexpectedSave, g_session.manualSaveGuardLost));
+        }
+
+        // 종료 직전 틱에 자동 저장 설정을 복구·재조회 검증하고, 입력 .ess/.skse 지문을 다시 대조해 보고한다.
+        void FinalizeTestSessionBeforeQuit()
+        {
+            if (g_session.integrityVerified) {
+                return;
+            }
+            // A6: 첫 RestoreAndVerify가 끝까지 돌아 목록을 비운 뒤라면 catch에서 재호출해 거짓 성공(0개)을 만들지 않는다.
+            bool autoSaveRestoreCompleted = false;
+            bool autoSaveRestoreSucceeded = false;
+            std::size_t firstRestoredAutoSaveCount = 0;
+            std::string firstAutoSaveMismatch;
+            const auto retryAutoSaveRestoreOnException = [&]() -> std::string {
+                if (autoSaveRestoreCompleted) {
+                    return std::format("첫 시도 완료(재시도 생략): ok={} ({}개, 불일치=[{}])",
+                        autoSaveRestoreSucceeded, firstRestoredAutoSaveCount, firstAutoSaveMismatch);
+                }
+                try {
+                    std::size_t retryCount = 0;
+                    std::string retryMismatch;
+                    const bool ok = g_session.autoSave.RestoreAndVerify(
+                        ReadAutoSaveSettingFromCollection, retryCount, &retryMismatch);
+                    return std::format("재시도 ok={} ({}개, 불일치=[{}])", ok, retryCount, retryMismatch);
+                } catch (const std::exception& re) {
+                    return std::format("재시도 예외: {}", re.what());
+                } catch (...) {
+                    return "재시도 알 수 없는 예외";
+                }
+            };
+            try {
+                bool unexpectedLoad = false;
+                bool unexpectedSave = false;
+                (void)HasUnexpectedSessionEvent(unexpectedLoad, unexpectedSave);
+                const bool aborted = unexpectedLoad || unexpectedSave || !g_session.completedNormally || g_runError;
+
+                // A3(F3): QuitDelay 매 틱과 직전 시점까지 kDisableSaving이 풀린 적이 없는지 확인한 뒤 재설정한다.
+                const bool manualStillBlocked = ObserveAndEnforceManualSaveGuard();
+                SaveLoad::LockTestSessionForQuit(aborted);
+
+                const bool autoSaveRestored = g_session.autoSave.RestoreAndVerify(
+                    ReadAutoSaveSettingFromCollection, firstRestoredAutoSaveCount, &firstAutoSaveMismatch);
+                autoSaveRestoreCompleted = true;
+                autoSaveRestoreSucceeded = autoSaveRestored;
+
+                bool allBaselinesIntact = true;
+                std::string baselineReport;
+                if (g_session.baselineSaves.empty()) {
+                    baselineReport = "입력 없음";
+                } else {
+                    for (const auto& base : g_session.baselineSaves) {
+                        const auto essAfter = CaptureFileFingerprint(base.essPath);
+                        const auto skseAfter = CaptureFileFingerprint(base.sksePath);
+                        const bool essIntact = SameFingerprint(base.essBefore, essAfter);
+                        const bool skseIntact = SameFingerprint(base.skseBefore, skseAfter);
+                        allBaselinesIntact &= essIntact && skseIntact;
+                        if (!baselineReport.empty()) {
+                            baselineReport += "; ";
+                        }
+                        baselineReport += std::format(
+                            "'{}' .ess불변={} (전 [{}], 후 [{}]), .skse불변={} (전 [{}], 후 [{}])",
+                            base.stem, essIntact, DescribeFingerprint(base.essBefore), DescribeFingerprint(essAfter),
+                            skseIntact, DescribeFingerprint(base.skseBefore), DescribeFingerprint(skseAfter));
+                    }
+                }
+                // 새 게임 모드는 지킬 입력 세이브가 없고, 캐릭터 생성 흐름이 엔진의 저장 금지 플래그를 바꾼다(2026-11-26 실행).
+                // 그래서 수동 저장 차단 해제는 기록만 하고 위반으로 세지 않는다(예상 밖 저장은 따로 잡는다).
+                const bool manualGuardOk = manualStillBlocked || g_cfg.newGameOnly;
+                const bool allIntact = allBaselinesIntact && autoSaveRestored && manualGuardOk &&
+                    !unexpectedLoad && !unexpectedSave;
+                const auto report = std::format(
+                    "시험 세션 종료 직전 보호 검증: 원본 불변={} [{}], "
+                    "자동 저장 설정 복구·재조회={} ({}개, 불일치=[{}]), 수동 저장 차단 유지={}, 예상 밖 로드={}, 예상 밖 저장={}, 중단={}.",
+                    allBaselinesIntact, baselineReport,
+                    autoSaveRestored, firstRestoredAutoSaveCount, firstAutoSaveMismatch, manualStillBlocked,
+                    unexpectedLoad, unexpectedSave, aborted);
+                if (allIntact) {
+                    LogInfo(report);
+                } else {
+                    g_runError = true;
+                    LogWarn(std::format("시험 세션 보호 위반! {}", report));
+                }
+                // F8: 검증과 보고가 끝난 뒤에만 완료 표시를 세운다.
+                g_session.integrityVerified = true;
+            } catch (const std::exception& e) {
+                g_runError = true;
+                SaveLoad::LockTestSessionForQuit(true);
+                const auto retryInfo = retryAutoSaveRestoreOnException();
+                LogWarn(std::format("시험 세션 보호 위반! 종료 직전 검증 중 예외 발생: {} (자동 저장 복구 {})", e.what(), retryInfo));
+                g_session.integrityVerified = true;
+            } catch (...) {
+                g_runError = true;
+                SaveLoad::LockTestSessionForQuit(true);
+                const auto retryInfo = retryAutoSaveRestoreOnException();
+                LogWarn(std::format("시험 세션 보호 위반! 종료 직전 검증 중 알 수 없는 예외 발생 (자동 저장 복구 {}).", retryInfo));
+                g_session.integrityVerified = true;
+            }
+        }
+
+        void SweepPendingDeleteMobs(std::vector<RE::ActorHandle>& pending)
+        {
+            std::erase_if(pending, [](const RE::ActorHandle& handle) {
+                const auto mob = handle.get();
+                if (!mob) {
+                    return true;
+                }
+                if (mob->IsDisabled()) {
+                    mob->SetDelete(true);
+                    return true;
+                }
+                mob->Disable();
+                return false;
+            });
+        }
+
+        // A5: 아직 Disable이 반영되지 않은 항목도 SetDelete(true) 없이 목록에서 버리지 않는다.
+        void DisposePendingDeleteMobsNow(std::vector<RE::ActorHandle>& pending)
+        {
+            for (const auto& handle : pending) {
+                if (const auto mob = handle.get()) {
+                    mob->Disable();
+                    mob->SetDelete(true);
+                }
+            }
+            pending.clear();
+        }
+
+        void ResetKillLoopState(HostileKillLoopState& loop)
+        {
+            if (const auto mob = std::exchange(loop.activeMob, {}).get()) {
+                mob->Disable();
+                mob->SetDelete(true);
+            }
+            DisposePendingDeleteMobsNow(loop.pendingDeleteMobs);
+            loop.pendingDeleteSince.reset();
+            loop.mobFormId = 0;
+            loop.firstHitSent = false;
+            loop.killDealt = false;
+            loop.rewardClaimedAt.reset();
+            loop.skippedNonHostile = 0;
+        }
+
+        enum class KillLoopOutcome { Pending, KillConfirmed, Failed };
+
+        // A1·A5·B2·B3 공용: startCombat=false 소환 → 실제 적대 확인(2초 뒤 미적대면 타격·카운트 없이 폐기) →
+        // CallDealDamage 선타 → DoDamage 처치 → KillTracker rewardClaimed + 0.5초 확인.
+        KillLoopOutcome StepHostileKillLoop(
+            RE::PlayerCharacter* player,
+            HostileKillLoopState& loop,
+            Clock::time_point now,
+            bool disableAfterConfirm,
+            RE::ActorHandle& confirmedMobOut,
+            std::string& failReasonOut)
+        {
+            confirmedMobOut = {};
+            SweepPendingDeleteMobs(loop.pendingDeleteMobs);
+            auto mob = loop.activeMob.get();
+            if (!mob) {
+                loop.activeMob = SpawnNpcInFrontOfPlayer(player, loop.enemyNpcId, 160.0f, 0.0f, 0.0f, false);
+                const auto spawned = loop.activeMob.get();
+                loop.mobFormId = spawned ? spawned->GetFormID() : 0;
+                loop.firstHitSent = false;
+                loop.killDealt = false;
+                loop.mobSince = now;
+                loop.rewardClaimedAt.reset();
+                loop.loadedAt.reset();
+                if (!spawned || loop.mobFormId == 0) {
+                    failReasonOut = "적 스폰 실패";
+                    return KillLoopOutcome::Failed;
+                }
+                return KillLoopOutcome::Pending;
+            }
+            const double mobElapsed = std::chrono::duration<double>(now - loop.mobSince).count();
+            if (!loop.firstHitSent) {
+                if (!mob->Is3DLoaded()) {
+                    if (mobElapsed > 5.0) {
+                        mob->Disable();
+                        loop.pendingDeleteMobs.push_back(loop.activeMob);
+                        loop.activeMob = {};
+                        failReasonOut = "스폰 적 3D 로드 시간 초과";
+                        return KillLoopOutcome::Failed;
+                    }
+                    return KillLoopOutcome::Pending;
+                }
+                if (!loop.loadedAt) {
+                    loop.loadedAt = now;
+                }
+                if (!mob->IsHostileToActor(player)) {
+                    mob->StartCombat(player);
+                    if (!mob->IsHostileToActor(player)) {
+                        // 적대 전환 대기 2초는 3D 로드가 끝난 때부터 잰다.
+                        if (std::chrono::duration<double>(now - *loop.loadedAt).count() < 2.0) {
+                            return KillLoopOutcome::Pending;
+                        }
+                        // A5: 2초 뒤에도 적대가 아닌 적은 때리지 말고 지우고 다음 후보로 넘어간다(처치 수에 넣지 않음).
+                        mob->Disable();
+                        loop.pendingDeleteMobs.push_back(loop.activeMob);
+                        loop.activeMob = {};
+                        loop.mobFormId = 0;
+                        loop.firstHitSent = false;
+                        loop.killDealt = false;
+                        loop.rewardClaimedAt.reset();
+                        loop.loadedAt.reset();
+                        ++loop.skippedNonHostile;
+                        if (loop.skippedNonHostile >= 5) {
+                            failReasonOut = "적대 전환되지 않은 스폰이 연속 5회 발생";
+                            return KillLoopOutcome::Failed;
+                        }
+                        return KillLoopOutcome::Pending;
+                    }
+                }
+                CallDealDamage(player, mob.get(), nullptr, false);
+                loop.firstHitSent = true;
+                loop.killDealt = mob->IsDead();
+                loop.mobSince = now;
+                return KillLoopOutcome::Pending;
+            }
+            if (!loop.killDealt) {
+                const auto* av = mob->AsActorValueOwner();
+                const float health = av ? av->GetActorValue(RE::ActorValue::kHealth) : 0.0f;
+                (void)mob->DoDamage(std::max(1200.0f, health * 10.0f), player, true);
+                loop.killDealt = true;
+                loop.mobSince = now;
+                return KillLoopOutcome::Pending;
+            }
+            const bool rewardClaimed = g_killTracker && loop.mobFormId != 0 &&
+                g_killTracker->GetActorRecordSnapshot(loop.mobFormId).rewardClaimed;
+            if (rewardClaimed) {
+                if (!loop.rewardClaimedAt) {
+                    loop.rewardClaimedAt = now;
+                }
+                if (std::chrono::duration<double>(now - *loop.rewardClaimedAt).count() < 0.5) {
+                    return KillLoopOutcome::Pending;
+                }
+                confirmedMobOut = loop.activeMob;
+                if (disableAfterConfirm) {
+                    mob->Disable();
+                    loop.pendingDeleteMobs.push_back(loop.activeMob);
+                }
+                loop.activeMob = {};
+                loop.mobFormId = 0;
+                loop.firstHitSent = false;
+                loop.killDealt = false;
+                loop.rewardClaimedAt.reset();
+                loop.loadedAt.reset();
+                loop.skippedNonHostile = 0;  // 적대가 아닌 스폰은 "연속" 횟수만 센다.
+                return KillLoopOutcome::KillConfirmed;
+            }
+            if (!mob->IsDead() && mobElapsed > 3.0) {
+                const auto* av = mob->AsActorValueOwner();
+                const float health = av ? av->GetActorValue(RE::ActorValue::kHealth) : 0.0f;
+                (void)mob->DoDamage(std::max(5000.0f, health * 20.0f), player, true);
+                loop.mobSince = now;
+            } else if (mob->IsDead() && mobElapsed > 15.0) {
+                failReasonOut = "처치 보상 미확정 시간 초과";
+                return KillLoopOutcome::Failed;
+            }
+            return KillLoopOutcome::Pending;
+        }
+
+        void ReleaseSaveEarnState()
+        {
+            ResetKillLoopState(g_saveEarn.loop);
+            if (const auto god = std::exchange(g_saveEarn.godModeBefore, std::nullopt)) {
+                SetPlayerGodModeFlag(*god);
+            }
+        }
+
+        // 결정 173으로 Skyrim.esm(AE 1.6.1170)에서 대조한 비보스 적대 원형(흡혈귀 제외) 중
+        // 상위 적 보너스(>= playerLvl + 10)를 우선으로, 없으면 >= playerLvl, 그마저 없으면 최고 레벨 적을 고른다.
+        bool PickSaveEarnEnemyNpc(RE::PlayerCharacter* player, RE::FormID& formIdOut, std::uint32_t& levelOut)
+        {
+            constexpr std::array<RE::FormID, 6> kCandidates{{
+                kEncSkeeverId,  // EncSkeever (Lv1)
+                0x0010EC87,     // EncDwarvenSpider03 (Lv16)
+                0x00039D21,     // EncBandit06Melee1HNordM (Lv25)
+                0x0003B53F,     // EncDraugr05Melee1HEbonyHeadM00 (Lv30)
+                0x0002432A,     // EncDraugr05MissileEbonyHeadM00 (Lv40)
+                0x00016FF8,     // EncDremoraMelee06 (Lv46)
+            }};
+            const std::uint32_t playerLvl = player ? player->GetLevel() : 1u;
+            const std::uint32_t bonusTargetLvl = playerLvl + 10u;
+            RE::FormID firstAtOrAboveId = 0;
+            std::uint32_t firstAtOrAboveLvl = 0;
+            RE::FormID bestFallbackId = 0;
+            std::uint32_t bestFallbackLvl = 0;
+            for (const auto fid : kCandidates) {
+                auto* npc = RE::TESForm::LookupByID<RE::TESNPC>(fid);
+                if (!npc) {
+                    continue;
+                }
+                const std::uint32_t lvl = npc->GetLevel();
+                if (lvl >= bonusTargetLvl) {
+                    formIdOut = fid;
+                    levelOut = lvl;
+                    return true;
+                }
+                if (firstAtOrAboveId == 0 && lvl >= playerLvl) {
+                    firstAtOrAboveId = fid;
+                    firstAtOrAboveLvl = lvl;
+                }
+                if (lvl >= bestFallbackLvl) {
+                    bestFallbackLvl = lvl;
+                    bestFallbackId = fid;
+                }
+            }
+            if (firstAtOrAboveId != 0) {
+                formIdOut = firstAtOrAboveId;
+                levelOut = firstAtOrAboveLvl;
+                return true;
+            }
+            if (bestFallbackId != 0) {
+                formIdOut = bestFallbackId;
+                levelOut = bestFallbackLvl;
+                return true;
+            }
+            return false;
+        }
+
+        // F1·F2(결정 257): 세대 1 save 모드 클래스 선택과 가장 가까운 능력치 선택 노드 경로·비용 계획.
+        bool PlanSaveOnlyGen1TreeAndClass(std::string& detailOut, Core::PassivePathPlan& planOut)
+        {
+            if (!g_treeData || !g_treeData->IsLoaded() || !g_config) {
+                detailOut = "세대 1 트리 데이터 또는 설정이 준비되지 않았습니다.";
+                return false;
+            }
+            auto state = SaveLoad::GetStateCopy();
+            std::string chosenClassId = state.tree.classSelected && state.tree.classContentId.starts_with("cls.")
+                ? state.tree.classContentId : std::string{};
+            if (chosenClassId.empty()) {
+                const auto* preferred = g_treeData->FindClassByContentId("cls.Sorceress");
+                if (preferred) {
+                    chosenClassId = preferred->contentId;
+                } else {
+                    for (const auto& cls : g_treeData->Classes()) {
+                        if (cls.contentId.starts_with("cls.")) {
+                            chosenClassId = cls.contentId;
+                            break;
+                        }
+                    }
+                }
+                if (chosenClassId.empty()) {
+                    detailOut = "세대 1 트리에서 선택할 cls.* 클래스를 찾지 못했습니다.";
+                    return false;
+                }
+                SendUiCmd(json{ { "op", "treeSelectClass" }, { "classContentId", chosenClassId } });
+                state = SaveLoad::GetStateCopy();
+                if (!state.tree.classSelected || state.tree.classContentId != chosenClassId) {
+                    detailOut = std::format("UI 명령 treeSelectClass('{}')가 반영되지 않았습니다.", chosenClassId);
+                    return false;
+                }
+            }
+            planOut = Core::PassiveTree::FindNearestAttributeChoicePath(*g_treeData, state.tree);
+            if (planOut.nodes.empty() || planOut.targetNodeId == 0 || planOut.preferredAttrOptionId == 0) {
+                detailOut = std::format("클래스 '{}'에서 할당 가능한 능력치 선택 노드 경로를 찾지 못했습니다.",
+                    state.tree.classContentId);
+                return false;
+            }
+            detailOut = std::format("세대 1 트리 계획 완료: class='{}', targetAttrNode={}, option={}, pathNodes={}, pointCost={}.",
+                state.tree.classContentId, planOut.targetNodeId, planOut.preferredAttrOptionId,
+                planOut.nodes.size(), planOut.pointCost);
+            return true;
+        }
+
+        // F1·F2·A2: 필요 점수가 모인 뒤 전체 경로 할당(능력치 선택 포함)과 가방 실물 Spark 장착을 UI 명령으로 확정한다.
+        // 저장 직전 스냅샷(CaptureSaveOnlySnapshot)은 TickPlayerPools가 appliedMagickaDelta를 갱신한 뒤(SaveOnly_SettleBeforeSnapshot) 잡는다.
+        bool FinishSaveOnlyGen1UiAllocation(
+            RE::PlayerCharacter* player,
+            const Core::PassivePathPlan& plan,
+            std::string& detailOut,
+            std::optional<std::uint8_t>& sparkSlotOut)
+        {
+            sparkSlotOut.reset();
+            if (!player || !g_treeData || !g_treeData->IsLoaded() || !g_config) {
+                detailOut = "세대 1 트리 데이터 또는 설정이 준비되지 않았습니다.";
+                return false;
+            }
+            auto state = SaveLoad::GetStateCopy();
+            const auto availPoints = Core::PassiveTree::ComputeAvailableNormalPoints(
+                *g_treeData, state.tree, state.exileLevel, *g_config, state.atlas.completedTierMask);
+            if (availPoints < plan.pointCost) {
+                detailOut = std::format("필요 패시브 점수가 부족합니다 (필요 {}, 가용 {}, 레벨 {}).",
+                    plan.pointCost, availPoints, state.exileLevel);
+                return false;
+            }
+            json choices = json::array();
+            for (const auto nid : plan.nodes) {
+                if (const auto* node = g_treeData->FindNode(nid); node && !node->attrOptions.empty()) {
+                    const auto optId = (nid == plan.targetNodeId) ? plan.preferredAttrOptionId : node->attrOptions.front().id;
+                    choices.push_back(json{ { "nodeId", nid }, { "optionId", optId } });
+                }
+            }
+            SendUiCmd(json{
+                { "op", "treeAllocatePath" },
+                { "nodes", plan.nodes },
+                { "attributeChoices", choices }
+            });
+            state = SaveLoad::GetStateCopy();
+            const bool nodesAllocated = !state.tree.allocatedNodes.empty() &&
+                std::ranges::all_of(plan.nodes, [&](std::uint32_t nid) { return state.tree.IsAllocated(nid); });
+            const auto attrIt = state.tree.attributeSelections.find(plan.targetNodeId);
+            const bool attrOk = attrIt != state.tree.attributeSelections.end() && attrIt->second == plan.preferredAttrOptionId;
+            if (!nodesAllocated || !attrOk) {
+                detailOut = std::format("UI 명령 treeAllocatePath 반영 실패 (nodes={}, attrNode={} option={} ok={}).",
+                    state.tree.allocatedNodes.size(), plan.targetNodeId, plan.preferredAttrOptionId, attrOk);
+                return false;
+            }
+
+            // 정리로 받은 실제 Spark를 UI 명령으로 장착한다(아이템 추가 금지).
+            std::optional<std::uint8_t> sparkSlot;
+            for (std::size_t i = 0; i < state.slots.size(); ++i) {
+                if (state.slots[i].occupied && state.slots[i].gem.gemId == "gem.Spark") {
+                    sparkSlot = static_cast<std::uint8_t>(i);
+                    break;
+                }
+            }
+            if (!sparkSlot) {
+                const auto freeIt = std::ranges::find(state.slots, false, &Core::SkillSlot::occupied);
+                if (freeIt == state.slots.end()) {
+                    detailOut = "gem.Spark를 장착할 빈 스킬 칸이 없습니다.";
+                    return false;
+                }
+                const auto slotIdx = static_cast<std::uint8_t>(std::distance(state.slots.begin(), freeIt));
+                const auto key = FindCleanGemKeyInPlayerInventory(player, "gem.Spark");
+                const auto content = SaveLoad::GetContentGeneration();
+                const json cmd{
+                    { "op", "equip" }, { "slot", slotIdx }, { "spellIdx", -1 },
+                    { "ownerFormId", key.ownerFormId }, { "uniqueId", key.uniqueId },
+                    { "gemId", "gem.Spark" },
+                    { "buildId", content ? content->buildId : std::string{} },
+                    { "uiProtocol", Core::UiBuildCheck::kUiProtocolVersion }
+                };
+                const auto [ok, msg] = UiBridge::ExecuteGemCommandForTestOnMainThread(cmd.dump());
+                if (!ok) {
+                    detailOut = std::format("UI 명령으로 gem.Spark 장착 실패: {}", msg);
+                    return false;
+                }
+                sparkSlot = slotIdx;
+            }
+            state = SaveLoad::GetStateCopy();
+            if (!state.slots[*sparkSlot].occupied || state.slots[*sparkSlot].gem.gemId != "gem.Spark") {
+                detailOut = "장착한 gem.Spark가 슬롯 상태에 반영되지 않았습니다.";
+                return false;
+            }
+            sparkSlotOut = sparkSlot;
+            detailOut = std::format("세대 1 저장 전 UI 확정 완료: class='{}', level={}, availPoints={}, nodes={}, attr {}->{}, Spark slot={}.",
+                state.tree.classContentId, state.exileLevel, availPoints, state.tree.allocatedNodes.size(),
+                plan.targetNodeId, plan.preferredAttrOptionId, *sparkSlot + 1);
+            return true;
         }
 
 
@@ -2619,30 +3792,6 @@ namespace SkyrimPoE::Runtime
             }
         }
 
-        using SaveDisableFlag = RE::PlayerCharacter::ByCharGenFlag;
-
-        void BlockGemsManualSaves(RE::PlayerCharacter& player)
-        {
-            auto& flags = player.GetGameStatsData().byCharGenFlag;
-            if (!g_gems.engineSavingWasDisabled) {
-                g_gems.engineSavingWasDisabled = flags.any(SaveDisableFlag::kDisableSaving);
-                g_gems.saveGuardLoad = g_gemsLoadStarts;
-            }
-            flags.set(SaveDisableFlag::kDisableSaving);
-        }
-
-        void RestoreGemsSaveGuard()
-        {
-            const auto original = std::exchange(g_gems.engineSavingWasDisabled, std::nullopt);
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            if (original && player && g_gemsLoadStarts == g_gems.saveGuardLoad) {
-                auto& flags = player->GetGameStatsData().byCharGenFlag;
-                if (*original) flags.set(SaveDisableFlag::kDisableSaving);
-                else flags.reset(SaveDisableFlag::kDisableSaving);
-                LogInfo(std::format("Gems engine save-disable flag restored to {}.", *original));
-            }
-        }
-
         // 시험 진단: 오른손 장착물과 시전자 상태가 바뀔 때만 기록한다.
         void TraceGemsHand(RE::PlayerCharacter* player, std::string_view label, double elapsed)
         {
@@ -2685,39 +3834,6 @@ namespace SkyrimPoE::Runtime
             ProjectileRuntime::SetHitTargetForTest(0);
         }
 
-        bool SuppressGemsAutoSaves()
-        {
-            constexpr std::array settings{
-                std::pair{ "bSaveOnRest", "bSaveOnRest:Main" },
-                std::pair{ "bSaveOnWait", "bSaveOnWait:Main" },
-                std::pair{ "bSaveOnTravel", "bSaveOnTravel:Main" },
-                std::pair{ "bSaveOnCharacterMenu", "bSaveOnCharacterMenu:Main" },
-                std::pair{ "bSaveOnPause", "bSaveOnPause:Main" },
-                std::pair{ "bAllowScriptedAutosave", "bAllowScriptedAutosave:SaveGame" },
-                std::pair{ "bAllowScriptedForceSave", "bAllowScriptedForceSave:SaveGame" },
-                std::pair{ "bAutoSaveOnUserStale", "bAutoSaveOnUserStale:SaveGame" },
-                std::pair{ "bDisableAutoSave", "bDisableAutoSave:SaveGame" }
-            };
-            bool masterFound = false;
-            auto* gameSettings = RE::GameSettingCollection::GetSingleton();
-            auto* preferences = RE::INIPrefSettingCollection::GetSingleton();
-            auto* iniSettings = RE::INISettingCollection::GetSingleton();
-            for (const auto& [gmst, ini] : settings) {
-                const bool master = std::string_view(gmst) == "bDisableAutoSave";
-                bool found = false;
-                for (auto* setting : { gameSettings ? gameSettings->GetSetting(gmst) : nullptr,
-                         preferences ? preferences->GetSetting(ini) : nullptr, iniSettings ? iniSettings->GetSetting(ini) : nullptr }) {
-                    if (setting && setting->GetType() == RE::Setting::Type::kBool) {
-                        g_gems.autoSave.Set(setting->data.b, master);
-                        found = true;
-                    }
-                }
-                masterFound |= master && found;
-                LogInfo(std::format("Autosave setting {} resolved={}, temporary={}.", gmst, found, master));
-            }
-            return masterFound;
-        }
-
         std::pair<bool, std::string> RequestGemsUi(RE::PlayerCharacter* player,
             std::string_view op, std::string_view id)
         {
@@ -2744,39 +3860,61 @@ namespace SkyrimPoE::Runtime
             return count > 0 && !ok && message == reason && unchanged;
         }
 
-        bool EquipGemsSpark(RE::PlayerCharacter* player, RE::TESObjectMISC* spark)
+        bool EquipGemsSpark(RE::PlayerCharacter* player, RE::TESObjectMISC* spark, std::string& detailOut)
         {
             const auto generation = SaveLoad::WorldGemGeneration();
             const auto id = generation == 1 ? "gem.Spark" : "Spark";
             const auto* def = g_dataPack->FindGem(id, generation);
             const auto* level = def ? def->GetLevel(1) : nullptr;
-            if (!level) return false;
+            if (!level) {
+                detailOut = std::format("카탈로그에서 1레벨 '{}' 정의를 찾지 못했습니다.", id);
+                return false;
+            }
 
             const auto slots = SaveLoad::GetStateCopy().slots;
             const auto freeSlot = std::ranges::find(slots, false, &Core::SkillSlot::occupied);
             if (freeSlot == slots.end()) {
                 const auto [ok, detail] = RequestGemsUi(player, "unequip", "");
-                LogInfo(std::format("Freeing slot {} for the legacy cast: {}", g_gems.slot + 1, detail));
-                if (!ok) return false;
+                LogInfo(std::format("슬롯 {} 비우기: {}", g_gems.slot + 1, detail));
+                if (!ok) {
+                    detailOut = std::format("빈 슬롯 확보 실패: {}", detail);
+                    return false;
+                }
             } else {
                 g_gems.slot = static_cast<std::uint8_t>(std::distance(slots.begin(), freeSlot));
             }
 
-            const auto count = player->GetItemCount(spark);
-            player->AddObjectToContainer(spark, nullptr, 1, nullptr);
-            if (player->GetItemCount(spark) != count + 1) return false;
+            const auto countBefore = player->GetItemCount(spark);
+            if (generation == 1) {
+                // 세대 1: 정리로 받은 실제 Spark를 가방에서 그대로 장착한다(아이템 추가 금지, 시험용 스탯 층 금지).
+                if (countBefore < 1) {
+                    detailOut = "입력 세이브 가방에 시작 Spark(0x880)가 없습니다(아이템 추가 금지).";
+                    return false;
+                }
+            } else {
+                // 세대 0 회귀: 기존 구판 Spark 경로 유지.
+                player->AddObjectToContainer(spark, nullptr, 1, nullptr);
+                if (player->GetItemCount(spark) != countBefore + 1) {
+                    detailOut = "세대 0 Spark 추가에 실패했습니다.";
+                    return false;
+                }
+            }
+            const auto expectedAfter = generation == 1 ? (countBefore - 1) : countBefore;
             const auto [ok, detail] = RequestGemsUi(player, "equip", id);
-            if (!ok || player->GetItemCount(spark) != count) {
-                LogInfo(std::format("Spark equip: {}", detail));
+            if (!ok || player->GetItemCount(spark) != expectedAfter) {
+                detailOut = std::format("Spark 장착 실패: {} (수량 {} -> {}, 기대 {}).",
+                    detail, countBefore, player->GetItemCount(spark), expectedAfter);
                 return false;
             }
             const auto state = SaveLoad::GetStateCopy();
             const auto& slot = state.slots[g_gems.slot];
             const auto snap = g_statEngine->GetSnapshot();
             if (!snap || snap->gemGeneration != generation || !slot.occupied || slot.gem.gemId != id ||
-                slot.gem.level != 1 || !slot.gem.socketedGems.empty()) return false;
-            if (!snap->slotStats[g_gems.slot].requirementMet) {
-                // Only the test Layer1 receives the extra PoE attributes. The saved tree and gear still come from CORE.
+                slot.gem.level != 1 || !slot.gem.socketedGems.empty()) {
+                detailOut = "장착 뒤 슬롯 상태가 기대(1레벨 단독 Spark)와 다릅니다.";
+                return false;
+            }
+            if (generation == 0 && !snap->slotStats[g_gems.slot].requirementMet) {
                 Core::Layer1Input test;
                 test.exileLevel = std::max<std::uint32_t>(state.exileLevel, level->levelRequirement);
                 test.className = state.className;
@@ -2787,15 +3925,14 @@ namespace SkyrimPoE::Runtime
                 test.passives.flatInt = level->reqInt;
                 g_statEngine->SetLayer1(test);
                 (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
-                LogInfo(std::format("Spark requirements prepared with test Layer1: level={}, +Str/Dex/Int={}/{}/{}.",
-                    test.exileLevel, level->reqStr, level->reqDex, level->reqInt));
-            } else {
-                LogInfo(std::format("Spark requirements met: level {}, Str/Dex/Int {}/{}/{}; requires {} and {}/{}/{}.",
-                    snap->exileLevel, snap->str, snap->dex, snap->intel, level->levelRequirement,
-                    level->reqStr, level->reqDex, level->reqInt));
             }
+            const auto finalSnap = g_statEngine->GetSnapshot();
+            const bool reqMet = finalSnap && finalSnap->slotStats[g_gems.slot].requirementMet;
             g_gems.instance = slot.gem.instanceId;
-            return g_statEngine->GetSnapshot()->slotStats[g_gems.slot].requirementMet && g_config->enforceGemRequirements;
+            detailOut = std::format("slot={}, id={}, instance={}, bag {}->{}, reqMet={}, enforceReq={}.",
+                g_gems.slot + 1, slot.gem.gemId, g_gems.instance, countBefore, player->GetItemCount(spark),
+                reqMet, g_config->enforceGemRequirements);
+            return reqMet && g_config->enforceGemRequirements;
         }
 
         bool PrepareGemsHandCast(RE::PlayerCharacter* player)
@@ -2810,24 +3947,45 @@ namespace SkyrimPoE::Runtime
             g_gems.regenDelta = -av->GetActorValue(RE::ActorValue::kMagickaRateMult);
             av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kMagickaRateMult, g_gems.regenDelta);
             const auto snap = g_statEngine->GetSnapshot();
-            if (!snap || snap->poe2Passives || snap->bloodMagic || snap->expectedPoeMana <= 0) return false;
-            if (g_gems.gen1Cast) {
-                // Normalize only the test actor. The proxy is still billed by Skyrim's integral cost override.
+            if (!snap || snap->bloodMagic || snap->expectedPoeMana <= 0) return false;
+
+            if (g_gems.packageGeneration == 1) {
+                // 세대 1: poe2Passives=true 경로에서 대리 주문 엔진 비용은 0, DLL이 환산 매지카를 직접 청구한다.
+                if (!snap->poe2Passives) {
+                    LogInfo("PrepareGemsHandCast 실패: 세대 1인데 snap->poe2Passives가 거짓입니다.");
+                    return false;
+                }
+                const auto* def = g_dataPack->FindGem("gem.Spark", 1);
+                const auto* level = def ? def->GetLevel(1) : nullptr;
+                const double poeManaCost = level ? level->manaCost : 5.0;
                 const double base = CombatHooks::GetBaseSkyrimMaxMagicka(player);
-                const double converted = Core::ComputeMagickaScaling(base, snap->poeMaxMana, 5, snap->expectedPoeMana).skyrimSkillCost;
+                g_gems.expectedMana = Core::ComputeMagickaScaling(base, snap->poeMaxMana, poeManaCost, snap->expectedPoeMana).skyrimSkillCost;
+                ProxySpellRuntime::SyncProxySpellsFromState();
+                LogInfo(std::format("세대 1 Spark 시전 준비: poe2Passives={}, costOverride={}, nativeCost={:.4f}, expectedDllMana({:.1f})={:.4f}.",
+                    snap->poe2Passives, spell->data.costOverride, spell->CalculateMagickaCost(player), poeManaCost, g_gems.expectedMana));
+            } else {
+                // 세대 0: 엔진 costOverride(정수)가 환산액과 정확히 일치하도록 시험 액터의 파괴 마법 숙련·기본 매지카만 정규화한다.
+                if (snap->poe2Passives) {
+                    LogInfo("PrepareGemsHandCast 실패: 세대 0인데 snap->poe2Passives가 참입니다.");
+                    return false;
+                }
+                const auto* def = g_dataPack->FindGem("Spark", 0);
+                const auto* level = def ? def->GetLevel(1) : nullptr;
+                const double poeManaCost = level && level->manaCost > 0.0 ? level->manaCost : 6.0;
+                const double base = CombatHooks::GetBaseSkyrimMaxMagicka(player);
+                const double converted = Core::ComputeMagickaScaling(base, snap->poeMaxMana, poeManaCost, snap->expectedPoeMana).skyrimSkillCost;
                 const double integral = std::max(1.0, std::round(converted));
-                const double testBase = integral * snap->expectedPoeMana / 5;
+                const double testBase = integral * snap->expectedPoeMana / poeManaCost;
                 g_gems.magickaDelta = static_cast<float>(testBase - base);
                 av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kMagicka, g_gems.magickaDelta);
                 g_gems.destructionDelta = -av->GetActorValue(RE::ActorValue::kDestruction);
                 av->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kDestruction, g_gems.destructionDelta);
                 g_gems.expectedMana = Core::ComputeMagickaScaling(
-                    CombatHooks::GetBaseSkyrimMaxMagicka(player), snap->poeMaxMana, 5, snap->expectedPoeMana).skyrimSkillCost;
+                    CombatHooks::GetBaseSkyrimMaxMagicka(player), snap->poeMaxMana, poeManaCost, snap->expectedPoeMana).skyrimSkillCost;
                 ProxySpellRuntime::SyncProxySpellsFromState();
-                LogInfo(std::format("Spark test AV deltas: base Magicka {:+.3f}, Destruction {:+.3f}, regen {:+.3f}; "
-                    "poe2Passives={}, engine override={}, native cost={:.4f}, core(5)={:.4f}.",
-                    g_gems.magickaDelta, g_gems.destructionDelta, g_gems.regenDelta, snap->poe2Passives,
-                    spell->data.costOverride, spell->CalculateMagickaCost(player), g_gems.expectedMana));
+                LogInfo(std::format("세대 0 Spark 시전 준비: baseMagicka {:+.3f}, Destruction {:+.3f}, costOverride={}, nativeCost={:.4f}, expected({:.1f})={:.4f}.",
+                    g_gems.magickaDelta, g_gems.destructionDelta, spell->data.costOverride, spell->CalculateMagickaCost(player),
+                    poeManaCost, g_gems.expectedMana));
             }
             NextGems(GemsStep::EquipWait);
             return true;
@@ -2918,31 +4076,8 @@ namespace SkyrimPoE::Runtime
             std::scoped_lock lock(g_msgMutex);
             g_expectedSaveStem = g_gems.finalSlot;
             g_saveMatched = false;
-            g_gemsSaveRequested = false;
+            g_sessionSaveRequested = false;
             NextGems(GemsStep::Save);
-        }
-
-        bool RequestGemsFinalSave()
-        {
-            auto* mgr = RE::BGSSaveLoadManager::GetSingleton();
-            auto* player = RE::PlayerCharacter::GetSingleton();
-            g_gems.files = ObserveSaveFiles(g_gems.finalSlot);
-            if (!mgr || !player || !g_gems.files || !g_gems.engineSavingWasDisabled) return false;
-            {
-                std::scoped_lock lock(g_msgMutex);
-                g_expectedSaveStem = g_gems.finalSlot;
-                g_saveMatched = false;
-                g_gemsSaveRequested = true;
-            }
-            g_gems.requestedAt = fs::file_time_type::clock::now();
-            // Only this request opens the engine's normal save gate. The SKSE
-            // callback independently checks its slot before writing SPOE records.
-            auto& flags = player->GetGameStatsData().byCharGenFlag;
-            flags.reset(SaveDisableFlag::kDisableSaving);
-            mgr->Save(g_gems.finalSlot.c_str());
-            flags.set(SaveDisableFlag::kDisableSaving);
-            LogInfo(std::format("Gems final save request {}.", g_gems.retry.Attempts()));
-            return true;
         }
 
         void BeginGemsLoad(GemsStep step)
@@ -2950,6 +4085,7 @@ namespace SkyrimPoE::Runtime
             std::scoped_lock lock(g_msgMutex);
             g_expectedLoadStem.clear();
             g_preLoadMatched = g_postLoadSignaled = g_postLoadSucceeded = false;
+            g_gems.loadStartsAtStep = g_sessionLoadStarts;
             NextGems(step);
         }
 
@@ -2958,8 +4094,10 @@ namespace SkyrimPoE::Runtime
             using Step = GemsStep;
             using CheckId = GemsCheck;
             using Action = GemsRetry::Action;
-            bool loading, signaled, succeeded, saveMatched, unexpected;
-            std::uint64_t before;
+            bool loading = false, signaled = false, succeeded = false, saveMatched = false;
+            bool unexpectedLoad = false, unexpectedSave = false;
+            std::uint64_t before = 0;
+            std::uint64_t currentLoadStarts = 0;
             {
                 std::scoped_lock lock(g_msgMutex);
                 loading = g_preLoadMatched;
@@ -2967,25 +4105,28 @@ namespace SkyrimPoE::Runtime
                 succeeded = g_postLoadSucceeded;
                 saveMatched = g_saveMatched;
                 before = g_saveSequenceAtMessage;
-                unexpected = g_gemsUnexpectedSave || g_gemsUnexpectedLoad;
+                unexpectedLoad = g_sessionUnexpectedLoad;
+                unexpectedSave = g_sessionUnexpectedSave;
+                currentLoadStarts = g_sessionLoadStarts;
             }
+            const bool loadStartedInStep = loading || (currentLoadStarts > g_gems.loadStartsAtStep);
             const auto now = Clock::now();
             const auto elapsed = std::chrono::duration<double>(now - g_gems.since).count();
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto* ui = RE::UI::GetSingleton();
             const auto stepName = kGemsStepNames[static_cast<std::size_t>(g_gems.step)];
             const auto describe = [&] {
-                return std::format("step={}, elapsed={:.1f}s, loadStarted={}, loadFinished={}, loadSucceeded={}, "
-                    "saveMatched={}, mode='{}', {}", stepName, elapsed, loading, signaled, succeeded, saveMatched,
-                    ModState::Get()->reason, DescribeGemsWait(player, ui));
+                return std::format("step={}, gen={}, elapsed={:.1f}s, loadStarted={}, loadFinished={}, loadSucceeded={}, "
+                    "saveMatched={}, mode='{}', {}", stepName, g_gems.packageGeneration, elapsed, loading, signaled, succeeded,
+                    saveMatched, ModState::Get()->reason, DescribeGemsWait(player, ui));
             };
             const auto fail = [&](std::string_view detail) {
                 FinishAndScheduleQuit(std::format("{} {}", detail, describe()));
             };
-            if (unexpected || (signaled && !succeeded) || elapsed > 90.0 ||
+            if (unexpectedLoad || unexpectedSave || (signaled && !succeeded) || elapsed > 90.0 ||
                 std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
-                fail(unexpected ? "Gems received an unexpected load/save request." :
-                    signaled && !succeeded ? "Gems load reported failure." : "Gems wait timed out.");
+                fail((unexpectedLoad || unexpectedSave) ? "젬 시험 중 예상 밖의 로드 또는 저장이 발생했습니다." :
+                    signaled && !succeeded ? "젬 시험 세이브 로드에 실패했습니다." : "젬 시험 대기 시간이 초과되었습니다.");
                 return;
             }
             if (now >= g_gems.nextStatus) {
@@ -3001,23 +4142,23 @@ namespace SkyrimPoE::Runtime
             const auto generation = SaveLoad::WorldGemGeneration();
             auto* spark = FormIds::Lookup<RE::TESObjectMISC>(0x880);
             auto* oldChain = FormIds::Lookup<RE::TESObjectMISC>(0x882);
-            auto* newChain = FormIds::Lookup<RE::TESObjectMISC>(0x8D2);
             auto* shockNova = FormIds::Lookup<RE::TESObjectMISC>(0x817);
             auto* frostbolt = FormIds::Lookup<RE::TESObjectMISC>(0x8C0);
-            if (!signaled && (g_gems.step == Step::LegacyLoad || g_gems.step == Step::CleanupLoad ||
-                    g_gems.step == Step::Reload || g_gems.step == Step::RestoreLoad)) {
+
+            if (!signaled && (g_gems.step == Step::LoadInput || g_gems.step == Step::Reload)) {
                 CloseGemsDialogue(ui);
                 const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
-                if (!engineIdle || dialogue || !(mainMenu || ready) || (manager && manager->GetRuntimeData().thread.isBusy)) {
+                // F10: 앞 요청의 kPreLoadGame이 이미 도착했다면 같은 단계에서 다시 로드 요청하지 않는다.
+                if (loadStartedInStep || !engineIdle || dialogue || !(mainMenu || ready) || (manager && manager->GetRuntimeData().thread.isBusy)) {
                     return;
                 }
                 switch (g_gems.retry.Poll(elapsed, 4.0)) {
                 case Action::Request: {
-                    const bool finalSlot = g_gems.step == Step::Reload;
-                    const bool testWorld = finalSlot || g_gems.step == Step::CleanupLoad;
-                    const auto& stem = finalSlot ? g_gems.finalSlot : g_cfg.baselineSave;
-                    const bool sent = RequestLoadSave(stem, testWorld);
-                    LogInfo(std::format("Gems {} load request {} for '{}', sent={}.", stepName, g_gems.retry.Attempts(), stem, sent));
+                    const auto& stem = g_gems.step == Step::Reload ? g_gems.finalSlot : g_cfg.baselineSave;
+                    std::string loadReason;
+                    const bool sent = RequestLoadSave(stem, &loadReason);
+                    LogInfo(std::format("Gems {} load request {} for '{}', sent={} ({}).",
+                        stepName, g_gems.retry.Attempts(), stem, sent, loadReason));
                     break;
                 }
                 case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Load start")); break;
@@ -3028,42 +4169,48 @@ namespace SkyrimPoE::Runtime
 
             switch (g_gems.step) {
             case Step::Prepare: {
-                const auto base = SaveLoad::GetContentGeneration();
-                std::string error;
-                bool staged = base && base->contentGeneration == 0 && g_dataPack &&
-                    Core::LoadStagedGems(*g_dataPack, "Data", base->buildId, error);
-                CheckGems(CheckId::Prepared, staged, staged ? "Staged catalog SHA-256 and identity validated." : error);
-                if (!staged || !spark || !oldChain || !newChain || !shockNova || !frostbolt || !SuppressGemsAutoSaves()) {
-                    fail("Could not prepare the gems run or resolve the master autosave setting.");
+                const auto pack = SaveLoad::GetContentGeneration();
+                g_gems.packageGeneration = pack ? pack->contentGeneration : 1;
+                const bool allowedGen = pack && (pack->contentGeneration == 0 || pack->contentGeneration == 1);
+                const bool formsOk = spark && (g_gems.packageGeneration == 0 || (oldChain && shockNova && frostbolt));
+                const std::string allowedSlot = g_gems.packageGeneration == 1 ? g_gems.finalSlot : std::string{};
+                const bool sessionOk = allowedGen && ModState::AllowsGameplay() && BeginAutoTestSession(allowedSlot);
+                const bool ok = allowedGen && formsOk && sessionOk;
+                CheckGems(CheckId::ContentReady, ok, std::format(
+                    "pack={}, gen={}, buildId='{}', formsOk={}, sessionOk={}.",
+                    pack.has_value(), g_gems.packageGeneration, pack ? pack->buildId : "", formsOk, sessionOk));
+                if (!ok) {
+                    fail("젬 시험 준비(패키지 확인·ESP 폼·시험 세션 보호)에 실패했습니다.");
                     break;
                 }
-                g_gems.buildId = base->buildId;
-                if (g_cfg.firstInstall) {
-                    const auto files = ObserveSaveFiles(g_cfg.baselineSave);
-                    if (!files || !files->essBefore) {
-                        fail("The first-install baseline save file was not found.");
-                        break;
-                    }
-                    g_firstInstall.baselineHasCosave = files->cosaveBefore.has_value();
-                }
-                SaveLoad::SetGemTestTarget({ "poe2", 1, Core::kStagedGemsGameVersion, base->buildId, base->dllVersion }, g_gems.finalSlot);
+                g_gems.buildId = pack->buildId;
                 NextGems(Step::Menu);
                 break;
             }
             case Step::Menu:
-                if (elapsed >= 2 && engineIdle && (mainMenu || ready)) {
-                    // 처음 설치 시험은 기준 세이브를 바로 세대 1 시험 세계로 부른다(CleanupLoad 단계의 시험 세계 로드).
-                    BeginGemsLoad(g_cfg.firstInstall ? Step::CleanupLoad : Step::LegacyLoad);
+                if (elapsed >= 2.0 && engineIdle && (mainMenu || ready)) {
+                    BeginGemsLoad(Step::LoadInput);
                 }
                 break;
-            case Step::LegacyLoad:
-                if (signaled && ready && elapsed >= 1) {
-                    BlockGemsManualSaves(*player);
-                    if (generation != 0 || !ModState::AllowsGameplay()) {
-                        fail("The baseline did not load into a playable generation-zero world.");
-                    } else {
-                        NextGems(Step::CastSite);
+            case Step::LoadInput:
+                if (signaled && ready && elapsed >= 1.0) {
+                    BlockSessionManualSaves(*player);
+                    const auto load = SaveLoad::GetLastLoadDiagnostics();
+                    const bool normalDecision = load.decision && load.decision->disposition == Core::SaveDisposition::Normal;
+                    const bool normalMode = ModState::AllowsGameplay();
+                    const bool genMatch = generation == g_gems.packageGeneration;
+                    const bool ok = normalDecision && normalMode && genMatch && load.collectionComplete;
+                    CheckGems(CheckId::LoadNormal, ok, std::format(
+                        "save='{}', decision={} ({}), normalMode={}, worldGen={}/{}, collectionComplete={}.",
+                        g_cfg.baselineSave,
+                        load.decision ? SaveDispositionName(load.decision->disposition) : "unavailable",
+                        load.decision ? load.decision->reason : "", normalMode, generation, g_gems.packageGeneration,
+                        load.collectionComplete));
+                    if (!ok) {
+                        fail("입력 세이브의 로드 판정이 Normal(기대 세대)이 아닙니다.");
+                        break;
                     }
+                    NextGems(Step::CastSite);
                 }
                 break;
             case Step::CastSite: {
@@ -3074,8 +4221,6 @@ namespace SkyrimPoE::Runtime
                 if (travel.inPackCell || travel.canRetryReturn) {
                     switch (g_gems.retry.Poll(elapsed)) {
                     case Action::Request: {
-                        // Use decision 176's monitored return path. A legacy cleanup load
-                        // still uses its own escape gate and reads the unmodified baseline.
                         const auto result = travel.unauthorized ?
                             MapDeviceRuntime::SafeEscape(player) : MapDeviceRuntime::ReturnPortal(player);
                         LogInfo(std::format("Gems map {} request {}: ok={}, {}.",
@@ -3089,15 +4234,105 @@ namespace SkyrimPoE::Runtime
                 }
                 const auto* cell = player->GetParentCell();
                 if (!cell || !cell->IsAttached()) break;
-                LogInfo(std::format("Gems cast site ready: cell={:08X}, outside map pack, activeRun={}, mapExitRequests={}.",
-                    cell->GetFormID(), MapDeviceRuntime::GetActiveRunId(), g_gems.retry.Attempts()));
-                if (g_gems.gen1Cast) {
-                    NextGems(Step::Target);
-                } else if (!EquipGemsSpark(player, spark) || !PrepareGemsHandCast(player)) {
-                    fail("Generation-zero Spark setup failed.");
+                LogInfo(std::format("Gems cast site ready: cell={:08X}, activeRun={}.",
+                    cell->GetFormID(), MapDeviceRuntime::GetActiveRunId()));
+
+                std::string equipDetail;
+                const bool equipped = EquipGemsSpark(player, spark, equipDetail);
+                if (g_gems.packageGeneration == 0) {
+                    if (!equipped || !PrepareGemsHandCast(player)) {
+                        CheckGems(CheckId::SparkEquipped, false, std::format("세대 0 Spark 준비 실패: {}", equipDetail));
+                        fail("세대 0 Spark 시전 준비에 실패했습니다.");
+                    }
+                    break;
                 }
+
+                // 세대 1: 실제 Spark 장착 -> 독립 거부 판정 3종(GM3a 구판 Chain, GM3b 구판 Shock Nova, GM3c 미준비 Frostbolt) + UI 표시 -> 표적 소환 -> 시전.
+                CheckGems(CheckId::SparkEquipped, equipped, equipDetail);
+                if (!equipped) {
+                    fail("세대 1 시작 Spark 장착에 실패했습니다.");
+                    break;
+                }
+                constexpr auto legacyReason = "구판 PoE1 젬입니다."sv;
+                const auto chainCount = player->GetItemCount(oldChain);
+                const bool chainOk = CheckGemsRejection(player, "socket", "SupportChain", oldChain, legacyReason);
+                CheckGems(CheckId::LegacyChainRejected, chainOk, std::format(
+                    "구판 Chain(0x882 count={}) socket 거부={} (기대 사유='{}').",
+                    chainCount, chainOk, legacyReason));
+
+                const auto shockCount = player->GetItemCount(shockNova);
+                const bool shockOk = CheckGemsRejection(player, "equip", "ShockNova", shockNova, legacyReason);
+                const auto manaBefore = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka);
+                const auto launchesBefore = ProjectileRuntime::TotalLaunchedCount();
+                Core::TriggeredSpellCast retiredCast;
+                retiredCast.gemId = "ShockNova";
+                retiredCast.isHandCast = true;
+                RE::NiPoint3 origin{}, direction{};
+                ProjectileRuntime::ComputePlayerAim(player, origin, direction);
+                const bool noDelivery = !ProjectileRuntime::LaunchSpellDelivery(retiredCast, origin, direction) &&
+                    player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka) == manaBefore &&
+                    ProjectileRuntime::TotalLaunchedCount() == launchesBefore;
+                CheckGems(CheckId::LegacyShockNovaRejected, shockOk && noDelivery, std::format(
+                    "구판 ShockNova(0x817 count={}) equip 거부={}, 실행 거부={}.",
+                    shockCount, shockOk, noDelivery));
+
+                // 미준비 세대 1 젬 하나(gem.FrostBolt)는 시험이 가방에 넣어 거부·UI 표시를 확인한다.
+                const auto frostboltBefore = player->GetItemCount(frostbolt);
+                player->AddObjectToContainer(frostbolt, nullptr, 1, nullptr);
+                g_gems.frostboltAdded = player->GetItemCount(frostbolt) == frostboltBefore + 1;
+                constexpr auto notReadyReason = "PoE2 젬: 아직 구현 안 됨"sv;
+                const bool frostRejected = g_gems.frostboltAdded &&
+                    CheckGemsRejection(player, "equip", "gem.FrostBolt", frostbolt, notReadyReason);
+                CheckGems(CheckId::NotReadyFrostboltRejected, frostRejected, std::format(
+                    "gem.FrostBolt(0x8C0) 추가={}, equip 거부='{}'.", g_gems.frostboltAdded, notReadyReason));
+                const auto inventory = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread()).at("inventory");
+                const bool frostVisible = std::ranges::any_of(inventory, [notReadyReason](const auto& entry) {
+                    return entry.value("gemId", "") == "gem.FrostBolt" && entry.value("reason", "") == notReadyReason;
+                });
+                CheckGems(CheckId::NotReadyUi, frostVisible, "UI 인벤토리 페이로드에 gem.FrostBolt와 미구현 사유가 포함되어야 합니다.");
+                if (g_gems.frostboltAdded) {
+                    player->RemoveItem(frostbolt, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                    g_gems.frostboltAdded = false;
+                }
+                NextGems(Step::Target);
                 break;
             }
+            case Step::Target:
+                CloseGemsDialogue(ui);
+                if (!ready || dialogue) break;
+                if (!g_gems.target) {
+                    switch (g_gems.retry.Poll(elapsed)) {
+                    case Action::Request:
+                        // 사람 크기 표적: 키 작은 스키버는 아래로 기운 조준선이 표적 앞 땅에 먼저 닿을 수 있다(2026-11-26 세대 1 첫 실행 GM8).
+                        g_gems.target = SpawnNpcInFrontOfPlayer(player, kGemsTargetNpcId, 300.0f, 0.0f, 2500.0f, false);
+                        LogInfo(std::format("Gems target spawn request {}: handle={}.",
+                            g_gems.retry.Attempts(), static_cast<bool>(g_gems.target)));
+                        break;
+                    case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Target spawn")); break;
+                    case Action::Wait: break;
+                    }
+                    break;
+                }
+                if (const auto target = g_gems.target.get(); target && target->Is3DLoaded() && ready) {
+                    target->EnableAI(false);
+                    MonsterRuntime::ForcePromoteForTest(target.get(), Core::MonsterRarity::Normal, 0, -1.0);
+                    const auto profile = MonsterRuntime::GetProfileCopy(target->GetFormID());
+                    if (profile || MapDeviceRuntime::GetActiveRunId() != 0) {
+                        fail("Spark 표적은 일반 등급·ES 0·지도 회차 밖이어야 합니다.");
+                        break;
+                    }
+                    ProjectileRuntime::SetHitTargetForTest(target->GetFormID());
+                    const auto snap = g_statEngine->GetSnapshot();
+                    const auto difficulty = SkillExecution::GetDifficultyMultiplier(false);
+                    g_gems.expectedMinHit = Core::ConvertOffenseHit(1, snap->exileLevel, *g_dataPack, *g_config) * difficulty;
+                    g_gems.expectedMaxHit = Core::ConvertOffenseHit(10, snap->exileLevel, *g_dataPack, *g_config) * difficulty;
+                    LogInfo(std::format("Target {:08X}: Normal, ES 0, difficulty={:.3f}, expectedHit=[{:.4f}, {:.4f}].",
+                        target->GetFormID(), difficulty, g_gems.expectedMinHit, g_gems.expectedMaxHit));
+                    if (!PrepareGemsHandCast(player)) {
+                        fail("세대 1 Spark 손 시전 준비에 실패했습니다.");
+                    }
+                }
+                break;
             case Step::EquipWait:
                 CloseGemsDialogue(ui);
                 if (ready && !dialogue && elapsed >= 0.5) {
@@ -3109,29 +4344,22 @@ namespace SkyrimPoE::Runtime
                         break;
                     }
                     {
-                        // 손 시전 입력을 보내기 전에 대리 주문의 가장 비싼 효과가 있는지 본다. 없으면 다른 모드의
-                        // RequestCast 훅이 튕길 수 있으므로(ProxySpellRuntime::EnsureProxyCostliestEffects) 입력 없이 실패한다.
                         auto* proxy = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
                         const auto* costliest = proxy ? proxy->GetCostliestEffectItem() : nullptr;
                         if (!costliest) {
-                            fail(std::format("Proxy spell has no costliest effect; hand input withheld. {}", describe()));
+                            fail(std::format("대리 주문에 가장 비싼 효과가 없어 시전을 중단합니다. {}", describe()));
                             break;
                         }
-                        LogInfo(std::format("Gems proxy costliest effect: base=0x{:08X}, cost={:.3f}.",
-                            costliest->baseEffect ? costliest->baseEffect->GetFormID() : 0u, costliest->cost));
                     }
-                    LogInfo(std::format("Gems hand ready: {}", describe()));
                     AimGemsAtTarget(player);
                     RestorePlayerVitals(player, true, false);
                     g_gems.initialMana = g_gems.minimumMana = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka);
                     g_gems.castsBefore = ProxySpellRuntime::HandCastCount();
                     g_gems.launchesBefore = ProjectileRuntime::TotalLaunchedCount();
+                    g_gems.dllChargeCountBefore = ProxySpellRuntime::GetMagickaChargeDiagnostics().chargeCount;
                     ProxySpellRuntime::SetCastTraceForTest(true);
                     TraceGemsHand(player, "press", elapsed);
                     {
-                        // 결정 234: 엔진은 합성 버튼 입력의 누름 유지를 받아들이지 않는다(추적 기록). 오른손 시전자의
-                        // CheckCast·SpellCast(doCast=true)를 직접 불러 우리 시전 검사 훅과 대기열 실행기를 실제와 같은 경로로 지나게 한다.
-                        // 엔진의 실제 입력 경로는 2026-11-25 사용자 손 시전으로 확인했다.
                         auto* caster = player->GetMagicCaster(RE::MagicSystem::CastingSource::kRightHand);
                         auto* proxy = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
                         float strength = 0.0f;
@@ -3139,7 +4367,7 @@ namespace SkyrimPoE::Runtime
                         const bool allowed = caster && proxy && caster->CheckCast(proxy, false, &strength, &reason, false);
                         LogInfo(std::format("Gems direct cast: CheckCast={}, reason={}.", allowed, static_cast<std::uint32_t>(reason)));
                         if (!allowed) {
-                            fail(std::format("The proxy cast was refused by CheckCast (reason {}).", static_cast<std::uint32_t>(reason)));
+                            fail(std::format("CheckCast가 대리 주문 시전을 거부했습니다 (reason {}).", static_cast<std::uint32_t>(reason)));
                             break;
                         }
                         caster->SpellCast(true, 0, proxy);
@@ -3155,207 +4383,53 @@ namespace SkyrimPoE::Runtime
                 const auto casts = ProxySpellRuntime::HandCastCount() - g_gems.castsBefore;
                 const auto launched = ProjectileRuntime::TotalLaunchedCount() - g_gems.launchesBefore;
                 const double paid = g_gems.initialMana - g_gems.minimumMana;
-                // 결정 234: SpellCast를 직접 부르면 엔진의 입력 시전 과정의 매지카 차감을 지나지 않는다(차감은 사용자 손 시전으로 확인).
-                // 그래서 우리 책임인 "엔진이 청구할 비용"(대리 주문의 비용 덮어쓰기 결과)을 본다.
                 auto* billedSpell = FormIds::Lookup<RE::SpellItem>(FormIds::kProxySpells[g_gems.slot]);
-                const double billed = billedSpell ? billedSpell->CalculateMagickaCost(player) : 0.0;
-                if (!g_gems.gen1Cast) {
-                    const bool passed = casts == 1 && launched == 4 && billed > 0;
-                    CheckGems(CheckId::LegacyCast, passed, std::format("hand casts={}, launches={}/4, engine-billed cost={:.4f}, observed magicka change={:.4f}.",
-                        casts, launched, billed, paid));
+                const double billed = billedSpell ? billedSpell->CalculateMagickaCost(player) : -1.0;
+
+                if (g_gems.packageGeneration == 0) {
+                    // 세대 0: 엔진 청구액이 환산액과 정확히 일치하는지 판정한다(기존 > 0 판정 강화).
+                    const bool passed = casts == 1 && launched == 4 && g_gems.expectedMana > 0.0 &&
+                        std::abs(billed - g_gems.expectedMana) < 0.02;
+                    CheckGems(CheckId::SparkEquipped, passed, std::format(
+                        "hand casts={}, launches={}/4, engine-billed cost={:.4f}, expected converted={:.4f}, observed magicka change={:.4f}.",
+                        casts, launched, billed, g_gems.expectedMana, paid));
                     ReleaseGemsCastState();
-                    if (!passed) fail("Legacy cast failed.");
-                    else BeginGemsLoad(Step::CleanupLoad);
+                    g_session.completedNormally = true;
+                    FinishAndScheduleQuit("세대 0 젬 시험을 마쳤습니다.");
                     break;
                 }
+
+                // 세대 1: 엔진 청구액 0, DLL 청구 1회 + 금액 일치 + 실측 매지카 감소 == DLL 청구액, 투사체 4개, 번개 피해.
+                const auto chargeDiag = ProxySpellRuntime::GetMagickaChargeDiagnostics();
+                const auto dllCharges = chargeDiag.chargeCount - g_gems.dllChargeCountBefore;
+                const double dllAmount = chargeDiag.lastChargedAmount;
+                const bool engineZero = billedSpell && billedSpell->data.costOverride == 0 && std::abs(billed) < 1e-4;
+                CheckGems(CheckId::EngineCostZero, engineZero, std::format(
+                    "costOverride={}, CalculateMagickaCost={:.4f} (기대 0).",
+                    billedSpell ? billedSpell->data.costOverride : -1, billed));
+                const bool dllOk = casts == 1 && dllCharges == 1 &&
+                    g_gems.expectedMana > 0.0 &&
+                    std::abs(dllAmount - g_gems.expectedMana) < 0.02 &&
+                    std::abs(paid - dllAmount) < 0.02;
+                CheckGems(CheckId::DllManaBilled, dllOk, std::format(
+                    "handCasts={}, dllCharges={}, dllCharged={:.4f}, expectedConverted={:.4f}, observedMagickaDrop={:.4f}.",
+                    casts, dllCharges, dllAmount, g_gems.expectedMana, paid));
+                LogInfo("실제 키 입력 1회 매지카 감소량: 사용자 관찰 필요 (자동 시험은 CheckCast->SpellCast 직접 호출 경로만 재현, 결정 234).");
+
                 const auto hit = ProjectileRuntime::GetHitForTest();
-                const bool billedOnce = casts == 1 && g_gems.expectedMana > 0 && std::abs(billed - g_gems.expectedMana) < 0.02;
-                CheckGems(CheckId::Mana, billedOnce,std::format("cast events={}, engine-billed cost={:.4f}, core mana(5)={:.4f}, observed magicka change={:.4f}.",
-                    casts, billed, g_gems.expectedMana, paid));
-                CheckGems(CheckId::Projectiles, hit.launched == 4 && launched == 4, std::format("Spark launches={}/4, total={}.", hit.launched, launched));
-                const bool hitOk = hit.hits > 0 && !hit.crit && hit.firstHpLost + 0.02 >= g_gems.expectedMinHit &&
+                CheckGems(CheckId::FourProjectiles, hit.launched == 4 && launched == 4,
+                    std::format("Spark launches={}/4, total={}.", hit.launched, launched));
+                const bool hitOk = hit.hits > 0 && !hit.crit &&
+                    hit.firstHpLost + 0.02 >= g_gems.expectedMinHit &&
                     hit.firstHpLost <= g_gems.expectedMaxHit + 0.02;
-                CheckGems(CheckId::Hit, hitOk, std::format("designated hits={}, first HP loss={:.4f}, expected=[{:.4f}, {:.4f}], crit={}.",
-                    hit.hits, hit.firstHpLost, g_gems.expectedMinHit, g_gems.expectedMaxHit, hit.crit));
+                CheckGems(CheckId::LightningHit, hitOk, std::format(
+                    "designated hits={}, first HP loss={:.4f}, expected=[{:.4f}, {:.4f}], crit={} "
+                    "(impacts: target={}, otherActor={}, nonActor={}; target deal failures={}, last target skyrimDamage={:.4f}).",
+                    hit.hits, hit.firstHpLost, g_gems.expectedMinHit, g_gems.expectedMaxHit, hit.crit,
+                    hit.targetImpacts, hit.otherActorImpacts, hit.nonActorImpacts, hit.targetDealFailures,
+                    hit.lastTargetSkyrimDamage));
                 ReleaseGemsCastState();
                 SaveLoad::SyncStateToStatEngine();
-                BeginGemsFinalSave();
-                break;
-            }
-            case Step::CleanupLoad:
-                if (g_cfg.firstInstall) {
-                    if (!signaled || !ready) break;
-                    BlockGemsManualSaves(*player);
-                    const auto load = SaveLoad::GetLastLoadDiagnostics();
-                    const bool firstInstall = load.decision && load.decision->disposition == Core::SaveDisposition::FirstInstall;
-                    const bool normal = ModState::Get()->mode == ModMode::Normal;
-                    const bool noCleanup = !SaveLoad::GetMigrationCandidate(player);
-                    // .skse가 있으면 OnLoad 경로, 없으면 로드 뒤 분기(SaveLoad의 !receivedLoad)를 지나야 한다.
-                    const bool branchOk = g_firstInstall.baselineHasCosave && load.receivedLoad == *g_firstInstall.baselineHasCosave;
-                    CheckFirstInstall(FirstInstallCheck::Decision, firstInstall && generation == 1 && normal && noCleanup && branchOk,
-                        std::format("decision={}, reason='{}', baseline .skse={}, receivedLoad(OnLoad called)={}, branch as expected={}, "
-                                    "collectionComplete={}, world generation={}, mode normal={}, cleanup candidate={}, starter items at load: {}.",
-                            load.decision ? SaveDispositionName(load.decision->disposition) : "none",
-                            load.decision ? load.decision->reason : "", g_firstInstall.baselineHasCosave.value_or(false),
-                            load.receivedLoad, branchOk, load.collectionComplete, generation, normal,
-                            !noCleanup, DescribeCounts(g_firstInstall.atLoad)));
-                    if (!firstInstall || generation != 1 || !normal) {
-                        fail("The baseline did not open as a first install in the generation-one test world.");
-                    } else {
-                        NextGems(Step::FirstGrant);
-                    }
-                    break;
-                }
-                if (signaled && ready) {
-                    BlockGemsManualSaves(*player);
-                    if (generation != 1 || !SaveLoad::GetMigrationCandidate(player)) {
-                        fail("Matched baseline did not reach the real cleanup gate.");
-                        break;
-                    }
-                    g_gems.oldChain = player->GetItemCount(oldChain);
-                    g_gems.newChain = player->GetItemCount(newChain);
-                    {
-                        // 결정 235: PoE1 때 탈착해 가방에 둔 추적 젬처럼, 플레이어 번호를 단 Spark 하나를 정리 전에 넣는다.
-                        // 정리는 장부를 비우므로 이 실물은 장부에 없는 번호만 남은 젬이 된다.
-                        auto* extra = UniqueIdUtil::CreateGameExtraDataList();
-                        const auto uid = UniqueIdUtil::AllocateInventoryUniqueId(player);
-                        if (!extra || uid == 0) {
-                            if (extra) UniqueIdUtil::DestroyGameExtraDataList(extra);
-                            fail("Could not build the numbered legacy Spark for the bag check.");
-                            break;
-                        }
-                        extra->Add(new RE::ExtraUniqueID(player->GetFormID(), uid));
-                        player->AddObjectToContainer(spark, extra, 1, nullptr);
-                        g_gems.totalBefore.clear();
-                        g_gems.numberedBefore = CountNumberedGems(player, &g_gems.totalBefore);
-                        LogInfo(std::format("Gems bag check before cleanup: added numbered Spark {:08X}:{:04X}; numbered={}, totals={}.",
-                            player->GetFormID(), uid, DescribeCounts(g_gems.numberedBefore), DescribeCounts(g_gems.totalBefore)));
-                    }
-                    SaveLoad::ReleaseForTest();
-                    NextGems(Step::CleanupCommit);
-                }
-                break;
-            case Step::CleanupCommit: {
-                const auto result = SaveLoad::GetLastMigrationDiagnostics();
-                if (ModState::Get()->mode == ModMode::Preserve) {
-                    fail("Cleanup entered preservation mode.");
-                } else if (ready && ModState::AllowsGameplay() && result) {
-                    const bool committed = result->step == Core::CleanupStep::Complete && generation == 1;
-                    CheckGems(CheckId::Cleanup, committed, result->Describe());
-                    g_gems.oldChainAfter = player->GetItemCount(oldChain);
-                    g_gems.newChainAfter = player->GetItemCount(newChain);
-                    const auto oldDelta = g_gems.oldChainAfter - g_gems.oldChain;
-                    const auto newDelta = g_gems.newChainAfter - g_gems.newChain;
-                    CheckGems(CheckId::ChainReturns, oldDelta == 1 && newDelta == 0,
-                        std::format("legacy 0x882 delta={}, Chain I 0x8D2 delta={}.", oldDelta, newDelta));
-                    if (!committed) fail("The cleanup did not commit in the generation-one test world.");
-                    else NextGems(Step::BagPlain);
-                }
-                break;
-            }
-            case Step::FirstGrant: {
-                // 결정 195: 처음 설치도 새 캐릭터와 같은 시작 물건을 한 번 받는다. 시작 화폐 지급이 끝날 때까지 기다린다.
-                if (!ready) break;
-                const auto state = SaveLoad::GetStateCopy();
-                // INI에서 끈 지급은 기대하지 않는다. 켠 화폐 지급이 있으면 그 플래그가 설 때까지(초기화 완료) 기다린다.
-                const bool currencyOn = g_config && g_config->giveStarterCurrency;
-                const bool gemsOn = g_config && g_config->giveStarterGems;
-                if (currencyOn && !state.starterCurrencyGiven && elapsed < 5.0) break;
-                if (!currencyOn && elapsed < 2.0) break;
-                const auto items = CaptureCleanupStarterItems(player);
-                std::map<RE::FormID, std::int32_t> expected = g_firstInstall.atLoad;
-                if (currencyOn) {
-                    for (const auto& grant : CraftingRuntime::StarterCurrencyGrants()) {
-                        expected[FormIds::CurrencyLocalFormId(grant.kind)] += grant.count;
-                    }
-                }
-                const auto starterGems = gemsOn ? Core::GemForms::StarterForms(generation) : decltype(Core::GemForms::StarterForms(generation)){};
-                for (const auto& gem : starterGems) {
-                    expected[gem.localFormId] += 1;
-                }
-                std::string differences;
-                for (const auto& [id, count] : items) {
-                    const auto it = expected.find(id);
-                    const auto want = it != expected.end() ? it->second : -1;
-                    if (count != want) {
-                        differences += std::format(" {:06X}={}(expected {})", id, count, want);
-                    }
-                }
-                const bool gemFlagsOk = state.starterGemsGiven == !starterGems.empty() &&
-                    state.starterStage5GemsGiven == !starterGems.empty();
-                const bool ok = state.starterCurrencyGiven == currencyOn && gemFlagsOk && differences.empty() &&
-                    items.size() == expected.size();
-                CheckFirstInstall(FirstInstallCheck::Grant, ok, std::format(
-                    "after {:.2f}s: INI gems/currency={}/{}, flags gems/stage5/currency={}/{}/{} (generation {} starter gems={}), "
-                    "mismatches=[{} ], forms={}.",
-                    elapsed, gemsOn, currencyOn, state.starterGemsGiven, state.starterStage5GemsGiven, state.starterCurrencyGiven,
-                    generation, starterGems.size(), differences, items.size()));
-                g_firstInstall.afterGrant = items;
-                g_firstInstall.flagsAfterGrant = state;
-                BeginGemsFinalSave();
-                break;
-            }
-            case Step::BagPlain: {
-                // 결정 235: 정리 직후 초기화가 장부에 없는 번호 붙은 젬을 일반 젬으로 바꿨는지 본다(초기화는 다음 틱에 돎).
-                if (!ready) break;
-                std::map<RE::FormID, std::int32_t> totals;
-                const auto numbered = CountNumberedGems(player, &totals);
-                const auto numberedCount = SumCounts(numbered);
-                if (numberedCount > 0 && elapsed < 5.0) break;
-                bool kept = true;
-                for (const auto& [form, savedTotal] : g_gems.totalBefore) {
-                    const auto it = totals.find(form);
-                    kept = kept && it != totals.end() && it->second >= savedTotal;
-                }
-                std::int32_t sparkPlain = 0;
-                for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
-                    if (stack.gemId == "gem.Spark") sparkPlain += stack.count;
-                }
-                const auto sparkNumbered = g_gems.numberedBefore.contains(spark->GetFormID()) ?
-                    g_gems.numberedBefore.at(spark->GetFormID()) : 0;
-                const bool ok = sparkNumbered >= 1 && numberedCount == 0 && kept && sparkPlain >= sparkNumbered;
-                CheckGems(CheckId::BagPlain, ok, std::format(
-                    "numbered before={}, after={}; totals kept={} (before {}, after {}); plain gem.Spark listed={} (numbered Spark before={}).",
-                    DescribeCounts(g_gems.numberedBefore), DescribeCounts(numbered), kept, DescribeCounts(g_gems.totalBefore),
-                    DescribeCounts(totals), sparkPlain, sparkNumbered));
-                {
-                    // 결정 235 유입 경로: 정상 모드의 세대 1에서 장부에 없는 번호를 단 Spark가 가방에 들어오면, 컨테이너 변경
-                    // 이벤트가 주 갱신 검사를 예약해 일반 젬으로 바꿔야 한다(정리 직후 경로와 따로 본다).
-                    g_gems.incomingSparkTotal = player->GetItemCount(spark);
-                    g_gems.incomingSparkPlain = 0;
-                    for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
-                        if (stack.gemId == "gem.Spark") g_gems.incomingSparkPlain += stack.count;
-                    }
-                    auto* extra = UniqueIdUtil::CreateGameExtraDataList();
-                    const auto uid = UniqueIdUtil::AllocateInventoryUniqueId(player);
-                    if (!extra || uid == 0) {
-                        if (extra) UniqueIdUtil::DestroyGameExtraDataList(extra);
-                        fail("Could not build the numbered Spark for the incoming check.");
-                        break;
-                    }
-                    extra->Add(new RE::ExtraUniqueID(player->GetFormID(), uid));
-                    player->AddObjectToContainer(spark, extra, 1, nullptr);
-                    LogInfo(std::format("Gems incoming check: added numbered Spark {:08X}:{:04X} in normal mode; Spark total={}, plain={}.",
-                        player->GetFormID(), uid, g_gems.incomingSparkTotal, g_gems.incomingSparkPlain));
-                }
-                NextGems(Step::IncomingPlain);
-                break;
-            }
-            case Step::IncomingPlain: {
-                if (!ready) break;
-                const auto numbered = CountNumberedGems(player, nullptr);
-                const auto numberedCount = SumCounts(numbered);
-                if (numberedCount > 0 && elapsed < 3.0) break;
-                std::int32_t sparkPlain = 0;
-                for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
-                    if (stack.gemId == "gem.Spark") sparkPlain += stack.count;
-                }
-                const auto sparkTotal = player->GetItemCount(spark);
-                const bool ok = numberedCount == 0 && sparkTotal == g_gems.incomingSparkTotal + 1 &&
-                    sparkPlain == g_gems.incomingSparkPlain + 1;
-                CheckGems(CheckId::IncomingPlain, ok, std::format(
-                    "after {:.2f}s: numbered left={}, Spark total {} -> {} (expected +1), plain gem.Spark listed {} -> {} (expected +1).",
-                    elapsed, DescribeCounts(numbered), g_gems.incomingSparkTotal, sparkTotal, g_gems.incomingSparkPlain, sparkPlain));
                 BeginGemsFinalSave();
                 break;
             }
@@ -3364,13 +4438,13 @@ namespace SkyrimPoE::Runtime
                 const auto write = SaveLoad::GetLastSaveDiagnostics();
                 if (!saveMatched || write.sequence == before) {
                     if (elapsed >= kScenarioASaveTimeoutSec) {
-                        fail("The final slot write did not reach the co-save callback.");
+                        fail("출력 슬롯 저장이 코세이브 콜백에 도달하지 못했습니다.");
                     } else if (!saveMatched && ready && engineIdle && !dialogue) {
                         const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
                         if (manager && manager->GetRuntimeData().thread.isBusy) break;
                         switch (g_gems.retry.Poll(elapsed)) {
                         case Action::Request:
-                            if (!RequestGemsFinalSave()) fail("Could not request the final slot write.");
+                            if (!RequestSessionSave(g_gems.finalSlot)) fail("출력 슬롯 저장 요청에 실패했습니다.");
                             break;
                         case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Final slot write")); break;
                         case Action::Wait: break;
@@ -3378,168 +4452,1724 @@ namespace SkyrimPoE::Runtime
                     }
                     break;
                 }
-                const auto& files = *g_gems.files;
-                const bool ess = SaveFileUpdated(files.ess, files.essBefore, g_gems.requestedAt);
-                const bool skse = SaveFileUpdated(files.cosave, files.cosaveBefore, g_gems.requestedAt);
+                const bool ess = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->ess, g_session.pendingSaveFiles->essBefore, g_session.pendingSaveRequestedAt);
+                const bool skse = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->cosave, g_session.pendingSaveFiles->cosaveBefore, g_session.pendingSaveRequestedAt);
+                const bool hasStarterRec = std::ranges::find(write.recordTypes, Core::SaveRecord::kRecordStarter) != write.recordTypes.end();
                 const bool callback = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
-                    write.generation && IsCleanupTarget(*write.generation) && write.generation->buildId == g_gems.buildId &&
+                    write.generation && IsGen1Target(*write.generation) && write.generation->buildId == g_gems.buildId &&
+                    hasStarterRec &&
                     std::ranges::find(write.recordTypes, Core::kRecordMigration) == write.recordTypes.end();
                 if (callback && !(ess && skse) && elapsed < kScenarioASaveTimeoutSec) break;
-                if (g_cfg.firstInstall) {
-                    CheckFirstInstall(FirstInstallCheck::Save, callback && ess && skse,
-                        std::format("callback={}, essUpdated={}, skseUpdated={}, wroteGeneration={}.", callback, ess, skse,
-                            write.wroteGeneration));
-                } else {
-                    CheckGems(g_gems.gen1Cast ? CheckId::SparkSave : CheckId::CleanupSave, callback && ess && skse,
-                        std::format("callback={}, essUpdated={}, skseUpdated={}.", callback, ess, skse));
-                }
-                if (!callback || !ess || !skse) fail("Final slot write failed.");
+                CheckGems(CheckId::FinalSaveWritten, callback && ess && skse, std::format(
+                    "save='{}', callback={}, STRT={}, essUpdated={}, skseUpdated={}.",
+                    g_gems.finalSlot, callback, hasStarterRec, ess, skse));
+                if (!callback || !ess || !skse) fail("출력 슬롯 저장 검증에 실패했습니다.");
                 else BeginGemsLoad(Step::Reload);
                 break;
             }
             case Step::Reload:
-                if (signaled && ready && elapsed >= 1) {
-                    BlockGemsManualSaves(*player);
-                    if (generation != 1 || !ModState::AllowsGameplay() || !SaveLoad::GetLastLoadDiagnostics().collectionComplete) {
-                        fail("Final slot did not load into the generation-one world.");
-                        break;
-                    }
-                    if (g_cfg.firstInstall) {
-                        // 다시 불러오면 모드 기록이 있는 세대 1 세이브로 정상 판정되고, 시작 물건은 더 주지 않는다.
-                        const auto load = SaveLoad::GetLastLoadDiagnostics();
-                        const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
-                            load.receivedLoad;
-                        const bool genr = load.generation && load.generation->status == Core::GenerationRecordStatus::Valid &&
-                            IsCleanupTarget(load.generation->value);
-                        // 다시 불러온 뒤의 초기화(주 갱신 큐)가 끝날 시간을 둔다.
-                        if (elapsed < 2.0) break;
-                        const auto items = CaptureCleanupStarterItems(player);
-                        const auto state = SaveLoad::GetStateCopy();
-                        const auto& granted = g_firstInstall.flagsAfterGrant;
-                        const bool flagsKept = state.starterGemsGiven == granted.starterGemsGiven &&
-                            state.starterStage5GemsGiven == granted.starterStage5GemsGiven &&
-                            state.starterCurrencyGiven == granted.starterCurrencyGiven;
-                        std::string differences;
-                        for (const auto& [id, count] : items) {
-                            const auto it = g_firstInstall.afterGrant.find(id);
-                            const auto saved = it != g_firstInstall.afterGrant.end() ? it->second : -1;
-                            if (count != saved) differences += std::format(" {:06X}={}->{}", id, saved, count);
-                        }
-                        CheckFirstInstall(FirstInstallCheck::Reload, normal && genr && flagsKept && differences.empty(),
-                            std::format("decision={}, receivedLoad={}, GENR valid poe2/1={}, flags kept={}, starter item changes=[{} ].",
-                                load.decision ? SaveDispositionName(load.decision->disposition) : "none", load.receivedLoad, genr, flagsKept,
-                                differences));
-                        FinishAndScheduleQuit("First-install run finished.");
-                        break;
-                    }
-                    if (!g_gems.gen1Cast) {
-                        const auto oldDelta = player->GetItemCount(oldChain) - g_gems.oldChainAfter;
-                        const auto newDelta = player->GetItemCount(newChain) - g_gems.newChainAfter;
-                        CheckGems(CheckId::NoDuplicate, oldDelta == 0 && newDelta == 0 && !SaveLoad::GetLastMigrationDiagnostics(),
-                            std::format("reload deltas legacy={}, Chain I={}.", oldDelta, newDelta));
-                        NextGems(Step::Reject);
-                        break;
-                    }
+                if (signaled && ready && elapsed >= 1.0) {
+                    BlockSessionManualSaves(*player);
+                    const auto load = SaveLoad::GetLastLoadDiagnostics();
+                    const bool normalDecision = load.decision && load.decision->disposition == Core::SaveDisposition::Normal;
                     const auto slot = SaveLoad::GetStateCopy().slots[g_gems.slot];
                     const auto snap = g_statEngine->GetSnapshot();
-                    const bool intact = slot.occupied && slot.gem.gemId == "gem.Spark" && slot.gem.level == 1 &&
+                    const bool intact = normalDecision && ModState::AllowsGameplay() && load.collectionComplete &&
+                        generation == 1 && slot.occupied && slot.gem.gemId == "gem.Spark" && slot.gem.level == 1 &&
                         slot.gem.instanceId == g_gems.instance && snap && snap->gemGeneration == 1;
-                    CheckGems(CheckId::SparkReload, intact, std::format("slot={}, key={}, instance={}/{}.",
-                        g_gems.slot + 1, slot.gem.gemId, slot.gem.instanceId, g_gems.instance));
-                    BeginGemsLoad(Step::RestoreLoad);
-                }
-                break;
-            case Step::Reject: {
-                CloseGemsDialogue(ui);
-                if (!ready || dialogue) break;
-                constexpr auto legacy = "구판 PoE1 젬입니다."sv;
-                const bool chainOk = CheckGemsRejection(player, "socket", "SupportChain", oldChain, legacy);
-                const bool shockOk = CheckGemsRejection(player, "equip", "ShockNova", shockNova, legacy);
-                const auto mana = player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka);
-                const auto launches = ProjectileRuntime::TotalLaunchedCount();
-                Core::TriggeredSpellCast retiredCast;
-                retiredCast.gemId = "ShockNova";
-                retiredCast.isHandCast = true;
-                RE::NiPoint3 origin, direction;
-                ProjectileRuntime::ComputePlayerAim(player, origin, direction);
-                const bool noDelivery = !ProjectileRuntime::LaunchSpellDelivery(retiredCast, origin, direction) &&
-                    player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kMagicka) == mana && ProjectileRuntime::TotalLaunchedCount() == launches;
-                CheckGems(CheckId::LegacyRejected, chainOk && shockOk && noDelivery,
-                    std::format("Chain socket={}, Shock Nova equip={}, Shock Nova delivery refused={}.", chainOk, shockOk, noDelivery));
-                const auto frostboltBefore = player->GetItemCount(frostbolt);
-                player->AddObjectToContainer(frostbolt, nullptr, 1, nullptr);
-                constexpr auto notReady = "PoE2 젬: 아직 구현 안 됨"sv;
-                const bool rejected = player->GetItemCount(frostbolt) == frostboltBefore + 1 &&
-                    CheckGemsRejection(player, "equip", "gem.FrostBolt", frostbolt, notReady);
-                CheckGems(CheckId::FrostboltRejected, rejected, std::string(notReady));
-                const auto inventory = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread()).at("inventory");
-                const bool visible = std::ranges::any_of(inventory, [notReady](const auto& entry) {
-                    return entry.value("gemId", "") == "gem.FrostBolt" && entry.value("reason", "") == notReady;
-                });
-                CheckGems(CheckId::FrostboltUi, visible, "Inventory payload includes gem.FrostBolt and its rejection reason.");
-
-                g_gems.gen1Cast = true;
-                const bool equipped = EquipGemsSpark(player, spark);
-                CheckGems(CheckId::SparkEquipped, equipped, std::format("slot={}, instance={}, expected CORE key gem.Spark.",
-                    g_gems.slot + 1, g_gems.instance));
-                if (!equipped) {
-                    fail("Generation-one Spark setup failed.");
-                    break;
-                }
-                NextGems(Step::CastSite);
-                break;
-            }
-            case Step::Target:
-                CloseGemsDialogue(ui);
-                if (!ready || dialogue) break;
-                if (!g_gems.target) {
-                    switch (g_gems.retry.Poll(elapsed)) {
-                    case Action::Request:
-                        g_gems.target = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 300.0f, 0.0f, 2500.0f, false);
-                        LogInfo(std::format("Gems target spawn request {}: handle={}.",
-                            g_gems.retry.Attempts(), static_cast<bool>(g_gems.target)));
-                        break;
-                    case Action::Exhausted: fail(g_gems.retry.ExhaustionMessage("Target spawn")); break;
-                    case Action::Wait: break;
-                    }
-                    break;
-                }
-                if (const auto target = g_gems.target.get(); target && target->Is3DLoaded() && ready) {
-                    target->EnableAI(false);
-                    MonsterRuntime::ForcePromoteForTest(target.get(), Core::MonsterRarity::Normal, 0, -1.0);
-                    const auto profile = MonsterRuntime::GetProfileCopy(target->GetFormID());
-                    if (profile || MapDeviceRuntime::GetActiveRunId() != 0) {
-                        fail("Spark target must have normal rarity, zero ES and no map modifiers.");
-                        break;
-                    }
-                    ProjectileRuntime::SetHitTargetForTest(target->GetFormID());
-                    const auto snap = g_statEngine->GetSnapshot();
-                    const auto difficulty = SkillExecution::GetDifficultyMultiplier(false);
-                    g_gems.expectedMinHit = Core::ConvertOffenseHit(1, snap->exileLevel, *g_dataPack, *g_config) * difficulty;
-                    g_gems.expectedMaxHit = Core::ConvertOffenseHit(10, snap->exileLevel, *g_dataPack, *g_config) * difficulty;
-                    LogInfo(std::format("Target {:08X}: Normal, ES 0, PoE lightning resistance 0%, Skyrim ResistShock {:.2f} "
-                        "(direct damage), difficulty multiplier {:.3f}, test crit 0%.",
-                        target->GetFormID(), target->AsActorValueOwner()->GetActorValue(RE::ActorValue::kResistShock), difficulty));
-                    if (!PrepareGemsHandCast(player)) fail("Could not equip the Spark proxy in the right hand.");
-                }
-                break;
-            case Step::RestoreLoad:
-                if (signaled && ready && elapsed >= 1) {
-                    const auto snap = g_statEngine->GetSnapshot();
-                    const bool restored = generation == 0 && ModState::AllowsGameplay() &&
-                        snap && snap->gemGeneration == 0 && g_dataPack->FindGem("Spark", generation) &&
-                        !g_dataPack->FindGem("gem.Spark", generation);
-                    const auto settings = g_gems.autoSave.Restore();
-                    g_gems.restoredSettings += settings;
-                    CheckGems(CheckId::Restore, restored && settings > 0,
-                        std::format("baseline reloaded, generation={}, restored autosave settings={}.", generation, settings));
-                    FinishAndScheduleQuit("Gems AutoTest finished.");
+                    CheckGems(CheckId::SparkReload, intact, std::format(
+                        "save='{}', decision={}, slot={}, key='{}', level={}, instance={}/{}, worldGen={}.",
+                        g_gems.finalSlot,
+                        load.decision ? SaveDispositionName(load.decision->disposition) : "unavailable",
+                        g_gems.slot + 1, slot.gem.gemId, slot.gem.level, slot.gem.instanceId, g_gems.instance, generation));
+                    g_session.completedNormally = true;
+                    FinishAndScheduleQuit("세대 1 젬 시험을 마쳤습니다.");
                 }
                 break;
             }
         }
 
-        bool ObserveCleanupBaseline(RE::PlayerCharacter* player, bool succeeded)
+        void NextFirstInstall(FirstInstallStep step)
+        {
+            g_firstInstall.step = step;
+            g_firstInstall.since = Clock::now();
+            g_firstInstall.nextStatus = g_firstInstall.since;
+            g_firstInstall.retry = GemsRetry(3);
+        }
+
+        void BeginFirstInstallLoad(FirstInstallStep step)
+        {
+            std::scoped_lock lock(g_msgMutex);
+            g_expectedLoadStem.clear();
+            g_preLoadMatched = g_postLoadSignaled = g_postLoadSucceeded = false;
+            g_firstInstall.loadStartsAtStep = g_sessionLoadStarts;
+            NextFirstInstall(step);
+        }
+
+        void TickFirstInstallOnly()
+        {
+            using Step = FirstInstallStep;
+            using CheckId = FirstInstallCheck;
+            using Action = GemsRetry::Action;
+            bool loading = false, signaled = false, succeeded = false, saveMatched = false;
+            bool unexpectedLoad = false, unexpectedSave = false;
+            std::uint64_t before = 0;
+            std::uint64_t currentLoadStarts = 0;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                loading = g_preLoadMatched;
+                signaled = g_postLoadSignaled;
+                succeeded = g_postLoadSucceeded;
+                saveMatched = g_saveMatched;
+                before = g_saveSequenceAtMessage;
+                unexpectedLoad = g_sessionUnexpectedLoad;
+                unexpectedSave = g_sessionUnexpectedSave;
+                currentLoadStarts = g_sessionLoadStarts;
+            }
+            const bool loadStartedInStep = loading || (currentLoadStarts > g_firstInstall.loadStartsAtStep);
+            const auto now = Clock::now();
+            const auto elapsed = std::chrono::duration<double>(now - g_firstInstall.since).count();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* ui = RE::UI::GetSingleton();
+            const auto stepName = kFirstInstallStepNames[static_cast<std::size_t>(g_firstInstall.step)];
+            const auto fail = [&](std::string_view detail) {
+                FinishAndScheduleQuit(std::format("[firstinstall:{}] {}", stepName, detail));
+            };
+            if (unexpectedLoad || unexpectedSave || (signaled && !succeeded) || elapsed > 90.0 ||
+                std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
+                fail((unexpectedLoad || unexpectedSave) ? "최초 설치 시험 중 예상 밖의 로드 또는 저장이 발생했습니다." :
+                    signaled && !succeeded ? "최초 설치 세이브 로드에 실패했습니다." : "최초 설치 시험 대기 시간이 초과되었습니다.");
+                return;
+            }
+            const bool ready = IsPlayerReadyInWorld() && ui && !ui->GameIsPaused() && player && !player->IsDead();
+            const bool mainMenu = ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME);
+            const bool dialogue = ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME);
+            const bool engineIdle = !loading && ui && !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) &&
+                (mainMenu ? !ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME) :
+                    !ui->IsModalMenuOpen() && !ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
+            const auto generation = SaveLoad::WorldGemGeneration();
+
+            if (!signaled && (g_firstInstall.step == Step::LoadInput || g_firstInstall.step == Step::Reload)) {
+                CloseGemsDialogue(ui);
+                const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                // F10: 앞 요청의 kPreLoadGame이 이미 도착했다면 같은 단계에서 다시 로드 요청하지 않는다.
+                if (loadStartedInStep || !engineIdle || dialogue || !(mainMenu || ready) || (manager && manager->GetRuntimeData().thread.isBusy)) {
+                    return;
+                }
+                switch (g_firstInstall.retry.Poll(elapsed, 4.0)) {
+                case Action::Request: {
+                    const auto& stem = g_firstInstall.step == Step::Reload ? g_firstInstall.finalSlot : g_cfg.baselineSave;
+                    std::string loadReason;
+                    const bool sent = RequestLoadSave(stem, &loadReason);
+                    LogInfo(std::format("FirstInstall {} load request {} for '{}', sent={} ({}).",
+                        stepName, g_firstInstall.retry.Attempts(), stem, sent, loadReason));
+                    break;
+                }
+                case Action::Exhausted: fail(g_firstInstall.retry.ExhaustionMessage("Load start")); break;
+                case Action::Wait: break;
+                }
+                return;
+            }
+
+            switch (g_firstInstall.step) {
+            case Step::Prepare: {
+                const auto pack = SaveLoad::GetContentGeneration();
+                const bool isGen1 = pack && IsGen1Target(*pack) && ModState::AllowsGameplay();
+                const bool sessionOk = isGen1 && BeginAutoTestSession(g_firstInstall.finalSlot);
+                const bool hasBaseline = !g_session.baselineSaves.empty();
+                const bool essExists = sessionOk && hasBaseline && g_session.baselineSaves.front().essBefore.exists;
+                const bool skseExists = hasBaseline && g_session.baselineSaves.front().skseBefore.exists;
+                const bool ok = isGen1 && sessionOk && essExists;
+                CheckFirstInstall(CheckId::Content, ok, std::format(
+                    "pack={}, game/gen={}/{}, sessionOk={}, baselineEss={}, baselineSkse={}.",
+                    pack.has_value(), pack ? pack->game : "none", pack ? pack->contentGeneration : 0,
+                    sessionOk, essExists, skseExists));
+                if (!ok) {
+                    fail("firstinstall 모드는 세대 1(PoE2) 패키지와 유효한 입력 세이브(.ess)가 필요합니다.");
+                    break;
+                }
+                g_firstInstall.buildId = pack->buildId;
+                g_firstInstall.baselineHasCosave = skseExists;
+                NextFirstInstall(Step::Menu);
+                break;
+            }
+            case Step::Menu:
+                if (elapsed >= 2.0 && engineIdle && (mainMenu || ready)) {
+                    BeginFirstInstallLoad(Step::LoadInput);
+                }
+                break;
+            case Step::LoadInput:
+                if (signaled && ready) {
+                    BlockSessionManualSaves(*player);
+                    const auto load = SaveLoad::GetLastLoadDiagnostics();
+                    const bool firstInstall = load.decision && load.decision->disposition == Core::SaveDisposition::FirstInstall;
+                    const bool normal = ModState::Get()->mode == ModMode::Normal;
+                    const bool noCleanup = !SaveLoad::GetMigrationCandidate(player);
+                    // (가) 타 모드 기록만 있는 .skse -> receivedLoad=true, (나) .skse 없음 -> receivedLoad=false.
+                    const bool branchOk = g_firstInstall.baselineHasCosave &&
+                        load.receivedLoad == *g_firstInstall.baselineHasCosave;
+                    const bool ok = firstInstall && generation == 1 && normal && noCleanup && branchOk;
+                    CheckFirstInstall(CheckId::Decision, ok, std::format(
+                        "decision={} ({}), baseline .skse={}, receivedLoad={}, branchOk={}, worldGen={}, normalMode={}, cleanupCandidate={}.",
+                        load.decision ? SaveDispositionName(load.decision->disposition) : "none",
+                        load.decision ? load.decision->reason : "", g_firstInstall.baselineHasCosave.value_or(false),
+                        load.receivedLoad, branchOk, generation, normal, !noCleanup));
+                    if (!ok) {
+                        fail("입력 세이브가 세대 1 FirstInstall 판정으로 열리지 않았습니다.");
+                        break;
+                    }
+                    NextFirstInstall(Step::WaitGrant);
+                }
+                break;
+            case Step::WaitGrant: {
+                if (!ready) break;
+                const auto state = SaveLoad::GetStateCopy();
+                const auto expectedIds = ExpectedGen1StarterIds();
+                if (!expectedIds.empty() && state.starterGrantedIds != expectedIds && elapsed < 5.0) break;
+                if (expectedIds.empty() && elapsed < 2.0) break;
+
+                const auto items = CaptureAllGemAndCurrencyCounts(player);
+                const auto expectedStarterByForm = ExpectedGen1StarterByRuntimeForm();
+                std::map<RE::FormID, std::int32_t> expected = g_firstInstall.atLoad;
+                for (const auto& [formId, addCount] : expectedStarterByForm) {
+                    expected[formId] += addCount;
+                }
+                std::string differences;
+                for (const auto& [formId, actualCount] : items) {
+                    const auto it = expected.find(formId);
+                    const auto want = it != expected.end() ? it->second : -1;
+                    if (actualCount != want) {
+                        differences += std::format(" {:08X}={}(기대 {})", formId, actualCount, want);
+                    }
+                }
+                const bool strtOk = state.starterGrantedIds == expectedIds;
+                const bool ok = strtOk && differences.empty() && items.size() == expected.size() && !items.empty();
+                CheckFirstInstall(CheckId::Grant, ok, std::format(
+                    "after {:.2f}s: giveStarterGems={}, STRT일치={} (실제 {}개, 기대 {}개), 62젬+12화폐 불일치=[{} ], 총 폼={}.",
+                    elapsed, g_config && g_config->giveStarterGems, strtOk,
+                    state.starterGrantedIds.size(), expectedIds.size(), differences, items.size()));
+                g_firstInstall.afterGrant = items;
+                g_firstInstall.starterIdsAfterGrant = state.starterGrantedIds;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem = g_firstInstall.finalSlot;
+                    g_saveMatched = false;
+                    g_sessionSaveRequested = false;
+                }
+                NextFirstInstall(Step::Save);
+                break;
+            }
+            case Step::Save: {
+                CloseDialogueWhileAwaitingSave(ui);
+                const auto write = SaveLoad::GetLastSaveDiagnostics();
+                if (!saveMatched || write.sequence == before) {
+                    if (elapsed >= kScenarioASaveTimeoutSec) {
+                        fail("출력 슬롯 저장이 코세이브 콜백에 도달하지 못했습니다.");
+                    } else if (!saveMatched && ready && engineIdle && !dialogue) {
+                        const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                        if (manager && manager->GetRuntimeData().thread.isBusy) break;
+                        switch (g_firstInstall.retry.Poll(elapsed)) {
+                        case Action::Request:
+                            if (!RequestSessionSave(g_firstInstall.finalSlot)) fail("출력 슬롯 저장 요청에 실패했습니다.");
+                            break;
+                        case Action::Exhausted: fail(g_firstInstall.retry.ExhaustionMessage("Final slot write")); break;
+                        case Action::Wait: break;
+                        }
+                    }
+                    break;
+                }
+                const bool ess = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->ess, g_session.pendingSaveFiles->essBefore, g_session.pendingSaveRequestedAt);
+                const bool skse = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->cosave, g_session.pendingSaveFiles->cosaveBefore, g_session.pendingSaveRequestedAt);
+                const bool hasStarterRec = std::ranges::find(write.recordTypes, Core::SaveRecord::kRecordStarter) != write.recordTypes.end();
+                const bool callback = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
+                    write.generation && IsGen1Target(*write.generation) && write.generation->buildId == g_firstInstall.buildId &&
+                    hasStarterRec &&
+                    std::ranges::find(write.recordTypes, Core::kRecordMigration) == write.recordTypes.end();
+                if (callback && !(ess && skse) && elapsed < kScenarioASaveTimeoutSec) break;
+                CheckFirstInstall(CheckId::Save, callback && ess && skse, std::format(
+                    "save='{}', callback={}, STRT={}, essUpdated={}, skseUpdated={}, wroteGeneration={}.",
+                    g_firstInstall.finalSlot, callback, hasStarterRec, ess, skse, write.wroteGeneration));
+                if (!callback || !ess || !skse) fail("출력 슬롯 저장 검증에 실패했습니다.");
+                else BeginFirstInstallLoad(Step::Reload);
+                break;
+            }
+            case Step::Reload:
+                if (signaled && ready && elapsed >= 2.0) {
+                    BlockSessionManualSaves(*player);
+                    // 결정 263: 일반 로드의 보충은 패널을 처음 열 때 한다. 이미 받은 시작 젬은 다시 주지 않아야 한다.
+                    if (!g_firstInstall.reloadPanelChecked) {
+                        const auto seqBefore = SaveLoad::GetLastPanelStarterGrantDiagnostics().sequence;
+                        if (UiBridge::TryOpenPanelOnMainThread("skills")) {
+                            const auto panelGrant = SaveLoad::GetLastPanelStarterGrantDiagnostics();
+                            g_firstInstall.reloadPanelGranted = panelGrant.sequence > seqBefore
+                                ? static_cast<std::int64_t>(panelGrant.grantedCount) : -1;
+                            UiBridge::ClosePanelOnMainThread();
+                            g_firstInstall.reloadPanelChecked = true;
+                        } else if (elapsed < 20.0) {
+                            break;
+                        } else {
+                            g_firstInstall.reloadPanelChecked = true;
+                        }
+                    }
+                    const auto load = SaveLoad::GetLastLoadDiagnostics();
+                    const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
+                        load.receivedLoad && load.collectionComplete && ModState::AllowsGameplay() && generation == 1;
+                    const bool genr = load.generation && load.generation->status == Core::GenerationRecordStatus::Valid &&
+                        IsGen1Target(load.generation->value);
+                    const auto items = CaptureAllGemAndCurrencyCounts(player);
+                    const auto state = SaveLoad::GetStateCopy();
+                    const bool strtKept = state.starterGrantedIds == g_firstInstall.starterIdsAfterGrant;
+                    std::string differences;
+                    for (const auto& [formId, actualCount] : items) {
+                        const auto it = g_firstInstall.afterGrant.find(formId);
+                        const auto saved = it != g_firstInstall.afterGrant.end() ? it->second : -1;
+                        if (actualCount != saved) {
+                            differences += std::format(" {:08X}={}->{}", formId, saved, actualCount);
+                        }
+                    }
+                    const bool panelZero = g_firstInstall.reloadPanelGranted == 0;
+                    CheckFirstInstall(CheckId::Reload, normal && genr && strtKept && panelZero && differences.empty(), std::format(
+                        "save='{}', decision={}, receivedLoad={}, GENR poe2/1={}, STRT유지={}, 패널지급={}(기대 0), 수량변화=[{} ].",
+                        g_firstInstall.finalSlot,
+                        load.decision ? SaveDispositionName(load.decision->disposition) : "none",
+                        load.receivedLoad, genr, strtKept, g_firstInstall.reloadPanelGranted, differences));
+                    g_session.completedNormally = true;
+                    FinishAndScheduleQuit("세대 1 최초 설치 시험을 마쳤습니다.");
+                }
+                break;
+            }
+        }
+
+        void NextNewGame(NewGameStep step)
+        {
+            g_newGame.step = step;
+            g_newGame.since = Clock::now();
+            g_newGame.mainMenuSince.reset();
+            g_newGame.worldReadySince.reset();
+            g_newGame.retry = GemsRetry(3);
+        }
+
+        void BeginNewGameLoad(NewGameStep step)
+        {
+            NextNewGame(step);
+            g_newGame.postLoadSeqBeforeReload = SaveLoad::GetLastPostLoadInitDiagnostics().sequence;
+            std::scoped_lock lock(g_msgMutex);
+            g_newGame.loadStartsAtStep = g_sessionLoadStarts;
+            g_expectedLoadStem.clear();
+            g_preLoadMatched = g_postLoadSignaled = g_postLoadSucceeded = false;
+        }
+
+        void TickNewGameOnly()
+        {
+            using Step = NewGameStep;
+            using CheckId = NewGameCheck;
+            using Action = GemsRetry::Action;
+            bool loading = false, signaled = false, succeeded = false, saveMatched = false;
+            bool unexpectedLoad = false, unexpectedSave = false;
+            std::uint64_t before = 0;
+            std::uint64_t currentLoadStarts = 0;
+            std::uint64_t newGameCount = 0;
+            std::uint64_t newGameFrame = 0;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                loading = g_preLoadMatched;
+                signaled = g_postLoadSignaled;
+                succeeded = g_postLoadSucceeded;
+                saveMatched = g_saveMatched;
+                before = g_saveSequenceAtMessage;
+                unexpectedLoad = g_sessionUnexpectedLoad;
+                unexpectedSave = g_sessionUnexpectedSave;
+                currentLoadStarts = g_sessionLoadStarts;
+                newGameCount = g_newGameCount;
+                newGameFrame = g_newGameFrame;
+            }
+            const bool loadStartedInStep = loading || (currentLoadStarts > g_newGame.loadStartsAtStep);
+            const auto now = Clock::now();
+            const auto elapsed = std::chrono::duration<double>(now - g_newGame.since).count();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* ui = RE::UI::GetSingleton();
+            const auto stepName = kNewGameStepNames[static_cast<std::size_t>(g_newGame.step)];
+            const auto fail = [&](std::string_view detail) {
+                FinishAndScheduleQuit(std::format("[newgame:{}] {}", stepName, detail));
+            };
+            if (unexpectedLoad || unexpectedSave || (signaled && !succeeded) || elapsed > 90.0 ||
+                std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
+                fail((unexpectedLoad || unexpectedSave) ? "새 게임 시험 중 예상 밖의 로드 또는 저장이 발생했습니다." :
+                    signaled && !succeeded ? "새 게임 출력 세이브 재로드에 실패했습니다." : "새 게임 시험 대기 시간이 초과되었습니다.");
+                return;
+            }
+            const bool ready = IsPlayerReadyInWorld() && ui && !ui->GameIsPaused() && player && !player->IsDead();
+            const bool mainMenu = ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME);
+            const bool dialogue = ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME);
+            const bool engineIdle = !loading && ui && !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) &&
+                (mainMenu ? !ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME) :
+                    !ui->IsModalMenuOpen() && !ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
+            const auto generation = SaveLoad::WorldGemGeneration();
+
+            if (!signaled && g_newGame.step == Step::Reload) {
+                CloseGemsDialogue(ui);
+                const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                if (loadStartedInStep || !engineIdle || dialogue || !(mainMenu || ready) || (manager && manager->GetRuntimeData().thread.isBusy)) {
+                    return;
+                }
+                switch (g_newGame.retry.Poll(elapsed, 4.0)) {
+                case Action::Request: {
+                    std::string loadReason;
+                    const bool sent = RequestLoadSave(g_newGame.outSlot, &loadReason);
+                    LogInfo(std::format("NewGame {} load request {} for '{}', sent={} ({}).",
+                        stepName, g_newGame.retry.Attempts(), g_newGame.outSlot, sent, loadReason));
+                    break;
+                }
+                case Action::Exhausted: fail(g_newGame.retry.ExhaustionMessage("Reload start")); break;
+                case Action::Wait: break;
+                }
+                return;
+            }
+
+            switch (g_newGame.step) {
+            case Step::Prepare: {
+                const auto pack = SaveLoad::GetContentGeneration();
+                const bool isGen1 = pack && IsGen1Target(*pack) && ModState::AllowsGameplay();
+                // A10: newgame의 N2·N4 기대는 고정 {"gem.Spark"}이므로 GiveStarterGems가 꺼져 있으면 N1 전에 입력 조건 실패.
+                if (!g_config || !g_config->giveStarterGems) {
+                    CheckNewGame(CheckId::NewGameReceived, false, "입력 조건: GiveStarterGems가 꺼져 있음.");
+                    fail("입력 조건: GiveStarterGems가 꺼져 있음");
+                    break;
+                }
+                const bool sessionOk = isGen1 && BeginAutoTestSession(g_newGame.outSlot, false);
+                if (!isGen1 || !sessionOk) {
+                    CheckNewGame(CheckId::NewGameReceived, false, std::format(
+                        "pack={}, game/gen={}/{}, normalMode={}, sessionOk={}.",
+                        pack.has_value(), pack ? pack->game : "none", pack ? pack->contentGeneration : 0,
+                        ModState::AllowsGameplay(), sessionOk));
+                    fail("newgame 모드는 세대 1(PoE2) 패키지와 정상 모드가 필요합니다.");
+                    break;
+                }
+                g_newGame.buildId = pack->buildId;
+                g_newGame.newGameCountBefore = newGameCount;
+                NextNewGame(Step::Menu);
+                break;
+            }
+            case Step::Menu: {
+                if (ready && !mainMenu) {
+                    CheckNewGame(CheckId::NewGameReceived, false, "kNewGame 미수신, 다른 진입 필요 (메인 메뉴를 거치지 않고 월드에 진입함).");
+                    fail("kNewGame 미수신, 다른 진입 필요");
+                    break;
+                }
+                if (!mainMenu) {
+                    g_newGame.mainMenuSince.reset();
+                    break;
+                }
+                // A9: 2초 대기는 메인 메뉴가 열린 것을 본 때부터 재고, 저장·로드 스레드가 바쁘지 않을 때 1회만 진입한다.
+                // 메인 메뉴의 콘솔 coc는 월드에 들어가지만 kNewGame을 보내지 않는다(2026-11-26 실행). 그래서 메인 메뉴의
+                // 네이티브 콜백 표(fxDelegate)에서 새 게임 콜백(이름에 "NewGame")을 찾아 메뉴의 새 게임 버튼과 같은 경로로 부른다.
+                if (!g_newGame.mainMenuSince) {
+                    g_newGame.mainMenuSince = now;
+                }
+                const double menuElapsed = std::chrono::duration<double>(now - *g_newGame.mainMenuSince).count();
+                const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                const bool saveLoadBusy = manager && manager->GetRuntimeData().thread.isBusy;
+                if (menuElapsed >= 2.0 && engineIdle && !saveLoadBusy) {
+                    auto menu = ui ? ui->GetMenu<RE::MainMenu>() : RE::GPtr<RE::MainMenu>{};
+                    if (!menu || !menu->fxDelegate || !menu->uiMovie) {
+                        CheckNewGame(CheckId::NewGameReceived, false, "메인 메뉴의 콜백 표(fxDelegate) 또는 무비를 찾지 못했습니다.");
+                        fail("새 게임 진입 실패.");
+                        break;
+                    }
+                    std::string names;
+                    std::string newGameCallback;
+                    for (const auto& node : menu->fxDelegate->callbacks) {
+                        const std::string name = node.first.data() ? node.first.data() : "";
+                        names += (names.empty() ? "" : ",") + name;
+                        if (name == "StartNewGame") {
+                            newGameCallback = name;
+                        }
+                    }
+                    LogInfo(std::format("NewGame: 메인 메뉴 콜백 [{}].", names));
+                    if (newGameCallback.empty()) {
+                        CheckNewGame(CheckId::NewGameReceived, false, std::format(
+                            "메인 메뉴 콜백에 StartNewGame이 없습니다 [{}].", names));
+                        fail("새 게임 진입 실패.");
+                        break;
+                    }
+                    LogInfo(std::format("NewGame: MainMenu 관측 후 {:.2f}s에 메인 메뉴 콜백 '{}' 1회 호출.", menuElapsed, newGameCallback));
+                    // 엔진의 FxDelegate::Callback은 args[0]을 응답 ID로 읽는다(GameDelegate.call과 같음). 인자를 비우면
+                    // 널 주소를 읽어 튕긴다(2026-11-26 실행). 응답이 필요 없으므로 빈 값 하나를 응답 ID 자리에 넘긴다.
+                    const RE::GFxValue responseId{};
+                    menu->fxDelegate->Callback(menu->uiMovie.get(), newGameCallback.c_str(), &responseId, 1);
+                    NextNewGame(Step::AwaitWorld);
+                }
+                break;
+            }
+            case Step::AwaitWorld: {
+                if (!ready) {
+                    break;
+                }
+                // A3: kNewGame 수신은 정확히 1회여야 하며 수신 프레임도 함께 기록한다.
+                const std::uint64_t newGameDelta = newGameCount - g_newGame.newGameCountBefore;
+                if (newGameDelta == 0) {
+                    if (!g_newGame.worldReadySince) {
+                        g_newGame.worldReadySince = now;
+                    }
+                    if (std::chrono::duration<double>(now - *g_newGame.worldReadySince).count() < 1.0) {
+                        break;
+                    }
+                    CheckNewGame(CheckId::NewGameReceived, false, "kNewGame 미수신, 다른 진입 필요");
+                    fail("kNewGame 미수신, 다른 진입 필요");
+                    break;
+                }
+                if (newGameDelta != 1) {
+                    CheckNewGame(CheckId::NewGameReceived, false, std::format(
+                        "kNewGame 수신 횟수가 1이 아닙니다 ({} -> {}, delta={}, lastFrame={}).",
+                        g_newGame.newGameCountBefore, newGameCount, newGameDelta, newGameFrame));
+                    fail("kNewGame 수신 횟수 이상.");
+                    break;
+                }
+                BlockSessionManualSaves(*player);
+                CheckNewGame(CheckId::NewGameReceived, true, std::format(
+                    "메인 메뉴 StartNewGame으로 kNewGame 정확히 1회 수신 ({} -> {}, frame={}) 후 월드 진입 완료.",
+                    g_newGame.newGameCountBefore, newGameCount, newGameFrame));
+
+                const auto load = SaveLoad::GetLastLoadDiagnostics();
+                const bool isNewGameDecision = load.decision &&
+                    load.decision->disposition == Core::SaveDisposition::Normal &&
+                    load.decision->reason == "새 게임입니다." && !load.receivedLoad;
+                const bool normal = ModState::Get()->mode == ModMode::Normal;
+                const bool noCleanup = !SaveLoad::GetMigrationCandidate(player);
+                const bool decisionOk = isNewGameDecision && normal && generation == 1 && noCleanup;
+                CheckNewGame(CheckId::Decision, decisionOk, std::format(
+                    "decision={} ({}), receivedLoad={}, worldGen={}, normalMode={}, cleanupCandidate={}.",
+                    load.decision ? SaveDispositionName(load.decision->disposition) : "none",
+                    load.decision ? load.decision->reason : "", load.receivedLoad, generation, normal, !noCleanup));
+                if (!decisionOk) {
+                    fail("새 게임 진입 판정이 세대 1 NewGame / Normal이 아닙니다.");
+                    break;
+                }
+                NextNewGame(Step::WaitGrant);
+                break;
+            }
+            case Step::WaitGrant: {
+                if (!ready) {
+                    break;
+                }
+                // 결정 263: 새 게임은 시작 직후 지급하지 않고 패널을 처음 열 때 준다. 열기 전에는 실물 0·STRT 빈 목록·대기 중이어야 한다.
+                if (!g_newGame.panelOpened) {
+                    if (!g_newGame.preOpenChecked) {
+                        const auto pre = SaveLoad::GetStateCopy();
+                        auto* sparkForm = FormIds::Lookup<RE::TESObjectMISC>(0x880);
+                        const auto sparkBefore = (player && sparkForm) ? player->GetItemCount(sparkForm) : -1;
+                        const bool pending = SaveLoad::IsStarterGrantPendingForPanel();
+                        const auto postInit = SaveLoad::GetLastPostLoadInitDiagnostics();
+                        g_newGame.preOpenOk = sparkBefore == 0 && pre.starterGrantedIds.empty() && pending &&
+                            postInit.isNewGame && postInit.starterDeferredToPanel && postInit.starterGrantedCount == 0;
+                        g_newGame.preOpenDetail = std::format(
+                            "패널 열기 전: Spark={}, STRT={}개, 지급대기={}, 초기화(isNewGame={}, deferred={}, granted={})",
+                            sparkBefore, pre.starterGrantedIds.size(), pending,
+                            postInit.isNewGame, postInit.starterDeferredToPanel, postInit.starterGrantedCount);
+                        g_newGame.preOpenChecked = true;
+                        LogInfo(g_newGame.preOpenDetail);
+                    }
+                    const auto panelSeqBefore = SaveLoad::GetLastPanelStarterGrantDiagnostics().sequence;
+                    if (UiBridge::TryOpenPanelOnMainThread("skills")) {
+                        const auto panelGrant = SaveLoad::GetLastPanelStarterGrantDiagnostics();
+                        g_newGame.panelGranted = panelGrant.sequence > panelSeqBefore ? panelGrant.grantedCount : 0;
+                        g_newGame.panelOpened = true;
+                        UiBridge::ClosePanelOnMainThread();
+                        LogInfo(std::format("NewGame: 패널을 열어 시작 젬 {}개 지급, 패널 닫음.", g_newGame.panelGranted));
+                    } else if (elapsed >= 20.0) {
+                        CheckNewGame(CheckId::StarterGems, false, std::format("{}; 20초 안에 PoE 패널을 열지 못했습니다.",
+                            g_newGame.preOpenDetail));
+                        fail("시작 젬 지급을 위한 패널 열기에 실패했습니다.");
+                    }
+                    break;
+                }
+                const auto state = SaveLoad::GetStateCopy();
+                // A10: newgame 기대값은 고정 {"gem.Spark"}.
+                const auto expectedIds = Core::ExpectedGen1StarterIdsForConfig(true);
+                if (state.starterGrantedIds != expectedIds && elapsed < 5.0) {
+                    break;
+                }
+
+                // N2: 62개 실물 젬 폼 수량 검증(gem.Spark=1, 나머지 61개 0).
+                const auto expectedStarterByForm = ExpectedGen1StarterByRuntimeForm(/*ignoreConfig=*/true);
+                std::string gemDiffs;
+                std::size_t gemFormsChecked = 0;
+                for (const auto& entry : Core::GemForms::kPhysicalForms) {
+                    auto* form = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId);
+                    if (!form) {
+                        continue;
+                    }
+                    ++gemFormsChecked;
+                    const auto runtimeId = form->GetFormID();
+                    const auto actual = player->GetItemCount(form);
+                    const auto it = expectedStarterByForm.find(runtimeId);
+                    const std::int32_t want = (it != expectedStarterByForm.end()) ? it->second : 0;
+                    if (actual != want) {
+                        gemDiffs += std::format(" {:08X}={}(기대 {})", runtimeId, actual, want);
+                    }
+                }
+                CheckNewGame(CheckId::StarterGems,
+                    g_newGame.preOpenOk && g_newGame.panelGranted == 1 &&
+                        gemDiffs.empty() && gemFormsChecked == Core::GemForms::kPhysicalForms.size(),
+                    std::format("{}; 패널 열어 지급={}, 확인 젬 폼={}/{}, 불일치=[{} ].",
+                        g_newGame.preOpenDetail, g_newGame.panelGranted,
+                        gemFormsChecked, Core::GemForms::kPhysicalForms.size(), gemDiffs));
+
+                // N3: PoE1 화폐 12종 수량 전부 0.
+                std::string currencyDiffs;
+                std::size_t currencyFormsChecked = 0;
+                for (const auto localId : FormIds::kCurrencyOrbForms) {
+                    auto* form = FormIds::Lookup<RE::TESObjectMISC>(localId);
+                    if (!form) {
+                        continue;
+                    }
+                    ++currencyFormsChecked;
+                    const auto actual = player->GetItemCount(form);
+                    if (actual != 0) {
+                        currencyDiffs += std::format(" {:08X}={}", form->GetFormID(), actual);
+                    }
+                }
+                CheckNewGame(CheckId::PoE1CurrencyZero,
+                    currencyDiffs.empty() && currencyFormsChecked == FormIds::kCurrencyOrbForms.size(),
+                    std::format("확인 화폐 폼={}/{}, 0이 아닌 화폐=[{} ].",
+                        currencyFormsChecked, FormIds::kCurrencyOrbForms.size(), currencyDiffs));
+
+                // N4: STRT 기록이 고정 {"gem.Spark"}와 일치.
+                const bool strtOk = state.starterGrantedIds == expectedIds;
+                CheckNewGame(CheckId::StarterRecord, strtOk, std::format(
+                    "STRT일치={} (실제 {}개, 기대 {}개).",
+                    strtOk, state.starterGrantedIds.size(), expectedIds.size()));
+
+                // N5: 트리 세대 == 1.
+                const bool treeGenOk = state.tree.generation == 1 && g_treeData && g_treeData->IsLoaded() && g_treeData->Generation() == 1;
+                CheckNewGame(CheckId::TreeGenOne, treeGenOk, std::format(
+                    "state.tree.generation={}, packTreeGen={}.",
+                    state.tree.generation, (g_treeData && g_treeData->IsLoaded()) ? g_treeData->Generation() : 0));
+
+                g_newGame.afterGrant = CaptureAllGemAndCurrencyCounts(player);
+                g_newGame.starterIdsAfterGrant = state.starterGrantedIds;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem = g_newGame.outSlot;
+                    g_saveMatched = false;
+                    g_saveAtNextMessage.reset();
+                    g_sessionSaveRequested = false;
+                }
+                NextNewGame(Step::Save);
+                break;
+            }
+            case Step::Save: {
+                CloseDialogueWhileAwaitingSave(ui);
+                const auto write = SaveLoad::GetLastSaveDiagnostics();
+                if (!saveMatched || write.sequence == before) {
+                    if (elapsed >= kScenarioASaveTimeoutSec) {
+                        fail("새 게임 출력 슬롯 저장이 코세이브 콜백에 도달하지 못했습니다.");
+                    } else if (!saveMatched && ready && engineIdle && !dialogue) {
+                        const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                        if (manager && manager->GetRuntimeData().thread.isBusy) break;
+                        switch (g_newGame.retry.Poll(elapsed)) {
+                        case Action::Request:
+                            if (!RequestSessionSave(g_newGame.outSlot)) fail("새 게임 출력 슬롯 저장 요청에 실패했습니다.");
+                            break;
+                        case Action::Exhausted: fail(g_newGame.retry.ExhaustionMessage("NewGame out save")); break;
+                        case Action::Wait: break;
+                        }
+                    }
+                    break;
+                }
+                const bool ess = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->ess, g_session.pendingSaveFiles->essBefore, g_session.pendingSaveRequestedAt);
+                const bool skse = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->cosave, g_session.pendingSaveFiles->cosaveBefore, g_session.pendingSaveRequestedAt);
+                const bool hasStarterRec = std::ranges::find(write.recordTypes, Core::SaveRecord::kRecordStarter) != write.recordTypes.end();
+                const bool callback = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
+                    !write.replayed && write.generation && IsGen1Target(*write.generation) &&
+                    write.generation->buildId == g_newGame.buildId && hasStarterRec &&
+                    std::ranges::find(write.recordTypes, Core::kRecordMigration) == write.recordTypes.end();
+                if (callback && !(ess && skse) && elapsed < kScenarioASaveTimeoutSec) break;
+                CheckNewGame(CheckId::SaveOut, callback && ess && skse, std::format(
+                    "save='{}', callback={}, STRT={}, essUpdated={}, skseUpdated={}, wroteGeneration={}, replayed={}.",
+                    g_newGame.outSlot, callback, hasStarterRec, ess, skse, write.wroteGeneration, write.replayed));
+                if (!callback || !ess || !skse) {
+                    fail("새 게임 출력 슬롯 저장 검증에 실패했습니다.");
+                } else {
+                    BeginNewGameLoad(Step::Reload);
+                }
+                break;
+            }
+            case Step::Reload: {
+                if (!signaled || !ready) {
+                    break;
+                }
+                BlockSessionManualSaves(*player);
+                // A2·A9: 재로드 뒤 주 갱신 스레드 PostLoadInit 완료를 진단으로 확인한 뒤 판정한다.
+                const auto postInit = SaveLoad::GetLastPostLoadInitDiagnostics();
+                const bool postInitDone = postInit.sequence > g_newGame.postLoadSeqBeforeReload;
+                if (!postInitDone && elapsed < 15.0) {
+                    break;
+                }
+                const auto load = SaveLoad::GetLastLoadDiagnostics();
+                const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
+                    load.receivedLoad && load.collectionComplete && ModState::AllowsGameplay() && generation == 1;
+                const bool genr = load.generation && load.generation->status == Core::GenerationRecordStatus::Valid &&
+                    IsGen1Target(load.generation->value);
+                // 결정 263: 재로드 뒤 패널을 다시 열어도 이미 받은 시작 젬은 다시 주지 않는다.
+                const auto panelSeqBefore = SaveLoad::GetLastPanelStarterGrantDiagnostics().sequence;
+                const bool panelOpened = UiBridge::TryOpenPanelOnMainThread("skills");
+                if (!panelOpened && elapsed < 20.0) {
+                    break;
+                }
+                const auto panelGrant = SaveLoad::GetLastPanelStarterGrantDiagnostics();
+                const bool panelZero = panelOpened && panelGrant.sequence > panelSeqBefore && panelGrant.grantedCount == 0;
+                if (panelOpened) {
+                    UiBridge::ClosePanelOnMainThread();
+                }
+                const auto items = CaptureAllGemAndCurrencyCounts(player);
+                const auto state = SaveLoad::GetStateCopy();
+                const bool strtKept = state.starterGrantedIds == g_newGame.starterIdsAfterGrant;
+                const bool treeGenKept = state.tree.generation == 1;
+                const bool zeroNewGrant = postInitDone && postInit.starterGrantedCount == 0 && panelZero;
+                const bool newGameCountStable = (newGameCount - g_newGame.newGameCountBefore) == 1;
+                std::string differences;
+                for (const auto& [formId, actualCount] : items) {
+                    const auto it = g_newGame.afterGrant.find(formId);
+                    const auto saved = it != g_newGame.afterGrant.end() ? it->second : -1;
+                    if (actualCount != saved) {
+                        differences += std::format(" {:08X}={}->{}", formId, saved, actualCount);
+                    }
+                }
+                CheckNewGame(CheckId::ReloadOut,
+                    normal && genr && strtKept && treeGenKept && zeroNewGrant && newGameCountStable && differences.empty(),
+                    std::format(
+                        "save='{}', decision={}, receivedLoad={}, GENR poe2/1={}, postInitDone={} (frame={}, granted={}), "
+                        "panel(opened={}, granted={}), kNewGameDelta={}, STRT유지={}, treeGen={}, 수량변화=[{} ].",
+                        g_newGame.outSlot,
+                        load.decision ? SaveDispositionName(load.decision->disposition) : "none",
+                        load.receivedLoad, genr, postInitDone, postInit.frame, postInit.starterGrantedCount,
+                        panelOpened, panelGrant.sequence > panelSeqBefore ? panelGrant.grantedCount : 0,
+                        newGameCount - g_newGame.newGameCountBefore, strtKept, state.tree.generation, differences));
+                g_session.completedNormally = true;
+                FinishAndScheduleQuit("세대 1 새 게임 진입 시험을 마쳤습니다.");
+                break;
+            }
+            }
+        }
+
+        void NextPreserve(PreserveStep step)
+        {
+            g_preserve.step = step;
+            g_preserve.since = Clock::now();
+            g_preserve.retry = GemsRetry(3);
+        }
+
+        bool BeginPreserveLoad()
+        {
+            const auto& stem = g_cfg.preserveSaves[g_preserve.index];
+            const auto outStem = stem + AutoTestMarker::kPreserveOutSuffix;
+            if (!SaveLoad::SetTestSessionAllowedSlot(outStem)) {
+                return false;
+            }
+            g_preserve.grantCallsBeforeLoad = GemInventory::StarterGrantCallCount();
+            g_preserve.countsAtLoad.clear();
+            NextPreserve(PreserveStep::LoadInput);
+            std::scoped_lock lock(g_msgMutex);
+            g_preserve.loadStartsAtStep = g_sessionLoadStarts;
+            g_expectedLoadStem.clear();
+            g_preLoadMatched = g_postLoadSignaled = g_postLoadSucceeded = false;
+            return true;
+        }
+
+        void TickPreserveOnly()
+        {
+            using Step = PreserveStep;
+            using Action = GemsRetry::Action;
+            bool loading = false, signaled = false, succeeded = false, saveMatched = false;
+            bool unexpectedLoad = false, unexpectedSave = false;
+            std::uint64_t before = 0;
+            std::uint64_t currentLoadStarts = 0;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                loading = g_preLoadMatched;
+                signaled = g_postLoadSignaled;
+                succeeded = g_postLoadSucceeded;
+                saveMatched = g_saveMatched;
+                before = g_saveSequenceAtMessage;
+                unexpectedLoad = g_sessionUnexpectedLoad;
+                unexpectedSave = g_sessionUnexpectedSave;
+                currentLoadStarts = g_sessionLoadStarts;
+            }
+            const bool loadStartedInStep = loading || (currentLoadStarts > g_preserve.loadStartsAtStep);
+            const auto now = Clock::now();
+            const auto elapsed = std::chrono::duration<double>(now - g_preserve.since).count();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* ui = RE::UI::GetSingleton();
+            const auto stepName = kPreserveStepNames[static_cast<std::size_t>(g_preserve.step)];
+            const auto fail = [&](std::string_view detail) {
+                FinishAndScheduleQuit(std::format("[preserve:{}:#{}] {}", stepName, g_preserve.index + 1, detail));
+            };
+            if (unexpectedLoad || unexpectedSave || (signaled && !succeeded) || elapsed > 90.0 ||
+                std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
+                fail((unexpectedLoad || unexpectedSave) ? "보존 시험 중 예상 밖의 로드 또는 저장이 발생했습니다." :
+                    signaled && !succeeded ? "보존 입력 세이브 로드에 실패했습니다." : "보존 시험 대기 시간이 초과되었습니다.");
+                return;
+            }
+            const bool ready = IsPlayerReadyInWorld() && ui && !ui->GameIsPaused() && player && !player->IsDead();
+            const bool mainMenu = ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME);
+            const bool dialogue = ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME);
+            const bool engineIdle = !loading && ui && !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) &&
+                (mainMenu ? !ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME) :
+                    !ui->IsModalMenuOpen() && !ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
+
+            if (!signaled && g_preserve.step == Step::LoadInput) {
+                CloseGemsDialogue(ui);
+                const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                if (loadStartedInStep || !engineIdle || dialogue || !(mainMenu || ready) || (manager && manager->GetRuntimeData().thread.isBusy)) {
+                    return;
+                }
+                switch (g_preserve.retry.Poll(elapsed, 4.0)) {
+                case Action::Request: {
+                    const auto& stem = g_cfg.preserveSaves[g_preserve.index];
+                    std::string loadReason;
+                    const bool sent = RequestLoadSave(stem, &loadReason);
+                    LogInfo(std::format("Preserve #{}/{} load request {} for '{}', sent={} ({}).",
+                        g_preserve.index + 1, g_cfg.preserveSaves.size(), g_preserve.retry.Attempts(), stem, sent, loadReason));
+                    break;
+                }
+                case Action::Exhausted: fail(g_preserve.retry.ExhaustionMessage("Preserve load start")); break;
+                case Action::Wait: break;
+                }
+                return;
+            }
+
+            switch (g_preserve.step) {
+            case Step::Prepare: {
+                const auto pack = SaveLoad::GetContentGeneration();
+                const bool packOk = pack.has_value() && ModState::AllowsGameplay() && !g_cfg.preserveSaves.empty();
+                const bool sessionOk = packOk && BeginAutoTestSession("", /*allowPreserveSave=*/true);
+                std::string missingEss;
+                if (sessionOk) {
+                    for (const auto& base : g_session.baselineSaves) {
+                        if (!base.essBefore.exists) {
+                            if (!missingEss.empty()) missingEss += ", ";
+                            missingEss += base.stem;
+                        }
+                    }
+                }
+                if (!packOk || !sessionOk || !missingEss.empty()) {
+                    fail(std::format("preserve 준비 실패: pack={}, game/gen={}/{}, sessionOk={}, missingEss=[{}].",
+                        pack.has_value(), pack ? pack->game : "none", pack ? pack->contentGeneration : 0,
+                        sessionOk, missingEss));
+                    break;
+                }
+                LogInfo(std::format("Preserve 준비 완료: game/gen={}/{}, 입력 {}건.",
+                    pack->game, pack->contentGeneration, g_cfg.preserveSaves.size()));
+                g_preserve.index = 0;
+                NextPreserve(Step::Menu);
+                break;
+            }
+            case Step::Menu: {
+                if (elapsed >= 2.0 && engineIdle && (mainMenu || ready)) {
+                    if (!BeginPreserveLoad()) {
+                        fail("보존 시험 출력 슬롯 설정에 실패했습니다.");
+                    }
+                }
+                break;
+            }
+            case Step::LoadInput: {
+                if (signaled && ready) {
+                    BlockSessionManualSaves(*player);
+                    const std::size_t n = g_preserve.index + 1;
+                    const auto& stem = g_cfg.preserveSaves[g_preserve.index];
+                    const auto load = SaveLoad::GetLastLoadDiagnostics();
+                    const auto status = ModState::Get();
+                    const bool preserveDecision = load.decision && load.decision->disposition == Core::SaveDisposition::Preserve;
+                    const bool notSessionAbort = !status->reason.starts_with("시험 세션이 중단");
+                    const bool preserveMode = status->mode == ModMode::Preserve && !ModState::AllowsGameplay() && notSessionAbort;
+                    const bool ok = preserveDecision && preserveMode;
+                    CheckPreserve(std::format("P{}a_Decision", n), ok, std::format(
+                        "input='{}', decision={} ({}), modePreserve={}, modReason='{}', notSessionAbort={}, allowsGameplay={}, "
+                        "receivedLoad={}, collectionComplete={}, preservedRecords={}.",
+                        stem,
+                        load.decision ? SaveDispositionName(load.decision->disposition) : "none",
+                        load.decision ? load.decision->reason : "",
+                        status->mode == ModMode::Preserve, status->reason, notSessionAbort, ModState::AllowsGameplay(),
+                        load.receivedLoad, load.collectionComplete, SaveLoad::GetPreservedRecordCount()));
+                    if (!ok) {
+                        fail(std::format("입력 '{}'가 정상 Preserve 판정·보존 모드로 열리지 않았습니다.", stem));
+                        break;
+                    }
+                    NextPreserve(Step::Observe);
+                }
+                break;
+            }
+            case Step::Observe: {
+                // A8: P<n>c 대기는 3초.
+                if (!ready || elapsed < 3.0) {
+                    break;
+                }
+                const std::size_t n = g_preserve.index + 1;
+                const auto& stem = g_cfg.preserveSaves[g_preserve.index];
+                const auto outStem = stem + AutoTestMarker::kPreserveOutSuffix;
+                const auto candidate = SaveLoad::GetMigrationCandidate(player);
+                const auto migDiag = SaveLoad::GetLastMigrationDiagnostics();
+                const auto status = ModState::Get();
+                const bool noCleanup = !candidate.has_value() && !migDiag.has_value() && status->mode == ModMode::Preserve;
+                CheckPreserve(std::format("P{}b_NoCleanup", n), noCleanup, std::format(
+                    "input='{}', candidate={}, lastMigration={}, modePreserve={}.",
+                    stem, candidate.has_value(), migDiag.has_value(), status->mode == ModMode::Preserve));
+
+                const auto grantCallsNow = GemInventory::StarterGrantCallCount();
+                const auto itemsNow = CaptureAllGemAndCurrencyCounts(player);
+                std::string countDiffs;
+                for (const auto& [formId, actual] : itemsNow) {
+                    const auto it = g_preserve.countsAtLoad.find(formId);
+                    const auto beforeCount = it != g_preserve.countsAtLoad.end() ? it->second : -1;
+                    if (actual != beforeCount) {
+                        countDiffs += std::format(" {:08X}={}->{}", formId, beforeCount, actual);
+                    }
+                }
+                const bool noGrant = grantCallsNow == g_preserve.grantCallsBeforeLoad &&
+                    countDiffs.empty() && itemsNow.size() == g_preserve.countsAtLoad.size() && !itemsNow.empty();
+                CheckPreserve(std::format("P{}c_NoGrant", n), noGrant, std::format(
+                    "input='{}', wait={:.2f}s, grantCalls={}->{}, 62젬+12화폐 변화=[{} ].",
+                    stem, elapsed, g_preserve.grantCallsBeforeLoad, grantCallsNow, countDiffs));
+
+                if (!noCleanup) {
+                    fail(std::format("보존 모드 입력 '{}'에서 정리 상태가 감지되어 중단합니다.", stem));
+                    break;
+                }
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem = outStem;
+                    g_saveMatched = false;
+                    g_saveAtNextMessage.reset();
+                    g_sessionSaveRequested = false;
+                }
+                NextPreserve(Step::SaveOut);
+                break;
+            }
+            case Step::SaveOut: {
+                CloseDialogueWhileAwaitingSave(ui);
+                const std::size_t n = g_preserve.index + 1;
+                const auto& stem = g_cfg.preserveSaves[g_preserve.index];
+                const auto outStem = stem + AutoTestMarker::kPreserveOutSuffix;
+                const auto write = SaveLoad::GetLastSaveDiagnostics();
+                if (!saveMatched || write.sequence == before) {
+                    if (elapsed >= kScenarioASaveTimeoutSec) {
+                        fail(std::format("보존 출력 '{}' 저장이 코세이브 콜백에 도달하지 못했습니다.", outStem));
+                    } else if (!saveMatched && ready && engineIdle && !dialogue) {
+                        const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                        if (manager && manager->GetRuntimeData().thread.isBusy) break;
+                        switch (g_preserve.retry.Poll(elapsed)) {
+                        case Action::Request:
+                            if (!RequestSessionSave(outStem)) {
+                                fail(std::format("보존 출력 '{}' 저장 요청에 실패했습니다.", outStem));
+                            }
+                            break;
+                        case Action::Exhausted: fail(g_preserve.retry.ExhaustionMessage("Preserve out save")); break;
+                        case Action::Wait: break;
+                        }
+                    }
+                    break;
+                }
+                const auto preservedCount = SaveLoad::GetPreservedRecordCount();
+                const bool ess = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->ess, g_session.pendingSaveFiles->essBefore, g_session.pendingSaveRequestedAt);
+                const bool skse = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->cosave, g_session.pendingSaveFiles->cosaveBefore, g_session.pendingSaveRequestedAt);
+                const bool skseOk = preservedCount == 0 ? true : skse;
+                // A8: 제품의 replay 경로(write.replayed == true)로 저장되었는지 확인한다.
+                const bool callback = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
+                    write.replayed && write.recordTypes.size() == preservedCount;
+                if (callback && !(ess && skseOk) && elapsed < kScenarioASaveTimeoutSec) {
+                    break;
+                }
+                const bool ok = callback && ess && skseOk;
+                CheckPreserve(std::format("P{}d_SavedOut", n), ok, std::format(
+                    "input='{}', output='{}', callback={}, replayed={}, replayedRecords={}/{}, failedRecords={}, essUpdated={}, skseUpdated={}.",
+                    stem, outStem, callback, write.replayed, write.recordTypes.size(), preservedCount, write.failedRecords, ess, skse));
+                if (!ok) {
+                    fail(std::format("보존 출력 '{}' 저장 검증에 실패했습니다.", outStem));
+                    break;
+                }
+                g_preserve.pairs.emplace_back(stem, outStem);
+                LogInfo(std::format("PRESERVE_PAIR\t{}\t{}", stem, outStem));
+                ++g_preserve.index;
+                if (g_preserve.index < g_cfg.preserveSaves.size()) {
+                    if (!BeginPreserveLoad()) {
+                        fail("다음 보존 입력 출력 슬롯 설정에 실패했습니다.");
+                    }
+                } else {
+                    g_session.completedNormally = true;
+                    FinishAndScheduleQuit(std::format("보존 모드 검증({}건)을 마쳤습니다.", g_cfg.preserveSaves.size()));
+                }
+                break;
+            }
+            }
+        }
+
+        void ReleaseGen1GateState(bool removeTempGear)
+        {
+            ResetKillLoopState(g_gen1Gate.killLoop);
+            DisposePendingDeleteMobsNow(g_gen1Gate.killCorpses);
+            if (const auto mob = std::exchange(g_gen1Gate.naturalMob, {}).get()) {
+                mob->Disable();
+                mob->SetDelete(true);
+            }
+            g_gen1Gate.naturalMobId = 0;
+            if (const auto mob = std::exchange(g_gen1Gate.esMob, {}).get()) {
+                mob->Disable();
+                mob->SetDelete(true);
+            }
+            g_gen1Gate.esMobId = 0;
+            if (g_config) {
+                if (const auto v = std::exchange(g_gen1Gate.enableLootDropsBefore, std::nullopt)) {
+                    g_config->enableLootDrops = *v;
+                }
+                if (const auto v = std::exchange(g_gen1Gate.enableMonsterPromotionBefore, std::nullopt)) {
+                    g_config->enableMonsterPromotion = *v;
+                }
+            }
+            if (const auto god = std::exchange(g_gen1Gate.godModeBefore, std::nullopt)) {
+                SetPlayerGodModeFlag(*god);
+            }
+            if (removeTempGear && !g_gen1Gate.tempGearAdded.empty()) {
+                if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                    auto* equipMgr = RE::ActorEquipManager::GetSingleton();
+                    for (const auto fid : g_gen1Gate.tempGearAdded) {
+                        if (auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(fid)) {
+                            if (equipMgr) {
+                                equipMgr->UnequipObject(player, obj, nullptr, 1, nullptr, false, true, false, true);
+                            }
+                            if (player->GetItemCount(obj) > 0) {
+                                player->RemoveItem(obj, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                            }
+                        }
+                    }
+                    EquipmentSync::RefreshFromPlayerNow();
+                }
+                g_gen1Gate.tempGearAdded.clear();
+            }
+        }
+
+        void NextGen1Gate(Gen1GateStep step)
+        {
+            g_gen1Gate.step = step;
+            g_gen1Gate.since = Clock::now();
+            g_gen1Gate.lastTick = g_gen1Gate.since;
+            g_gen1Gate.retry = GemsRetry(3);
+        }
+
+        void BeginGen1GateLoad(Gen1GateStep step)
+        {
+            NextGen1Gate(step);
+            g_gen1Gate.postLoadSeqBeforeReload = SaveLoad::GetLastPostLoadInitDiagnostics().sequence;
+            std::scoped_lock lock(g_msgMutex);
+            g_gen1Gate.loadStartsAtStep = g_sessionLoadStarts;
+            g_expectedLoadStem.clear();
+            g_preLoadMatched = g_postLoadSignaled = g_postLoadSucceeded = false;
+        }
+
+        bool IsZeroEquipmentSlotContribution(const Core::EquippedSlotInput& slot) noexcept
+        {
+            const auto& s = slot.stats;
+            const auto nearZero = [](double v) noexcept { return std::abs(v) < 1e-9; };
+            return slot.reqLevel == 0 && slot.reqStr == 0 && slot.reqDex == 0 && slot.reqInt == 0 &&
+                nearZero(slot.baseArmour) && nearZero(slot.baseEvasion) && nearZero(slot.baseEnergyShield) &&
+                nearZero(slot.baseBlockChance) && nearZero(slot.baseWeaponPhysMin) && nearZero(slot.baseWeaponPhysMax) &&
+                nearZero(slot.baseWeaponCritChancePct) && nearZero(slot.baseWeaponAttackRate) &&
+                nearZero(s.localFlatPhysMin) && nearZero(s.localFlatPhysMax) && nearZero(s.localIncPhysPct) &&
+                nearZero(s.localFlatFireMin) && nearZero(s.localFlatFireMax) &&
+                nearZero(s.localFlatColdMin) && nearZero(s.localFlatColdMax) &&
+                nearZero(s.localFlatLightningMin) && nearZero(s.localFlatLightningMax) &&
+                nearZero(s.localFlatChaosMin) && nearZero(s.localFlatChaosMax) &&
+                nearZero(s.localIncAttackSpeedPct) && nearZero(s.localIncCritChancePct) &&
+                nearZero(s.localFlatArmour) && nearZero(s.localIncArmourPct) &&
+                nearZero(s.localFlatEvasion) && nearZero(s.localIncEvasionPct) &&
+                nearZero(s.localFlatEnergyShield) && nearZero(s.localIncEnergyShieldPct) &&
+                nearZero(s.localIncBlockPct) && nearZero(s.flatLife) && nearZero(s.flatMana) &&
+                nearZero(s.incAttackSpeedPct) && nearZero(s.attackBlockChance) && nearZero(s.spellBlockChance);
+        }
+
+        void UnequipPlayerHandsForGate(RE::PlayerCharacter* player, RE::ActorEquipManager* equipMgr)
+        {
+            if (!player || !equipMgr) {
+                return;
+            }
+            for (int attempt = 0; attempt < 4; ++attempt) {
+                EquipmentSync::RefreshFromPlayerNow();
+                const auto meta = EquipmentSync::GetCurrentGearMeta();
+                bool removedAny = false;
+                for (const auto slot : { Core::EquipSlot::MainHand, Core::EquipSlot::OffHand }) {
+                    const auto& m = meta[static_cast<std::size_t>(slot)];
+                    if (m.occupied && m.baseFormId != 0) {
+                        if (auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(m.baseFormId)) {
+                            equipMgr->UnequipObject(player, obj, nullptr, 1, nullptr, false, true, false, true);
+                            removedAny = true;
+                        }
+                    }
+                }
+                if (!removedAny) {
+                    break;
+                }
+            }
+            EquipmentSync::RefreshFromPlayerNow();
+        }
+
+        void TickGen1GateOnly()
+        {
+            using Step = Gen1GateStep;
+            using Action = GemsRetry::Action;
+            bool loading = false, signaled = false, succeeded = false, saveMatched = false;
+            bool unexpectedLoad = false, unexpectedSave = false;
+            std::uint64_t before = 0;
+            std::uint64_t currentLoadStarts = 0;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                loading = g_preLoadMatched;
+                signaled = g_postLoadSignaled;
+                succeeded = g_postLoadSucceeded;
+                saveMatched = g_saveMatched;
+                before = g_saveSequenceAtMessage;
+                unexpectedLoad = g_sessionUnexpectedLoad;
+                unexpectedSave = g_sessionUnexpectedSave;
+                currentLoadStarts = g_sessionLoadStarts;
+            }
+            const bool loadStartedInStep = loading || (currentLoadStarts > g_gen1Gate.loadStartsAtStep);
+            const auto now = Clock::now();
+            const double dtTick = std::clamp(std::chrono::duration<double>(now - g_gen1Gate.lastTick).count(), 0.0, 0.25);
+            g_gen1Gate.lastTick = now;
+            const auto elapsed = std::chrono::duration<double>(now - g_gen1Gate.since).count();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* ui = RE::UI::GetSingleton();
+            const auto stepName = kGen1GateStepNames[static_cast<std::size_t>(g_gen1Gate.step)];
+            const auto fail = [&](std::string_view detail) {
+                FinishAndScheduleQuit(std::format("[gen1gate:{}] {}", stepName, detail));
+            };
+            const double stepTimeoutSec = g_gen1Gate.step == Step::KillDropGate ? 180.0 : 90.0;
+            if (unexpectedLoad || unexpectedSave || (signaled && !succeeded) || elapsed > stepTimeoutSec ||
+                std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
+                fail((unexpectedLoad || unexpectedSave) ? "gen1gate 시험 중 예상 밖의 로드 또는 저장이 발생했습니다." :
+                    signaled && !succeeded ? "gen1gate 세이브 로드에 실패했습니다." : "gen1gate 시험 대기 시간이 초과되었습니다.");
+                return;
+            }
+            const bool ready = IsPlayerReadyInWorld() && ui && !ui->GameIsPaused() && player && !player->IsDead();
+            const bool mainMenu = ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME);
+            const bool dialogue = ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME);
+            const bool engineIdle = !loading && ui && !ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) &&
+                (mainMenu ? !ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME) :
+                    !ui->IsModalMenuOpen() && !ui->IsMenuOpen(RE::FaderMenu::MENU_NAME));
+            const auto generation = SaveLoad::WorldGemGeneration();
+
+            if (!signaled && (g_gen1Gate.step == Step::LoadInput || g_gen1Gate.step == Step::ReloadOut)) {
+                CloseGemsDialogue(ui);
+                const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                if (loadStartedInStep || !engineIdle || dialogue || !(mainMenu || ready) || (manager && manager->GetRuntimeData().thread.isBusy)) {
+                    return;
+                }
+                switch (g_gen1Gate.retry.Poll(elapsed, 4.0)) {
+                case Action::Request: {
+                    const auto& stem = g_gen1Gate.step == Step::ReloadOut ? g_gen1Gate.outSlot : g_cfg.baselineSave;
+                    std::string loadReason;
+                    const bool sent = RequestLoadSave(stem, &loadReason);
+                    LogInfo(std::format("Gen1Gate {} load request {} for '{}', sent={} ({}).",
+                        stepName, g_gen1Gate.retry.Attempts(), stem, sent, loadReason));
+                    break;
+                }
+                case Action::Exhausted: fail(g_gen1Gate.retry.ExhaustionMessage("Gen1Gate load start")); break;
+                case Action::Wait: break;
+                }
+                return;
+            }
+
+            switch (g_gen1Gate.step) {
+            case Step::Prepare: {
+                const auto pack = SaveLoad::GetContentGeneration();
+                g_gen1Gate.packageGeneration = pack ? pack->contentGeneration : 1;
+                const bool allowedGen = pack && (pack->contentGeneration == 0 || pack->contentGeneration == 1) && ModState::AllowsGameplay();
+                // B1: 세대 1 패키지는 out_save 필수, 세대 0 양성 대조는 out_save 금지.
+                const bool outSaveRuleOk = g_gen1Gate.packageGeneration == 1
+                    ? !g_cfg.outSave.empty() : g_cfg.outSave.empty();
+                g_gen1Gate.outSlot = g_gen1Gate.packageGeneration == 1 ? g_cfg.outSave : std::string{};
+                const bool sessionOk = allowedGen && outSaveRuleOk && BeginAutoTestSession(g_gen1Gate.outSlot, false);
+                if (!allowedGen || !outSaveRuleOk || !sessionOk) {
+                    CheckGen1Gate(0, false, std::format(
+                        "pack={}, game/gen={}/{}, outSave='{}', outSaveRuleOk={}, sessionOk={}.",
+                        pack.has_value(), pack ? pack->game : "none", g_gen1Gate.packageGeneration,
+                        g_cfg.outSave, outSaveRuleOk, sessionOk));
+                    fail(!outSaveRuleOk
+                        ? (g_gen1Gate.packageGeneration == 1
+                            ? "세대 1 gen1gate는 out_save가 필수입니다."
+                            : "세대 0 gen1gate 양성 대조는 out_save를 지정할 수 없습니다.")
+                        : "gen1gate 시작 콘텐츠·세션 보호 준비에 실패했습니다.");
+                    break;
+                }
+                g_gen1Gate.buildId = pack->buildId;
+                NextGen1Gate(Step::Menu);
+                break;
+            }
+            case Step::Menu: {
+                if (elapsed >= 2.0 && engineIdle && (mainMenu || ready)) {
+                    BeginGen1GateLoad(Step::LoadInput);
+                }
+                break;
+            }
+            case Step::LoadInput: {
+                if (!signaled || !ready) {
+                    break;
+                }
+                BlockSessionManualSaves(*player);
+                const auto load = SaveLoad::GetLastLoadDiagnostics();
+                const auto mode = ModState::Get();
+                const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
+                    mode->mode == ModMode::Normal && load.collectionComplete &&
+                    generation == g_gen1Gate.packageGeneration;
+                CheckGen1Gate(0, normal, std::format(
+                    "save='{}', packGen={}, worldGen={}, outSave='{}', decision={} ({}), normalMode={}, collectionComplete={}.",
+                    g_cfg.baselineSave, g_gen1Gate.packageGeneration, generation, g_gen1Gate.outSlot,
+                    load.decision ? SaveDispositionName(load.decision->disposition) : "none",
+                    load.decision ? load.decision->reason : "", mode->mode == ModMode::Normal, load.collectionComplete));
+                if (!normal) {
+                    fail("입력 세이브가 기대 세대의 Normal 모드로 열리지 않았습니다.");
+                    break;
+                }
+                if (!g_config) {
+                    fail("설정이 준비되지 않았습니다.");
+                    break;
+                }
+                RE::FormID enemyId = 0;
+                std::uint32_t enemyLvl = 1;
+                if (!PickSaveEarnEnemyNpc(player, enemyId, enemyLvl)) {
+                    fail("처치 게이트 시험용 Skyrim.esm 적 원형을 찾지 못했습니다.");
+                    break;
+                }
+                g_gen1Gate.enableLootDropsBefore = g_config->enableLootDrops;
+                g_config->enableLootDrops = true;
+                g_gen1Gate.godModeBefore = RE::PlayerCharacter::IsGodMode();
+                SetPlayerGodModeFlag(true);
+                g_gen1Gate.killLoop = {};
+                g_gen1Gate.killLoop.enemyNpcId = enemyId;
+                g_gen1Gate.killLoop.enemyLevel = enemyLvl;
+                g_gen1Gate.kills = 0;
+                g_gen1Gate.xpIncreasedKills = 0;
+                const auto stBefore = SaveLoad::GetStateCopy();
+                g_gen1Gate.lastLevel = stBefore.exileLevel;
+                g_gen1Gate.lastXp = stBefore.exileXp;
+                g_gen1Gate.totalXpGained = 0;
+                g_gen1Gate.dropBefore = WorldDropTracker::GetGateStatsForTest();
+                g_gen1Gate.activeDropsBefore = WorldDropTracker::ActiveCount();
+                g_gen1Gate.bagBeforeKills = CaptureAllGemAndCurrencyCounts(player);
+                g_gen1Gate.firstTributeBeforeKills = stBefore.atlas.firstTributeGiven;
+                g_gen1Gate.killCorpses.clear();
+                NextGen1Gate(Step::KillDropGate);
+                break;
+            }
+            case Step::KillDropGate: {
+                if (!ready || !g_config) {
+                    break;
+                }
+                constexpr std::uint32_t kTargetKills = 3;
+                RE::ActorHandle confirmedMob{};
+                std::string killErr;
+                // 판정이 끝날 때까지 시체를 Disable하지 않는다(OnKillAwarded가 꺼진 시체를 시체 없음으로 보기 때문).
+                const auto outcome = StepHostileKillLoop(
+                    player, g_gen1Gate.killLoop, now, /*disableAfterConfirm=*/false, confirmedMob, killErr);
+                if (outcome == KillLoopOutcome::Failed) {
+                    fail(std::format("처치·드롭 게이트 처치 실패: {}", killErr));
+                    break;
+                }
+                if (outcome == KillLoopOutcome::KillConfirmed) {
+                    ++g_gen1Gate.kills;
+                    g_gen1Gate.killCorpses.push_back(confirmedMob);
+                    const auto st = SaveLoad::GetStateCopy();
+                    std::uint64_t deltaXp = 0;
+                    if (st.exileLevel > g_gen1Gate.lastLevel) {
+                        const auto reqPrev = Core::KillTracker::RequiredXpForNextExileLevel(g_gen1Gate.lastLevel, *g_config);
+                        if (reqPrev > g_gen1Gate.lastXp) deltaXp += (reqPrev - g_gen1Gate.lastXp);
+                        for (std::uint32_t lv = g_gen1Gate.lastLevel + 1; lv < st.exileLevel; ++lv) {
+                            deltaXp += Core::KillTracker::RequiredXpForNextExileLevel(lv, *g_config);
+                        }
+                        deltaXp += st.exileXp;
+                    } else if (st.exileLevel == g_gen1Gate.lastLevel && st.exileXp > g_gen1Gate.lastXp) {
+                        deltaXp = st.exileXp - g_gen1Gate.lastXp;
+                    }
+                    if (deltaXp > 0) {
+                        ++g_gen1Gate.xpIncreasedKills;
+                        g_gen1Gate.totalXpGained += deltaXp;
+                    }
+                    g_gen1Gate.lastLevel = st.exileLevel;
+                    g_gen1Gate.lastXp = st.exileXp;
+                }
+                if (g_gen1Gate.kills < kTargetKills) {
+                    break;
+                }
+
+                const auto dropAfter = WorldDropTracker::GetGateStatsForTest();
+                const auto calls = dropAfter.onKillAwardedCalls - g_gen1Gate.dropBefore.onKillAwardedCalls;
+                const auto gateRej = dropAfter.gen1GateRejections - g_gen1Gate.dropBefore.gen1GateRejections;
+                const auto rolls = dropAfter.rollEntries - g_gen1Gate.dropBefore.rollEntries;
+                const auto phys = dropAfter.physicalCreations - g_gen1Gate.dropBefore.physicalCreations;
+
+                if (g_gen1Gate.packageGeneration == 1) {
+                    std::set<RE::FormID> ourForms;
+                    for (const auto& entry : Core::GemForms::kPhysicalForms) {
+                        if (auto* f = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId)) {
+                            ourForms.insert(f->GetFormID());
+                        }
+                    }
+                    for (const auto localId : FormIds::kCurrencyOrbForms) {
+                        if (auto* f = FormIds::Lookup<RE::TESObjectMISC>(localId)) {
+                            ourForms.insert(f->GetFormID());
+                        }
+                    }
+                    if (auto* f = FormIds::Lookup<RE::TESObjectMISC>(FormIds::kAscendancy4Tribute)) {
+                        ourForms.insert(f->GetFormID());
+                    }
+                    std::int32_t corpseOurItems = 0;
+                    for (const auto& handle : g_gen1Gate.killCorpses) {
+                        if (const auto corpse = handle.get()) {
+                            const auto inv = corpse->GetInventoryCounts(
+                                [&](RE::TESBoundObject& item) { return ourForms.contains(item.GetFormID()); });
+                            for (const auto& [_, cnt] : inv) {
+                                corpseOurItems += cnt;
+                            }
+                        }
+                    }
+                    const auto activeNow = WorldDropTracker::ActiveCount();
+                    const auto bagNow = CaptureAllGemAndCurrencyCounts(player);
+                    const auto stNow = SaveLoad::GetStateCopy();
+                    const bool g1Ok = g_gen1Gate.kills >= kTargetKills &&
+                        g_gen1Gate.xpIncreasedKills == g_gen1Gate.kills &&
+                        calls == g_gen1Gate.kills && gateRej == g_gen1Gate.kills &&
+                        rolls == 0 && phys == 0 && corpseOurItems == 0 &&
+                        activeNow == g_gen1Gate.activeDropsBefore &&
+                        bagNow == g_gen1Gate.bagBeforeKills &&
+                        stNow.atlas.firstTributeGiven == g_gen1Gate.firstTributeBeforeKills;
+                    CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::KillDropGate), g1Ok, std::format(
+                        "kills={}, xpIncreasedKills={}, totalXp=+{}, calls={}, gateRej={}, rolls={}, phys={}, "
+                        "corpseOurItems={}, activeDrops={}->{}, bagSame={}, firstTribute={}->{}.",
+                        g_gen1Gate.kills, g_gen1Gate.xpIncreasedKills, g_gen1Gate.totalXpGained,
+                        calls, gateRej, rolls, phys, corpseOurItems,
+                        g_gen1Gate.activeDropsBefore, activeNow, bagNow == g_gen1Gate.bagBeforeKills,
+                        g_gen1Gate.firstTributeBeforeKills, stNow.atlas.firstTributeGiven));
+
+                    // 판정 뒤 시체 정리(Disable + SetDelete).
+                    DisposePendingDeleteMobsNow(g_gen1Gate.killCorpses);
+                    DisposePendingDeleteMobsNow(g_gen1Gate.killLoop.pendingDeleteMobs);
+
+                    // G2: 공물 자격·가방 직접 지급 경로 직접 호출 검증.
+                    const auto d2Before = WorldDropTracker::GetGateStatsForTest();
+                    const auto bag2Before = CaptureAllGemAndCurrencyCounts(player);
+                    const auto tribute2Before = MapDeviceRuntime::CountPlayerTributes(player);
+                    const bool firstTribute2Before = SaveLoad::GetStateCopy().atlas.firstTributeGiven;
+                    const bool directRet = WorldDropTracker::OnKillAwarded(
+                        RE::ActorHandle{}, 50, true, false, Core::MonsterRarity::Rare,
+                        6, 0.0, 0.0, /*guaranteeFirstTribute=*/true, /*deliverToPlayer=*/true);
+                    const auto d2After = WorldDropTracker::GetGateStatsForTest();
+                    const auto bag2After = CaptureAllGemAndCurrencyCounts(player);
+                    const auto tribute2After = MapDeviceRuntime::CountPlayerTributes(player);
+                    const bool firstTribute2After = SaveLoad::GetStateCopy().atlas.firstTributeGiven;
+                    const bool g2Ok = !directRet &&
+                        (d2After.onKillAwardedCalls - d2Before.onKillAwardedCalls) == 1 &&
+                        (d2After.gen1GateRejections - d2Before.gen1GateRejections) == 1 &&
+                        (d2After.rollEntries - d2Before.rollEntries) == 0 &&
+                        (d2After.physicalCreations - d2Before.physicalCreations) == 0 &&
+                        bag2After == bag2Before && tribute2After == tribute2Before &&
+                        firstTribute2After == firstTribute2Before;
+                    CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::DirectTributeGate), g2Ok, std::format(
+                        "ret={}, calls+={}, gateRej+={}, rolls+={}, phys+={}, bagSame={}, tributes={}->{}, firstTribute={}->{}.",
+                        directRet,
+                        d2After.onKillAwardedCalls - d2Before.onKillAwardedCalls,
+                        d2After.gen1GateRejections - d2Before.gen1GateRejections,
+                        d2After.rollEntries - d2Before.rollEntries,
+                        d2After.physicalCreations - d2Before.physicalCreations,
+                        bag2After == bag2Before, tribute2Before, tribute2After, firstTribute2Before, firstTribute2After));
+                } else {
+                    const bool gp1Ok = g_gen1Gate.kills >= kTargetKills &&
+                        calls == g_gen1Gate.kills && gateRej == 0 && rolls == g_gen1Gate.kills;
+                    CheckGen1Gate(static_cast<std::size_t>(Gen0GateCheck::KillDropPositive), gp1Ok, std::format(
+                        "kills={}, calls={}, gateRej={}, rolls={}, phys={}.",
+                        g_gen1Gate.kills, calls, gateRej, rolls, phys));
+                    DisposePendingDeleteMobsNow(g_gen1Gate.killCorpses);
+                    DisposePendingDeleteMobsNow(g_gen1Gate.killLoop.pendingDeleteMobs);
+                }
+
+                // 드롭 INI 복원 후 승격 INI를 메모리에서 켜고 자연 승격 관찰로 넘어간다.
+                if (const auto v = std::exchange(g_gen1Gate.enableLootDropsBefore, std::nullopt)) {
+                    g_config->enableLootDrops = *v;
+                }
+                g_gen1Gate.enableMonsterPromotionBefore = g_config->enableMonsterPromotion;
+                g_config->enableMonsterPromotion = true;
+                g_gen1Gate.promoBefore = MonsterRuntime::GetPromotionGateStatsForTest();
+                g_gen1Gate.naturalMob = SpawnNpcInFrontOfPlayer(player, g_gen1Gate.killLoop.enemyNpcId, 180.0f, 0.0f, 0.0f, true);
+                const auto nm = g_gen1Gate.naturalMob.get();
+                g_gen1Gate.naturalMobId = nm ? nm->GetFormID() : 0;
+                g_gen1Gate.naturalInCombatSec = 0.0;
+                if (!nm || g_gen1Gate.naturalMobId == 0) {
+                    fail("자연 승격 관찰용 적 스폰에 실패했습니다.");
+                    break;
+                }
+                NextGen1Gate(Step::PromoNaturalWait);
+                break;
+            }
+            case Step::PromoNaturalWait: {
+                if (!ready) {
+                    break;
+                }
+                auto mob = g_gen1Gate.naturalMob.get();
+                if (!mob || mob->IsDead()) {
+                    fail("자연 승격 관찰 중 적이 사라지거나 사망했습니다.");
+                    break;
+                }
+                if (!mob->Is3DLoaded()) {
+                    break;
+                }
+                if (!mob->IsInCombat()) {
+                    mob->StartCombat(player);
+                }
+                if (mob->IsInCombat()) {
+                    g_gen1Gate.naturalInCombatSec += dtTick;
+                }
+                if (g_gen1Gate.naturalInCombatSec < 3.0 && elapsed < 20.0) {
+                    break;
+                }
+                const auto promoAfter = MonsterRuntime::GetPromotionGateStatsForTest();
+                const auto rej = promoAfter.gen1GateRejections - g_gen1Gate.promoBefore.gen1GateRejections;
+                const auto scans = promoAfter.scanEntries - g_gen1Gate.promoBefore.scanEntries;
+                const auto rolls = promoAfter.rollEntries - g_gen1Gate.promoBefore.rollEntries;
+                const auto prof = MonsterRuntime::GetProfileCopy(g_gen1Gate.naturalMobId);
+
+                mob->Disable();
+                mob->SetDelete(true);
+                g_gen1Gate.naturalMob = {};
+
+                if (g_gen1Gate.packageGeneration == 0) {
+                    const bool gp2Ok = g_gen1Gate.naturalInCombatSec >= 3.0 && rej == 0 && scans > 0 && rolls > 0;
+                    CheckGen1Gate(static_cast<std::size_t>(Gen0GateCheck::NaturalPromoPositive), gp2Ok, std::format(
+                        "inCombatSec={:.2f}s, gateRej={}, scanEntries={}, rollEntries={}, hasProfile={}.",
+                        g_gen1Gate.naturalInCombatSec, rej, scans, rolls, prof.has_value()));
+                    ReleaseGen1GateState(false);
+                    g_session.completedNormally = true;
+                    FinishAndScheduleQuit("세대 0 gen1gate 양성 대조를 마쳤습니다.");
+                    break;
+                }
+
+                g_gen1Gate.naturalGateOk = g_gen1Gate.naturalInCombatSec >= 3.0 &&
+                    rej > 0 && scans == 0 && rolls == 0 && !prof.has_value();
+                g_gen1Gate.naturalDetail = std::format(
+                    "natural(inCombatSec={:.2f}s, gateRej={}, scanEntries={}, rollEntries={}, hasProfile={})",
+                    g_gen1Gate.naturalInCombatSec, rej, scans, rolls, prof.has_value());
+
+                // G3 후반: 다른 적에 ForcePromoteForTest → 프로필 생성 및 ES 갱신 유지 확인.
+                g_gen1Gate.esMob = SpawnNpcInFrontOfPlayer(player, g_gen1Gate.killLoop.enemyNpcId, 180.0f, 0.0f, 0.0f, false);
+                const auto em = g_gen1Gate.esMob.get();
+                g_gen1Gate.esMobId = em ? em->GetFormID() : 0;
+                g_gen1Gate.forceEsApplied = false;
+                g_gen1Gate.esAfterHit = 0.0;
+                if (!em || g_gen1Gate.esMobId == 0) {
+                    fail("ForcePromoteForTest ES 관찰용 적 스폰에 실패했습니다.");
+                    break;
+                }
+                NextGen1Gate(Step::PromoForceEsWait);
+                break;
+            }
+            case Step::PromoForceEsWait: {
+                if (!ready) {
+                    break;
+                }
+                auto mob = g_gen1Gate.esMob.get();
+                // G3 끝(성공·실패 모두): 관찰용 적을 지우고 승격 INI 메모리 값과 무적을 되돌린 뒤 다음 단계로 간다.
+                const auto finishPromoStep = [&mob]() {
+                    if (mob) {
+                        mob->Disable();
+                        mob->SetDelete(true);
+                    }
+                    g_gen1Gate.esMob = {};
+                    g_gen1Gate.esMobId = 0;
+                    if (g_config) {
+                        if (const auto v = std::exchange(g_gen1Gate.enableMonsterPromotionBefore, std::nullopt)) {
+                            g_config->enableMonsterPromotion = *v;
+                        }
+                    }
+                    if (const auto god = std::exchange(g_gen1Gate.godModeBefore, std::nullopt)) {
+                        SetPlayerGodModeFlag(*god);
+                    }
+                    NextGen1Gate(Step::EquipmentAndStaleUi);
+                };
+                if (!mob || mob->IsDead()) {
+                    fail("ForcePromoteForTest ES 관찰 중 적이 사라지거나 사망했습니다.");
+                    break;
+                }
+                if (!mob->Is3DLoaded()) {
+                    break;
+                }
+                if (!g_gen1Gate.forceEsApplied) {
+                    const std::uint16_t esMask = static_cast<std::uint16_t>(
+                        1u << static_cast<std::uint8_t>(Core::MonsterModKind::EnergyShielded));
+                    MonsterRuntime::ForcePromoteForTest(mob.get(), Core::MonsterRarity::Rare, esMask, 500.0);
+                    const auto beforeHit = MonsterRuntime::GetProfileCopy(g_gen1Gate.esMobId);
+                    if (!beforeHit || beforeHit->maxEsSkyrim < 499.0) {
+                        CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::NaturalPromoAndEs), false, std::format(
+                            "{}; forcePromote profile missing or maxEs invalid.", g_gen1Gate.naturalDetail));
+                        finishPromoStep();
+                        break;
+                    }
+                    (void)MonsterRuntime::ApplyPlayerHitToMonster(
+                        g_gen1Gate.esMobId, 120.0, Core::DamageType::Physical, false, mob.get());
+                    const auto afterHit = MonsterRuntime::GetProfileCopy(g_gen1Gate.esMobId);
+                    g_gen1Gate.esAfterHit = afterHit ? afterHit->currentEsSkyrim : 0.0;
+                    g_gen1Gate.forceEsApplied = true;
+                    break;
+                }
+                const auto curProf = MonsterRuntime::GetProfileCopy(g_gen1Gate.esMobId);
+                const bool esRecharged = curProf && curProf->currentEsSkyrim > g_gen1Gate.esAfterHit + 0.5;
+                if (!esRecharged && elapsed < 10.0) {
+                    break;
+                }
+                const bool g3Ok = g_gen1Gate.naturalGateOk && curProf.has_value() &&
+                    curProf->maxEsSkyrim >= 499.0 && g_gen1Gate.esAfterHit < 499.0 && esRecharged;
+                CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::NaturalPromoAndEs), g3Ok, std::format(
+                    "{}; forceEs(hasProfile={}, maxEs={:.1f}, afterHit={:.1f}, currentEs={:.1f}, recharged={}).",
+                    g_gen1Gate.naturalDetail, curProf.has_value(),
+                    curProf ? curProf->maxEsSkyrim : 0.0, g_gen1Gate.esAfterHit,
+                    curProf ? curProf->currentEsSkyrim : 0.0, esRecharged));
+                finishPromoStep();
+                break;
+            }
+            case Step::EquipmentAndStaleUi: {
+                if (!ready || !g_statEngine || !g_dataPack || !g_config) {
+                    break;
+                }
+                auto* equipMgr = RE::ActorEquipManager::GetSingleton();
+                auto* greatsword = RE::TESForm::LookupByID<RE::TESObjectWEAP>(kIronGreatswordId);
+                auto* sword = RE::TESForm::LookupByID<RE::TESObjectWEAP>(kIronSwordId);
+                auto* dagger = RE::TESForm::LookupByID<RE::TESObjectWEAP>(kIronDaggerId);
+                auto* shield = RE::TESForm::LookupByID<RE::TESObjectARMO>(kIronShieldId);
+                auto* rightSlot = RE::TESForm::LookupByID<RE::BGSEquipSlot>(kRightHandSlotId);
+                auto* leftSlot = RE::TESForm::LookupByID<RE::BGSEquipSlot>(kLeftHandSlotId);
+
+                if (!equipMgr || !greatsword || !sword || !dagger || !shield || !rightSlot || !leftSlot) {
+                    CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::EquipmentSnapshots), false,
+                        "Skyrim.esm 시험 무기·방패 또는 장착 슬롯 폼 조회 실패.");
+                    fail("G4 장비 시험 폼 조회 실패.");
+                    break;
+                }
+
+                // 임시 시험 장비 4종 지급(종료·중단 시 제거).
+                for (RE::TESBoundObject* obj : std::array<RE::TESBoundObject*, 4>{ greatsword, sword, dagger, shield }) {
+                    player->AddObjectToContainer(obj, nullptr, 1, nullptr);
+                    g_gen1Gate.tempGearAdded.push_back(obj->GetFormID());
+                }
+
+                const auto evalCombo = [&]() {
+                    EquipmentSync::RefreshFromPlayerNow();
+                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                    const auto gear = EquipmentSync::GetCurrentGearSnapshot();
+                    const auto meta = EquipmentSync::GetCurrentGearMeta();
+                    const auto snap = g_statEngine->GetSnapshot();
+                    return std::tuple{ gear, meta, snap };
+                };
+                // 세대 1에는 실행 가능한 공격 젬이 없어(ready는 gem.Spark 하나) 게임 안에서 공격 기본값을 비교할 수 없다.
+                // "무기를 들어도 맨손 기본값" 규칙은 단위 시험(test_content_features.cpp)이 맡고, 여기서는 장비 기여 0·막기·장착 사실만 본다.
+
+                // 1) 맨손
+                UnequipPlayerHandsForGate(player, equipMgr);
+                const auto [uGear, uMeta, uSnap] = evalCombo();
+                const auto mainIdx = static_cast<std::size_t>(Core::EquipSlot::MainHand);
+                const auto offIdx = static_cast<std::size_t>(Core::EquipSlot::OffHand);
+                const bool unarmedOk = !uGear[mainIdx].occupied && !uGear[offIdx].occupied &&
+                    uSnap && std::abs(uSnap->attackBlockChance) < 1e-9;
+
+                // 2) 양손 (IronGreatsword)
+                equipMgr->EquipObject(player, greatsword, nullptr, 1, nullptr, false, true, false, true);
+                const auto [tGear, tMeta, tSnap] = evalCombo();
+                const bool twoHandOk = tGear[mainIdx].occupied && tGear[mainIdx].isWeapon && tGear[mainIdx].isTwoHanded &&
+                    tMeta[mainIdx].weaponTag == "TwoHandSword" && !tGear[offIdx].occupied &&
+                    IsZeroEquipmentSlotContribution(tGear[mainIdx]) &&
+                    tSnap && std::abs(tSnap->attackBlockChance) < 1e-9;
+
+                // 3) 쌍수 (IronSword 오른손 + IronDagger 왼손)
+                UnequipPlayerHandsForGate(player, equipMgr);
+                equipMgr->EquipObject(player, sword, nullptr, 1, rightSlot, false, true, false, true);
+                equipMgr->EquipObject(player, dagger, nullptr, 1, leftSlot, false, true, false, true);
+                const auto [dGear, dMeta, dSnap] = evalCombo();
+                const bool dualOk = dGear[mainIdx].occupied && dGear[mainIdx].isWeapon && !dGear[mainIdx].isTwoHanded &&
+                    dMeta[mainIdx].weaponTag == "OneHandSword" &&
+                    dGear[offIdx].occupied && dGear[offIdx].isWeapon && !dGear[offIdx].isTwoHanded &&
+                    dMeta[offIdx].weaponTag == "Dagger" &&
+                    IsZeroEquipmentSlotContribution(dGear[mainIdx]) && IsZeroEquipmentSlotContribution(dGear[offIdx]) &&
+                    dSnap && std::abs(dSnap->attackBlockChance) < 1e-9;
+
+                // 4) 한손 + 방패 (IronSword 오른손 + ArmorIronShield 왼손) — 저장·재로드 검증을 위해 유지한다.
+                UnequipPlayerHandsForGate(player, equipMgr);
+                equipMgr->EquipObject(player, sword, nullptr, 1, rightSlot, false, true, false, true);
+                equipMgr->EquipObject(player, shield, nullptr, 1, nullptr, false, true, false, true);
+                const auto [sGear, sMeta, sSnap] = evalCombo();
+                const bool shieldOk = sGear[mainIdx].occupied && sGear[mainIdx].isWeapon && !sGear[mainIdx].isTwoHanded &&
+                    sMeta[mainIdx].weaponTag == "OneHandSword" &&
+                    sGear[offIdx].occupied && !sGear[offIdx].isWeapon &&
+                    sMeta[offIdx].slotGroup == Core::TokenSlotGroup::Shield &&
+                    IsZeroEquipmentSlotContribution(sGear[mainIdx]) && IsZeroEquipmentSlotContribution(sGear[offIdx]) &&
+                    sSnap && std::abs(sSnap->attackBlockChance) < 1e-9;
+
+                CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::EquipmentSnapshots),
+                    unarmedOk && twoHandOk && dualOk && shieldOk,
+                    std::format(
+                        "unarmed={} (blk={:.1f}), 2H={} (tag='{}', 2h={}, aps={:.2f}), "
+                        "dual={} (R='{}', L='{}', blk={:.1f}), 1H+shield={} (R='{}', Lgroup={}, blk={:.1f}).",
+                        unarmedOk, uSnap ? uSnap->attackBlockChance : -1.0,
+                        twoHandOk, tMeta[mainIdx].weaponTag, tGear[mainIdx].isTwoHanded, tGear[mainIdx].baseWeaponAttackRate,
+                        dualOk, dMeta[mainIdx].weaponTag, dMeta[offIdx].weaponTag, dSnap ? dSnap->attackBlockChance : -1.0,
+                        shieldOk, sMeta[mainIdx].weaponTag, static_cast<int>(sMeta[offIdx].slotGroup),
+                        sSnap ? sSnap->attackBlockChance : -1.0));
+
+                // G5: 낡은 UI (buildId 불일치 직접 호출 → 상태 불변 + uiBuildMismatch=true → 정상 명령 1회로 해제).
+                const auto stateBeforeStale = SaveLoad::GetStateCopy();
+                const std::string targetClass = stateBeforeStale.tree.classContentId == "cls.Warrior"
+                    ? "cls.Sorceress" : "cls.Warrior";
+                const json staleCmd{
+                    { "op", "treeSelectClass" },
+                    { "classContentId", targetClass },
+                    { "buildId", "stale-build-id-gen1gate-mismatch" },
+                    { "uiProtocol", Core::UiBuildCheck::kUiProtocolVersion }
+                };
+                UiBridge::ExecuteCommandForTestOnMainThread(staleCmd.dump());
+                const auto stateAfterStale = SaveLoad::GetStateCopy();
+                const bool stateUnchanged =
+                    stateAfterStale.tree.classSelected == stateBeforeStale.tree.classSelected &&
+                    stateAfterStale.tree.classContentId == stateBeforeStale.tree.classContentId &&
+                    stateAfterStale.tree.allocatedNodes == stateBeforeStale.tree.allocatedNodes &&
+                    stateAfterStale.starterGrantedIds == stateBeforeStale.starterGrantedIds;
+                bool mismatchTrue = false;
+                try {
+                    const auto panelAfterStale = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread());
+                    mismatchTrue = panelAfterStale.value("uiBuildMismatch", false);
+                } catch (...) {
+                    mismatchTrue = false;
+                }
+                const json validRefresh{
+                    { "op", "refresh" },
+                    { "buildId", g_gen1Gate.buildId },
+                    { "uiProtocol", Core::UiBuildCheck::kUiProtocolVersion }
+                };
+                UiBridge::ExecuteCommandForTestOnMainThread(validRefresh.dump());
+                bool mismatchCleared = false;
+                try {
+                    const auto panelAfterValid = json::parse(UiBridge::BuildPanelJsonForTestOnMainThread());
+                    mismatchCleared = !panelAfterValid.value("uiBuildMismatch", true);
+                } catch (...) {
+                    mismatchCleared = false;
+                }
+                CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::StaleUi),
+                    stateUnchanged && mismatchTrue && mismatchCleared,
+                    std::format("stateUnchanged={}, uiBuildMismatchAfterStale={}, uiBuildMismatchCleared={}.",
+                        stateUnchanged, mismatchTrue, mismatchCleared));
+
+                // G6 준비: 한손+방패를 장착한 채 OutSave에 저장한다.
+                g_gen1Gate.bagBeforeSave = CaptureAllGemAndCurrencyCounts(player);
+                g_gen1Gate.strtBeforeSave = SaveLoad::GetStateCopy().starterGrantedIds;
+                {
+                    std::scoped_lock lock(g_msgMutex);
+                    g_expectedSaveStem = g_gen1Gate.outSlot;
+                    g_saveMatched = false;
+                    g_saveAtNextMessage.reset();
+                    g_sessionSaveRequested = false;
+                }
+                NextGen1Gate(Step::SaveOut);
+                break;
+            }
+            case Step::SaveOut: {
+                CloseDialogueWhileAwaitingSave(ui);
+                const auto write = SaveLoad::GetLastSaveDiagnostics();
+                if (!saveMatched || write.sequence == before) {
+                    if (elapsed >= kScenarioASaveTimeoutSec) {
+                        fail("gen1gate 출력 슬롯 저장이 코세이브 콜백에 도달하지 못했습니다.");
+                    } else if (!saveMatched && ready && engineIdle && !dialogue) {
+                        const auto* manager = RE::BGSSaveLoadManager::GetSingleton();
+                        if (manager && manager->GetRuntimeData().thread.isBusy) break;
+                        switch (g_gen1Gate.retry.Poll(elapsed)) {
+                        case Action::Request:
+                            if (!RequestSessionSave(g_gen1Gate.outSlot)) fail("gen1gate 출력 슬롯 저장 요청에 실패했습니다.");
+                            break;
+                        case Action::Exhausted: fail(g_gen1Gate.retry.ExhaustionMessage("Gen1Gate out save")); break;
+                        case Action::Wait: break;
+                        }
+                    }
+                    break;
+                }
+                const bool ess = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->ess, g_session.pendingSaveFiles->essBefore, g_session.pendingSaveRequestedAt);
+                const bool skse = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->cosave, g_session.pendingSaveFiles->cosaveBefore, g_session.pendingSaveRequestedAt);
+                const bool hasStarterRec = std::ranges::find(write.recordTypes, Core::SaveRecord::kRecordStarter) != write.recordTypes.end();
+                const bool callback = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
+                    !write.replayed && write.generation && IsGen1Target(*write.generation) &&
+                    write.generation->buildId == g_gen1Gate.buildId && hasStarterRec;
+                if (callback && !(ess && skse) && elapsed < kScenarioASaveTimeoutSec) {
+                    break;
+                }
+                if (!callback || !ess || !skse) {
+                    CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::SaveOutReload), false, std::format(
+                        "save='{}' 쓰기 실패: callback={}, STRT={}, essUpdated={}, skseUpdated={}, replayed={}.",
+                        g_gen1Gate.outSlot, callback, hasStarterRec, ess, skse, write.replayed));
+                    fail("gen1gate 출력 슬롯 저장 검증에 실패했습니다.");
+                    break;
+                }
+                BeginGen1GateLoad(Step::ReloadOut);
+                break;
+            }
+            case Step::ReloadOut: {
+                if (!signaled || !ready) {
+                    break;
+                }
+                BlockSessionManualSaves(*player);
+                const auto postInit = SaveLoad::GetLastPostLoadInitDiagnostics();
+                const bool postInitDone = postInit.sequence > g_gen1Gate.postLoadSeqBeforeReload;
+                if (!postInitDone && elapsed < 15.0) {
+                    break;
+                }
+                EquipmentSync::RefreshFromPlayerNow();
+                if (g_statEngine && g_dataPack && g_config) {
+                    (void)g_statEngine->RebuildIfDirty(*g_dataPack, *g_config);
+                }
+                const auto load = SaveLoad::GetLastLoadDiagnostics();
+                const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
+                    load.receivedLoad && load.collectionComplete && ModState::AllowsGameplay() && generation == 1;
+                const bool genr = load.generation && load.generation->status == Core::GenerationRecordStatus::Valid &&
+                    IsGen1Target(load.generation->value);
+                const auto gear = EquipmentSync::GetCurrentGearSnapshot();
+                const auto meta = EquipmentSync::GetCurrentGearMeta();
+                const auto snap = g_statEngine ? g_statEngine->GetSnapshot() : nullptr;
+                const auto mainIdx = static_cast<std::size_t>(Core::EquipSlot::MainHand);
+                const auto offIdx = static_cast<std::size_t>(Core::EquipSlot::OffHand);
+                const bool gearOk = gear[mainIdx].occupied && gear[mainIdx].isWeapon && !gear[mainIdx].isTwoHanded &&
+                    meta[mainIdx].weaponTag == "OneHandSword" &&
+                    gear[offIdx].occupied && !gear[offIdx].isWeapon &&
+                    meta[offIdx].slotGroup == Core::TokenSlotGroup::Shield &&
+                    IsZeroEquipmentSlotContribution(gear[mainIdx]) && IsZeroEquipmentSlotContribution(gear[offIdx]) &&
+                    snap && std::abs(snap->attackBlockChance) < 1e-9;
+                const auto bagNow = CaptureAllGemAndCurrencyCounts(player);
+                const auto strtNow = SaveLoad::GetStateCopy().starterGrantedIds;
+                const bool ok = normal && genr && postInitDone && postInit.starterGrantedCount == 0 &&
+                    gearOk && bagNow == g_gen1Gate.bagBeforeSave && strtNow == g_gen1Gate.strtBeforeSave;
+                CheckGen1Gate(static_cast<std::size_t>(Gen1GateCheck::SaveOutReload), ok, std::format(
+                    "save='{}', normal={}, GENR={}, postInitDone={} (granted={}), gear1HShieldZero={}, "
+                    "bagSame={}, STRTsame={}.",
+                    g_gen1Gate.outSlot, normal, genr, postInitDone, postInit.starterGrantedCount,
+                    gearOk, bagNow == g_gen1Gate.bagBeforeSave, strtNow == g_gen1Gate.strtBeforeSave));
+                ReleaseGen1GateState(true);
+                g_session.completedNormally = true;
+                FinishAndScheduleQuit("세대 1 gen1gate 검증을 마쳤습니다.");
+                break;
+            }
+            }
+        }
+
+        bool ObserveCleanupCandidate(RE::PlayerCharacter* player, bool succeeded)
         {
             const auto load = SaveLoad::GetLastLoadDiagnostics();
             const auto candidate = SaveLoad::GetMigrationCandidate(player);
@@ -3553,64 +6183,173 @@ namespace SkyrimPoE::Runtime
                     load.decision ? SaveDispositionName(load.decision->disposition) : "unavailable", pending, mode->reason));
                 return false;
             }
-            std::array<std::size_t, 4> returnKinds{};
-            g_cleanupTest.expectedReturns = candidate->returns.size();
-            for (const auto& entry : candidate->returns) {
-                ++returnKinds[static_cast<std::size_t>(entry.kind)];
-                if (auto* form = MigrationRuntime::ReturnForm(entry)) {
-                    auto [it, inserted] = g_cleanupTest.expectedItems.try_emplace(form->GetFormID());
-                    if (inserted) {
-                        it->second.first = player->GetItemCount(form);
-                    }
-                    ++it->second.second;
-                } else {
-                    ++g_cleanupTest.expectedWithoutForm;
-                }
+            const auto slottedSparks = static_cast<std::size_t>(std::ranges::count_if(candidate->returns, [](const auto& entry) {
+                return entry.kind == Core::ReturnKind::SlottedGem && entry.gemId == "Spark";
+            }));
+            const auto isGemReturn = [](const Core::ReturnEntry& entry, std::string_view gemId) {
+                return (entry.kind == Core::ReturnKind::SlottedGem || entry.kind == Core::ReturnKind::BagSupport) &&
+                    entry.gemId == gemId;
+            };
+            const auto plannedOldChain = static_cast<std::size_t>(std::ranges::count_if(candidate->returns, [&](const auto& entry) {
+                return isGemReturn(entry, "SupportChain");
+            }));
+            const auto plannedShockNova = static_cast<std::size_t>(std::ranges::count_if(candidate->returns, [&](const auto& entry) {
+                return isGemReturn(entry, "ShockNova");
+            }));
+            auto* oldChainForm = FormIds::Lookup<RE::TESObjectMISC>(0x882);
+            auto* shockNovaForm = FormIds::Lookup<RE::TESObjectMISC>(0x817);
+            const std::int32_t bagOldChain = (player && oldChainForm) ? player->GetItemCount(oldChainForm) : 0;
+            const std::int32_t bagShockNova = (player && shockNovaForm) ? player->GetItemCount(shockNovaForm) : 0;
+            // F6(a): 구판 Chain(0x882)은 0x8D2 +0 판정이 반환 경로를 실제로 타도록 소켓/보조 젬에 1개 이상 필수(가방만으로는 부족).
+            // 구판 Shock Nova(0x817)는 소켓/보조 젬 또는 가방에 1개 이상.
+            const bool hasOldChainInReturn = plannedOldChain >= 1;
+            const bool hasShockNova = (plannedShockNova + static_cast<std::size_t>(std::max<std::int32_t>(0, bagShockNova))) >= 1;
+            if (!hasOldChainInReturn || !hasShockNova) {
+                CheckCleanup(CleanupCheck::Candidate, false, std::format(
+                    "입력 세이브가 요건을 못 갖춤: 소켓 구판 Spark={} (관측), "
+                    "구판 Chain(0x882) 소켓/보조={} (기대 >=1, 가방={}), "
+                    "구판 ShockNova(0x817) 소켓/보조={}+가방={} (기대 >=1). {}",
+                    slottedSparks, plannedOldChain, bagOldChain, plannedShockNova, bagShockNova, candidate->report));
+                return false;
             }
-            std::string baselineCounts;
-            for (const auto& [form, count] : g_cleanupTest.expectedItems) {
-                baselineCounts += std::format(" {:08X}={} (+{})", form, count.first, count.second);
-            }
-            constexpr auto permanent = RE::ACTOR_VALUE_MODIFIER::kPermanent;
+            g_cleanupTest.plannedSlottedSpark = slottedSparks;
+            g_cleanupTest.plannedOldChain = plannedOldChain;
+            g_cleanupTest.plannedShockNova = plannedShockNova;
             CheckCleanup(CleanupCheck::Candidate, true, std::format(
-                "save='{}', decision=CleanupFromLegacy, CleanupPending=true, {}, inventory=[{} ], "
-                "returns(gem/support/jewel/charm)={}/{}/{}/{}, unresolvedReturnForms={}, permanent(health/magicka)={:.6f}/{:.6f}, "
-                "delta={:.6f}/{:.6f}, mapRun={}, inMapCell={}",
-                g_cfg.baselineSave, candidate->report, baselineCounts, returnKinds[0], returnKinds[1], returnKinds[2], returnKinds[3],
-                g_cleanupTest.expectedWithoutForm,
-                player->GetActorValueModifier(permanent, RE::ActorValue::kHealth),
-                player->GetActorValueModifier(permanent, RE::ActorValue::kMagicka),
-                candidate->healthDelta, candidate->magickaDelta, candidate->hasMapRun, candidate->inMapCell));
+                "save='{}', decision=CleanupFromLegacy, CleanupPending=true, slottedSpark={}, "
+                "oldChain(plan={}, bag={}), shockNova(plan={}, bag={}), {}, mapRun={}, inMapCell={}",
+                g_cfg.baselineSave, slottedSparks, plannedOldChain, bagOldChain, plannedShockNova, bagShockNova,
+                candidate->report, candidate->hasMapRun, candidate->inMapCell));
             return true;
         }
 
         std::pair<bool, std::string> CheckCleanupItems(RE::PlayerCharacter* player, const MigrationDiagnostics& result)
         {
-            const auto totalLost = std::accumulate(result.lostReturns.begin(), result.lostReturns.end(), std::size_t{ 0 });
-            if (g_cleanupTest.expectedReturns == 0) {
-                return { totalLost == 0 && result.lostReturnsByForm.empty() && result.lostReturnsWithoutForm == 0,
-                    "미실행(대상 없음)" };
+            std::map<RE::FormID, std::int32_t> preReturn;
+            for (const auto& [formId, count] : result.preReturnCounts) {
+                preReturn[formId] = count;
             }
-            bool matched = g_cleanupTest.expectedWithoutForm == result.lostReturnsWithoutForm;
-            std::size_t totalIncrease = 0;
-            std::size_t countedLosses = result.lostReturnsWithoutForm;
-            auto detail = std::format("expected={}, unresolved(expected={}, lost={})", g_cleanupTest.expectedReturns,
-                g_cleanupTest.expectedWithoutForm, result.lostReturnsWithoutForm);
-            for (const auto& [id, baseline] : g_cleanupTest.expectedItems) {
-                auto* form = RE::TESForm::LookupByID<RE::TESObjectMISC>(id);
-                const auto lost = result.lostReturnsByForm.find(id);
-                const auto lostCount = lost == result.lostReturnsByForm.end() ? 0 : lost->second;
-                const auto increase = form ? player->GetItemCount(form) - baseline.first : -1;
-                matched &= increase >= 0 && static_cast<std::size_t>(increase) + lostCount == baseline.second;
-                totalIncrease += static_cast<std::size_t>(std::max(0, increase));
-                countedLosses += lostCount;
-                detail += std::format(" {:08X}(expected={}, increase={}, lost={})", id, baseline.second, increase, lostCount);
+            const bool giveStarter = g_config && g_config->giveStarterGems;
+            const auto starterExpected = ExpectedGen1StarterByRuntimeForm();
+            auto* sparkForm = FormIds::Lookup<RE::TESObjectMISC>(0x880);
+            auto* oldChainForm = FormIds::Lookup<RE::TESObjectMISC>(0x882);
+            auto* newChainForm = FormIds::Lookup<RE::TESObjectMISC>(0x8D2);
+            const RE::FormID sparkRuntimeId = sparkForm ? sparkForm->GetFormID() : 0;
+            const RE::FormID oldChainRuntimeId = oldChainForm ? oldChainForm->GetFormID() : 0;
+            const RE::FormID newChainRuntimeId = newChainForm ? newChainForm->GetFormID() : 0;
+            const auto lookupCount = [&](const std::map<RE::FormID, std::int32_t>& m, RE::FormID id) -> std::int32_t {
+                const auto it = m.find(id);
+                return it != m.end() ? it->second : -1;
+            };
+            const auto lookupLost = [&](RE::FormID id) -> std::size_t {
+                const auto it = result.lostReturnsByForm.find(id);
+                return it != result.lostReturnsByForm.end() ? it->second : 0;
+            };
+            const Core::CleanupItemExpectationInput indepInput{
+                .plannedSlottedSpark = g_cleanupTest.plannedSlottedSpark,
+                .plannedOldChain = g_cleanupTest.plannedOldChain,
+                .giveStarterGems = giveStarter,
+                .sparkPre = lookupCount(preReturn, sparkRuntimeId),
+                .sparkActual = (player && sparkForm) ? player->GetItemCount(sparkForm) : -1,
+                .sparkLost = lookupLost(sparkRuntimeId),
+                .oldChainPre = lookupCount(preReturn, oldChainRuntimeId),
+                .oldChainActual = (player && oldChainForm) ? player->GetItemCount(oldChainForm) : -1,
+                .oldChainLost = lookupLost(oldChainRuntimeId),
+                .newChainPre = lookupCount(preReturn, newChainRuntimeId),
+                .newChainActual = (player && newChainForm) ? player->GetItemCount(newChainForm) : -1,
+                .newChainLost = lookupLost(newChainRuntimeId),
+                .starterReport = result.starterGrant.report,
+            };
+            const auto indep = Core::EvaluateCleanupItemExpectation(indepInput);
+
+            bool matched = indep.ok && sparkRuntimeId != 0 && oldChainRuntimeId != 0 && newChainRuntimeId != 0;
+            std::string mismatches;
+            std::size_t gemChecked = 0;
+            std::size_t currencyChecked = 0;
+
+            // 젬 62폼 전체 검증(Spark·구판 Chain·신판 Chain I은 F6 순수 독립 기대값, 나머지 59폼은 반환+시작 공식).
+            for (const auto& entry : Core::GemForms::kPhysicalForms) {
+                auto* form = FormIds::Lookup<RE::TESObjectMISC>(entry.localFormId);
+                if (!form) {
+                    matched = false;
+                    mismatches += std::format(" missingGem(0x{:04X})", entry.localFormId);
+                    continue;
+                }
+                const auto runtimeId = form->GetFormID();
+                const auto preIt = preReturn.find(runtimeId);
+                if (preIt == preReturn.end()) {
+                    matched = false;
+                    mismatches += std::format(" noPreReturn({:08X})", runtimeId);
+                    continue;
+                }
+                const auto actual = player->GetItemCount(form);
+                std::int32_t want = 0;
+                std::string formula;
+                if (runtimeId == sparkRuntimeId) {
+                    want = preIt->second + indep.expectedSparkDelta;
+                    formula = std::format("indep(pre={}+ret{}+start{})", preIt->second,
+                        g_cleanupTest.plannedSlottedSpark, indep.expectedStarterSparkDelta);
+                } else if (runtimeId == oldChainRuntimeId) {
+                    want = preIt->second + indep.expectedOldChainDelta;
+                    formula = std::format("indep(pre={}+plannedChain={})", preIt->second, indep.expectedOldChainDelta);
+                } else if (runtimeId == newChainRuntimeId) {
+                    want = preIt->second + indep.expectedNewChainDelta;
+                    formula = std::format("indep(pre={}+0)", preIt->second);
+                } else {
+                    const auto retIt = result.returnedByForm.find(runtimeId);
+                    const auto returnedCount = retIt != result.returnedByForm.end() ? static_cast<std::int32_t>(retIt->second) : 0;
+                    const auto startIt = starterExpected.find(runtimeId);
+                    const auto starterCount = startIt != starterExpected.end() ? startIt->second : 0;
+                    want = preIt->second + returnedCount + starterCount;
+                    formula = std::format("pre={}+ret={}+start={}", preIt->second, returnedCount, starterCount);
+                }
+                ++gemChecked;
+                if (actual != want) {
+                    matched = false;
+                    mismatches += std::format(" gem[{:04X}:{:08X}]({} => want {}, actual {})",
+                        entry.localFormId, runtimeId, formula, want, actual);
+                }
             }
-            matched &= std::ranges::all_of(result.lostReturnsByForm,
-                [](const auto& entry) { return g_cleanupTest.expectedItems.contains(entry.first); });
-            matched &= countedLosses == totalLost && totalIncrease + totalLost == g_cleanupTest.expectedReturns;
-            detail += std::format(" totalIncrease={}, totalLost={}", totalIncrease, totalLost);
-            return { matched, std::move(detail) };
+
+            // PoE1 화폐 12폼 전체: 증분 0.
+            for (const auto localId : FormIds::kCurrencyOrbForms) {
+                auto* form = FormIds::Lookup<RE::TESObjectMISC>(localId);
+                if (!form) {
+                    matched = false;
+                    mismatches += std::format(" missingCurr(0x{:04X})", localId);
+                    continue;
+                }
+                const auto runtimeId = form->GetFormID();
+                const auto preIt = preReturn.find(runtimeId);
+                if (preIt == preReturn.end()) {
+                    matched = false;
+                    mismatches += std::format(" noPreReturnCurr({:08X})", runtimeId);
+                    continue;
+                }
+                const auto actual = player->GetItemCount(form);
+                ++currencyChecked;
+                if (actual != preIt->second) {
+                    matched = false;
+                    mismatches += std::format(" curr[{:04X}](pre={}, actual={})", localId, preIt->second, actual);
+                }
+            }
+
+            // 그 밖의 반환 대상(주얼·참 포함)도 손실·반환 합이 예정과 일치하는지 확인한다.
+            for (const auto& [runtimeId, planned] : result.plannedReturnsByForm) {
+                const auto retIt = result.returnedByForm.find(runtimeId);
+                const auto lostIt = result.lostReturnsByForm.find(runtimeId);
+                const auto ret = retIt != result.returnedByForm.end() ? retIt->second : 0;
+                const auto lost = lostIt != result.lostReturnsByForm.end() ? lostIt->second : 0;
+                if (ret + lost != planned) {
+                    matched = false;
+                    mismatches += std::format(" planned[{:08X}](ret {} + lost {} != planned {})", runtimeId, ret, lost, planned);
+                }
+            }
+            matched &= gemChecked == Core::GemForms::kPhysicalForms.size() &&
+                currencyChecked == FormIds::kCurrencyOrbForms.size();
+            return { matched, std::format(
+                "gemsChecked={}/62, currencyChecked={}/12, {}, mismatches=[{} ]",
+                gemChecked, currencyChecked, indep.summary, mismatches) };
         }
 
         std::pair<bool, std::string> CheckCleanupEngine(RE::PlayerCharacter* player, const MigrationDiagnostics& result)
@@ -3641,38 +6380,21 @@ namespace SkyrimPoE::Runtime
             const auto trackedItems = ItemTracker::CountTracked();
             const bool atlasReset = state.atlas.completedTierMask == 0 && state.atlas.totalMapsCleared == 0 &&
                 state.atlas.highestTierCleared == 0 && !state.atlas.firstTributeGiven;
-            const bool starter = state.starterGemsGiven && state.starterCurrencyGiven && state.starterStage5GemsGiven;
+            const auto expectedStarterIds = ExpectedGen1StarterIds();
+            const bool strtOk = state.starterGrantedIds == expectedStarterIds;
             const bool ok = state.exileLevel == 1 && state.exileXp == 0 && state.tree.allocatedNodes.empty() &&
                 slots == 0 && state.activeAuraMask == 0 && virtualSlotsEmpty && charms == 0 && liveCharms == 0 &&
-                state.socketedJewels.empty() && trackedGems == 0 && trackedItems == 0 && atlasReset && starter;
+                state.socketedJewels.empty() && trackedGems == 0 && trackedItems == 0 && atlasReset && strtOk;
             return { ok, std::format("level={}, xp={}, nodes={}, skills={}, auras={}, virtualSlotsEmpty={}, charms={}/{}, jewels={}, "
-                    "trackedGems={}, trackedItems={}, atlasReset={}, starterFlags={}/{}/{}", state.exileLevel, state.exileXp,
+                    "trackedGems={}, trackedItems={}, atlasReset={}, STRT일치={} (실제 {}개, 기대 {}개)", state.exileLevel, state.exileXp,
                     state.tree.allocatedNodes.size(), slots, state.activeAuraMask, virtualSlotsEmpty, charms, liveCharms,
-                    state.socketedJewels.size(), trackedGems, trackedItems, atlasReset, state.starterGemsGiven,
-                    state.starterCurrencyGiven, state.starterStage5GemsGiven) };
-        }
-
-        std::map<RE::FormID, std::int32_t> CaptureCleanupStarterItems(RE::PlayerCharacter* player)
-        {
-            std::map<RE::FormID, std::int32_t> counts;
-            const auto capture = [&](RE::FormID localId) {
-                auto* form = FormIds::Lookup<RE::TESObjectMISC>(localId);
-                counts.emplace(localId, form ? player->GetItemCount(form) : -1);
-            };
-            for (const auto& entry : FormIds::kAllGemForms) {
-                capture(entry.localFormId);
-            }
-            using enum Core::CurrencyKind;
-            for (const auto kind : { ScrollOfWisdom, Transmutation, Augmentation, Alteration,
-                    Regal, Alchemy, Chaos, Scouring, Regret, Jeweller }) {
-                capture(FormIds::CurrencyLocalFormId(kind));
-            }
-            return counts;
+                    state.socketedJewels.size(), trackedGems, trackedItems, atlasReset, strtOk,
+                    state.starterGrantedIds.size(), expectedStarterIds.size()) };
         }
 
         std::pair<bool, std::string> CheckCleanupStarterItems(RE::PlayerCharacter* player)
         {
-            const auto after = CaptureCleanupStarterItems(player);
+            const auto after = CaptureAllGemAndCurrencyCounts(player);
             const auto& before = g_cleanupTest.starterItemsBeforeSave;
             bool equal = before.size() == after.size();
             std::string differences;
@@ -3681,10 +6403,14 @@ namespace SkyrimPoE::Runtime
                 const auto savedCount = previous != before.end() ? previous->second : -1;
                 if (savedCount < 0 || count != savedCount) {
                     equal = false;
-                    differences += std::format(" {:06X}={}->{}", id, savedCount, count);
+                    differences += std::format(" {:08X}={}->{}", id, savedCount, count);
                 }
             }
-            return { equal, std::format("starterInventoryEqual={}, forms={}, differences=[{} ]", equal, after.size(), differences) };
+            const auto state = SaveLoad::GetStateCopy();
+            const bool strtEqual = state.starterGrantedIds == g_cleanupTest.starterIdsBeforeSave;
+            equal &= strtEqual;
+            return { equal, std::format("inventoryEqual={}, STRT유지={}, forms={}, differences=[{} ]",
+                equal, strtEqual, after.size(), differences) };
         }
 
         void CloseDialogueWhileAwaitingSave(RE::UI* ui)
@@ -3713,6 +6439,11 @@ namespace SkyrimPoE::Runtime
         void TickCleanupOnly()
         {
             const auto now = Clock::now();
+            bool unexpectedLoad = false, unexpectedSave = false;
+            if (HasUnexpectedSessionEvent(unexpectedLoad, unexpectedSave)) {
+                FinishAndScheduleQuit("정리 시험 중 예상 밖의 로드 또는 저장이 발생해 즉시 중단했습니다.");
+                return;
+            }
             if (std::chrono::duration<double>(now - g_startedAt).count() > g_cfg.globalTimeoutSec) {
                 FinishAndScheduleQuit(std::format("Cleanup AutoTest timed out in {}.", PhaseName(g_phase)));
                 return;
@@ -3720,20 +6451,25 @@ namespace SkyrimPoE::Runtime
             auto* ui = RE::UI::GetSingleton();
             auto* player = RE::PlayerCharacter::GetSingleton();
             const bool eligible = MigrationRuntime::CanTick(player);
-            const auto finalSave = g_cfg.tempSave + kCleanupFinalSuffix;
+            const auto finalSave = g_cfg.EffectiveOutSave();
             const auto loadSignal = [] {
                 std::scoped_lock lock(g_msgMutex);
                 return std::pair{ g_postLoadSignaled, g_postLoadSucceeded };
             };
+            auto* spark = FormIds::Lookup<RE::TESObjectMISC>(0x880);
+
             switch (g_phase) {
             case Phase::CleanupContent: {
                 const auto content = SaveLoad::GetContentGeneration();
-                const auto target = SaveLoad::GetCleanupTestTarget();
-                const bool ok = content && target && IsCleanupTarget(*target) && ModState::AllowsGameplay();
-                CheckCleanup(CleanupCheck::Content, ok, std::format("contentCheckPassed={}, target={}/{}",
-                    content.has_value(), target ? target->game : "unavailable", target ? target->contentGeneration : 0));
-                if (!ok || g_cfg.baselineSave.empty()) {
-                    FinishAndScheduleQuit("Cleanup AutoTest requires verified content and a baseline save.");
+                const bool isGen1 = content && IsGen1Target(*content) && ModState::AllowsGameplay();
+                const bool sessionOk = isGen1 && BeginAutoTestSession(finalSave);
+                const bool ok = isGen1 && sessionOk && spark != nullptr && !g_cfg.baselineSave.empty();
+                CheckCleanup(CleanupCheck::Content, ok, std::format(
+                    "contentCheckPassed={}, game/gen={}/{}, sessionOk={}, baseline='{}', outSave='{}'",
+                    content.has_value(), content ? content->game : "unavailable",
+                    content ? content->contentGeneration : 0, sessionOk, g_cfg.baselineSave, finalSave));
+                if (!ok) {
+                    FinishAndScheduleQuit("cleanup 모드는 세대 1(PoE2) 패키지·유효한 기준 세이브·시험 세션 보호가 필요합니다.");
                 } else {
                     EnterPhase(Phase::AwaitMainMenu);
                 }
@@ -3746,10 +6482,11 @@ namespace SkyrimPoE::Runtime
                 break;
             case Phase::MenuDelay:
                 if (PhaseElapsedSec() >= 2.0) {
-                    if (RequestLoadSave(g_cfg.baselineSave)) {
+                    std::string loadReason;
+                    if (RequestLoadSave(g_cfg.baselineSave, &loadReason)) {
                         EnterPhase(Phase::AwaitBaselineLoad);
                     } else {
-                        FinishAndScheduleQuit("Could not request the cleanup baseline load.");
+                        FinishAndScheduleQuit(std::format("정리 기준 세이브 로드를 요청하지 못했습니다: {}", loadReason));
                     }
                 }
                 break;
@@ -3757,15 +6494,34 @@ namespace SkyrimPoE::Runtime
                 const auto [signaled, succeeded] = loadSignal();
                 if (!signaled || (succeeded && !eligible)) {
                     if (PhaseElapsedSec() > 90.0) {
-                        FinishAndScheduleQuit("Cleanup baseline load did not become ready.");
+                        FinishAndScheduleQuit("정리 기준 세이브 로드가 준비되지 않았습니다.");
                     }
                     break;
                 }
-                if (!ObserveCleanupBaseline(player, succeeded)) {
-                    FinishAndScheduleQuit("Baseline load did not produce the legacy candidate.");
+                if (succeeded && player) {
+                    BlockSessionManualSaves(*player);
+                }
+                if (!ObserveCleanupCandidate(player, succeeded)) {
+                    FinishAndScheduleQuit("기준 세이브가 구판 정리 요건을 충족하지 못했습니다.");
                     break;
                 }
-                SaveLoad::ReleaseForTest();
+                // 결정 235(이관된 G2): 정리 커밋(같은 프레임 TickMigration) 직전에 번호 붙은 구판 Spark 1개를 가방에 넣는다.
+                if (!g_cleanupTest.orphanInjected && spark) {
+                    auto* extra = UniqueIdUtil::CreateGameExtraDataList();
+                    const auto uid = UniqueIdUtil::AllocateInventoryUniqueId(player);
+                    if (!extra || uid == 0) {
+                        if (extra) UniqueIdUtil::DestroyGameExtraDataList(extra);
+                        FinishAndScheduleQuit("고아 젬 정상화(G2) 시험용 번호 Spark를 만들지 못했습니다.");
+                        break;
+                    }
+                    extra->Add(new RE::ExtraUniqueID(player->GetFormID(), uid));
+                    player->AddObjectToContainer(spark, extra, 1, nullptr);
+                    g_cleanupTest.totalBefore.clear();
+                    g_cleanupTest.numberedBefore = CountNumberedGems(player, &g_cleanupTest.totalBefore);
+                    g_cleanupTest.orphanInjected = true;
+                    LogInfo(std::format("Cleanup G2 준비: 정리 직전 번호 Spark {:08X}:{:04X} 추가; numbered={}, totals={}.",
+                        player->GetFormID(), uid, DescribeCounts(g_cleanupTest.numberedBefore), DescribeCounts(g_cleanupTest.totalBefore)));
+                }
                 g_cleanupTest.lastEligibleTick = now;
                 EnterPhase(Phase::CleanupAwaitCommit);
                 break;
@@ -3777,26 +6533,91 @@ namespace SkyrimPoE::Runtime
                 }
                 g_cleanupTest.lastEligibleTick = eligible ? std::optional{ now } : std::nullopt;
                 if (g_cleanupTest.eligibleSeconds > kCleanupCommitTimeoutSec || ModState::Get()->mode == ModMode::Preserve) {
-                    FinishAndScheduleQuit(std::format("Cleanup commit failed after {:.2f}s of eligible time. {}",
+                    FinishAndScheduleQuit(std::format("정리 커밋이 {:.2f}초 안에 끝나지 않았습니다. {}",
                         g_cleanupTest.eligibleSeconds, ModState::Get()->reason));
                     break;
                 }
                 if (!ModState::AllowsGameplay() || !eligible) {
                     break;
                 }
-                g_cleanupTest.committed = SaveLoad::GetLastMigrationDiagnostics();
-                if (!g_cleanupTest.committed || g_cleanupTest.committed->step != Core::CleanupStep::Complete) {
-                    FinishAndScheduleQuit("Normal mode was reached without a completed cleanup.");
+                const auto afterInit = SaveLoad::GetAfterCleanupInitDiagnostics();
+                if (afterInit.frame == 0) {
+                    // 정리 뒤 초기화(PostLoadInit: NormalizeOrphanGems + afterCleanupInit 진단 기록)가 끝날 때까지 기다린다.
                     break;
                 }
-                g_cleanupTest.outcomeChecks[0] = CheckCleanupItems(player, *g_cleanupTest.committed);
-                g_cleanupTest.outcomeChecks[1] = CheckCleanupEngine(player, *g_cleanupTest.committed);
-                g_cleanupTest.outcomeChecks[2] = CheckCleanupState();
+                g_cleanupTest.committed = SaveLoad::GetLastMigrationDiagnostics();
+                if (!g_cleanupTest.committed || g_cleanupTest.committed->step != Core::CleanupStep::Complete) {
+                    FinishAndScheduleQuit("정리 완료 진단 없이 Normal 모드에 진입했습니다.");
+                    break;
+                }
+                const auto& result = *g_cleanupTest.committed;
+                const auto slottedSparkIt = result.plannedSlottedGems.find("Spark");
+                const std::size_t slottedSparkDiag = slottedSparkIt != result.plannedSlottedGems.end() ? slottedSparkIt->second : 0;
+                if (slottedSparkDiag != g_cleanupTest.plannedSlottedSpark) {
+                    CheckCleanup(CleanupCheck::Committed, false, std::format(
+                        "반환 직전 진단의 소켓 장착 구판 Spark={}가 로드 때 정리 계획({})과 다릅니다.",
+                        slottedSparkDiag, g_cleanupTest.plannedSlottedSpark));
+                    FinishAndScheduleQuit("정리 계획과 반환 직전 진단이 다릅니다.");
+                    break;
+                }
+                CheckCleanup(CleanupCheck::Committed, result.step == Core::CleanupStep::Complete && result.starterGranted,
+                    std::format("slottedSparkDiag={}; {}", slottedSparkDiag, result.Describe()));
+
+                // 같은 틱 증거(결정 247, 4.1 W7, 검토 7): RanInCleanupTick + afterInit.frame > cleanupFrame +
+                // afterInit.grantCalls == grantCallsAtCommit + 판정 시점 StarterGrantCallCount() 재조회 일치 + STRT 일치.
+                const auto expectedStarterIds = ExpectedGen1StarterIds();
+                const auto currentState = SaveLoad::GetStateCopy();
+                const auto currentGrantCalls = GemInventory::StarterGrantCallCount();
+                const bool sameTickOk = result.starterGrant.RanInCleanupTick() &&
+                    afterInit.frame > result.starterGrant.cleanupFrame &&
+                    afterInit.grantCalls == result.starterGrant.grantCallsAtCommit &&
+                    currentGrantCalls == result.starterGrant.grantCallsAtCommit &&
+                    currentState.starterGrantedIds == expectedStarterIds;
+                CheckCleanup(CleanupCheck::SameTick, sameTickOk, std::format(
+                    "RanInCleanupTick={}, cleanupFrame={}, grantFrame={}, afterInitFrame={}, "
+                    "grantCallsAtCommit={}, afterInitGrantCalls={}, currentGrantCalls={}, STRT일치={}.",
+                    result.starterGrant.RanInCleanupTick(), result.starterGrant.cleanupFrame, result.starterGrant.grantFrame,
+                    afterInit.frame, result.starterGrant.grantCallsAtCommit, afterInit.grantCalls, currentGrantCalls,
+                    currentState.starterGrantedIds == expectedStarterIds));
+
+                const auto [itemsOk, itemsDetail] = CheckCleanupItems(player, result);
+                CheckCleanup(CleanupCheck::Items, itemsOk, itemsDetail);
+                const auto [engineOk, engineDetail] = CheckCleanupEngine(player, result);
+                CheckCleanup(CleanupCheck::Engine, engineOk, engineDetail);
+                const auto [stateOk, stateDetail] = CheckCleanupState();
+                CheckCleanup(CleanupCheck::State, stateOk, stateDetail);
+
+                // 이관된 G2(1): 정리 직후 초기화에서 번호 붙은 고아 Spark가 일반 젬으로 정상화되었는지 확인.
+                std::map<RE::FormID, std::int32_t> totals;
+                const auto numbered = CountNumberedGems(player, &totals);
+                const auto numberedCount = SumCounts(numbered);
+                bool kept = true;
+                for (const auto& [form, savedTotal] : g_cleanupTest.totalBefore) {
+                    const auto it = totals.find(form);
+                    kept = kept && it != totals.end() && it->second >= savedTotal;
+                }
+                std::int32_t sparkPlain = 0;
+                for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
+                    if (stack.gemId == "gem.Spark") sparkPlain += stack.count;
+                }
+                const auto sparkNumbered = spark && g_cleanupTest.numberedBefore.contains(spark->GetFormID())
+                    ? g_cleanupTest.numberedBefore.at(spark->GetFormID()) : 0;
+                const bool bagPlainOk = sparkNumbered >= 1 && numberedCount == 0 && kept && sparkPlain >= sparkNumbered;
+                CheckCleanup(CleanupCheck::BagPlain, bagPlainOk, std::format(
+                    "numbered before={}, after={}; totals kept={}, plain gem.Spark={} (numberedBefore={}).",
+                    DescribeCounts(g_cleanupTest.numberedBefore), DescribeCounts(numbered), kept, sparkPlain, sparkNumbered));
+
+                // G2 시험용으로 정리 직전 주입했던 번호 Spark 1개(이제 일반 Spark)를 출력 저장 전에 제거해 깨끗한 출력을 남긴다.
+                if (g_cleanupTest.orphanInjected && spark && player->GetItemCount(spark) >= 1) {
+                    player->RemoveItem(spark, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                    LogInfo("G2 정리 직후 확인용으로 추가했던 Spark 1개를 출력 저장 전에 제거했습니다.");
+                }
                 {
                     std::scoped_lock lock(g_msgMutex);
                     g_expectedSaveStem = finalSave;
                     g_saveMatched = false;
                     g_saveAtNextMessage.reset();
+                    g_sessionSaveRequested = false;
                 }
                 g_nextSaveRetryAt = now;
                 EnterPhase(Phase::CleanupSaveFinal);
@@ -3817,17 +6638,17 @@ namespace SkyrimPoE::Runtime
                 }
                 const bool timedOut = PhaseElapsedSec() > kScenarioASaveTimeoutSec || !ModState::AllowsGameplay();
                 if (matched && write.sequence != before) {
-                    ReportCleanupCommitChecks(write.sequence == before + 1 ? write.threadId : 0);
                     const bool noMigration = std::ranges::find(write.recordTypes, Core::kRecordMigration) == write.recordTypes.end();
-                    const bool stamp = write.generation && IsCleanupTarget(*write.generation);
+                    const bool hasStarter = std::ranges::find(write.recordTypes, Core::SaveRecord::kRecordStarter) != write.recordTypes.end();
+                    const bool stamp = write.generation && IsGen1Target(*write.generation);
                     const auto tickThread = g_cleanupTest.committed->tickThreadId;
                     const bool sameThread = write.threadId != 0 && write.threadId == tickThread;
                     const bool callbackWritten = write.sequence == before + 1 && write.complete && write.failedRecords == 0 &&
-                        noMigration && stamp && sameThread;
-                    const auto& files = g_cleanupTest.finalFiles;
-                    const auto requestedAt = g_cleanupTest.finalSaveRequestedAt;
-                    const bool essUpdated = files && SaveFileUpdated(files->ess, files->essBefore, requestedAt);
-                    const bool cosaveUpdated = files && SaveFileUpdated(files->cosave, files->cosaveBefore, requestedAt);
+                        noMigration && hasStarter && stamp && sameThread;
+                    const bool essUpdated = g_session.pendingSaveFiles &&
+                        SaveFileUpdated(g_session.pendingSaveFiles->ess, g_session.pendingSaveFiles->essBefore, g_session.pendingSaveRequestedAt);
+                    const bool cosaveUpdated = g_session.pendingSaveFiles &&
+                        SaveFileUpdated(g_session.pendingSaveFiles->cosave, g_session.pendingSaveFiles->cosaveBefore, g_session.pendingSaveRequestedAt);
                     const bool written = callbackWritten && essUpdated && cosaveUpdated;
                     if (callbackWritten && !written && !timedOut) {
                         break;
@@ -3838,31 +6659,28 @@ namespace SkyrimPoE::Runtime
                             static_cast<char>(type >> 8), static_cast<char>(type));
                     }
                     CheckCleanup(CleanupCheck::Write, written, std::format(
-                        "save='{}', sequence={}->{}, complete={}, failedRecords={}, records=[{} ], GENR={}/{}, "
-                        "tick thread={}, OnSave thread={}, sameThread={}, essUpdated={}, skseUpdated={}",
+                        "save='{}', sequence={}->{}, complete={}, failedRecords={}, records=[{} ], GENR={}/{}, STRT={}, "
+                        "tickThread={}, onSaveThread={}, sameThread={}, essUpdated={}, skseUpdated={}",
                         finalSave, before, write.sequence, write.complete, write.failedRecords, records,
                         write.generation ? write.generation->game : "unavailable",
-                        write.generation ? write.generation->contentGeneration : 0, tickThread, write.threadId, sameThread,
-                        essUpdated, cosaveUpdated));
-                    if (written && RequestLoadSave(finalSave)) {
+                        write.generation ? write.generation->contentGeneration : 0, hasStarter,
+                        tickThread, write.threadId, sameThread, essUpdated, cosaveUpdated));
+                    std::string loadReason;
+                    if (written && RequestLoadSave(finalSave, &loadReason)) {
                         EnterPhase(Phase::CleanupReloadFinal);
                     } else {
-                        FinishAndScheduleQuit("Could not verify the final save or request its reload.");
+                        FinishAndScheduleQuit(written
+                            ? std::format("출력 세이브 재로드 요청에 실패했습니다: {}", loadReason)
+                            : "출력 세이브 확인에 실패했습니다.");
                     }
                 } else if (timedOut) {
-                    FinishAndScheduleQuit("Final co-save write did not complete.");
+                    FinishAndScheduleQuit("출력 슬롯 코세이브 쓰기가 완료되지 않았습니다.");
                 } else if (!matched && eligible && now >= g_nextSaveRetryAt) {
                     g_nextSaveRetryAt = now + std::chrono::seconds(2);
-                    if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
-                        const fs::path stem{ std::u8string(finalSave.begin(), finalSave.end()) };
-                        g_cleanupTest.finalFiles = ObserveSaveFiles(stem);
-                        if (!g_cleanupTest.finalFiles) {
-                            FinishAndScheduleQuit("Could not read the final ESS and SKSE timestamps before saving.");
-                            break;
-                        }
-                        g_cleanupTest.starterItemsBeforeSave = CaptureCleanupStarterItems(player);
-                        g_cleanupTest.finalSaveRequestedAt = fs::file_time_type::clock::now();
-                        mgr->Save(finalSave.c_str());
+                    g_cleanupTest.starterItemsBeforeSave = CaptureAllGemAndCurrencyCounts(player);
+                    g_cleanupTest.starterIdsBeforeSave = SaveLoad::GetStateCopy().starterGrantedIds;
+                    if (!RequestSessionSave(finalSave)) {
+                        FinishAndScheduleQuit("출력 슬롯 저장 요청에 실패했습니다.");
                     }
                 }
                 break;
@@ -3871,27 +6689,77 @@ namespace SkyrimPoE::Runtime
                 const auto [signaled, succeeded] = loadSignal();
                 if (!signaled || (succeeded && !eligible)) {
                     if (PhaseElapsedSec() > 90.0) {
-                        FinishAndScheduleQuit("Final save reload did not become ready.");
+                        FinishAndScheduleQuit("출력 세이브 재로드가 준비되지 않았습니다.");
                     }
+                    break;
+                }
+                if (succeeded && player) {
+                    BlockSessionManualSaves(*player);
+                }
+                if (succeeded && PhaseElapsedSec() < 1.5) {
+                    // 재로드 뒤 PostLoadInit이 실행될 여유를 둔다.
                     break;
                 }
                 const auto load = SaveLoad::GetLastLoadDiagnostics();
                 const auto [stateReset, stateDetail] = CheckCleanupState();
                 const bool stamp = load.generation && load.generation->status == Core::GenerationRecordStatus::Valid &&
-                    IsCleanupTarget(load.generation->value);
+                    IsGen1Target(load.generation->value);
                 const bool normal = load.decision && load.decision->disposition == Core::SaveDisposition::Normal &&
-                    ModState::AllowsGameplay();
+                    ModState::AllowsGameplay() && !SaveLoad::GetLastMigrationDiagnostics();
                 const auto [starterItemsEqual, starterItemsDetail] = succeeded ? CheckCleanupStarterItems(player) :
                     std::pair{ false, std::string("starter inventory unavailable") };
                 CheckCleanup(CleanupCheck::Reload, succeeded && load.receivedLoad && load.collectionComplete &&
                     stamp && normal && stateReset && starterItemsEqual, std::format(
                     "save='{}', success={}, collected={}, GENR=poe2/1:{}, normal={}, {}, {}",
                     finalSave, succeeded, load.collectionComplete, stamp, normal, stateDetail, starterItemsDetail));
-                FinishAndScheduleQuit("Cleanup AutoTest finished.");
+                if (!succeeded || !normal || !spark) {
+                    FinishAndScheduleQuit("재로드 검증에 실패해 유입 정상화(G2)를 건너뜁니다.");
+                    break;
+                }
+                // 이관된 G2(2): 출력 저장·재로드 검증 뒤 정상 모드에서 번호 붙은 Spark 유입 정상화 확인(출력 세이브 오염 없음).
+                g_cleanupTest.incomingSparkTotal = player->GetItemCount(spark);
+                g_cleanupTest.incomingSparkPlain = 0;
+                for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
+                    if (stack.gemId == "gem.Spark") g_cleanupTest.incomingSparkPlain += stack.count;
+                }
+                auto* extra = UniqueIdUtil::CreateGameExtraDataList();
+                const auto uid = UniqueIdUtil::AllocateInventoryUniqueId(player);
+                if (!extra || uid == 0) {
+                    if (extra) UniqueIdUtil::DestroyGameExtraDataList(extra);
+                    CheckCleanup(CleanupCheck::IncomingPlain, false, "유입 정상화 시험용 번호 Spark를 만들지 못했습니다.");
+                    FinishAndScheduleQuit("유입 정상화 시험 준비에 실패했습니다.");
+                    break;
+                }
+                extra->Add(new RE::ExtraUniqueID(player->GetFormID(), uid));
+                player->AddObjectToContainer(spark, extra, 1, nullptr);
+                g_cleanupTest.incomingSince = now;
+                EnterPhase(Phase::CleanupIncomingPlain);
+                break;
+            }
+            case Phase::CleanupIncomingPlain: {
+                if (!eligible || !spark) break;
+                const double waited = std::chrono::duration<double>(now - g_cleanupTest.incomingSince).count();
+                const auto numbered = CountNumberedGems(player, nullptr);
+                const auto numberedCount = SumCounts(numbered);
+                if (numberedCount > 0 && waited < 3.0) break;
+                std::int32_t sparkPlain = 0;
+                for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
+                    if (stack.gemId == "gem.Spark") sparkPlain += stack.count;
+                }
+                const auto sparkTotal = player->GetItemCount(spark);
+                const bool ok = numberedCount == 0 &&
+                    sparkTotal == g_cleanupTest.incomingSparkTotal + 1 &&
+                    sparkPlain == g_cleanupTest.incomingSparkPlain + 1;
+                CheckCleanup(CleanupCheck::IncomingPlain, ok, std::format(
+                    "after {:.2f}s: numberedLeft={}, Spark total {} -> {} (기대 +1), plain gem.Spark {} -> {} (기대 +1).",
+                    waited, DescribeCounts(numbered), g_cleanupTest.incomingSparkTotal, sparkTotal,
+                    g_cleanupTest.incomingSparkPlain, sparkPlain));
+                g_session.completedNormally = true;
+                FinishAndScheduleQuit("세대 1 정리 시험을 마쳤습니다.");
                 break;
             }
             default:
-                FinishAndScheduleQuit("Unexpected cleanup AutoTest phase.");
+                FinishAndScheduleQuit("예상하지 못한 정리 시험 단계입니다.");
                 break;
             }
         }
@@ -6238,31 +9106,67 @@ namespace SkyrimPoE::Runtime
         g_saveChecksReported.fill(false);
         g_cleanupTest = {};
         g_gems = {};
-        g_gemsSaveRequested = g_gemsUnexpectedSave = g_gemsUnexpectedLoad = false;
-        g_gemsLoadStarts = 0;
+        g_firstInstall = {};
+        g_newGame = {};
+        g_preserve = {};
+        g_gen1Gate = {};
+        g_saveEarn = {};
+        g_session = {};
+        {
+            // F7: 예상 밖 로드·저장 플래그는 프로세스 시작 시 false이며 이후 재설정으로 지우지 않는다.
+            std::scoped_lock lock(g_msgMutex);
+            g_sessionSaveRequested = false;
+        }
         g_failCount = 0;
         g_warnCount = 0;
         g_startedAt = Clock::now();
         // U2 확정(2026-11-20): 출시 기본값 EnforceGemRequirements=true에서 Lv1 기준 세이브의
-        // 스타터 젬(Cyclone Lv28 등) 통합 시험이 가능하도록 AutoTest 실행 중에만 임시 false 적용(종료 시 원복)
-        if (g_config && !g_cfg.saveOnly && !g_cfg.cleanupOnly) {
+        // 스타터 젬(Cyclone Lv28 등) 통합 시험이 가능하도록 전체/단축 조사 실행 중에만 임시 false 적용(종료 시 원복).
+        // gems 모드는 요구치 강제(true) 상태에서 시험하고, save/cleanup/firstinstall/newgame/preserve/gen1gate는 INI를 건드리지 않는다.
+        if (g_config && !g_cfg.saveOnly && !g_cfg.cleanupOnly && !g_cfg.firstInstall &&
+            !g_cfg.newGameOnly && !g_cfg.preserveOnly && !g_cfg.gen1GateOnly) {
             g_savedEnforceGemReq = g_config->enforceGemRequirements;
             g_hasSavedEnforceGemReq = true;
             g_config->enforceGemRequirements = g_cfg.gemsOnly;
         }
         g_enabled.store(true, std::memory_order_release);
 
-        LogInfo(std::format("SkyrimPoE Stage 6 AutoTest armed (save='{}', temp_save='{}', quit={}, timeout={:.0f}s).",
-            g_cfg.baselineSave, g_cfg.tempSave, g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
+        LogInfo(std::format("SkyrimPoE AutoTest armed (save='{}', temp_save='{}', out_save='{}', preserve_saves={}, quit={}, timeout={:.0f}s).",
+            g_cfg.baselineSave, g_cfg.tempSave, g_cfg.EffectiveOutSave(), g_cfg.preserveSaves.size(),
+            g_cfg.quitWhenDone, g_cfg.globalTimeoutSec));
 
+        if (g_cfg.gen1GateOnly) {
+            const auto pack = SaveLoad::GetContentGeneration();
+            g_gen1Gate.packageGeneration = pack ? pack->contentGeneration : 1;
+            g_gen1Gate.since = Clock::now();
+            g_gen1Gate.lastTick = g_gen1Gate.since;
+            EnterPhase(Phase::Gen1GateOnly);
+            return;
+        }
+        if (g_cfg.newGameOnly) {
+            g_newGame.outSlot = g_cfg.EffectiveOutSave();
+            g_newGame.since = Clock::now();
+            EnterPhase(Phase::NewGameOnly);
+            return;
+        }
+        if (g_cfg.preserveOnly) {
+            g_preserve.since = Clock::now();
+            EnterPhase(Phase::PreserveOnly);
+            return;
+        }
+        if (g_cfg.firstInstall) {
+            g_firstInstall.finalSlot = g_cfg.EffectiveOutSave();
+            g_firstInstall.since = Clock::now();
+            EnterPhase(Phase::FirstInstallOnly);
+            return;
+        }
         if (g_cfg.gemsOnly) {
-            g_gems.finalSlot = g_cfg.tempSave + kCleanupFinalSuffix;
+            g_gems.finalSlot = g_cfg.EffectiveOutSave();
             g_gems.since = Clock::now();
             EnterPhase(Phase::GemsOnly);
             return;
         }
         if (g_cfg.cleanupOnly) {
-            SaveLoad::SetCleanupTestTarget(true);
             EnterPhase(Phase::CleanupContent);
             return;
         }
@@ -6284,19 +9188,14 @@ namespace SkyrimPoE::Runtime
         return g_enabled.load(std::memory_order_acquire);
     }
 
-    bool AutoTest::IsCleanupOnly() noexcept
+    bool AutoTest::UsesTestSession() noexcept
     {
-        return IsEnabled() && g_cfg.cleanupOnly;
-    }
-
-    bool AutoTest::IsGemsOnly() noexcept
-    {
-        return IsEnabled() && g_cfg.gemsOnly;
+        return IsEnabled() && g_cfg.UsesTestSession();
     }
 
     void AutoTest::TickSaveOnlyWhileSuspended(RE::Main* main)
     {
-        if (IsEnabled() && (g_cfg.saveOnly || g_cfg.cleanupOnly || g_cfg.gemsOnly)) {
+        if (UsesTestSession()) {
             Tick(main, 0.0);
         }
     }
@@ -6306,22 +9205,38 @@ namespace SkyrimPoE::Runtime
         if (!IsEnabled()) {
             return;
         }
-        if (g_cfg.gemsOnly) {
-            SaveLoad::MatchGemTestLoad(saveName);
-            ++g_gemsLoadStarts;
+        if (g_cfg.UsesTestSession()) {
             const auto stem = StripSaveStem(saveName);
-            std::scoped_lock lock(g_msgMutex);
-            g_preLoadMatched = !g_expectedLoadStem.empty() && SameSaveStem(stem, g_expectedLoadStem);
-            g_gemsUnexpectedLoad |= !g_preLoadMatched;
-            g_postLoadSignaled = g_postLoadSucceeded = false;
+            bool unexpected = false;
+            {
+                std::scoped_lock lock(g_msgMutex);
+                ++g_sessionLoadStarts;
+                g_preLoadMatched = !g_expectedLoadStem.empty() && SameSaveStem(stem, g_expectedLoadStem);
+                unexpected = !g_preLoadMatched;
+                g_sessionUnexpectedLoad |= unexpected;
+                g_postLoadSignaled = g_postLoadSucceeded = false;
+            }
+            if (unexpected) {
+                SaveLoad::LockTestSessionForQuit(true);
+            }
             return;
         }
-        const bool cleanupMatch = g_cfg.cleanupOnly && SaveLoad::MatchCleanupTestLoad(saveName);
-        const auto stem = g_cfg.cleanupOnly ? std::string{} : ToLowerAscii(StripSaveStem(saveName));
+        const auto stem = ToLowerAscii(StripSaveStem(saveName));
         std::scoped_lock lock(g_msgMutex);
-        g_preLoadMatched = g_cfg.cleanupOnly ? cleanupMatch : !g_expectedLoadStem.empty() && stem == g_expectedLoadStem;
+        g_preLoadMatched = !g_expectedLoadStem.empty() && stem == g_expectedLoadStem;
         g_postLoadSignaled = false;
         g_postLoadSucceeded = false;
+    }
+
+    void AutoTest::OnNewGame()
+    {
+        if (!IsEnabled()) {
+            return;
+        }
+        const auto frame = MainUpdateHook::EngineFrameCount();
+        std::scoped_lock lock(g_msgMutex);
+        ++g_newGameCount;
+        g_newGameFrame = frame;
     }
 
     void AutoTest::OnPostLoadGame(bool succeeded)
@@ -6339,7 +9254,11 @@ namespace SkyrimPoE::Runtime
             // 로드 완료 메시지는 초기 지급 예약(주 갱신 큐)보다 먼저 온다. 그래서 여기서 잰 수가 지급 전 기준이다.
             // 엔진 인벤토리는 메시지 잠금 밖에서 읽는다.
             if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-                g_firstInstall.atLoad = CaptureCleanupStarterItems(player);
+                g_firstInstall.atLoad = CaptureAllGemAndCurrencyCounts(player);
+            }
+        } else if (succeeded && g_cfg.preserveOnly) {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                g_preserve.countsAtLoad = CaptureAllGemAndCurrencyCounts(player);
             }
         }
         std::scoped_lock lock(g_msgMutex);
@@ -6360,37 +9279,28 @@ namespace SkyrimPoE::Runtime
             return;
         }
         const auto stem = StripSaveStem(saveName);
-        if (g_cfg.gemsOnly) {
+        if (g_cfg.UsesTestSession()) {
             const auto previous = SaveLoad::GetLastSaveDiagnostics();
             bool requested = false;
             {
                 std::scoped_lock lock(g_msgMutex);
-                requested = g_gemsSaveRequested && SameSaveStem(stem, g_expectedSaveStem);
-                g_gemsSaveRequested = false;
-                g_gemsUnexpectedSave |= !requested;
+                requested = g_sessionSaveRequested && SameSaveStem(stem, g_expectedSaveStem);
+                g_sessionSaveRequested = false;
+                g_sessionUnexpectedSave |= !requested;
                 if (requested) {
-                    g_saveSequenceAtMessage = previous.sequence;
-                    g_saveMatched = true;
+                    if (g_saveMatched) {
+                        if (!g_saveAtNextMessage) {
+                            g_saveAtNextMessage = previous;
+                        }
+                    } else {
+                        g_saveSequenceAtMessage = previous.sequence;
+                        g_saveMatched = true;
+                    }
                 }
             }
-            SaveLoad::OnGemTestSave(stem, requested);
-            return;
-        }
-        if (g_cfg.saveOnly || g_cfg.cleanupOnly) {
-            // SKSE dispatches kSaveGame before it invokes the co-save writer.
-            const auto previous = SaveLoad::GetLastSaveDiagnostics();
-            std::scoped_lock lock(g_msgMutex);
-            if (g_expectedSaveStem.empty()) {
-                return;
-            }
-            if (g_saveMatched) {
-                if (!g_saveAtNextMessage) {
-                    g_saveAtNextMessage = previous;
-                }
-            } else if (g_cfg.cleanupOnly ? SameSaveStem(stem, g_expectedSaveStem) :
-                                         ToLowerAscii(stem) == ToLowerAscii(g_expectedSaveStem)) {
-                g_saveSequenceAtMessage = previous.sequence;
-                g_saveMatched = true;
+            SaveLoad::OnTestSessionSave(stem, requested);
+            if (!requested) {
+                SaveLoad::LockTestSessionForQuit(true);
             }
             return;
         }
@@ -6413,12 +9323,64 @@ namespace SkyrimPoE::Runtime
         }
 
         if (g_phase == Phase::QuitDelay) {
+            if (g_cfg.UsesTestSession()) {
+                // A3(F3): QuitDelay 매 틱에 kDisableSaving이 해제된 적이 없는지 먼저 관측한 뒤 재설정한다.
+                (void)ObserveAndEnforceManualSaveGuard();
+            }
             if (PhaseElapsedSec() >= 2.0) {
+                if (g_cfg.UsesTestSession()) {
+                    FinalizeTestSessionBeforeQuit();
+                    WriteSummaryAndCloseReport();
+                }
                 EnterPhase(Phase::Done);
                 g_enabled.store(false, std::memory_order_release);
                 if (auto* m = main ? main : RE::Main::GetSingleton()) {
                     m->GetRuntimeData().quitGame = true;
                 }
+            }
+            return;
+        }
+
+        if (g_cfg.gen1GateOnly) {
+            try {
+                TickGen1GateOnly();
+            } catch (const std::exception& e) {
+                FinishAndScheduleQuit(std::format("Gen1Gate AutoTest failed: {}", e.what()));
+            } catch (...) {
+                FinishAndScheduleQuit("Gen1Gate AutoTest failed with an unknown exception.");
+            }
+            return;
+        }
+
+        if (g_cfg.newGameOnly) {
+            try {
+                TickNewGameOnly();
+            } catch (const std::exception& e) {
+                FinishAndScheduleQuit(std::format("NewGame AutoTest failed: {}", e.what()));
+            } catch (...) {
+                FinishAndScheduleQuit("NewGame AutoTest failed with an unknown exception.");
+            }
+            return;
+        }
+
+        if (g_cfg.preserveOnly) {
+            try {
+                TickPreserveOnly();
+            } catch (const std::exception& e) {
+                FinishAndScheduleQuit(std::format("Preserve AutoTest failed: {}", e.what()));
+            } catch (...) {
+                FinishAndScheduleQuit("Preserve AutoTest failed with an unknown exception.");
+            }
+            return;
+        }
+
+        if (g_cfg.firstInstall) {
+            try {
+                TickFirstInstallOnly();
+            } catch (const std::exception& e) {
+                FinishAndScheduleQuit(std::format("FirstInstall AutoTest failed: {}", e.what()));
+            } catch (...) {
+                FinishAndScheduleQuit("FirstInstall AutoTest failed with an unknown exception.");
             }
             return;
         }
@@ -6445,19 +9407,31 @@ namespace SkyrimPoE::Runtime
             return;
         }
 
-        const bool saveOnlySuspended = g_cfg.saveOnly && !ModState::AllowsGameplay();
+        if (g_cfg.UsesTestSession()) {
+            bool unexpectedLoad = false, unexpectedSave = false;
+            if (HasUnexpectedSessionEvent(unexpectedLoad, unexpectedSave)) {
+                FinishAndScheduleQuit("시험 세션 중 예상 밖의 로드 또는 저장이 발생해 즉시 중단했습니다.");
+                return;
+            }
+        }
+
+        const bool sessionSuspended = (g_cfg.saveOnly || g_cfg.enemyEsOnly || g_cfg.reactOnly) && !ModState::AllowsGameplay();
         if (g_phase == Phase::SaveOnlyContent) {
             const auto pack = SaveLoad::GetContentGeneration();
             const auto status = ModState::Get();
             const bool normal = status->mode == ModMode::Normal;
-            const bool ok = pack.has_value() && normal;
-            CheckSave(SaveCheck::Content, ok, std::format("contentCheckPassed={}, normalMode={}, failureReasons=[{}]",
-                pack.has_value(), normal, ok ? "" : status->reason));
+            const auto outSave = g_cfg.EffectiveOutSave();
+            const bool sessionOk = pack.has_value() && normal && BeginAutoTestSession(outSave);
+            const bool ok = pack.has_value() && normal && sessionOk;
+            CheckSave(SaveCheck::Content, ok, std::format(
+                "contentCheckPassed={}, normalMode={}, game/gen={}/{}, outSave='{}', sessionOk={}, failureReasons=[{}]",
+                pack.has_value(), normal, pack ? pack->game : "none", pack ? pack->contentGeneration : 0,
+                outSave, sessionOk, ok ? "" : status->reason));
             if (!ok) {
-                FinishAndScheduleQuit("Startup content or mod mode check failed.");
+                FinishAndScheduleQuit("시작 콘텐츠·모드 또는 시험 세션 보호 준비에 실패했습니다.");
             } else if (g_cfg.baselineSave.empty()) {
                 CheckSave(SaveCheck::Baseline, false, "Marker file missing required 'save=<stem>' entry.");
-                FinishAndScheduleQuit("Aborting due to missing baseline save.");
+                FinishAndScheduleQuit("기준 세이브 이름이 비어 중단합니다.");
             } else {
                 EnterPhase(Phase::AwaitMainMenu);
             }
@@ -6481,14 +9455,14 @@ namespace SkyrimPoE::Runtime
         }
 
         // Preserve is also the transient mode during a load. Let its matched post-load message determine the result.
-        if (saveOnlySuspended &&
+        if (sessionSuspended &&
             g_phase != Phase::AwaitBaselineLoad && g_phase != Phase::ScenarioA_AwaitReload) {
-            FinishAndScheduleQuit(std::format("Mod left normal mode in {}. {}", PhaseName(g_phase), ModState::Get()->reason));
+            FinishAndScheduleQuit(std::format("모드가 {} 단계에서 Normal을 벗어났습니다. {}", PhaseName(g_phase), ModState::Get()->reason));
             return;
         }
 
         auto* ui = RE::UI::GetSingleton();
-        if (!saveOnlySuspended) {
+        if (!sessionSuspended) {
             CloseDialogueWhileAwaitingSave(ui);
         }
         const bool paused = ui && ui->GameIsPaused();
@@ -6502,6 +9476,22 @@ namespace SkyrimPoE::Runtime
 
         switch (g_phase) {
         case Phase::AwaitMainMenu: {
+            // 전체 A~H와 h27은 세대 0(PoE1) 패키지 필수.
+            if (!g_cfg.UsesTestSession()) {
+                const auto pack = SaveLoad::GetContentGeneration();
+                if (!pack || pack->contentGeneration != 0) {
+                    Check("A0_PackageGeneration", false, std::format(
+                        "전체 A~H 및 h27 모드는 세대 0(PoE1) 패키지가 필요합니다 (현재 세대={}).",
+                        pack ? std::to_string(pack->contentGeneration) : "없음"));
+                    FinishAndScheduleQuit("세대 0 패키지가 아니어서 실행을 중단합니다.");
+                    return;
+                }
+            } else if ((g_cfg.enemyEsOnly || g_cfg.reactOnly) && !g_session.active) {
+                if (!BeginAutoTestSession("")) {
+                    FinishAndScheduleQuit("es/react 시험 세션 보호(자동 저장 억제·원본 지문 기록)를 시작하지 못했습니다.");
+                    return;
+                }
+            }
             if (ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) {
                 LogInfo("MainMenu detected; waiting 2.0s before loading baseline save.");
                 EnterPhase(Phase::MenuDelay);
@@ -6517,13 +9507,17 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             LogInfo(std::format("Loading baseline save '{}'...", g_cfg.baselineSave));
-            if (!RequestLoadSave(g_cfg.baselineSave)) {
-                if (g_cfg.saveOnly) {
-                    CheckSave(SaveCheck::Baseline, false, "BGSSaveLoadManager singleton unavailable.");
-                } else {
-                    Check("A0_LoadBaseline", false, "BGSSaveLoadManager singleton unavailable.");
+            std::string loadReason;
+            if (!RequestLoadSave(g_cfg.baselineSave, &loadReason)) {
+                if (loadReason.empty()) {
+                    loadReason = "Failed to request baseline save load.";
                 }
-                FinishAndScheduleQuit("Failed to request baseline save load.");
+                if (g_cfg.saveOnly) {
+                    CheckSave(SaveCheck::Baseline, false, loadReason);
+                } else {
+                    Check("A0_LoadBaseline", false, loadReason);
+                }
+                FinishAndScheduleQuit(std::format("Failed to request baseline save load: {}", loadReason));
                 return;
             }
             EnterPhase(Phase::AwaitBaselineLoad);
@@ -6540,8 +9534,31 @@ namespace SkyrimPoE::Runtime
             }
             if (g_cfg.saveOnly && signaled && !SaveCheckReported(SaveCheck::Baseline) &&
                 !CheckSaveOnlyLoad(SaveCheck::Baseline, ok, g_cfg.baselineSave)) {
-                FinishAndScheduleQuit("Baseline save did not load in normal mode with a supported GENR.");
+                FinishAndScheduleQuit("기준 세이브가 기대 판정(Normal)과 유효 GENR로 열리지 않았습니다.");
                 return;
+            }
+            if ((g_cfg.enemyEsOnly || g_cfg.reactOnly) && signaled) {
+                const auto load = SaveLoad::GetLastLoadDiagnostics();
+                const auto mode = ModState::Get();
+                const bool normalDecision = load.decision && load.decision->disposition == Core::SaveDisposition::Normal;
+                const bool loadOk = ok && normalDecision && mode->mode == ModMode::Normal && load.collectionComplete;
+                const auto detail = std::format(
+                    "save='{}', kPostLoadGame={}, decision={} ({}), normalMode={} ({}), collectionComplete={}",
+                    g_cfg.baselineSave, ok,
+                    load.decision ? SaveDispositionName(load.decision->disposition) : "unavailable",
+                    load.decision ? load.decision->reason : "",
+                    mode->mode == ModMode::Normal, mode->reason, load.collectionComplete);
+                if (g_cfg.enemyEsOnly && !g_esTest.reported.contains("ES0_LoadNormal")) {
+                    g_esTest.reported.insert("ES0_LoadNormal");
+                    Check("ES0_LoadNormal", loadOk, detail);
+                } else if (g_cfg.reactOnly && !g_reactTest.reported.contains("R0_LoadNormal")) {
+                    g_reactTest.reported.insert("R0_LoadNormal");
+                    Check("R0_LoadNormal", loadOk, detail);
+                }
+                if (!loadOk) {
+                    FinishAndScheduleQuit("입력 세이브의 로드 판정이 Normal이 아니어서 즉시 중단합니다.");
+                    return;
+                }
             }
             if (signaled && !ok) {
                 Check("A0_LoadBaseline", false, std::format("kPostLoadGame reported failure for '{}'.", g_cfg.baselineSave));
@@ -6549,15 +9566,20 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             if (signaled && ok && IsPlayerReadyInWorld()) {
+                if (g_cfg.UsesTestSession()) {
+                    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                        BlockSessionManualSaves(*player);
+                    }
+                }
                 LogInfo(g_cfg.saveOnly ? "Baseline save loaded; settling unpaused world." :
                     "Baseline save loaded; settling unpaused world + Prisma DOM.");
                 EnterPhase(Phase::BaselineSettle);
             } else if (PhaseElapsedSec() > 90.0) {
-                if (!g_cfg.saveOnly) {
+                if (!g_cfg.saveOnly && !g_cfg.enemyEsOnly && !g_cfg.reactOnly) {
                     Check("A0_LoadBaseline", false, "Timed out waiting for baseline save load.");
-                } else if (!SaveCheckReported(SaveCheck::Baseline)) {
+                } else if (g_cfg.saveOnly && !SaveCheckReported(SaveCheck::Baseline)) {
                     (void)CheckSaveOnlyLoad(SaveCheck::Baseline, false, g_cfg.baselineSave);
-                } else {
+                } else if (g_cfg.saveOnly) {
                     g_runError = true;
                 }
                 FinishAndScheduleQuit("Baseline load timeout.");
@@ -6575,27 +9597,87 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (g_cfg.saveOnly) {
+                const auto pack = SaveLoad::GetContentGeneration();
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (pack && pack->contentGeneration == 1) {
+                    std::string prepDetail;
+                    Core::PassivePathPlan plan;
+                    if (!PlanSaveOnlyGen1TreeAndClass(prepDetail, plan)) {
+                        CheckSave(SaveCheck::Write, false, prepDetail);
+                        FinishAndScheduleQuit(std::format("세대 1 save 트리 계획 실패: {}", prepDetail));
+                        return;
+                    }
+                    LogInfo(prepDetail);
+                    const auto state = SaveLoad::GetStateCopy();
+                    const auto availPoints = Core::PassiveTree::ComputeAvailableNormalPoints(
+                        *g_treeData, state.tree, state.exileLevel, *g_config, state.atlas.completedTierMask);
+                    if (availPoints < plan.pointCost) {
+                        // 결정 257(F1·F2): 가용 점수가 모자라면 실제 적 처치(DeathListener->KillTracker)로 점수를 얻는다.
+                        RE::FormID enemyId = 0;
+                        std::uint32_t enemyLvl = 1;
+                        if (!PickSaveEarnEnemyNpc(player, enemyId, enemyLvl)) {
+                            const auto err = "실제 처치로 필요한 점수를 얻지 못함: 스폰 가능한 Skyrim.esm 적 원형을 찾지 못했습니다.";
+                            CheckSave(SaveCheck::Write, false, err);
+                            FinishAndScheduleQuit(err);
+                            return;
+                        }
+                        g_saveEarn = {};
+                        g_saveEarn.plan = std::move(plan);
+                        g_saveEarn.startLevel = state.exileLevel;
+                        g_saveEarn.startXp = state.exileXp;
+                        g_saveEarn.lastLevel = state.exileLevel;
+                        g_saveEarn.lastXp = state.exileXp;
+                        g_saveEarn.loop.enemyNpcId = enemyId;
+                        g_saveEarn.loop.enemyLevel = enemyLvl;
+                        g_saveEarn.playerLevel = player ? player->GetLevel() : 1u;
+                        g_saveEarn.godModeBefore = RE::PlayerCharacter::IsGodMode();
+                        SetPlayerGodModeFlag(true);
+                        LogInfo(std::format(
+                            "세대 1 save 점수 얻기 시작: 필요 {}점, 현재 가용 {}점 (유배자 Lv{} XP={}, 스카이림 Lv{}), 적 원형 0x{:08X} Lv{}.",
+                            g_saveEarn.plan.pointCost, availPoints, state.exileLevel, state.exileXp,
+                            g_saveEarn.playerLevel, g_saveEarn.loop.enemyNpcId, g_saveEarn.loop.enemyLevel));
+                        EnterPhase(Phase::SaveOnly_EarnPassivePoints);
+                        break;
+                    }
+                    std::optional<std::uint8_t> sparkSlot;
+                    if (!FinishSaveOnlyGen1UiAllocation(player, plan, prepDetail, sparkSlot)) {
+                        CheckSave(SaveCheck::Write, false, prepDetail);
+                        FinishAndScheduleQuit(std::format("세대 1 save 저장 전 UI 준비 실패: {}", prepDetail));
+                        return;
+                    }
+                    LogInfo(prepDetail);
+                    g_saveEarn.pendingSparkSlot = sparkSlot;
+                    EnterPhase(Phase::SaveOnly_SettleBeforeSnapshot);
+                    break;
+                } else {
+                    g_saveOnlyBefore = CaptureSaveOnlySnapshot(player);
+                }
                 g_saveAttempts = 0;
                 g_nextSaveRetryAt = Clock::now();
                 {
                     std::scoped_lock lock(g_msgMutex);
-                    g_expectedSaveStem = g_cfg.tempSave;
+                    g_expectedSaveStem = g_cfg.EffectiveOutSave();
                     g_saveMatched = false;
                     g_saveAtNextMessage.reset();
+                    g_sessionSaveRequested = false;
                 }
                 EnterPhase(Phase::ScenarioA_SavePump);
                 break;
             }
             if (g_cfg.reactOnly) {
                 LogInfo("Hit-reaction run: skipping scenarios A-H and running R1-R5 only (no save).");
+                const auto reportedCopy = g_reactTest.reported;
                 g_reactTest = {};
+                g_reactTest.reported = reportedCopy;
                 EnterPhase(Phase::ReactOnly);
                 break;
             }
             if (g_cfg.enemyEsOnly) {
                 // 결정 185 확인용 단축 실행: 앞 시나리오 없이 적 ES 표시 시험만 돌고 끝낸다(체크포인트 없음, 저장하지 않음).
                 LogInfo("Enemy-ES investigation run: skipping scenarios A-H and running ES1-ES7 only.");
+                const auto reportedCopy = g_esTest.reported;
                 g_esTest = {};
+                g_esTest.reported = reportedCopy;
                 EnterPhase(Phase::EnemyEsOnly);
                 break;
             }
@@ -6608,6 +9690,137 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             EnterPhase(Phase::ScenarioA_Setup);
+            break;
+        }
+
+        // 결정 257(F1·F2·A1·A5): 세대 1 save 모드에서 실제 적 처치(DeathListener->KillTracker)로 필요 패시브 점수를 얻는다.
+        case Phase::SaveOnly_EarnPassivePoints: {
+            constexpr std::uint32_t kMaxEarnKills = 60;
+            constexpr double kMaxEarnSec = 300.0;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !g_treeData || !g_config) {
+                ReleaseSaveEarnState();
+                CheckSave(SaveCheck::Write, false, "점수 얻기 단계에서 플레이어·트리·설정에 접근하지 못했습니다.");
+                FinishAndScheduleQuit("세대 1 save 점수 얻기 준비 실패.");
+                return;
+            }
+            if (paused) {
+                break;
+            }
+            SweepPendingDeleteMobs(g_saveEarn.loop.pendingDeleteMobs);
+            const auto now = Clock::now();
+            const auto state = SaveLoad::GetStateCopy();
+            const auto availPoints = Core::PassiveTree::ComputeAvailableNormalPoints(
+                *g_treeData, state.tree, state.exileLevel, *g_config, state.atlas.completedTierMask);
+
+            // 직전 처치 이후 누적 경험치 계산(레벨 업 시 이전 레벨 필요 경험치를 더해 누적).
+            if (state.exileLevel != g_saveEarn.lastLevel || state.exileXp != g_saveEarn.lastXp) {
+                std::uint64_t deltaXp = 0;
+                if (state.exileLevel > g_saveEarn.lastLevel) {
+                    const auto reqPrev = Core::KillTracker::RequiredXpForNextExileLevel(g_saveEarn.lastLevel, *g_config);
+                    if (reqPrev > g_saveEarn.lastXp) {
+                        deltaXp += (reqPrev - g_saveEarn.lastXp);
+                    }
+                    for (std::uint32_t lv = g_saveEarn.lastLevel + 1; lv < state.exileLevel; ++lv) {
+                        deltaXp += Core::KillTracker::RequiredXpForNextExileLevel(lv, *g_config);
+                    }
+                    deltaXp += state.exileXp;
+                } else if (state.exileLevel == g_saveEarn.lastLevel && state.exileXp > g_saveEarn.lastXp) {
+                    deltaXp = state.exileXp - g_saveEarn.lastXp;
+                }
+                g_saveEarn.totalXpGained += deltaXp;
+                g_saveEarn.lastLevel = state.exileLevel;
+                g_saveEarn.lastXp = state.exileXp;
+            }
+
+            if (availPoints >= g_saveEarn.plan.pointCost && !g_saveEarn.loop.activeMob.get()) {
+                // A5: Disable 반영 후 SetDelete(true)까지 끝난 뒤 저장으로 넘어간다(한도 뒤 남은 항목도 ReleaseSaveEarnState가 SetDelete 호출).
+                if (!g_saveEarn.loop.pendingDeleteMobs.empty()) {
+                    if (!g_saveEarn.loop.pendingDeleteSince) {
+                        g_saveEarn.loop.pendingDeleteSince = now;
+                    }
+                    if (std::chrono::duration<double>(now - *g_saveEarn.loop.pendingDeleteSince).count() < 3.0) {
+                        break;
+                    }
+                }
+                ReleaseSaveEarnState();
+                const double xpPerKill = g_saveEarn.kills > 0
+                    ? static_cast<double>(g_saveEarn.totalXpGained) / static_cast<double>(g_saveEarn.kills) : 0.0;
+                LogInfo(std::format(
+                    "세대 1 save 실제 처치로 패시브 점수 획득 완료: 처치 {}회, 누적 경험치 +{} (처치당 {:.1f}), "
+                    "레벨 {}->{}, 가용 {}/필요 {} (적 0x{:08X} Lv{}, 플레이어 Lv{}).",
+                    g_saveEarn.kills, g_saveEarn.totalXpGained, xpPerKill,
+                    g_saveEarn.startLevel, state.exileLevel, availPoints, g_saveEarn.plan.pointCost,
+                    g_saveEarn.loop.enemyNpcId, g_saveEarn.loop.enemyLevel, g_saveEarn.playerLevel));
+                std::string prepDetail;
+                std::optional<std::uint8_t> sparkSlot;
+                if (!FinishSaveOnlyGen1UiAllocation(player, g_saveEarn.plan, prepDetail, sparkSlot)) {
+                    CheckSave(SaveCheck::Write, false, prepDetail);
+                    FinishAndScheduleQuit(std::format("세대 1 save 저장 전 UI 준비 실패: {}", prepDetail));
+                    return;
+                }
+                LogInfo(prepDetail);
+                g_saveEarn.pendingSparkSlot = sparkSlot;
+                EnterPhase(Phase::SaveOnly_SettleBeforeSnapshot);
+                break;
+            }
+
+            const auto failEarn = [&](std::string_view why) {
+                ReleaseSaveEarnState();
+                const double xpPerKill = g_saveEarn.kills > 0
+                    ? static_cast<double>(g_saveEarn.totalXpGained) / static_cast<double>(g_saveEarn.kills) : 0.0;
+                const auto msg = std::format(
+                    "실제 처치로 필요한 점수를 얻지 못함 ({}, 필요 {}, 가용 {}, 처치 {}, 누적 경험치 +{}, "
+                    "처치당 경험치 {:.1f}, 레벨 {}->{}, 적 0x{:08X} Lv{}, 플레이어 Lv{}).",
+                    why, g_saveEarn.plan.pointCost, availPoints, g_saveEarn.kills, g_saveEarn.totalXpGained,
+                    xpPerKill, g_saveEarn.startLevel, state.exileLevel, g_saveEarn.loop.enemyNpcId,
+                    g_saveEarn.loop.enemyLevel, g_saveEarn.playerLevel);
+                CheckSave(SaveCheck::Write, false, msg);
+                FinishAndScheduleQuit(msg);
+            };
+            if (g_saveEarn.kills >= kMaxEarnKills) {
+                failEarn("처치 한도 초과");
+                return;
+            }
+            if (PhaseElapsedSec() > kMaxEarnSec) {
+                failEarn("시간 한도 초과");
+                return;
+            }
+
+            RE::ActorHandle confirmedMob{};
+            std::string killErr;
+            const auto outcome = StepHostileKillLoop(
+                player, g_saveEarn.loop, now, /*disableAfterConfirm=*/true, confirmedMob, killErr);
+            if (outcome == KillLoopOutcome::KillConfirmed) {
+                ++g_saveEarn.kills;
+            } else if (outcome == KillLoopOutcome::Failed) {
+                failEarn(killErr);
+            }
+            break;
+        }
+
+        // A1·A2: EnterPhase가 g_unpausedAccumSec을 0으로 초기화하므로 g_unpausedAccumSec < 0.5로 비정지 안정화를 잰다.
+        case Phase::SaveOnly_SettleBeforeSnapshot: {
+            if (paused) {
+                break;
+            }
+            if (g_unpausedAccumSec < 0.5 && PhaseElapsedSec() < 5.0) {
+                break;
+            }
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            g_saveOnlyBefore = CaptureSaveOnlySnapshot(player);
+            g_saveOnlyBefore.equippedSparkSlot = g_saveEarn.pendingSparkSlot;
+            g_saveOnlyBefore.preparedGen1Ui = true;
+            g_saveAttempts = 0;
+            g_nextSaveRetryAt = Clock::now();
+            {
+                std::scoped_lock lock(g_msgMutex);
+                g_expectedSaveStem = g_cfg.EffectiveOutSave();
+                g_saveMatched = false;
+                g_saveAtNextMessage.reset();
+                g_sessionSaveRequested = false;
+            }
+            EnterPhase(Phase::ScenarioA_SavePump);
             break;
         }
 
@@ -6803,6 +10016,7 @@ namespace SkyrimPoE::Runtime
         }
 
         case Phase::ScenarioA_SavePump: {
+            const auto saveStem = g_cfg.saveOnly ? g_cfg.EffectiveOutSave() : g_cfg.tempSave;
             bool matched = false;
             {
                 std::scoped_lock lock(g_msgMutex);
@@ -6813,7 +10027,7 @@ namespace SkyrimPoE::Runtime
                     std::scoped_lock lock(g_msgMutex);
                     g_expectedSaveStem.clear();
                 }
-                LogInfo(std::format("Temp save '{}' confirmed by kSaveGame (attempts={}).", g_cfg.tempSave, g_saveAttempts));
+                LogInfo(std::format("Save '{}' confirmed by kSaveGame (attempts={}).", saveStem, g_saveAttempts));
                 EnterPhase(Phase::ScenarioA_SaveWaitBeforeLoad);
                 break;
             }
@@ -6823,7 +10037,7 @@ namespace SkyrimPoE::Runtime
                     g_expectedSaveStem.clear();
                 }
                 const auto detail = std::format("Timed out waiting for kSaveGame('{}') after {} attempts.",
-                    g_cfg.tempSave, g_saveAttempts);
+                    saveStem, g_saveAttempts);
                 if (g_cfg.saveOnly) {
                     CheckSave(SaveCheck::Write, false, detail);
                     FinishAndScheduleQuit("Temporary save did not reach the co-save check.");
@@ -6835,12 +10049,16 @@ namespace SkyrimPoE::Runtime
             }
             const auto now = Clock::now();
             if (now >= g_nextSaveRetryAt) {
-                if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
-                    if (g_cfg.saveOnly) {
-                        g_saveOnlyBefore = CaptureSaveOnlySnapshot();
-                    }
+                if (g_cfg.saveOnly) {
                     ++g_saveAttempts;
-                    mgr->Save(g_cfg.tempSave.c_str());
+                    if (!RequestSessionSave(saveStem)) {
+                        CheckSave(SaveCheck::Write, false, "출력 슬롯 저장 요청(RequestSessionSave)에 실패했습니다.");
+                        FinishAndScheduleQuit("출력 슬롯 저장 요청에 실패했습니다.");
+                        return;
+                    }
+                } else if (auto* mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+                    ++g_saveAttempts;
+                    mgr->Save(saveStem.c_str());
                 }
                 g_nextSaveRetryAt = now + std::chrono::seconds(2);
             }
@@ -6848,6 +10066,7 @@ namespace SkyrimPoE::Runtime
         }
 
         case Phase::ScenarioA_SaveWaitBeforeLoad: {
+            const auto saveStem = g_cfg.saveOnly ? g_cfg.EffectiveOutSave() : g_cfg.tempSave;
             const double elapsed = PhaseElapsedSec();
             if (elapsed < 1.0) {
                 break;
@@ -6865,26 +10084,43 @@ namespace SkyrimPoE::Runtime
                     }
                     g_expectedSaveStem.clear();
                 }
+                const auto pack = SaveLoad::GetContentGeneration();
+                const bool isGen1 = pack && pack->contentGeneration == 1;
+                const bool hasStarter = !isGen1 ||
+                    std::ranges::find(write.recordTypes, Core::SaveRecord::kRecordStarter) != write.recordTypes.end();
+                const bool essUpdated = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->ess, g_session.pendingSaveFiles->essBefore, g_session.pendingSaveRequestedAt);
+                const bool skseUpdated = g_session.pendingSaveFiles &&
+                    SaveFileUpdated(g_session.pendingSaveFiles->cosave, g_session.pendingSaveFiles->cosaveBefore, g_session.pendingSaveRequestedAt);
                 const bool matchedCallback = write.sequence == sequenceAtMessage + 1;
-                const bool written = matchedCallback && write.wroteGeneration && write.failedRecords == 0 && write.complete;
+                const bool callbackOk = matchedCallback && write.wroteGeneration && write.failedRecords == 0 && write.complete && hasStarter;
+                if (callbackOk && !(essUpdated && skseUpdated) && elapsed < kScenarioASaveTimeoutSec) {
+                    break;
+                }
+                const bool written = callbackOk && essUpdated && skseUpdated;
                 CheckSave(SaveCheck::Write, written, std::format(
-                    "save='{}', matchedCallback={}, sequence={} -> {}, GENR written={}, failedRecords={}, complete={}",
-                    g_cfg.tempSave, matchedCallback, sequenceAtMessage, write.sequence,
-                    matchedCallback && write.wroteGeneration,
-                    matchedCallback ? std::to_string(write.failedRecords) : "unavailable", matchedCallback && write.complete));
+                    "save='{}', matchedCallback={}, sequence={} -> {}, GENR written={}, STRT={}, failedRecords={}, complete={}, essUpdated={}, skseUpdated={}",
+                    saveStem, matchedCallback, sequenceAtMessage, write.sequence,
+                    matchedCallback && write.wroteGeneration, hasStarter,
+                    matchedCallback ? std::to_string(write.failedRecords) : "unavailable",
+                    matchedCallback && write.complete, essUpdated, skseUpdated));
                 if (!written) {
-                    FinishAndScheduleQuit("Temporary co-save write could not be verified.");
+                    FinishAndScheduleQuit("출력 슬롯 코세이브 쓰기 검증에 실패했습니다.");
                     return;
                 }
             }
-            LogInfo(std::format("Reloading temp save '{}' to verify SPOE co-save round-trip...", g_cfg.tempSave));
-            if (!RequestLoadSave(g_cfg.tempSave)) {
+            LogInfo(std::format("Reloading save '{}' to verify SPOE co-save round-trip...", saveStem));
+            std::string loadReason;
+            if (!RequestLoadSave(saveStem, &loadReason)) {
+                if (loadReason.empty()) {
+                    loadReason = "Could not request temporary save reload.";
+                }
                 if (g_cfg.saveOnly) {
-                    CheckSave(SaveCheck::Reload, false, "BGSSaveLoadManager singleton unavailable.");
-                    FinishAndScheduleQuit("Could not request the temporary save reload.");
+                    CheckSave(SaveCheck::Reload, false, loadReason);
+                    FinishAndScheduleQuit(std::format("Could not request the temporary save reload: {}", loadReason));
                     return;
                 }
-                Check("A9_SaveLoadRoundTrip", false, "BGSSaveLoadManager singleton unavailable.");
+                Check("A9_SaveLoadRoundTrip", false, loadReason);
                 BeginScenarioB();
                 break;
             }
@@ -6893,6 +10129,7 @@ namespace SkyrimPoE::Runtime
         }
 
         case Phase::ScenarioA_AwaitReload: {
+            const auto saveStem = g_cfg.saveOnly ? g_cfg.EffectiveOutSave() : g_cfg.tempSave;
             bool signaled = false;
             bool ok = false;
             {
@@ -6901,9 +10138,9 @@ namespace SkyrimPoE::Runtime
                 ok = g_postLoadSucceeded;
             }
             if (g_cfg.saveOnly && signaled && !SaveCheckReported(SaveCheck::Reload)) {
-                (void)CheckSaveOnlyLoad(SaveCheck::Reload, ok, g_cfg.tempSave);
+                (void)CheckSaveOnlyLoad(SaveCheck::Reload, ok, saveStem);
             }
-            if (g_cfg.saveOnly && signaled && (!ok || saveOnlySuspended)) {
+            if (g_cfg.saveOnly && signaled && (!ok || sessionSuspended)) {
                 if (ok) {
                     CheckSave(SaveCheck::State, false, "Skipped because the reloaded mod is not in normal mode.");
                     CheckSaveOnlyPreservedStore();
@@ -6917,12 +10154,17 @@ namespace SkyrimPoE::Runtime
                 return;
             }
             if (signaled && ok && IsPlayerReadyInWorld()) {
+                if (g_cfg.saveOnly) {
+                    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                        BlockSessionManualSaves(*player);
+                    }
+                }
                 EnterPhase(Phase::ScenarioA_ReloadSettle);
             } else if (PhaseElapsedSec() > 90.0) {
                 if (!g_cfg.saveOnly) {
                     Check("A9_SaveLoadRoundTrip", false, "Timed out waiting for temp save reload.");
                 } else if (!SaveCheckReported(SaveCheck::Reload)) {
-                    (void)CheckSaveOnlyLoad(SaveCheck::Reload, false, g_cfg.tempSave);
+                    (void)CheckSaveOnlyLoad(SaveCheck::Reload, false, saveStem);
                 } else {
                     g_runError = true;
                 }
@@ -6936,8 +10178,9 @@ namespace SkyrimPoE::Runtime
                 break;
             }
             if (g_cfg.saveOnly) {
-                CheckSaveOnlyRoundTrip();
+                CheckSaveOnlyRoundTrip(RE::PlayerCharacter::GetSingleton());
                 CheckSaveOnlyPreservedStore();
+                g_session.completedNormally = true;
                 FinishAndScheduleQuit("Save-only round-trip run finished.");
                 return;
             }
@@ -7539,13 +10782,20 @@ namespace SkyrimPoE::Runtime
 
             // 중간 브리지 노드(pathTo20835의 첫 노드 또는 31628) 단절 회수 거절 검증
             const std::uint32_t bridgeId = (pathTo20835.size() >= 2) ? pathTo20835[0] : 31628u;
-            SendUiCmd(json{ { "op", "treeRefundNode" }, { "nodeId", bridgeId } });
+            // P3(결정 210, 커밋 860f0c9)부터 회수 명령은 UI가 보여 준 비용(expectedRegretCost)을 함께 보내야 한다.
+            // 비용을 빼면 "비용을 다시 확인"으로 거절되어, 단절 거절을 엉뚱한 이유로 통과시키고 리프 회수는 늘 실패한다.
+            const auto refundCmd = [](std::uint32_t nodeId) {
+                const auto st = SaveLoad::GetStateCopy();
+                return json{ { "op", "treeRefundNode" }, { "nodeId", nodeId },
+                    { "expectedRegretCost", Core::PassiveTree::GetRefundNodeCost(*g_treeData, st.tree, nodeId, *g_config) } };
+            };
+            SendUiCmd(refundCmd(bridgeId));
             const auto stBridge = SaveLoad::GetStateCopy();
             const bool bridgeKept = std::binary_search(
                 stBridge.tree.allocatedNodes.begin(), stBridge.tree.allocatedNodes.end(), bridgeId);
 
             // 리프 notable 20835 회수 -> 마스터리 8556 자동 회수, 8629는 유지
-            SendUiCmd(json{ { "op", "treeRefundNode" }, { "nodeId", 20835 } });
+            SendUiCmd(refundCmd(20835u));
             const auto stAuto = SaveLoad::GetStateCopy();
             const bool leafRefunded = !std::binary_search(
                 stAuto.tree.allocatedNodes.begin(), stAuto.tree.allocatedNodes.end(), 20835u);
@@ -7810,7 +11060,7 @@ namespace SkyrimPoE::Runtime
                 return;
             }
 
-            // E1: items_3_30.json 로드 + 화폐 12종 + 토큰 80종 + 빛기둥 2종 ESP 폼 + 시작 화폐 플래그 검증
+            // E1: items.json 로드 + 화폐 12종 + 토큰 80종 + 빛기둥 2종 ESP 폼 + 시작 화폐 플래그 검증
             std::size_t orbFound = 0;
             for (const auto fid : FormIds::kCurrencyOrbForms) {
                 if (FormIds::Lookup<RE::TESObjectMISC>(fid)) ++orbFound;
@@ -8000,7 +11250,7 @@ namespace SkyrimPoE::Runtime
                     hRec.baseFormId = kIronHelmetId;
                     hRec.slotGroup = Core::TokenSlotGroup::Helmet;
                     hRec.defenseSubtype = EquipmentSync::ClassifyDefenseSubtype(helmet);
-                    // items_3_30.json에 존재하는 실제 어픽스 ID 및 법정 롤 범위 값 사용
+                    // items.json에 존재하는 실제 어픽스 ID 및 법정 롤 범위 값 사용
                     hRec.affixes = {
                         { "IncreasedLife8", { 120.0 } },
                         { "FireResist6", { 40.0 } },
@@ -8214,7 +11464,7 @@ namespace SkyrimPoE::Runtime
                     g_eDroppedWorldStamped, trackedAxeCount, untouchedAxeCount, axeSummary));
 
             // E7 준비: 시체 1구 소환·즉사(검수 Minor #9: nullptr 공격자로 DeathListener 간섭 차단) -> 바닥 물리 드랍+빛기둥 생성 -> 세이브·로드 왕복
-            WorldDropTracker::ReturnAllToCorpsesNow();
+            (void)WorldDropTracker::ReturnAllToCorpsesNow();
             g_eCorpseHandle = {};
             if (player) {
                 g_eCorpseHandle = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 75.0f, 0.0f, 0.0f, false);
@@ -8339,7 +11589,7 @@ namespace SkyrimPoE::Runtime
             // E7 검증: 로드 직후 'WDRP' 복원 -> 고아 빛기둥 0개 -> ReturnAllToCorpsesNow() 후 활성 0 & 고아 0
             const auto activeAfterReload = WorldDropTracker::ActiveCount();
             const auto orphansBeforeReturn = WorldDropTracker::SweepOrphanBeamsNearPlayer();
-            WorldDropTracker::ReturnAllToCorpsesNow();
+            (void)WorldDropTracker::ReturnAllToCorpsesNow();
             const auto activeAfterReturn = WorldDropTracker::ActiveCount();
             const auto orphansAfterReturn = WorldDropTracker::SweepOrphanBeamsNearPlayer();
             const bool e7Ok = (activeAfterReload >= 1) &&
@@ -8590,7 +11840,7 @@ namespace SkyrimPoE::Runtime
                                 jRec.itemLevel = 50;
                                 jRec.slotGroup = Core::TokenSlotGroup::Jewel;
                                 jRec.jewelColor = 0;
-                                // items_3_30.json의 힘 주얼 어픽스(StrengthJewel) 탐색
+                                // items.json의 힘 주얼 어픽스(StrengthJewel) 탐색
                                 for (const auto& af : g_itemData->AllAffixes()) {
                                     if (!af.lines.empty() && af.lines[0].templateEn.find("to Strength") != std::string::npos &&
                                         af.id.find("Jewel") != std::string::npos) {
@@ -11383,6 +14633,7 @@ namespace SkyrimPoE::Runtime
                                 "S staggered seen={}, staggered for about {:.2f}s of 3 s (observation only).",
                         t.base.heavyStunRequests, stats.heavyStunRequests, t.base.heavyStuns, stats.heavyStuns,
                         t.base.staggersRejected, stats.staggersRejected, t.heavyTries, t.staggerSeen, t.staggeredSec));
+                g_session.completedNormally = true;
                 finish("Hit-reaction run finished.");
                 break;
             }
@@ -11672,6 +14923,7 @@ namespace SkyrimPoE::Runtime
                 report("ES5_EngagedHoldExpires", g_esTest.visibleAt3s && hiddenInWindow,
                     std::format("{}; visible at 3 s={}", describe("B after the hold"), g_esTest.visibleAt3s));
                 failRemaining("Not reached.");
+                g_session.completedNormally = true;
                 // 진단(판정 아님): 적이 플레이어에게 건 지속 피해의 틱이 교전 기록을 계속 다시 쓰는지 본다.
                 // 결정 185는 플레이어 쪽 지속 피해 틱만 제외하고 받는 쪽 틱은 정하지 않았다(설계-현황 7장, 2026-11-26 조사).
                 auto* poison = RE::TESForm::LookupByID<RE::SpellItem>(kSprigganPoisonClawId);

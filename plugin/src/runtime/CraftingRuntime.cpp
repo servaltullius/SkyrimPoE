@@ -6,6 +6,7 @@
 #include "runtime/SaveLoad.h"
 #include "runtime/UniqueIdUtil.h"
 
+#include "core/ContentFeatures.h"
 #include "core/Config.h"
 #include "core/ItemCrafting.h"
 #include "core/MapSystem.h"
@@ -31,6 +32,7 @@ namespace SkyrimPoE::Runtime
 
         std::mutex g_rngMutex;
         std::mt19937_64 g_rng{ std::random_device{}() };
+        std::atomic<std::uint64_t> g_jewelSocketGateRejections{ 0 };
 
         // houseCARL 대조 완료 Skyrim.esm 안전 플레이 가능 베이스 장비 풀 (5티어 × 8부위군)
         // 모든 FormID는 Skyrim.esm에서 직접 검증된 비퀘스트 일반 장비임.
@@ -1517,6 +1519,11 @@ namespace SkyrimPoE::Runtime
         RE::FormID baseFormId,
         std::uint16_t uniqueId)
     {
+        // 결정 249: 세대 1은 P5까지 주얼을 새로 꽂지 않는다(회수는 허용).
+        if (!Core::ActiveContentFeatures().jewelSocketing) {
+            g_jewelSocketGateRejections.fetch_add(1, std::memory_order_relaxed);
+            return { false, "세대 1(PoE2)에서는 아직 주얼을 장착할 수 없습니다. 회수만 할 수 있습니다." };
+        }
         CraftActionResult res;
         auto* player = RE::PlayerCharacter::GetSingleton();
         auto* jewelMisc = RE::TESForm::LookupByID<RE::TESObjectMISC>(baseFormId);
@@ -1724,5 +1731,10 @@ namespace SkyrimPoE::Runtime
             SaveLoad::SyncStateToStatEngine();
         }
         return res;
+    }
+
+    CraftingRuntime::GateStats CraftingRuntime::GetGateStatsForTest() noexcept
+    {
+        return { g_jewelSocketGateRejections.load(std::memory_order_relaxed) };
     }
 }

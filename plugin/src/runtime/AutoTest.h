@@ -37,6 +37,8 @@ namespace SkyrimPoE::Runtime
     {
         inline constexpr auto kHCheckpointSuffix = "_h_restore";
         inline constexpr auto kCleanupFinalSuffix = "_final";
+        inline constexpr auto kPreserveOutSuffix = "_out";
+        inline constexpr std::size_t kMaxPreserveSaves = 16;
 
         // A~G의 저장 왕복, H의 이동·셀 초기화, 새 포털/경로 시험을 포함한 벽시계 예산.
         // 2026-11-23 실측: H5~H7이 끝까지 돌면 H23 정리 20회까지 약 25~28분이 걸리고, 그 뒤 H26·H27 착지 탐침(17곳)과 H8이 남는다.
@@ -47,6 +49,7 @@ namespace SkyrimPoE::Runtime
         {
             std::string baselineSave;
             std::string tempSave = "SkyrimPoE_autotest";
+            std::string outSave;
             bool quitWhenDone = true;
             bool consumeMarker = true;
             double globalTimeoutSec = kDefaultAutoTestTimeoutSec;
@@ -59,9 +62,32 @@ namespace SkyrimPoE::Runtime
             bool saveOnly = false;
             bool cleanupOnly = false;
             bool gemsOnly = false;
-            // "firstinstall": 모드 기록 없는 세이브로 세대 1 시험 세계에 처음 들어가는 경로. 젬 시험의 세대 1 시험 세계·저장 차단·
-            // 최종 슬롯 장치를 그대로 쓰므로 gemsOnly도 함께 켠다(판정은 따로).
+            // "firstinstall": 모드 기록 없는 세이브로 세대 1 패키지에 처음 들어가는 경로.
             bool firstInstall = false;
+            // "newgame": 메인 메뉴 StartNewGame 콜백으로 세대 1 새 게임 진입, 패널을 처음 열 때의 시작 지급(결정 247·263, C6).
+            bool newGameOnly = false;
+            // "preserve": 보존 음성·세대 불일치 세이브 목록을 차례로 불러와 보존·무정리·무지급·<stem>_out 저장 확인(결정 256).
+            bool preserveOnly = false;
+            // "gen1gate": 세대 1 게이트(C5·결정 248·249·259)와 세대 0 양성 대조.
+            bool gen1GateOnly = false;
+            std::vector<std::string> preserveSaves;
+
+            [[nodiscard]] std::string EffectiveOutSave() const
+            {
+                if (!outSave.empty()) {
+                    return outSave;
+                }
+                if (cleanupOnly || gemsOnly || firstInstall) {
+                    return tempSave + kCleanupFinalSuffix;
+                }
+                return tempSave;
+            }
+
+            [[nodiscard]] bool UsesTestSession() const noexcept
+            {
+                return cleanupOnly || firstInstall || saveOnly || gemsOnly || enemyEsOnly || reactOnly ||
+                    newGameOnly || preserveOnly || gen1GateOnly;
+            }
         };
 
         inline std::string Trim(std::string_view sv)
@@ -120,82 +146,68 @@ namespace SkyrimPoE::Runtime
             return CompareStringOrdinal(leftName.c_str(), -1, rightName.c_str(), -1, 1) == ordinalEqual;
         }
 
-        class CleanupLoadRequest
+        enum class AutoSaveCollection : std::uint8_t { GameSetting, IniPref, IniSetting };
+
+        struct AutoSaveEntry
         {
-        public:
-            void Expect(std::string_view stem) { expected_ = stem; }
-            void Clear() noexcept { expected_.clear(); }
-
-            [[nodiscard]] bool Match(std::string_view name) noexcept
-            {
-                const auto expected = std::exchange(expected_, {});
-                try {
-                    return !expected.empty() && SameSaveStem(expected, StripSaveStem(name));
-                } catch (const std::exception&) {
-                    return false;
-                }
-            }
-
-        private:
-            std::string expected_;
-        };
-
-        // Load matching is one-shot. The selected catalog lasts until the next load.
-        // Request and selection writes are serialized with the co-save callbacks.
-        class GemTestWorld
-        {
-        public:
-            void Expect(std::string_view stem) { request_.Expect(stem); }
-            bool Match(std::string_view name) noexcept { return matched_ = request_.Match(name); }
-            [[nodiscard]] bool MatchedLoad() const noexcept { return matched_; }
-            void BeginLoad(std::uint32_t packageGeneration) noexcept
-            {
-                matched_ = false;
-                Select(packageGeneration, false);
-            }
-            void Select(std::uint32_t packageGeneration, bool acceptedLoad) noexcept
-            {
-                generation_.store(acceptedLoad && matched_ ? 1 : packageGeneration, std::memory_order_release);
-            }
-            void ClearMatch() noexcept { matched_ = false; }
-            void End(std::uint32_t packageGeneration) noexcept
-            {
-                request_.Clear();
-                BeginLoad(packageGeneration);
-            }
-            [[nodiscard]] std::uint32_t Generation() const noexcept
-            {
-                return generation_.load(std::memory_order_acquire);
-            }
-
-        private:
-            CleanupLoadRequest request_;
-            bool matched_ = false;
-            std::atomic<std::uint32_t> generation_{ 0 };
+            AutoSaveCollection collection = AutoSaveCollection::IniSetting;
+            std::string name;
+            bool* pointer = nullptr;
+            bool original = false;
         };
 
         class AutoSaveSettings
         {
         public:
-            void Set(bool& value, bool temporary)
+            void Set(AutoSaveCollection collection, std::string_view name, bool& value, bool temporary)
             {
-                if (std::ranges::none_of(originals_, [&value](const auto& entry) { return entry.first == &value; })) {
-                    originals_.emplace_back(&value, value);
+                const bool sameKey = std::ranges::any_of(entries_, [&](const AutoSaveEntry& e) {
+                    return e.collection == collection && e.name == name && e.pointer == &value;
+                });
+                if (!sameKey) {
+                    bool original = value;
+                    if (const auto it = std::ranges::find(entries_, &value, &AutoSaveEntry::pointer); it != entries_.end()) {
+                        original = it->original;
+                    }
+                    entries_.push_back({ collection, std::string(name), &value, original });
                 }
                 value = temporary;
             }
-            [[nodiscard]] std::size_t Restore() noexcept
+            template <class Reader>
+            [[nodiscard]] bool RestoreAndVerify(Reader&& readFromCollection, std::size_t& countOut,
+                std::string* mismatchDetail = nullptr)
             {
-                for (const auto& [setting, value] : originals_) {
-                    *setting = value;
+                countOut = entries_.size();
+                for (const auto& entry : entries_) {
+                    if (entry.pointer) {
+                        *entry.pointer = entry.original;
+                    }
                 }
-                const auto count = originals_.size();
-                originals_.clear();
-                return count;
+                bool ok = true;
+                for (const auto& entry : entries_) {
+                    const std::optional<bool> observed = readFromCollection(entry.collection, std::string_view(entry.name));
+                    if (!observed || *observed != entry.original) {
+                        ok = false;
+                        if (mismatchDetail) {
+                            if (!mismatchDetail->empty()) {
+                                *mismatchDetail += ", ";
+                            }
+                            *mismatchDetail += std::format("{}[{}](orig={}, read={})",
+                                entry.name, static_cast<unsigned>(entry.collection), entry.original,
+                                observed ? (*observed ? "true" : "false") : "missing");
+                        }
+                    }
+                }
+                entries_.clear();
+                return ok;
+            }
+            [[nodiscard]] std::size_t CapturedCount() const noexcept
+            {
+                return entries_.size();
             }
 
         private:
-            std::vector<std::pair<bool*, bool>> originals_;
+            std::vector<AutoSaveEntry> entries_;
         };
 
         class GemsRetry
@@ -251,6 +263,17 @@ namespace SkyrimPoE::Runtime
             return digits(suffix.substr(1, split - 1)) && digits(suffix.substr(split + 1));
         }
 
+        inline bool HasInvalidSaveStemChars(std::string_view sv) noexcept
+        {
+            for (const unsigned char ch : sv) {
+                if (ch < 0x20u || ch == '<' || ch == '>' || ch == ':' || ch == '"' ||
+                    ch == '/' || ch == '\\' || ch == '|' || ch == '?' || ch == '*') {
+                    return true;
+                }
+            }
+            return sv.find("..") != std::string_view::npos;
+        }
+
         inline std::optional<AutoTestConfig> ParseMarker(std::istream& input)
         {
             AutoTestConfig out;
@@ -278,11 +301,45 @@ namespace SkyrimPoE::Runtime
                 const auto key = ToLowerAscii(Trim(std::string_view(trimmed).substr(0, eq)));
                 const auto val = Trim(std::string_view(trimmed).substr(eq + 1));
                 if (key == "save") {
+                    if (HasInvalidSaveStemChars(val)) {
+                        return std::nullopt;
+                    }
                     out.baselineSave = StripSaveStem(val);
                 } else if (key == "temp_save") {
+                    if (HasInvalidSaveStemChars(val)) {
+                        return std::nullopt;
+                    }
                     const auto stripped = StripSaveStem(val);
                     if (!stripped.empty()) {
                         out.tempSave = stripped;
+                    }
+                } else if (key == "out_save") {
+                    if (HasInvalidSaveStemChars(val)) {
+                        return std::nullopt;
+                    }
+                    const auto stripped = StripSaveStem(val);
+                    if (!stripped.empty()) {
+                        out.outSave = stripped;
+                    }
+                } else if (key == "preserve_saves") {
+                    std::size_t start = 0;
+                    while (start <= val.size()) {
+                        const auto comma = val.find(',', start);
+                        const auto rawItem = comma == std::string_view::npos
+                            ? val.substr(start) : val.substr(start, comma - start);
+                        const auto trimmedItem = Trim(rawItem);
+                        if (trimmedItem.empty() || HasInvalidSaveStemChars(trimmedItem)) {
+                            return std::nullopt;
+                        }
+                        const auto stripped = StripSaveStem(trimmedItem);
+                        if (stripped.empty()) {
+                            return std::nullopt;
+                        }
+                        out.preserveSaves.push_back(stripped);
+                        if (comma == std::string_view::npos) {
+                            break;
+                        }
+                        start = comma + 1;
                     }
                 } else if (key == "quit") {
                     out.quitWhenDone = ParseBool(val, out.quitWhenDone);
@@ -294,14 +351,22 @@ namespace SkyrimPoE::Runtime
                         continue;
                     }
                     if (mode != "h27" && mode != "es" && mode != "save" && mode != "cleanup" && mode != "gems" &&
-                        mode != "firstinstall" && mode != "react") {
+                        mode != "firstinstall" && mode != "react" && mode != "newgame" && mode != "preserve" &&
+                        mode != "gen1gate") {
                         return std::nullopt;
                     }
-                    const bool gemsWorld = mode == "gems" || mode == "firstinstall";
-                    if ((out.cleanupOnly && mode != "cleanup") || (out.gemsOnly && !out.firstInstall && mode != "gems") ||
-                        (out.firstInstall && mode != "firstinstall") || (out.reactOnly && mode != "react") ||
-                        (mode == "react" && (out.routeOnly || out.enemyEsOnly || out.saveOnly)) ||
-                        ((mode == "cleanup" || gemsWorld) && (out.routeOnly || out.enemyEsOnly || out.saveOnly || out.reactOnly))) {
+                    const bool anyOther =
+                        (out.routeOnly && mode != "h27") ||
+                        (out.enemyEsOnly && mode != "es") ||
+                        (out.reactOnly && mode != "react") ||
+                        (out.saveOnly && mode != "save") ||
+                        (out.cleanupOnly && mode != "cleanup") ||
+                        (out.gemsOnly && mode != "gems") ||
+                        (out.firstInstall && mode != "firstinstall") ||
+                        (out.newGameOnly && mode != "newgame") ||
+                        (out.preserveOnly && mode != "preserve") ||
+                        (out.gen1GateOnly && mode != "gen1gate");
+                    if (anyOther) {
                         return std::nullopt;
                     }
                     out.routeOnly = mode == "h27";
@@ -309,8 +374,11 @@ namespace SkyrimPoE::Runtime
                     out.reactOnly = mode == "react";
                     out.saveOnly = mode == "save";
                     out.cleanupOnly = mode == "cleanup";
-                    out.gemsOnly = gemsWorld;
+                    out.gemsOnly = mode == "gems";
                     out.firstInstall = mode == "firstinstall";
+                    out.newGameOnly = mode == "newgame";
+                    out.preserveOnly = mode == "preserve";
+                    out.gen1GateOnly = mode == "gen1gate";
                 } else if (key == "timeout_sec") {
                     try {
                         const double sec = std::stod(val);
@@ -322,29 +390,69 @@ namespace SkyrimPoE::Runtime
                     }
                 }
             }
-            // 타격 반응 시험은 현상금·교전을 남기므로 끝나면 반드시 게임을 끈다.
-            if (out.reactOnly && !out.quitWhenDone) {
+            if (out.UsesTestSession() && !out.quitWhenDone) {
                 return std::nullopt;
             }
-            if (out.cleanupOnly || out.gemsOnly) {
-                if (!out.quitWhenDone) {
+            // A4: 입력 없음 허용은 newgame에서만. preserve는 preserve_saves, 그 외 시험 세션 모드는 save= 필수.
+            if (out.UsesTestSession() && !out.newGameOnly && !out.preserveOnly && out.baselineSave.empty()) {
+                return std::nullopt;
+            }
+            if (out.newGameOnly) {
+                if (!out.baselineSave.empty() || out.outSave.empty() || !out.preserveSaves.empty()) {
                     return std::nullopt;
                 }
-                try {
-                    if (SameSaveStem(out.baselineSave, out.tempSave) ||
-                        SameSaveStem(out.baselineSave, out.tempSave + kCleanupFinalSuffix) ||
-                        (out.gemsOnly && (out.baselineSave.empty() || IsCheckpointStem(out.baselineSave, out.tempSave)))) {
+            } else if (out.preserveOnly) {
+                if (!out.baselineSave.empty() || !out.outSave.empty() ||
+                    out.preserveSaves.empty() || out.preserveSaves.size() > kMaxPreserveSaves) {
+                    return std::nullopt;
+                }
+            } else if (!out.preserveSaves.empty()) {
+                return std::nullopt;
+            }
+            try {
+                if (!out.baselineSave.empty()) {
+                    (void)SameSaveStem(out.baselineSave, out.baselineSave);
+                }
+                if (!out.tempSave.empty()) {
+                    (void)SameSaveStem(out.tempSave, out.tempSave);
+                }
+                if (!out.outSave.empty()) {
+                    (void)SameSaveStem(out.outSave, out.outSave);
+                }
+                if (out.preserveOnly) {
+                    for (std::size_t i = 0; i < out.preserveSaves.size(); ++i) {
+                        const auto& a = out.preserveSaves[i];
+                        (void)SameSaveStem(a, a);
+                        const auto aOut = a + kPreserveOutSuffix;
+                        (void)SameSaveStem(aOut, aOut);
+                        for (std::size_t j = 0; j < out.preserveSaves.size(); ++j) {
+                            const auto& b = out.preserveSaves[j];
+                            if (i < j && SameSaveStem(a, b)) {
+                                return std::nullopt;
+                            }
+                            if (SameSaveStem(b, aOut)) {
+                                return std::nullopt;
+                            }
+                        }
+                    }
+                }
+                if (!out.baselineSave.empty()) {
+                    if (!out.tempSave.empty() && SameSaveStem(out.baselineSave, out.tempSave)) {
                         return std::nullopt;
                     }
-                } catch (const std::exception&) {
-                    // Save names in a marker must be representable as Windows filenames.
-                    return std::nullopt;
+                    if (!out.outSave.empty() && SameSaveStem(out.baselineSave, out.outSave)) {
+                        return std::nullopt;
+                    }
+                    if ((out.cleanupOnly || out.gemsOnly || out.firstInstall) &&
+                        SameSaveStem(out.baselineSave, out.EffectiveOutSave())) {
+                        return std::nullopt;
+                    }
+                    if (!out.tempSave.empty() && IsCheckpointStem(out.baselineSave, out.tempSave)) {
+                        return std::nullopt;
+                    }
                 }
-            }
-            // T-5: 기존 임시 세이브·H 체크포인트 충돌 검사.
-            if (!out.baselineSave.empty() && !out.tempSave.empty() &&
-                (ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave) ||
-                    ToLowerAscii(out.baselineSave) == ToLowerAscii(out.tempSave + kHCheckpointSuffix))) {
+            } catch (const std::exception&) {
+                // Save names in a marker must be representable as Windows filenames.
                 return std::nullopt;
             }
             return out;
@@ -370,8 +478,7 @@ namespace SkyrimPoE::Runtime
             Core::CharmSystem* charmSystem = nullptr);
 
         [[nodiscard]] static bool IsEnabled() noexcept;
-        [[nodiscard]] static bool IsCleanupOnly() noexcept;
-        [[nodiscard]] static bool IsGemsOnly() noexcept;
+        [[nodiscard]] static bool UsesTestSession() noexcept;
 
         // 주 갱신 스레드 프레임 콜백에서 호출(비활성 시 즉시 반환)
         static void Tick(RE::Main* main, double deltaSec);
@@ -385,6 +492,7 @@ namespace SkyrimPoE::Runtime
             OnPreLoadGame(msg.data ? std::string_view(static_cast<const char*>(msg.data), msg.dataLen) : std::string_view{});
         }
         static void OnPostLoadGame(bool succeeded);
+        static void OnNewGame();
         template <class Message>
         static void OnSaveGame(const Message& msg)
         {

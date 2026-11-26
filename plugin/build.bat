@@ -1,11 +1,25 @@
 @echo off
 chcp 65001 >nul
 rem SkyrimPoE 본 모드 DLL 빌드, 단위 테스트(ctest), 패키징, 배치 스크립트
-rem 사용: build.bat            빌드 + ctest + 묶기
-rem       build.bat deploy "MO2의 mods 폴더"
-rem       build.bat deploy-dev "MO2의 mods 폴더"   젬 시험 준비 팩 포함
-rem                            게임이 꺼져 있을 때 묶음을 모드 폴더로 복사
-setlocal
+rem 사용: build.bat [gen0^|gen1] [deploy "MO2의 mods 폴더"]
+rem 기본 gen1. 빌드 + ctest + 묶기 후 게임이 꺼져 있으면 배치한다.
+setlocal DisableDelayedExpansion
+set "CONTENT_GENERATION=1"
+if /i "%~1"=="gen0" (
+    set "CONTENT_GENERATION=0"
+    shift /1
+) else if /i "%~1"=="gen1" (
+    shift /1
+)
+set "DEPLOY_MODE="
+set "MO2_MODS="
+if not [%1]==[] (
+    if /i not "%~1"=="deploy" goto :usage
+    if "%~2"=="" goto :usage
+    if not [%3]==[] goto :usage
+    set "DEPLOY_MODE=%~1"
+    set "MO2_MODS=%~2"
+)
 set "VS_INSTALLER=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 set "PATH=%VS_INSTALLER%;%PATH%"
 set "VS_ROOT="
@@ -41,19 +55,14 @@ set "MOD_NAME=SkyrimPoE"
 rem 지도 팩 폴더는 매번 넘긴다. 넘기지 않으면 CMake 캐시에 남은 예전 폴더를 계속 쓴다.
 set "MAPS_PACK_DIR=G:\skyrim-build\SkyrimPoE-maps"
 if defined POE_MAPS_PACK_DIR set "MAPS_PACK_DIR=%POE_MAPS_PACK_DIR%"
-cmake --preset %BUILD_PRESET% "-DPOE_MAPS_PACK_DIR=%MAPS_PACK_DIR%" || exit /b 1
+cmake --preset %BUILD_PRESET% "-DPOE_CONTENT_GENERATION=%CONTENT_GENERATION%" "-DPOE_MAPS_PACK_DIR=%MAPS_PACK_DIR%" || exit /b 1
 cmake --build --preset %BUILD_PRESET% || exit /b 1
 ctest --preset %BUILD_PRESET% || exit /b 1
 cmake --build --preset %BUILD_PRESET% --target package_mod || exit /b 1
-echo Package: %BUILD_ROOT%\package
+echo Package: "%BUILD_ROOT%\package" ^(gen%CONTENT_GENERATION%^)
 
-if /i not "%~1"=="deploy" if /i not "%~1"=="deploy-dev" exit /b 0
-set "MO2_MODS=%~2"
-if not defined MO2_MODS (
-    echo 배치할 MO2 mods 폴더를 둘째 인자로 주세요.
-    exit /b 1
-)
-tasklist /fi "imagename eq SkyrimSE.exe" 2>nul | find /i "SkyrimSE.exe" >nul
+if not defined DEPLOY_MODE exit /b 0
+tasklist /fi "imagename eq SkyrimSE.exe" 2>nul | "%SystemRoot%\System32\find.exe" /i "SkyrimSE.exe" >nul
 if not errorlevel 1 (
     echo 스카이림이 실행 중이라 배치하지 않았습니다. 게임을 끄고 다시 실행하세요.
     exit /b 1
@@ -73,8 +82,10 @@ if errorlevel 8 (
     exit /b 1
 )
 python -I "%~dp0..\tools\package\stamp.py" deploy-clean --package "%BUILD_ROOT%\package" --target "%MO2_MODS%\%MOD_NAME%" || exit /b 1
-if /i "%~1"=="deploy-dev" (
-    python -I "%~dp0..\tools\package\stamp.py" stage-dev --package "%BUILD_ROOT%\package" --target "%MO2_MODS%\%MOD_NAME%" || exit /b 1
-)
 echo Deployed: %MO2_MODS%\%MOD_NAME%
 exit /b 0
+
+:usage
+echo 사용법: build.bat [gen0^|gen1] [deploy "MO2의 mods 폴더"]
+echo 세대(gen0/gen1)는 맨 앞에 씁니다. 생략하면 gen1입니다.
+exit /b 1

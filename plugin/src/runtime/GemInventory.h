@@ -3,6 +3,7 @@
 #include "core/SaveRecordState.h"
 
 #include "core/CommandQueue.h"
+#include "core/GemForms.h"
 #include "core/GemTransaction.h"
 #include "core/Types.h"
 
@@ -38,6 +39,18 @@ namespace SkyrimPoE::Runtime
 
         // 주 갱신 스레드 전용: 기존 4단계 세이브 업그레이드용으로 5단계 신규 19종 젬만 1개씩 지급한다.
         static std::size_t GiveStage5StarterGems(RE::PlayerCharacter* player);
+
+        // 주 갱신 스레드 전용(7단계 G1, 결정 240·247): 세대 1 이상 시작 물건 중 grantedIds에 없는 ready 젬을
+        // 각 1개 지급하고, 인벤토리 수량이 정확히 1 증가했을 때만 grantedIds에 기록한다.
+        // 잠금(g_cosaveMutex·g_txMutex·g_stateMutex)을 잡지 않고 RunSerializedTransaction도 열지 않는다.
+        // SaveLoad::WorldGemGeneration()·GetContentGeneration()도 부르지 않고 호출자가 넘긴 generation을 사용한다.
+        [[nodiscard]] static Core::GemForms::StarterGrantReport GrantGenerationOneStarter(
+            RE::PlayerCharacter* player,
+            std::uint32_t generation,
+            bool giveStarterGemsConfig,
+            std::vector<std::string>& grantedIds);
+        // GrantGenerationOneStarter가 불린 누적 횟수(시험 진단용).
+        [[nodiscard]] static std::uint64_t StarterGrantCallCount() noexcept;
 
         // 주 갱신 스레드 전용: UI 표시용으로 플레이어 인벤토리의 데이터 젬 + 순정 젬 수량을 조회한다.
         [[nodiscard]] static PlayerGemInventorySnapshot ListPlayerGems(RE::PlayerCharacter* player);

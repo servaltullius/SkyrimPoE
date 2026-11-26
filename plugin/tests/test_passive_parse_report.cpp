@@ -253,7 +253,7 @@ POE_TEST("PoE2 cost efficiency preserves its resource and skill selectors")
 
 POE_TEST("Generation 0 keeps the legacy parser results across all node and mastery lines")
 {
-    const auto report = BuildReport(std::filesystem::path(POE_TEST_DATA_DIR) / "packs/tree_3_30.json");
+    const auto report = BuildReport(std::filesystem::path(POE_TEST_DATA_DIR) / "packs/gen0/tree.json");
     // FNV-1a over 4,339 stat occurrences using the unchanged generation-zero grammar.
     std::uint64_t digest = 14695981039346656037ULL;
     for (const unsigned char byte : report) {

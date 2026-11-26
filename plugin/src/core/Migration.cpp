@@ -728,15 +728,6 @@ namespace SkyrimPoE::Core
         return result;
     }
 
-    const SaveGeneration* SelectSaveTarget(const std::optional<SaveGeneration>& content,
-        const std::optional<SaveGeneration>& test, bool matchedCleanupLoad) noexcept
-    {
-        if (!content) {
-            return nullptr;
-        }
-        return test && matchedCleanupLoad ? &*test : &*content;
-    }
-
     DeltaTrust JudgeLegacyDelta(double delta, double modifier) noexcept
     {
         if (!std::isfinite(delta)) {

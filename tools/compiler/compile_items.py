@@ -1189,9 +1189,9 @@ def compile_items(pob: Path, out_dir: Path) -> dict[str, Any]:
         "affixes": all_affixes,
     }
 
-    packs_dir = out_dir / "packs"
+    packs_dir = out_dir / "packs" / "gen0"
     packs_dir.mkdir(parents=True, exist_ok=True)
-    out_path = packs_dir / "items_3_30.json"
+    out_path = packs_dir / "items.json"
     out_path.write_text(json.dumps(pack, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
     return pack
 
@@ -1207,7 +1207,7 @@ def main() -> int:
     pack = compile_items(args.pob, args.out)
     m = pack["meta"]
     print(
-        f"생성 완료: {args.out / 'packs' / 'items_3_30.json'} "
+        f"생성 완료: {args.out / 'packs' / 'gen0' / 'items.json'} "
         f"(total={m['totalAffixes']}, rollable={m['rollableAffixes']}, local={m['localAffixes']}, "
         f"armorCurves={len(pack['baseArmorCurves'])}, weaponCurves={len(pack['baseWeaponCurves'])})"
     )

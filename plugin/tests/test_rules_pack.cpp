@@ -23,6 +23,23 @@ namespace
 {
     using nlohmann::json;
 
+    const RulesPack* rulesOverride = nullptr;
+
+    class ScopedRulesOverride
+    {
+    public:
+        explicit ScopedRulesOverride(const json& fixture)
+        {
+            POE_CHECK(pack_.LoadFromJsonString(fixture.dump()));
+            rulesOverride = &pack_;
+        }
+
+        ~ScopedRulesOverride() { rulesOverride = nullptr; }
+
+    private:
+        RulesPack pack_;
+    };
+
     json ReadData(const std::filesystem::path& relative)
     {
         std::ifstream file(std::filesystem::path(POE_TEST_DATA_DIR) / relative, std::ios::binary);
@@ -38,7 +55,7 @@ namespace
     DataPack ContentFixture()
     {
         DataPack pack;
-        POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json"));
+        POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json"));
         return pack;
     }
 
@@ -54,12 +71,85 @@ namespace
 
 const RulesPack* SkyrimPoE::Core::GetRulesPack() noexcept
 {
+    if (rulesOverride) return rulesOverride;
     static const RulesPack pack = [] {
         RulesPack loaded;
         POE_CHECK(loaded.LoadFromJsonString(RulesFixture().dump()));
         return loaded;
     }();
     return &pack;
+}
+
+POE_TEST("RulesPack: player base maximum resistance is used for snapshots and expected damage")
+{
+    auto fixture = RulesFixture();
+    fixture["resistance"]["baseMaxPercent"] = 65;
+    const ScopedRulesOverride rules(fixture);
+    const auto pack = ContentFixture();
+    Config config;
+    config.expectedResistAffixes = 20.0;
+    StatEngine engine;
+    Layer1Input input;
+    input.fireResist = input.coldResist = input.lightningResist = input.chaosResist = 100.0;
+    engine.SetLayer1(input);
+    POE_CHECK(engine.RebuildIfDirty(pack, config));
+    const auto snapshot = engine.GetSnapshot();
+    POE_CHECK(snapshot->maxFireResist == 65 && snapshot->maxColdResist == 65);
+    POE_CHECK(snapshot->maxLightningResist == 65 && snapshot->maxChaosResist == 65);
+    POE_CHECK_NEAR(ExpectedElementalPass(1, pack, config), 0.35, 1e-9);
+    POE_CHECK_NEAR(ConvertDefenseResistDamage(100.0, DamageType::Fire, 1, *snapshot, pack, config), 100.0, 1e-9);
+    POE_CHECK_NEAR(ConvertDefenseResistDamage(100.0, DamageType::Chaos, 1, *snapshot, pack, config), 35.0, 1e-9);
+
+    StatSnapshot uncomputed;
+    uncomputed.chaosResist = 100.0;
+    POE_CHECK_NEAR(ConvertDefenseResistDamage(100.0, DamageType::Chaos, 1, uncomputed, pack, config), 35.0, 1e-9);
+}
+
+POE_TEST("RulesPack: absolute resistance cap limits bonuses and damage conversion independently")
+{
+    auto fixture = RulesFixture();
+    fixture["resistance"]["capPercent"] = 80;
+    const ScopedRulesOverride rules(fixture);
+    const auto pack = ContentFixture();
+    Config config;
+    config.expectedResistAffixes = 0.0;
+    StatEngine engine;
+    Layer1Input input;
+    input.fireResist = input.coldResist = input.lightningResist = input.chaosResist = 100.0;
+    input.passives.maxFireResistBonus = 50.0;
+    input.passives.maxLightningResistBonus = 50.0;
+    input.passives.maxChaosResistBonus = 50.0;
+    engine.SetLayer1(input);
+    POE_CHECK(engine.RebuildIfDirty(pack, config));
+    const auto snapshot = engine.GetSnapshot();
+    POE_CHECK(snapshot->maxFireResist == 80 && snapshot->maxColdResist == 75);
+    POE_CHECK(snapshot->maxLightningResist == 80 && snapshot->maxChaosResist == 80);
+
+    auto raised = *snapshot;
+    raised.fireResist = raised.coldResist = raised.lightningResist = raised.chaosResist = 100.0;
+    raised.maxFireResist = raised.maxColdResist = raised.maxLightningResist = raised.maxChaosResist = 100.0;
+    for (const auto type : { DamageType::Fire, DamageType::Cold, DamageType::Lightning, DamageType::Chaos }) {
+        POE_CHECK_NEAR(ConvertDefenseResistDamage(100.0, type, 1, raised, pack, config), 20.0, 1e-9);
+    }
+}
+
+POE_TEST("RulesPack: map resistance floor cannot exceed the absolute resistance cap")
+{
+    auto fixture = RulesFixture();
+    fixture["resistance"]["baseMaxPercent"] = 35;
+    fixture["resistance"]["monsterBaseMaxPercent"] = 30;
+    fixture["resistance"]["capPercent"] = 40;
+    const ScopedRulesOverride rules(fixture);
+    const auto pack = ContentFixture();
+    StatEngine engine;
+    Layer2Input map;
+    map.inActiveMap = true;
+    map.activeMapMods.playerMaxResPenalty = 10.0;
+    engine.SetLayer2(map);
+    POE_CHECK(engine.RebuildIfDirty(pack, Config{}));
+    const auto snapshot = engine.GetSnapshot();
+    POE_CHECK(snapshot->maxFireResist == 40 && snapshot->maxColdResist == 40);
+    POE_CHECK(snapshot->maxLightningResist == 40 && snapshot->maxChaosResist == 40);
 }
 
 POE_TEST("RulesPack: loads PoB constants, game rules and all one-based level tables")
@@ -406,7 +496,7 @@ POE_TEST("P2b block: equipped signed maximum modifiers add to the matching passi
 
 POE_TEST("P2b Spirit toggle preview and snapshot use gear, highest active duplicate and a priced trigger")
 {
-    auto source = ReadData("packs/core_3_30.json");
+    auto source = ReadData("packs/gen0/core.json");
     auto& gems = source["gems"];
     gems["Determination"]["levels"]["1"]["spiritCost"] = 50;
     gems["Determination"]["levels"]["2"]["spiritCost"] = 75;
@@ -440,7 +530,7 @@ POE_TEST("P2b Spirit toggle preview and snapshot use gear, highest active duplic
 
 POE_TEST("P2b Spirit: a missing level cost inherits the gem cost and an explicit zero overrides it")
 {
-    auto source = ReadData("packs/core_3_30.json");
+    auto source = ReadData("packs/gen0/core.json");
     auto& gem = source["gems"]["SupportCastOnCriticalStrike"];
     gem["spiritCost"] = 30;
     gem["levels"]["1"].erase("spiritCost");
@@ -699,16 +789,18 @@ POE_TEST("P2b player rules: Skyrim physical, life and difficulty conversion answ
 POE_TEST("ContentCheck: the rules meta and manifest hash participate in four-pack startup checks")
 {
     const std::array<ContentFile, 5> files{{
-        { "packs/core_3_30.json", std::string(64, 'a') },
-        { "packs/tree_3_30.json", std::string(64, 'b') },
-        { "packs/items_3_30.json", std::string(64, 'c') },
+        { "packs/core.json", std::string(64, 'a') },
+        { "packs/tree.json", std::string(64, 'b') },
+        { "packs/items.json", std::string(64, 'c') },
         { "packs/rules.json", std::string(64, 'd') },
         { "SkyrimPoE.esp", std::string(64, 'e') },
     }};
     constexpr auto buildId = "1234567890abcdef";
     std::array<json, 4> meta{
-        ReadData(files[0].path).at("meta"), ReadData(files[1].path).at("meta"),
-        ReadData(files[2].path).at("meta"), RulesFixture().at("meta"),
+        ReadData("packs/gen0/core.json").at("meta"),
+        ReadData("packs/gen0/tree.json").at("meta"),
+        ReadData("packs/gen0/items.json").at("meta"),
+        RulesFixture().at("meta"),
     };
     meta[3].update({ { "game", "poe1" }, { "gameVersion", "3.30" }, { "contentGeneration", 0 } });
     for (auto& entry : meta) {

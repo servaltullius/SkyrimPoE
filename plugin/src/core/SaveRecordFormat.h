@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/MapSave.h"
+#include "core/GemForms.h"
 #include "core/SaveGeneration.h"
 #include "core/SaveRecords.h"
 #include "core/SaveRecordState.h"
@@ -23,6 +24,7 @@ namespace SkyrimPoE::Core::SaveRecord
     inline constexpr std::uint32_t kRecordPlayerRates = 'PRAT';
     inline constexpr std::uint32_t kRecordAtlas = 'ATLS';
     inline constexpr std::uint32_t kRecordMaps = 'MAPS';
+    inline constexpr std::uint32_t kRecordStarter = 'STRT';
     inline constexpr std::uint32_t kCoreVersion = 3;
     inline constexpr std::uint32_t kLegacyGemKeysVersion = 1;
     inline constexpr std::uint32_t kGemKeysVersion = 2;
@@ -38,6 +40,7 @@ namespace SkyrimPoE::Core::SaveRecord
     inline constexpr std::uint32_t kPlayerRatesVersion = 1;
     inline constexpr std::uint32_t kAtlasVersion = kAtlasSaveVersion;
     inline constexpr std::uint32_t kMapsVersion = kMapSaveVersion;
+    inline constexpr std::uint32_t kStarterVersion = 1;
 
     inline constexpr std::uint32_t kMaxListLen = 1024;
     inline constexpr std::uint32_t kMaxTreeNodes = 4096;
@@ -45,6 +48,8 @@ namespace SkyrimPoE::Core::SaveRecord
     inline constexpr std::uint32_t kMaxWorldDropRecords = 64;
     inline constexpr std::uint32_t kMaxGemDepth = 4;
     inline constexpr std::uint32_t kMaxSocketedJewels = 64;
+    inline constexpr std::uint32_t kMaxStarterGrantedIds = static_cast<std::uint32_t>(GemForms::kMaxStarterGrantedRecordIds);
+    inline constexpr std::size_t kMaxStarterContentIdBytes = 64;
     inline constexpr std::uint32_t kPlayerRefFormId = 0x00000014;
 
     struct Snapshot
@@ -117,6 +122,9 @@ namespace SkyrimPoE::Core::SaveRecord
     bool ReadTreeRecord(const RawSaveRecord& record, PassiveTreeState& out);
     // Leaves the cursor at the first jewel. Every socket in the record shares jewelGeneration.
     bool ReadGearHeader(std::uint32_t version, std::span<const std::uint8_t>& bytes, GearHeader& out);
+    // 7단계 G1(결정 247, 계약 2.2 규칙 2): ASCII 64바이트 이하, [a-z]+\.[A-Za-z0-9._]+ 문법.
+    [[nodiscard]] bool IsValidStarterContentId(std::string_view id) noexcept;
+    bool ReadStarterRecord(const RawSaveRecord& record, std::vector<std::string>& out);
     SaveDecision DecideSave(const SaveRecordBatch& batch, bool isNewGame, const SaveGeneration& pack,
         std::optional<std::uint32_t> activeTreeGeneration = std::nullopt);
     bool WriteSnapshot(const Snapshot& snapshot, const SaveGeneration& generation, const RecordSink& sink,

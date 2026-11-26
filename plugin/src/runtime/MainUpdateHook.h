@@ -25,6 +25,8 @@ namespace SkyrimPoE::Runtime
         static void AddFrameCallback(FrameCallback cb);
         [[nodiscard]] static bool IsInstalled() noexcept;
         [[nodiscard]] static std::uint64_t TickCount() noexcept;
+        // 플러그인이 건너뛰는 프레임까지 센 엔진 프레임 수.
+        [[nodiscard]] static std::uint64_t EngineFrameCount() noexcept;
 
     private:
         static void Thunk(RE::Main* a_main);

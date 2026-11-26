@@ -170,19 +170,29 @@ namespace SkyrimPoE::Runtime::MapPackRuntime
             if (!input) {
                 throw std::runtime_error("SkyrimPoE_Maps.json을 찾거나 읽을 수 없습니다.");
             }
-            g_manifest = Core::ParseMapManifest(input);
+            // G1 계획 4.1 W4(Codex 2차 1): 검증이 끝난 목록만 둔다. 실패한 목록이 남으면 구판 회차 정리가
+            // 그 목록으로 다른 던전의 셀을 찾아 초기화할 수 있었다.
+            auto manifest = Core::ParseMapManifest(input);
             if (!g_plugin) {
                 throw std::runtime_error("로드 순서에 SkyrimPoE_Maps.esp가 없습니다.");
             }
-            if (HashMapsPlugin() != g_manifest.espSha256) {
+            if (HashMapsPlugin() != manifest.espSha256) {
                 throw std::runtime_error("지도 팩 ESP와 목록 파일의 SHA-256이 다릅니다.");
             }
 
-            FormsByDungeon validated;
-            for (const auto& dungeon : g_manifest.maps) {
-                validated.emplace(&dungeon, ResolveDungeon(*data, dungeon, g_manifest.exitZoneRadius));
+            // 모든 던전을 먼저 검증하고, 성공했을 때만 목록을 옮긴다. g_forms의 키는 g_manifest 안의 주소라 옮긴 뒤에 만든다.
+            std::vector<DungeonForms> mapForms;
+            mapForms.reserve(manifest.maps.size());
+            for (const auto& dungeon : manifest.maps) {
+                mapForms.push_back(ResolveDungeon(*data, dungeon, manifest.exitZoneRadius));
             }
-            validated.emplace(&g_manifest.arena, ResolveDungeon(*data, g_manifest.arena, g_manifest.exitZoneRadius));
+            auto arenaForms = ResolveDungeon(*data, manifest.arena, manifest.exitZoneRadius);
+            g_manifest = std::move(manifest);
+            FormsByDungeon validated;
+            for (std::size_t i = 0; i < g_manifest.maps.size(); ++i) {
+                validated.emplace(&g_manifest.maps[i], std::move(mapForms[i]));
+            }
+            validated.emplace(&g_manifest.arena, std::move(arenaForms));
             g_forms = std::move(validated);
             g_error.clear();
             SKSE::log::info("Map pack: verified version {}, {} maps and one arena.",

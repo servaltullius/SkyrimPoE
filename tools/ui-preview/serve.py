@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 UI = ROOT / "ui"
-PACKS = {"poe1": "tree_3_30.json", "poe2": "gen1/tree.json"}
+PACKS = {"poe1": "gen0/tree.json", "poe2": "gen1/tree.json"}
 JS_TYPE = "text/javascript; charset=utf-8"
 
 

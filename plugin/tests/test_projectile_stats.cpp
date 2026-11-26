@@ -58,7 +58,7 @@ POE_TEST("PoE2 projectile stats reach the cast and preserve the lightning and pr
 {
     DataPack pack;
     std::string error;
-    POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs/core_3_30.json", &error));
+    POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs/gen0/core.json", &error));
     Config config;
     config.enforceGemRequirements = false;
     Layer1Input input;

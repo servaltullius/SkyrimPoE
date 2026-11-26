@@ -25,6 +25,8 @@ namespace SkyrimPoE::Runtime
         std::atomic<std::uintptr_t> g_originalMainUpdateAddr{ 0 };
         std::atomic_bool g_installed{ false };
         std::atomic<std::uint64_t> g_tickCount{ 0 };
+        // 건너뛰는 프레임(정리 대기·보존 등)까지 포함한 엔진 프레임 수. 정리 틱 증거에 쓴다.
+        std::atomic<std::uint64_t> g_engineFrameCount{ 0 };
         std::chrono::steady_clock::time_point g_lastTick{};
         bool g_hasLastTick = false;
         bool g_hudSuspended = false;
@@ -82,6 +84,7 @@ namespace SkyrimPoE::Runtime
 
     void MainUpdateHook::Thunk(RE::Main* a_main)
     {
+        g_engineFrameCount.fetch_add(1, std::memory_order_relaxed);
         if (SkipPluginFrame(a_main)) {
             return;
         }
@@ -216,6 +219,11 @@ namespace SkyrimPoE::Runtime
     bool MainUpdateHook::IsInstalled() noexcept
     {
         return g_installed.load(std::memory_order_acquire);
+    }
+
+    std::uint64_t MainUpdateHook::EngineFrameCount() noexcept
+    {
+        return g_engineFrameCount.load(std::memory_order_relaxed);
     }
 
     std::uint64_t MainUpdateHook::TickCount() noexcept

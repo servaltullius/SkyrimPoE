@@ -9,11 +9,18 @@
 #include "core/WorldStampLink.h"
 
 #include <algorithm>
-
+#include <atomic>
+#include <limits>
 #include <unordered_map>
 
 namespace SkyrimPoE::Runtime
 {
+    namespace
+    {
+        // 세대 1 시작 지급 함수가 불린 횟수(시험 진단용: 정리 뒤 초기화가 다시 주지 않는지 본다).
+        std::atomic<std::uint64_t> g_starterGrantCalls{ 0 };
+    }
+
     namespace
     {
         namespace WorldStampLink = Core::WorldStampLink;
@@ -656,6 +663,11 @@ namespace SkyrimPoE::Runtime
         return true;
     }
 
+    std::uint64_t GemInventory::StarterGrantCallCount() noexcept
+    {
+        return g_starterGrantCalls.load(std::memory_order_relaxed);
+    }
+
     std::size_t GemInventory::GiveStarterGems(RE::PlayerCharacter* player)
     {
         if (!player) {
@@ -696,6 +708,93 @@ namespace SkyrimPoE::Runtime
         }
         SKSE::log::info("GemInventory: gave {}/{} stage5 starter gems to player.", added, forms.size());
         return added;
+    }
+
+    Core::GemForms::StarterGrantReport GemInventory::GrantGenerationOneStarter(
+        RE::PlayerCharacter* player,
+        std::uint32_t generation,
+        bool giveStarterGemsConfig,
+        std::vector<std::string>& grantedIds)
+    {
+        g_starterGrantCalls.fetch_add(1, std::memory_order_relaxed);
+        using Core::GemForms::StarterGrantStatus;
+        const auto readyItems = Core::GemForms::ReadyStarterContent(generation);
+        auto report = Core::GemForms::ApplyStarterGrant(
+            generation,
+            readyItems,
+            giveStarterGemsConfig,
+            grantedIds,
+            [player, generation](const Core::GemForms::StarterContentItem& item) -> std::optional<std::int32_t> {
+                if (!player) {
+                    SKSE::log::warn("GemInventory: 플레이어 참조가 없어 세대 {} 시작 젬 '{}'을(를) 지급하지 못했습니다.",
+                        generation, item.contentId);
+                    return std::nullopt;
+                }
+                auto* misc = FormIds::Lookup<RE::TESObjectMISC>(item.localFormId);
+                if (!misc) {
+                    SKSE::log::warn("GemInventory: {}에서 세대 {} 시작 젬 '{}' (0x{:06X}) 폼을 찾지 못했습니다.",
+                        FormIds::kPluginName, generation, item.contentId, item.localFormId);
+                    return std::nullopt;
+                }
+                try {
+                    const auto before = player->GetItemCount(misc);
+                    player->AddObjectToContainer(misc, nullptr, 1, nullptr);
+                    const auto after = player->GetItemCount(misc);
+                    const auto delta64 = static_cast<std::int64_t>(after) - static_cast<std::int64_t>(before);
+                    if (delta64 != 1) {
+                        SKSE::log::warn(
+                            "GemInventory: 세대 {} 시작 젬 '{}' (0x{:06X}) 지급 후 수량 증분이 1이 아닙니다(전={}, 후={}, 증분={}). {}",
+                            generation, item.contentId, item.localFormId, before, after, delta64,
+                            delta64 >= 1 ? "들어갔으므로 기록합니다." : "기록하지 않습니다.");
+                    }
+                    const auto clamped = std::clamp<std::int64_t>(
+                        delta64,
+                        std::numeric_limits<std::int32_t>::min(),
+                        std::numeric_limits<std::int32_t>::max());
+                    return static_cast<std::int32_t>(clamped);
+                } catch (...) {
+                    SKSE::log::warn("GemInventory: 세대 {} 시작 젬 '{}' (0x{:06X}) 지급 중 예외가 발생했습니다. 기록하지 않습니다.",
+                        generation, item.contentId, item.localFormId);
+                    return std::nullopt;
+                }
+            });
+
+        if (report.entries.empty()) {
+            return report;
+        }
+
+        const auto joinByStatus = [&report](StarterGrantStatus status) {
+            std::string out;
+            for (const auto& entry : report.entries) {
+                if (entry.status != status) {
+                    continue;
+                }
+                if (!out.empty()) {
+                    out += ", ";
+                }
+                out += entry.contentId;
+            }
+            return out;
+        };
+
+        if (!giveStarterGemsConfig) {
+            SKSE::log::info("GemInventory: 세대 {} 시작 젬 지급을 설정(GiveStarterGems=false)으로 건너뛰었습니다(대상 {}개: [{}]).",
+                generation, report.DisabledCount(), joinByStatus(StarterGrantStatus::DisabledByConfig));
+            return report;
+        }
+
+        const auto grantedCount = report.GrantedCount();
+        const auto failedCount = report.FailedCount();
+        if (failedCount > 0) {
+            SKSE::log::warn("GemInventory: 세대 {} 시작 젬 지급 일부 실패 — 지급 {}개 [{}], 실패 {}개 [{}].",
+                generation,
+                grantedCount, joinByStatus(StarterGrantStatus::Granted),
+                failedCount, joinByStatus(StarterGrantStatus::Failed));
+        } else {
+            SKSE::log::info("GemInventory: 세대 {} 시작 젬 지급 완료 — {}개 [{}].",
+                generation, grantedCount, joinByStatus(StarterGrantStatus::Granted));
+        }
+        return report;
     }
 
     std::size_t GemInventory::RelinkPickedUpGems(RE::TESObjectREFR* owner, bool postLoadOwnerNormalized)

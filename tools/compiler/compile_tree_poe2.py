@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "poe2"))
 from diffraw import number_value
 from extract import extract, json_bytes, write_atomic
 from luadata import table_array, table_fields
+from id_baseline import BASELINE_PATH, TREE_KINDS
 from validate_migration import load_table
 
 
@@ -35,7 +36,6 @@ GAME_DATA_VERSION = "0.5.5h"
 TREE_FILE = "TreeData/0_5/tree.lua"
 PACK_PATH = ROOT / "data/packs/gen1/tree.json"
 REPORT_PATH = ROOT / "data/poe2/reports/tree-coverage.json"
-BASELINE_PATH = ROOT / "data/poe2/id-baseline/gen1.json"
 SCHEMA_VERSION = 2
 KIND_ATTRIBUTE = 7
 STRAIGHT_ORBIT = 2147483647
@@ -800,7 +800,8 @@ def make_id_baseline(pack: dict, known_entries=None) -> dict:
 
 
 def validate_id_baseline(pack: dict, baseline: dict, migrations: Path = ROOT / "data/migrations") -> None:
-    original = baseline["entries"]
+    # 기준선의 cls·asc·node만 트리가 맡는다. gem·sup은 젬 생성기 몫이라 보지 않는다(id_baseline.py).
+    original = {kind: baseline["entries"][kind] for kind in TREE_KINDS}
     rebuilt = make_id_baseline(pack, original)
     source = baseline["contentGeneration"]
     target = rebuilt["contentGeneration"]

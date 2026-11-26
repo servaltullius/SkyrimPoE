@@ -219,7 +219,7 @@ POE_TEST("Map health matching uses exile-level reference health and the PoE2 tie
 {
     DataPack pack;
     std::string error;
-    POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "core_3_30.json", &error));
+    POE_CHECK(pack.LoadFromFile(std::filesystem::path(POE_TEST_DATA_DIR) / "packs" / "gen0" / "core.json", &error));
     const Config config;
     for (const auto level : { 50u, 68u, 83u }) {
         const auto expected = config.offenseK *

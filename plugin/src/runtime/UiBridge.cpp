@@ -16,6 +16,7 @@
 #include "runtime/SkillExecution.h"
 #include "runtime/TrueHudBridge.h"
 
+#include "core/ContentFeatures.h"
 #include "core/EnemyEsHud.h"
 #include "core/GemTransaction.h"
 #include "core/ItemCrafting.h"
@@ -176,6 +177,8 @@ namespace SkyrimPoE::Runtime
         std::atomic_bool g_needResetOnMain{ false };
         std::atomic<std::uint64_t> g_lastProcessedReqId{ 0 };
         bool g_uiBuildMismatch = false;
+        std::atomic<std::uint64_t> g_gearGateRejections{ 0 };
+        std::atomic<std::uint64_t> g_gearGatePasses{ 0 };
         // 받은 buildId, 받은 uiProtocol, 기대 buildId. 기대 프로토콜은 실행 중 고정이다.
         std::set<std::tuple<std::string, std::string, std::string>> g_loggedUiBuildMismatches;
         constexpr std::size_t kMaxLoggedUiBuildMismatches = 32;
@@ -726,6 +729,16 @@ namespace SkyrimPoE::Runtime
             root["uiBuildMismatch"] = g_uiBuildMismatch;
             root["simpleImeAvailable"] = SimpleImeBridge::Available();
             root["freePassiveRefund"] = g_config->freePassiveRefund;
+            // 7단계 G1(결정 239·248·249): 설치 패키지 세대로 꺼진 기능. UI는 이 값으로 빈 상태와 버튼을 정한다.
+            {
+                const auto features = Core::ActiveContentFeatures();
+                root["contentGeneration"] = Core::ActiveContentGeneration();
+                root["contentFeatures"] = {
+                    { "crafting", features.crafting }, { "mapEntry", features.mapEntry },
+                    { "jewelSocketing", features.jewelSocketing }, { "charms", features.charms },
+                    { "itemDrops", features.itemDrops },
+                };
+            }
             root["exileLevel"] = state.exileLevel;
             root["exileXp"] = state.exileXp;
             root["exileReqXp"] = Core::KillTracker::RequiredXpForNextExileLevel(state.exileLevel, *g_config);
@@ -853,10 +866,15 @@ namespace SkyrimPoE::Runtime
                 st["coldResist"] = std::round(snap->coldResist);
                 st["lightningResist"] = std::round(snap->lightningResist);
                 st["chaosResist"] = std::round(snap->chaosResist);
-                st["maxFireResist"] = std::round(snap->maxFireResist);
-                st["maxColdResist"] = std::round(snap->maxColdResist);
-                st["maxLightningResist"] = std::round(snap->maxLightningResist);
-                st["maxChaosResist"] = std::round(snap->maxChaosResist);
+                // 계산 전 스냅숏의 최대 저항은 NaN이다(StatEngine.h). 화면에는 규칙의 기본 최대값을 보인다.
+                const double baseMaxResist = Core::ActiveRuleValues().resistance.baseMaxPercent;
+                const auto maxResistOrBase = [baseMaxResist](double v) {
+                    return std::round(std::isfinite(v) ? v : baseMaxResist);
+                };
+                st["maxFireResist"] = maxResistOrBase(snap->maxFireResist);
+                st["maxColdResist"] = maxResistOrBase(snap->maxColdResist);
+                st["maxLightningResist"] = maxResistOrBase(snap->maxLightningResist);
+                st["maxChaosResist"] = maxResistOrBase(snap->maxChaosResist);
                 st["physDR"] = std::round(snap->physDamageReduction);
                 st["elemDR"] = std::round(snap->elementalDamageReduction);
                 st["attackBlock"] = std::round(snap->attackBlockChance);
@@ -951,7 +969,8 @@ namespace SkyrimPoE::Runtime
             root["inventory"] = std::move(invArr);
 
             // 4단계 3번째 탭(장비·제작) 페이로드(결정 156, 157, 158, 160)
-            const bool itemsLoaded = g_itemData && g_itemData->IsLoaded();
+            // 세대 1(빈 items, 제작 꺼짐)은 장비 탭이 안내만 보이므로 가방 전체 직렬화를 하지 않는다.
+            const bool itemsLoaded = g_itemData && g_itemData->HasItemContent() && Core::ActiveContentFeatures().crafting;
             json gearJ;
             gearJ["loaded"] = itemsLoaded;
             if (itemsLoaded) {
@@ -1184,6 +1203,12 @@ namespace SkyrimPoE::Runtime
                 const auto& packError = MapPackRuntime::UnavailableReason();
                 mapsJ["packAvailable"] = packError.empty();
                 mapsJ["packUnavailableReason"] = packError;
+                // 결정 239·248: 세대 1은 새 입장·결투장·재입장만 막고 귀환·포기·탈출·안전 제거 버튼은 남긴다.
+                const bool entryDisabled = !Core::ActiveContentFeatures().mapEntry;
+                mapsJ["entryDisabled"] = entryDisabled;
+                mapsJ["entryDisabledReason"] = entryDisabled
+                    ? "세대 1(PoE2)에서는 아직 지도에 들어갈 수 없습니다. 지도 기능은 P6b에서 다시 엽니다. 진행 중이던 회차의 귀환과 안전 제거는 쓸 수 있습니다."
+                    : "";
                 mapsJ["arenaDungeonName"] = mapPack.arena.name;
                 const auto travel = MapDeviceRuntime::GetTravelStatus(player);
                 g_panelMapTravel = travel;
@@ -1944,6 +1969,14 @@ namespace SkyrimPoE::Runtime
 
                 // 4단계 장비·제작 탭 명령 분기(결정 157, 158, 160)
                 if (op.starts_with("gear")) {
+                    // 결정 239·248: 세대 1 패키지는 P5까지 감정·화폐·쥬얼러·고유·반지·벨트·참 장착을 받지 않는다(회수는 허용).
+                    if (!Core::ActiveContentFeatures().crafting && !op.starts_with("gearUnequip")) {
+                        g_gearGateRejections.fetch_add(1, std::memory_order_relaxed);
+                        PushToastToJs(false, "세대 1(PoE2)에서는 아직 장비·제작 기능이 없습니다. P5에서 엽니다.");
+                        PushPanelStateToJs();
+                        return;
+                    }
+                    g_gearGatePasses.fetch_add(1, std::memory_order_relaxed);
                     if (!g_itemData || !g_itemData->IsLoaded()) {
                         PushToastToJs(false, "아이템 데이터가 로드되지 않았습니다.");
                         return;
@@ -2312,6 +2345,8 @@ namespace SkyrimPoE::Runtime
             g_activeTab.store(targetTab, std::memory_order_release);
             g_searchFocused.store(false, std::memory_order_release);
             g_panelOpen.store(true, std::memory_order_release);
+            // 결정 263: 새 게임·일반 로드 뒤 미뤄 둔 시작 젬 보충을 패널을 처음 열 때 한다(패널 상태에 바로 보이게 먼저).
+            (void)SaveLoad::GrantPendingStarterOnPanelOpen();
             const std::string openArg = json{ { "tab", std::string(TabNameFromId(targetTab)) } }.dump();
             g_api->InteropCall(g_view, kJsOnPanelOpen, openArg.c_str());
             PushPanelStateToJs();
@@ -2675,5 +2710,13 @@ namespace SkyrimPoE::Runtime
     std::string UiBridge::BuildPanelJsonForTestOnMainThread()
     {
         return BuildPanelPayloadJson();
+    }
+
+    UiBridge::GateStats UiBridge::GetGateStatsForTest() noexcept
+    {
+        return {
+            g_gearGateRejections.load(std::memory_order_relaxed),
+            g_gearGatePasses.load(std::memory_order_relaxed),
+        };
     }
 }

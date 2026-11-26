@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -201,10 +202,11 @@ namespace SkyrimPoE::Core
         double coldResist = 0.0;
         double lightningResist = 0.0;
         double chaosResist = 0.0;
-        double maxFireResist = 75.0;
-        double maxColdResist = 75.0;
-        double maxLightningResist = 75.0;
-        double maxChaosResist = 75.0;
+        // 미계산 사본에는 피해 환산 시점의 기본 최대 저항을 적용한다.
+        double maxFireResist = std::numeric_limits<double>::quiet_NaN();
+        double maxColdResist = std::numeric_limits<double>::quiet_NaN();
+        double maxLightningResist = std::numeric_limits<double>::quiet_NaN();
+        double maxChaosResist = std::numeric_limits<double>::quiet_NaN();
         double physDamageReduction = 0.0;
         double elementalDamageReduction = 0.0;  // PoE 3.30 인내 충전: 원소 피해 감소(+4%/충전, 저항 상한과 별도 곱연산)
         double attackBlockChance = 0.0;

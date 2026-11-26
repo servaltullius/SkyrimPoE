@@ -4,10 +4,12 @@
 #include "runtime/SaveLoad.h"
 #include "runtime/MapDeviceRuntime.h"
 
+#include "core/ContentFeatures.h"
 #include "core/LootTable.h"
 #include "core/MapSystem.h"
 #include "core/Migration.h"
 
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <random>
@@ -40,6 +42,12 @@ namespace SkyrimPoE::Runtime
         RE::FormID g_lastPlayerInteriorCellId = 0;
         bool g_lastWasInterior = false;
         bool g_hasLocationHistory = false;
+
+        // 결정 259(B0): 처치 드롭 게이트 누적 계측 카운터.
+        std::atomic<std::uint64_t> g_onKillAwardedCalls{ 0 };
+        std::atomic<std::uint64_t> g_gen1GateRejections{ 0 };
+        std::atomic<std::uint64_t> g_rollEntries{ 0 };
+        std::atomic<std::uint64_t> g_physicalCreations{ 0 };
 
         [[nodiscard]] bool IsSkyrimPoELootForm(const RE::TESForm* base) noexcept
         {
@@ -164,7 +172,26 @@ namespace SkyrimPoE::Runtime
             auto* baseObj = dropRef->GetBaseObject();
             if (baseObj && IsSkyrimPoELootForm(baseObj) && dropRef->As<RE::Actor>() == nullptr) {
                 const std::int32_t cnt = std::max<std::int32_t>(1, dropRef->extraList.GetCount());
+                const auto before = CountItemInContainer(corpseActor, baseObj);
                 corpseActor->AddObjectToContainer(baseObj, nullptr, cnt, nullptr);
+                const auto after = CountItemInContainer(corpseActor, baseObj);
+                // G1 계획 4.1 W4: 시체 수량이 실제로 늘어난 만큼만 바닥에서 지운다.
+                const auto increase = static_cast<std::int64_t>(after) - before;
+                if (increase < 0 || increase > cnt) {
+                    // 같은 틱에 시체 인벤토리가 따로 바뀌어 얼마나 들어갔는지 알 수 없다. 다시 넣으면 복제될 수 있으므로
+                    // 바닥 물건은 그대로 두고 추적만 끝낸다.
+                    SKSE::log::warn("WorldDropTracker: corpse 0x{:08X} count changed by {} for {} dropped item(s); "
+                        "leaving the floor item.", corpseActor->GetFormID(), increase, cnt);
+                    return ReturnOutcome::CorpseGone;
+                }
+                if (increase < cnt) {
+                    if (increase > 0) {
+                        dropRef->extraList.SetCount(static_cast<std::uint16_t>(cnt - increase));
+                    }
+                    SKSE::log::warn("WorldDropTracker: corpse 0x{:08X} took {} of {} dropped item(s); retrying the rest.",
+                        corpseActor->GetFormID(), increase, cnt);
+                    return ReturnOutcome::RetryLater;
+                }
                 dropRef->Disable();
                 dropRef->SetDelete(true);
                 return ReturnOutcome::Completed;
@@ -333,6 +360,12 @@ namespace SkyrimPoE::Runtime
         bool guaranteeFirstTribute,
         bool deliverToPlayer)
     {
+        g_onKillAwardedCalls.fetch_add(1, std::memory_order_relaxed);
+        // 결정 239·248: 세대 1 패키지는 새 전리품과 공물을 만들지 않는다(가방 직접 지급 포함). 보류 중인 구판 드롭 반환은 Tick이 계속 한다.
+        if (!Core::ActiveContentFeatures().itemDrops) {
+            g_gen1GateRejections.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         auto corpsePtr = corpseHandle.get();
         auto* corpse = corpsePtr.get();
         auto* bagOwner = deliverToPlayer ? RE::PlayerCharacter::GetSingleton() : nullptr;
@@ -348,6 +381,7 @@ namespace SkyrimPoE::Runtime
                 return false;
             }
             const auto countBefore = CountItemInContainer(player, tribute);
+            g_physicalCreations.fetch_add(1, std::memory_order_relaxed);
             player->AddObjectToContainer(tribute, nullptr, 1, nullptr);
             return CountItemInContainer(player, tribute) > countBefore;
         }
@@ -355,6 +389,7 @@ namespace SkyrimPoE::Runtime
         std::vector<Core::DropEntry> drops;
         {
             std::scoped_lock lock(g_dropMutex);
+            g_rollEntries.fetch_add(1, std::memory_order_relaxed);
             drops = Core::LootTable::RollKillDrops(
                 effectiveMonsterLevel, isBoss, isDragon, *g_config, *g_itemData, g_rng, monsterRarity,
                 activeMapTier, bonusIiqPct, bonusIirPct, guaranteeFirstTribute, gemGeneration);
@@ -408,8 +443,10 @@ namespace SkyrimPoE::Runtime
             bool onGround = false;
             if (!bagOwner && g_config->worldDropEnabled && d.worldDropTier >= g_config->worldDropMinTier) {
                 // 바닥 배출에 실패해도 시체에 남았을 수 있으므로 중복 추가하지 않는다.
+                g_physicalCreations.fetch_add(1, std::memory_order_relaxed);
                 onGround = SpawnPhysicalDropFromContainer(corpse, misc, d.worldDropTier, isCurr, isUniq, isMap);
             } else {
+                g_physicalCreations.fetch_add(1, std::memory_order_relaxed);
                 container->AddObjectToContainer(misc, nullptr, 1, nullptr);
             }
             if (isTribute) {
@@ -603,16 +640,30 @@ namespace SkyrimPoE::Runtime
         }
     }
 
-    void WorldDropTracker::ReturnAllToCorpsesNow()
+    std::size_t WorldDropTracker::ReturnAllToCorpsesNow()
     {
         std::vector<ActiveWorldDrop> all;
         {
             std::scoped_lock lock(g_dropMutex);
             all.swap(g_active);
         }
-        for (const auto& d : all) {
-            (void)TryReturnSingleDropToCorpse(d);
+        std::vector<ActiveWorldDrop> retry;
+        std::size_t leftOnGround = 0;
+        for (auto d : all) {
+            const auto outcome = TryReturnSingleDropToCorpse(d);
+            if (outcome == ReturnOutcome::RetryLater) {
+                d.beamRefFormId = 0;  // 빛기둥은 이미 지웠다.
+                retry.push_back(d);
+                ++leftOnGround;
+            } else if (outcome == ReturnOutcome::CorpseGone) {
+                ++leftOnGround;  // 시체가 사라졌거나 수량을 알 수 없어 바닥 물건이 그대로 남았다.
+            }
         }
+        if (!retry.empty()) {
+            std::scoped_lock lock(g_dropMutex);
+            g_active.insert(g_active.end(), retry.begin(), retry.end());
+        }
+        return leftOnGround;
     }
 
     WorldDropTracker::LegacyDropReturn WorldDropTracker::ReturnLegacyDrop(const SavedWorldDropEntry& entry)
@@ -747,5 +798,15 @@ namespace SkyrimPoE::Runtime
     {
         std::scoped_lock lock(g_dropMutex);
         return g_active.size();
+    }
+
+    WorldDropTracker::DropGateStats WorldDropTracker::GetGateStatsForTest() noexcept
+    {
+        return {
+            g_onKillAwardedCalls.load(std::memory_order_relaxed),
+            g_gen1GateRejections.load(std::memory_order_relaxed),
+            g_rollEntries.load(std::memory_order_relaxed),
+            g_physicalCreations.load(std::memory_order_relaxed),
+        };
     }
 }

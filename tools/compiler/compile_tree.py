@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile PoB 2.68.1 TreeData/3_30/tree.lua into data/packs/tree_3_30.json.
+"""Compile PoB 2.68.1 TreeData/3_30/tree.lua into data/packs/gen0/tree.json.
 
 Implements Stage 3 S3-M1 (Decisions 6, 8, 10, 27, 104, 151-155):
 - Filters to 7 base classes + 19 base ascendancies (matched by internal id: e.g. Raider -> Warden).
@@ -964,7 +964,7 @@ def compile_tree(pob_dir: Path, ko_dir: Path | None, version: str = "3_30") -> d
 
 
 def write_tree_js_wrapper(json_path: Path, js_path: Path) -> None:
-    """Wrap compiled tree_3_30.json as `window.POE_TREE = ...;` for Prisma UI."""
+    """Wrap compiled tree.json as `window.POE_TREE = ...;` for Prisma UI."""
     raw = json_path.read_text(encoding="utf-8")
     raw = raw.replace("</", "<\\/").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     js_path.parent.mkdir(parents=True, exist_ok=True)
@@ -976,7 +976,7 @@ def main() -> None:
     parser.add_argument("--pob-dir", type=Path, default=Path(r"G:\poe\PathOfBuilding-2.68.1"))
     parser.add_argument("--ko-dir", type=Path, default=Path(r"G:\poe\POE1 한글 POB (2025.10.31)\Data\Translate\ko-KR"))
     parser.add_argument("--version", default="3_30")
-    parser.add_argument("--out", type=Path, default=Path("data/packs/tree_3_30.json"))
+    parser.add_argument("--out", type=Path, default=Path("data/packs/gen0/tree.json"))
     parser.add_argument("--wrap-only-from", type=Path, default=None,
                         help="Skip PoB compilation and only wrap an existing tree JSON into --js-out.")
     parser.add_argument("--js-out", type=Path, default=None,

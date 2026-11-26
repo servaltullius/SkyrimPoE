@@ -15,10 +15,9 @@ PLUGIN = Path("SKSE/Plugins/SkyrimPoE")
 PACKS = PLUGIN / "packs"
 UI = Path("PrismaUI/views/SkyrimPoE")
 MANIFEST = PLUGIN / "manifest.json"
-STAGED_GEMS = PACKS / "gen1/gems.json"
-STAGED_GEMS_SOURCE = ROOT / "data/packs/gen1/gems.json"
+LEGACY_PREP_GEMS = PACKS / "gen1/gems.json"
 ESP = "SkyrimPoE.esp"
-PACK_NAMES = ("core_3_30.json", "tree_3_30.json", "items_3_30.json", "rules.json")
+PACK_NAMES = ("core.json", "tree.json", "items.json", "rules.json")
 
 
 def field(signature: bytes, payload: bytes) -> bytes:
@@ -58,7 +57,8 @@ class TestStamp(unittest.TestCase):
         self.package = self.temp / "패키지 산출물"
         (self.package / PACKS).mkdir(parents=True)
         (self.package / UI).mkdir(parents=True)
-        shutil.copyfile(ROOT / "esp" / ESP, self.package / ESP)
+        # 고정값은 세대 0 패키지라 결정 246의 얼린 세대 0 ESP(GLOB 없음)를 쓴다.
+        shutil.copyfile(ROOT / "esp" / "gen0" / ESP, self.package / ESP)
         (self.package / UI / "index.html").write_bytes(b"<main></main>\n")
         (self.package / UI / "style.css").write_bytes(b"body {}\n")
         oar = self.package / "meshes/animations/OAR/config.json"
@@ -112,104 +112,39 @@ class TestStamp(unittest.TestCase):
         shutil.copytree(self.package, target)
         return target
 
-    def staged_copy(self) -> Path:
-        target = self.deployed_copy()
-        self.assert_success(self.run_cli("stage-dev", "--target", str(target)))
-        return target
-
-    def test_release_package_has_no_staged_files(self) -> None:
+    def test_release_package_has_no_legacy_prep_files(self) -> None:
         self.completed()
-        self.assertFalse((self.package / STAGED_GEMS.parent).exists())
+        self.assertFalse((self.package / LEGACY_PREP_GEMS.parent).exists())
         self.assertNotIn("staged", read_json(self.package / MANIFEST))
         self.assert_success(self.run_cli("verify", "--release"))
 
-    def test_development_deploy_stamps_only_gems(self) -> None:
-        target = self.staged_copy()
-        source_manifest = read_json(self.package / MANIFEST)
-        source_gems = read_json(STAGED_GEMS_SOURCE)
-        self.assertNotIn("staged", source_manifest)
-        self.assertFalse((self.package / STAGED_GEMS).exists())
-        self.assertEqual({entry.name for entry in (target / STAGED_GEMS.parent).iterdir()}, {"gems.json"})
-        staged_bytes = (target / STAGED_GEMS).read_bytes()
-        source_gems["meta"]["buildId"] = source_manifest["buildId"]
-        self.assertEqual(json.loads(staged_bytes), source_gems)
-        target_manifest = read_json(target / MANIFEST)
-        self.assertEqual(target_manifest.pop("staged"), [
-            {"path": STAGED_GEMS.as_posix(), "sha256": hashlib.sha256(staged_bytes).hexdigest()},
-        ])
-        self.assertEqual(target_manifest, source_manifest)
-        self.assert_success(self.run_cli("verify", package=target))
-        self.assert_failure(self.run_cli("verify", "--release", package=target), "릴리스 패키지")
-
-    def test_deploy_clean_preserves_listed_staged_files(self) -> None:
-        staged = self.staged_copy()
-        target = self.temp / "개발 배치 복사본"
-        shutil.copytree(staged, target)
-        extra = target / STAGED_GEMS.with_name("tree.json")
-        extra.touch()
-        self.assert_success(self.run_cli("deploy-clean", "--target", str(target), package=staged))
-        self.assertTrue((target / STAGED_GEMS).is_file())
-        self.assertFalse(extra.exists())
-        self.assert_success(self.run_cli("verify", package=target))
-
-    def test_regular_redeploy_removes_staged_gems(self) -> None:
-        target = self.staged_copy()
-        shutil.copytree(self.package, target, dirs_exist_ok=True)
+    def test_deploy_clean_removes_leftover_legacy_prep_gems(self) -> None:
+        target = self.deployed_copy()
+        (target / LEGACY_PREP_GEMS.parent).mkdir()
+        (target / LEGACY_PREP_GEMS).write_bytes(b"{}\n")
         self.assert_success(self.run_cli("deploy-clean", "--target", str(target)))
-        self.assertFalse((target / STAGED_GEMS).exists())
+        self.assertFalse((target / LEGACY_PREP_GEMS).exists())
         self.assert_success(self.run_cli("verify", "--release", package=target))
 
-    def test_release_rejects_unlisted_staged_gems(self) -> None:
+    def test_verify_rejects_unlisted_legacy_prep_gems(self) -> None:
         target = self.deployed_copy()
-        (target / STAGED_GEMS.parent).mkdir()
-        shutil.copyfile(STAGED_GEMS_SOURCE, target / STAGED_GEMS)
-        self.assert_failure(self.run_cli("verify", "--release", package=target), "릴리스 패키지", "목록 밖 파일")
+        (target / LEGACY_PREP_GEMS.parent).mkdir()
+        (target / LEGACY_PREP_GEMS).write_bytes(b"{}\n")
+        self.assert_failure(self.run_cli("verify", "--release", package=target), "옛 준비 파일", "목록 밖 파일")
+
+    def test_verify_rejects_manifest_with_staged_field(self) -> None:
+        target = self.deployed_copy()
+        manifest_path = target / MANIFEST
+        manifest = read_json(manifest_path)
+        manifest["staged"] = []
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assert_failure(self.run_cli("verify", package=target), "허용되지 않는 staged 항목")
 
     def test_manifest_rejects_nested_preparation_tree(self) -> None:
         self.completed()
-        (self.package / STAGED_GEMS.parent).mkdir()
-        (self.package / STAGED_GEMS.with_name("tree.json")).write_bytes(b"{}")
+        (self.package / LEGACY_PREP_GEMS.parent).mkdir()
+        (self.package / LEGACY_PREP_GEMS.with_name("tree.json")).write_bytes(b"{}")
         self.assert_failure(self.run_cli("manifest"), "gen1/tree.json", "허용되지 않은 추가 팩")
-
-    def test_verify_rejects_tampered_staged_file(self) -> None:
-        target = self.staged_copy()
-        with (target / STAGED_GEMS).open("ab") as stream:
-            stream.write(b"\n")
-        self.assert_failure(self.run_cli("verify", package=target), "staged sha256 불일치")
-
-    def test_verify_rejects_missing_staged_file(self) -> None:
-        target = self.staged_copy()
-        (target / STAGED_GEMS).unlink()
-        self.assert_failure(self.run_cli("verify", package=target), f"누락 파일: {STAGED_GEMS.as_posix()}")
-
-    def test_verify_rejects_staged_file_from_other_build_even_with_matching_hash(self) -> None:
-        target = self.staged_copy()
-        pack_path = target / STAGED_GEMS
-        pack = read_json(pack_path)
-        pack["meta"]["buildId"] = "0" * 16
-        payload = json.dumps(pack).encode("utf-8")
-        pack_path.write_bytes(payload)
-        manifest_path = target / MANIFEST
-        manifest = read_json(manifest_path)
-        manifest["staged"][0]["sha256"] = hashlib.sha256(payload).hexdigest()
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        self.assert_failure(self.run_cli("verify", package=target), "buildId 불일치")
-
-    def test_verify_rejects_staged_identity_the_dll_would_refuse(self) -> None:
-        for field, value in (("schemaVersion", 2), ("schemaVersion", True), ("gameVersion", "0.6")):
-            with self.subTest(field=field, value=value):
-                target = self.staged_copy()
-                pack_path = target / STAGED_GEMS
-                pack = read_json(pack_path)
-                pack["meta"][field] = value
-                payload = json.dumps(pack).encode("utf-8")
-                pack_path.write_bytes(payload)
-                manifest_path = target / MANIFEST
-                manifest = read_json(manifest_path)
-                manifest["staged"][0]["sha256"] = hashlib.sha256(payload).hexdigest()
-                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-                self.assert_failure(self.run_cli("verify", package=target), f"{field} 불일치")
-                shutil.rmtree(target)
 
     def test_fifth_json_pack_is_rejected(self) -> None:
         extra = self.package / PACKS / "old.json"
@@ -274,13 +209,13 @@ class TestStamp(unittest.TestCase):
         )
 
     def test_stamp_rejects_mixed_generations(self) -> None:
-        self.change_meta("items_3_30.json", "contentGeneration", 1)
-        self.assert_failure(self.stamp(), "items_3_30.json", "contentGeneration 불일치")
+        self.change_meta("items.json", "contentGeneration", 1)
+        self.assert_failure(self.stamp(), "items.json", "contentGeneration 불일치")
         self.assertNotIn("buildId", read_json(self.package / PACKS / PACK_NAMES[0])["meta"])
 
     def test_stamp_rejects_mixed_games(self) -> None:
-        self.change_meta("tree_3_30.json", "game", "poe2")
-        self.assert_failure(self.stamp(), "tree_3_30.json", "game 불일치")
+        self.change_meta("tree.json", "game", "poe2")
+        self.assert_failure(self.stamp(), "tree.json", "game 불일치")
 
     def test_stamp_rejects_mismatched_esp_generation(self) -> None:
         add_generation_marker(self.package / ESP, 1)
@@ -307,8 +242,8 @@ class TestStamp(unittest.TestCase):
 
     def test_verify_rejects_changed_pack_build_id(self) -> None:
         self.completed()
-        self.change_meta("tree_3_30.json", "buildId", "0" * 16)
-        self.assert_failure(self.run_cli("verify"), "tree_3_30.json: buildId 불일치")
+        self.change_meta("tree.json", "buildId", "0" * 16)
+        self.assert_failure(self.run_cli("verify"), "tree.json: buildId 불일치")
 
     def test_rules_pack_is_required_for_stamp_and_verify(self) -> None:
         path = self.package / PACKS / "rules.json"
@@ -327,12 +262,12 @@ class TestStamp(unittest.TestCase):
 
     def test_verify_reports_pack_identity_and_file_mismatches(self) -> None:
         self.completed()
-        self.change_meta("tree_3_30.json", "buildId", "0" * 16)
-        self.change_meta("items_3_30.json", "contentGeneration", 1)
+        self.change_meta("tree.json", "buildId", "0" * 16)
+        self.change_meta("items.json", "contentGeneration", 1)
         (self.package / "extra.txt").touch()
         self.assert_failure(
-            self.run_cli("verify"), "tree_3_30.json: buildId 불일치",
-            "items_3_30.json: contentGeneration 불일치", "tree_3_30.json: sha256 불일치",
+            self.run_cli("verify"), "tree.json: buildId 불일치",
+            "items.json: contentGeneration 불일치", "tree.json: sha256 불일치",
             "목록 밖 파일: extra.txt",
         )
 

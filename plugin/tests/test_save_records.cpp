@@ -586,3 +586,263 @@ POE_TEST("Replay returns failure and still attempts each later complete record")
     POE_CHECK(!ReplaySaveRecords(batch, [&](const RawSaveRecord& record) { return WriteSaveRecord(output, record); }));
     POE_CHECK(output.records.back() == batch.records.back());
 }
+
+namespace
+{
+    RawSaveRecord MakeRawStarterRecord(std::uint32_t version, std::uint32_t count,
+        const std::vector<std::string>& ids, std::vector<std::uint8_t> trailing = {})
+    {
+        RawSaveRecord record{ kRecordStarter, version, {} };
+        const auto append = [&](const void* data, std::size_t size) {
+            const auto* bytes = static_cast<const std::uint8_t*>(data);
+            record.bytes.insert(record.bytes.end(), bytes, bytes + size);
+        };
+        append(&count, sizeof(count));
+        for (const auto& id : ids) {
+            const auto len = static_cast<std::uint32_t>(id.size());
+            append(&len, sizeof(len));
+            if (len != 0) {
+                append(id.data(), len);
+            }
+        }
+        record.bytes.insert(record.bytes.end(), trailing.begin(), trailing.end());
+        return record;
+    }
+}
+
+POE_TEST("STRT v1 round trips empty lists, multiple IDs in order, and unknown valid content IDs")
+{
+    POE_CHECK(IsValidStarterContentId("gem.Spark"));
+    POE_CHECK(IsValidStarterContentId("sup.Chain1"));
+    POE_CHECK(IsValidStarterContentId("future.Unknown_Reward.v2"));
+    POE_CHECK(IsValidStarterContentId(std::string("gem.") + std::string(kMaxStarterContentIdBytes - 4, 'a')));
+    for (const std::string invalid : {
+             std::string(""), std::string("Spark"), std::string(".Spark"), std::string("gem."),
+             std::string("Gem.Spark"), std::string("gem1.Spark"), std::string("gem_1.Spark"),
+             std::string("gem.Spark!"), std::string("gem.Spark "), std::string("gem.\xEA\xB0\x80"),
+             std::string("gem.") + std::string(kMaxStarterContentIdBytes - 3, 'a') }) {
+        POE_CHECK(!IsValidStarterContentId(invalid));
+    }
+
+    // 빈 목록 왕복
+    {
+        auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
+        save.state.starterGrantedIds.clear();
+        auto batch = EncodeToMemory(save, kGen1Pack);
+        POE_CHECK(batch.complete);
+        POE_CHECK(DecideSave(batch, false, kGen1Pack).disposition == SaveDisposition::Normal);
+        const auto& strt = FindRecord(batch, kRecordStarter);
+        POE_CHECK(strt.version == kStarterVersion && strt.bytes.size() == sizeof(std::uint32_t));
+        std::vector<std::string> restored{ "stale.Entry" };
+        POE_CHECK(ReadStarterRecord(strt, restored) && restored.empty());
+    }
+
+    // 여러 ID 및 현재 빌드가 모르는 유효 ID 보존·순서 유지
+    {
+        auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
+        save.state.starterGrantedIds = { "gem.Spark", "future.Unknown_Gem.v2", "sup.Fork", "currency.ExaltedOrb" };
+        auto batch = EncodeToMemory(save, kGen1Pack);
+        POE_CHECK(batch.complete);
+        POE_CHECK(DecideSave(batch, false, kGen1Pack).disposition == SaveDisposition::Normal);
+        const auto& strt = FindRecord(batch, kRecordStarter);
+        std::vector<std::string> restored;
+        POE_CHECK(ReadStarterRecord(strt, restored) && restored == save.state.starterGrantedIds);
+
+        auto resaved = save;
+        resaved.state.starterGrantedIds = restored;
+        auto secondBatch = EncodeToMemory(resaved, kGen1Pack);
+        POE_CHECK(FindRecord(secondBatch, kRecordStarter) == strt);
+    }
+
+    // 상한 256개 허용
+    {
+        auto save = MakeSnapshot(27, kGen1Pack.contentGeneration);
+        save.state.starterGrantedIds.clear();
+        for (std::uint32_t i = 0; i < kMaxStarterGrantedIds; ++i) {
+            save.state.starterGrantedIds.push_back("gem.Item_" + std::to_string(i));
+        }
+        auto batch = EncodeToMemory(save, kGen1Pack);
+        POE_CHECK(batch.complete);
+        POE_CHECK(DecideSave(batch, false, kGen1Pack).disposition == SaveDisposition::Normal);
+        std::vector<std::string> restored;
+        POE_CHECK(ReadStarterRecord(FindRecord(batch, kRecordStarter), restored));
+        POE_CHECK(restored == save.state.starterGrantedIds);
+    }
+}
+
+POE_TEST("STRT v1 rejects count over 256, oversized IDs, syntax errors, duplicates, trailing bytes, wrong version and truncation")
+{
+    const std::vector<std::string> sentinel{ "gem.KeepMe" };
+    const auto checkRejected = [&](const RawSaveRecord& record) {
+        auto out = sentinel;
+        POE_CHECK(!ReadStarterRecord(record, out));
+        POE_CHECK(out == sentinel);
+    };
+
+    // 개수 257 거부
+    {
+        std::vector<std::string> tooMany;
+        tooMany.reserve(kMaxStarterGrantedIds + 1);
+        for (std::uint32_t i = 0; i <= kMaxStarterGrantedIds; ++i) {
+            tooMany.push_back("gem.Item_" + std::to_string(i));
+        }
+        checkRejected(MakeRawStarterRecord(kStarterVersion, kMaxStarterGrantedIds + 1, tooMany));
+    }
+
+    // 64바이트 넘는 ID 거부 (65바이트, SaveString 한도 256 이내이지만 콘텐츠 ID 한도 초과)
+    checkRejected(MakeRawStarterRecord(kStarterVersion, 1, { "gem." + std::string(61, 'x') }));
+
+    // 문법 오류 ID 거부
+    for (const std::string badId : {
+             std::string(""), std::string("Spark"), std::string(".Spark"), std::string("gem."),
+             std::string("Gem.Spark"), std::string("gem1.Spark"), std::string("gem.Bad-Id"),
+             std::string("gem.Bad Id"), std::string("gem.\xEC\x8A\xA4") }) {
+        checkRejected(MakeRawStarterRecord(kStarterVersion, 1, { badId }));
+    }
+
+    // 중복 ID 거부
+    checkRejected(MakeRawStarterRecord(kStarterVersion, 3, { "gem.Spark", "sup.Fork", "gem.Spark" }));
+
+    // 뒤 바이트 거부
+    checkRejected(MakeRawStarterRecord(kStarterVersion, 1, { "gem.Spark" }, { 0 }));
+    checkRejected(MakeRawStarterRecord(kStarterVersion, 0, {}, { 0xFF }));
+
+    // 잘린 본문 (모든 접두) 거부
+    const auto valid = MakeRawStarterRecord(kStarterVersion, 2, { "gem.Spark", "sup.Fork" });
+    std::vector<std::string> parsed;
+    POE_CHECK(ReadStarterRecord(valid, parsed) && parsed.size() == 2);
+    for (std::size_t size = 0; size < valid.bytes.size(); ++size) {
+        RawSaveRecord truncated = valid;
+        truncated.bytes.resize(size);
+        checkRejected(truncated);
+    }
+
+    // 잘못된 판·타입 거부
+    for (const auto badVer : { 0u, kStarterVersion + 1 }) {
+        RawSaveRecord wrongVer = valid;
+        wrongVer.version = badVer;
+        checkRejected(wrongVer);
+    }
+    RawSaveRecord wrongType = valid;
+    wrongType.type = kRecordCore;
+    checkRejected(wrongType);
+}
+
+POE_TEST("DecideSave enforces STRT presence and validity in generation one and forbids it in generation zero")
+{
+    auto gen1Save = MakeSnapshot(27, kGen1Pack.contentGeneration);
+    gen1Save.state.starterGrantedIds = { "gem.Spark" };
+    const auto validGen1 = EncodeToMemory(gen1Save, kGen1Pack);
+    POE_CHECK(validGen1.complete && DecideSave(validGen1, false, kGen1Pack).disposition == SaveDisposition::Normal);
+
+    // 세대 1 Normal에서 STRT 없음 → Preserve
+    {
+        auto missing = validGen1;
+        POE_CHECK(std::erase_if(missing.records, [](const auto& r) { return r.type == kRecordStarter; }) == 1);
+        POE_CHECK(DecideSave(missing, false, kGen1Pack).disposition == SaveDisposition::Preserve);
+    }
+
+    // 세대 1 Normal에서 STRT 둘 → Preserve
+    {
+        auto duplicate = validGen1;
+        duplicate.records.push_back(FindRecord(duplicate, kRecordStarter));
+        POE_CHECK(DecideSave(duplicate, false, kGen1Pack).disposition == SaveDisposition::Preserve);
+    }
+
+    // 세대 1 Normal에서 STRT 손상(잘림·뒤 바이트·중복 ID·문법 오류·판 오류) → Preserve
+    for (const auto& badStarter : {
+             MakeRawStarterRecord(kStarterVersion, 1, { "gem.Spark" }, { 0 }),
+             MakeRawStarterRecord(kStarterVersion, 2, { "gem.Spark", "gem.Spark" }),
+             MakeRawStarterRecord(kStarterVersion, 1, { "InvalidId" }),
+             MakeRawStarterRecord(kStarterVersion + 1, 1, { "gem.Spark" }),
+             RawSaveRecord{ kRecordStarter, kStarterVersion, { 1, 0 } } }) {
+        auto damaged = validGen1;
+        FindRecord(damaged, kRecordStarter) = badStarter;
+        POE_CHECK(DecideSave(damaged, false, kGen1Pack).disposition == SaveDisposition::Preserve);
+    }
+
+    // 최초 설치(모드 기록 없음)와 새 게임은 STRT 없어도 통과
+    POE_CHECK(DecideSave(SaveRecordBatch{}, false, kGen1Pack).disposition == SaveDisposition::FirstInstall);
+    POE_CHECK(DecideSave(SaveRecordBatch{}, true, kGen1Pack).disposition == SaveDisposition::Normal);
+
+    // 구판 정리 입력(GENR poe1/0, 무스탬프)은 STRT 없어도 통과하고, STRT가 섞여 있으면 Preserve
+    const auto validGen0 = EncodeToMemory(MakeSnapshot(27, 0), kPack);
+    auto unstampedGen0 = validGen0;
+    POE_CHECK(std::erase_if(unstampedGen0.records, [](const auto& r) { return r.type == kRecordGeneration; }) == 1);
+    for (const auto& legacy : { validGen0, unstampedGen0 }) {
+        POE_CHECK(std::ranges::find(legacy.records, kRecordStarter, &RawSaveRecord::type) == legacy.records.end());
+        POE_CHECK(DecideSave(legacy, false, kPack).disposition == SaveDisposition::Normal);
+        POE_CHECK(DecideSave(legacy, false, kGen1Pack).disposition == SaveDisposition::CleanupFromLegacy);
+
+        auto poisoned = legacy;
+        poisoned.records.push_back(MakeRawStarterRecord(kStarterVersion, 0, {}));
+        POE_CHECK(DecideSave(poisoned, false, kPack).disposition == SaveDisposition::Preserve);
+        POE_CHECK(DecideSave(poisoned, false, kGen1Pack).disposition == SaveDisposition::Preserve);
+    }
+
+    // 세대 0 팩에 STRT만 단독으로 있어도 Preserve
+    const SaveRecordBatch onlyStarter{ { MakeRawStarterRecord(kStarterVersion, 0, {}) } };
+    POE_CHECK(DecideSave(onlyStarter, false, kPack).disposition == SaveDisposition::Preserve);
+    POE_CHECK(DecideSave(onlyStarter, false, kGen1Pack).disposition == SaveDisposition::Preserve);
+}
+
+POE_TEST("WriteSnapshot writes one STRT in generation one, none in generation zero, and omits GENR when STRT fails")
+{
+    // 세대 1에는 STRT 정확히 하나, 세대 0에는 STRT 없음(필드에 값이 있어도 쓰지 않으며 바이트 불변)
+    auto gen0Empty = MakeSnapshot(27, 0);
+    auto gen0WithIds = gen0Empty;
+    gen0WithIds.state.starterGrantedIds = { "gem.Spark" };
+    const auto gen0BatchA = EncodeToMemory(gen0Empty, kPack);
+    const auto gen0BatchB = EncodeToMemory(gen0WithIds, kPack);
+    POE_CHECK(gen0BatchA.complete && gen0BatchB.complete);
+    POE_CHECK(gen0BatchA.records == gen0BatchB.records);
+    POE_CHECK(std::ranges::count(gen0BatchA.records, kRecordStarter, &RawSaveRecord::type) == 0);
+
+    auto gen1 = MakeSnapshot(27, kGen1Pack.contentGeneration);
+    gen1.state.starterGrantedIds = { "gem.Spark" };
+    const auto gen1Batch = EncodeToMemory(gen1, kGen1Pack);
+    POE_CHECK(gen1Batch.complete);
+    POE_CHECK(std::ranges::count(gen1Batch.records, kRecordStarter, &RawSaveRecord::type) == 1);
+    POE_CHECK(gen1Batch.records.back().type == kRecordGeneration);
+
+    // STRT 열기·쓰기 실패 시 GENR 생략
+    for (const bool failOpen : { true, false }) {
+        FakeOutput output;
+        (failOpen ? output.failOpen : output.failWrite) = kRecordStarter;
+        POE_CHECK(!WriteSnapshot(gen1, kGen1Pack, [&](const RawSaveRecord& record) {
+            return WriteSaveRecord(output, record);
+        }));
+        POE_CHECK(std::ranges::find(output.attempted, kRecordStarter) != output.attempted.end());
+        POE_CHECK(std::ranges::find(output.attempted, kRecordGeneration) == output.attempted.end());
+    }
+
+    // 잘못된 STRT 내용(중복·문법 오류·상한 초과)도 실패 처리하고 GENR 생략
+    for (const auto badCase : { 0, 1, 2 }) {
+        auto bad = gen1;
+        if (badCase == 0) {
+            bad.state.starterGrantedIds = { "gem.Spark", "gem.Spark" };
+        } else if (badCase == 1) {
+            bad.state.starterGrantedIds = { "NotValidSyntax" };
+        } else {
+            bad.state.starterGrantedIds.clear();
+            for (std::uint32_t i = 0; i <= kMaxStarterGrantedIds; ++i) {
+                bad.state.starterGrantedIds.push_back("gem.Item_" + std::to_string(i));
+            }
+        }
+        FakeOutput output;
+        POE_CHECK(!WriteSnapshot(bad, kGen1Pack, [&](const RawSaveRecord& record) {
+            return WriteSaveRecord(output, record);
+        }));
+        POE_CHECK(std::ranges::find(output.attempted, kRecordStarter) == output.attempted.end());
+        POE_CHECK(std::ranges::find(output.attempted, kRecordGeneration) == output.attempted.end());
+    }
+}
+
+POE_TEST("Every generation-one content ID passes the STRT grammar so a ready gem can always be recorded")
+{
+    for (const auto& key : SkyrimPoE::Core::GemForms::kContentKeys) {
+        POE_CHECK(SkyrimPoE::Core::SaveRecord::IsValidStarterContentId(key.contentId));
+    }
+    static_assert(SkyrimPoE::Core::SaveRecord::kMaxStarterGrantedIds ==
+                  SkyrimPoE::Core::GemForms::kMaxStarterGrantedRecordIds);
+}

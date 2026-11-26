@@ -3,6 +3,7 @@
 #include "core/Types.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 
@@ -59,6 +60,15 @@ namespace SkyrimPoE::Core
 
         [[nodiscard]] CharmActiveBonuses ComputeActiveBonuses() const;
 
+        // 결정 259(B0): 세대 1 게이트 검증용 누적 계측 카운터.
+        struct GateStats
+        {
+            std::uint64_t triggerEntries = 0;
+            std::uint64_t triggerGateRejections = 0;
+            std::uint64_t rechargeGateRejections = 0;
+        };
+        [[nodiscard]] GateStats GetGateStatsForTest() const noexcept;
+
     private:
         bool TryConsumeAndActivateLocked(CharmKind targetKind) noexcept;
 
@@ -66,5 +76,8 @@ namespace SkyrimPoE::Core
         std::array<CharmSlotState, kMaxCharmSlots> slots_{};
         std::uint8_t unlockedSlots_ = 0;
         std::array<double, kCharmKindCount> activeTimers_{};
+        std::atomic<std::uint64_t> triggerEntries_{ 0 };
+        std::atomic<std::uint64_t> triggerGateRejections_{ 0 };
+        std::atomic<std::uint64_t> rechargeGateRejections_{ 0 };
     };
 }

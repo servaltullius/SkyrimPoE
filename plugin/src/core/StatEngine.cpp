@@ -1,6 +1,7 @@
 #include "core/StatEngine.h"
 #include "core/GemForms.h"
 #include "core/Config.h"
+#include "core/ContentFeatures.h"
 #include "core/DamageConversion.h"
 #include "core/EnergyShield.h"
 #include "core/RulesPack.h"
@@ -592,9 +593,11 @@ namespace SkyrimPoE::Core
             if (def->kind == GemKind::AttackChannel) {
                 incAreaPct += gear.incAttackAreaOfEffectPct + p.attackAreaIncPct;
                 // 검수 m1: 4~5단계 무기 로컬 + 글로벌/오라 추가 5속성 공격 피해 통합 + 물리→원소 추가(Hatred/HeraldOfAsh/Headhunter)
-                const double basePhysMin = gear.hasActiveWeapon ? gear.weaponPhysMin : l1.baseWeaponPhysicalMin;
-                const double basePhysMax = gear.hasActiveWeapon ? gear.weaponPhysMax : l1.baseWeaponPhysicalMax;
-                const double baseCrit = gear.hasActiveWeapon ? gear.weaponCritChancePct : l1.baseWeaponCritChancePct;
+                // 결정 244: 세대 1은 P5까지 무기 수치가 없으므로 무기를 들어도 맨손 기본값으로 친다(무기 종류 조건은 그대로).
+                const bool useWeapon = gear.hasActiveWeapon && ActiveContentFeatures().equipmentStats;
+                const double basePhysMin = useWeapon ? gear.weaponPhysMin : l1.baseWeaponPhysicalMin;
+                const double basePhysMax = useWeapon ? gear.weaponPhysMax : l1.baseWeaponPhysicalMax;
+                const double baseCrit = useWeapon ? gear.weaponCritChancePct : l1.baseWeaponCritChancePct;
                 const double localSpdMult = gear.hasActiveWeapon ? gear.weaponLocalSpeedMult : 1.0;
 
                 const double rawPhysMin = basePhysMin * lv->baseMultiplier + gear.addedAttackPhysMin * lv->damageEffectiveness;
@@ -669,7 +672,8 @@ namespace SkyrimPoE::Core
 
                 // 결정 50, 98, 검수 m1/M3: 무기 로컬 공속 + PoE1 쌍수 보너스(+10% 증폭 공속) 정확히 1회 적용
                 const double skillSpeedBase = 1.0 + lv->attackSpeedMultiplier / 100.0;
-                const double dualWieldMoreSpd = gear.isDualWielding ? 1.10 : 1.0;
+                // PoE1 쌍수 고유 보너스(공격 속도 ×1.10). 세대 1은 결정 244로 끈다.
+                const double dualWieldMoreSpd = gear.isDualWielding && ActiveContentFeatures().equipmentStats ? 1.10 : 1.0;
                 const double incSpeed = std::max(0.1,
                     1.0 + (l1.incAttackSpeedPct + p.incAttackSpeedPct + p.incMeleeAttackSpeedPct +
                            gear.incAttackSpeedPct + aura.incAttackSpeedPct + clampedFrenzy * kFrenzySpeedAndMore +
@@ -1104,7 +1108,9 @@ namespace SkyrimPoE::Core
             gear.weaponChaosMax = 0.5 * (mhEval.chaosMax + ohEval.chaosMax);
             gear.weaponCritChancePct = 0.5 * (mhEval.critPct + ohEval.critPct);
             gear.weaponLocalSpeedMult = 0.5 * (mhEval.speedMult + ohEval.speedMult);
-            gear.attackBlock += 20.0;  // PoE1 쌍수 고유 보너스: 공격 막기 +20%
+            if (ActiveContentFeatures().equipmentStats) {
+                gear.attackBlock += 20.0;  // PoE1 쌍수 고유 보너스: 공격 막기 +20%(세대 1은 결정 244로 끔)
+            }
         } else if (mhEval.valid || ohEval.valid) {
             const auto& w = mhEval.valid ? mhEval : ohEval;
             gear.hasActiveWeapon = true;
@@ -1309,7 +1315,6 @@ namespace SkyrimPoE::Core
         snap.expectedPoeLife = ExpectedLife(snap.exileLevel, static_cast<std::uint32_t>(baseStr), config);
         snap.expectedPoeMana = ExpectedMana(snap.exileLevel, static_cast<std::uint32_t>(baseInt), config);
 
-        const auto& c = pack.Constants();
         if (snap.chaosInoculation) {
             snap.poeMaxLife = 1.0;
         } else {
@@ -1379,13 +1384,16 @@ namespace SkyrimPoE::Core
             snap.evasion = p.cannotEvade ? 0.0 : (rawEvasion * aura.moreEvasionMult * mapEvasionFactor);
         }
 
-        // 결정 169: 동적 최대 저항은 90% 상한이며, 50% 하한은 활성 회차 셀 안에서만 적용한다.
+        // 결정 169: 50% 하한은 활성 회차 셀 안에서 규칙 팩의 상한까지 적용한다.
         constexpr double kMapMaxResistFloor = 50.0;
-        const double maxResistFloor = snap.inActiveMap ? kMapMaxResistFloor : 0.0;
-        snap.maxFireResist = std::clamp(c.resistCap + p.maxFireResistBonus + cb.maxFireResist - mapResPen, maxResistFloor, 90.0);
-        snap.maxColdResist = std::clamp(c.resistCap + p.maxColdResistBonus + cb.maxColdResist - mapResPen, maxResistFloor, 90.0);
-        snap.maxLightningResist = std::clamp(c.resistCap + p.maxLightningResistBonus + cb.maxLightningResist - mapResPen, maxResistFloor, 90.0);
-        snap.maxChaosResist = std::clamp(c.resistCap + p.maxChaosResistBonus - mapResPen, maxResistFloor, 90.0);
+        const auto& resistance = rules.resistance;
+        const double cap = resistance.capPercent;
+        const double baseMax = resistance.baseMaxPercent;
+        const double maxResistFloor = snap.inActiveMap ? std::min(kMapMaxResistFloor, cap) : 0.0;
+        snap.maxFireResist = std::clamp(baseMax + p.maxFireResistBonus + cb.maxFireResist - mapResPen, maxResistFloor, cap);
+        snap.maxColdResist = std::clamp(baseMax + p.maxColdResistBonus + cb.maxColdResist - mapResPen, maxResistFloor, cap);
+        snap.maxLightningResist = std::clamp(baseMax + p.maxLightningResistBonus + cb.maxLightningResist - mapResPen, maxResistFloor, cap);
+        snap.maxChaosResist = std::clamp(baseMax + p.maxChaosResistBonus - mapResPen, maxResistFloor, cap);
 
         const std::uint8_t clampedEnd = std::min(l2.enduranceCharges, snap.maxEnduranceCharges);
         const double endDR = clampedEnd * kEndurancePhysAndElemDR;
