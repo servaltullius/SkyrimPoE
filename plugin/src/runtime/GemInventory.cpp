@@ -1,10 +1,14 @@
 #include "PCH.h"
 #include "runtime/GemInventory.h"
 #include "runtime/FormIds.h"
+#include "runtime/MapDeviceRuntime.h"
 #include "runtime/ModState.h"
 #include "runtime/SaveLoad.h"
 #include "runtime/UniqueIdUtil.h"
+#include "core/SaveRecordFormat.h"
 #include "core/WorldStampLink.h"
+
+#include <algorithm>
 
 #include <unordered_map>
 
@@ -30,6 +34,10 @@ namespace SkyrimPoE::Runtime
         const GemFormCache* g_physicalForms = nullptr;
 
         Core::CommandQueue* g_queue = nullptr;
+        // 결정 235: 가방에 젬이 들어올 때의 일반 젬 바꾸기 예약을, 대기 중인 것 하나로 합친다(여러 개를 한꺼번에 옮길 때).
+        // 값은 대기 중인 예약의 큐 세대 + 1이고 0이면 대기 없음. 작업이 시작되면 지우므로 그 뒤의 유입은 다시 예약된다.
+        // 로드로 큐 세대가 바뀌어 예약이 버려져도 새 세대의 예약은 막히지 않는다.
+        std::atomic<std::uint64_t> g_orphanNormalizeQueuedFor{ 0 };
         bool g_installed = false;
 
         [[nodiscard]] const GemFormCache& BuildGemFormCache()
@@ -525,6 +533,27 @@ namespace SkyrimPoE::Runtime
             UniqueIdEventSink() = default;
         };
 
+        // 결정 235: 세대 1 이상에서 번호 붙은 젬이 플레이어 가방에 들어오면 주 갱신에서 고아 번호를 일반 젬으로 바꾼다.
+        // 다시 잇기 예약보다 뒤에 넣어(같은 큐, 들어간 순서대로 실행) 세대 1 추적 젬이 먼저 장부에 이어지게 한다.
+        void ScheduleOrphanNormalization(std::uint64_t generation)
+        {
+            const std::uint64_t marker = generation + 1;
+            if (!g_queue || g_orphanNormalizeQueuedFor.exchange(marker, std::memory_order_acq_rel) == marker) {
+                return;
+            }
+            try {
+                g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, [marker]() {
+                    auto expected = marker;
+                    (void)g_orphanNormalizeQueuedFor.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+                    (void)GemInventory::NormalizeOrphanGems(RE::PlayerCharacter::GetSingleton());
+                });
+            } catch (...) {
+                // 넣지 못했으면 표식을 지워 다음 유입이 다시 예약하게 한다.
+                auto expected = marker;
+                (void)g_orphanNormalizeQueuedFor.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+            }
+        }
+
         // 결정 59·123·C-1: 바닥에서 주운 스탬프 젬을 감지해 다시 잇기를 주 갱신 큐로 예약한다.
         class ContainerChangedEventSink final : public RE::BSTEventSink<RE::TESContainerChangedEvent>
         {
@@ -540,13 +569,23 @@ namespace SkyrimPoE::Runtime
                 RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
             {
                 const auto generation = g_queue ? g_queue->CurrentGeneration(Core::CommandQueue::Kind::Tracking) : 0;
-                if (!ModState::AllowsGameplay() || !event || !g_queue ||
-                    !WorldStampLink::IsStampedWorldPickup(
-                        event->oldContainer, event->newContainer, event->uniqueID, event->itemCount, kGemStampBand)) {
+                if (!ModState::AllowsGameplay() || !event || !g_queue) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
                 const auto gemId = GemIdForForm(event->baseObj);
                 if (gemId.empty()) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                // 결정 235: 세대 1 이상에서 젬이 플레이어 가방에 들어오면 고아 번호 검사를 예약한다. 이벤트의 고유 ID 칸이 0이어도
+                // 실물에는 번호가 붙어 있을 수 있어(프로토타입 5 관찰) 칸 값으로 거르지 않는다. 이벤트 스레드에서는 플레이어
+                // 객체를 건드리지 않고 고정 참조 ID와만 비교한다.
+                const bool numberedIntoPlayer = event->newContainer == Core::SaveRecord::kPlayerRefFormId &&
+                    event->itemCount > 0 && SaveLoad::WorldGemGeneration() >= 1;
+                if (!WorldStampLink::IsStampedWorldPickup(
+                        event->oldContainer, event->newContainer, event->uniqueID, event->itemCount, kGemStampBand)) {
+                    if (numberedIntoPlayer) {
+                        ScheduleOrphanNormalization(generation);
+                    }
                     return RE::BSEventNotifyControl::kContinue;
                 }
 
@@ -567,6 +606,9 @@ namespace SkyrimPoE::Runtime
                     g_queue->EnqueueForGeneration(generation, Core::CommandQueue::Kind::Tracking, [newOwner, stamp]() {
                         RelinkPickedUpGemOnMainUpdate(newOwner, stamp);
                     });
+                }
+                if (numberedIntoPlayer) {
+                    ScheduleOrphanNormalization(generation);
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }
@@ -705,6 +747,90 @@ namespace SkyrimPoE::Runtime
             }
         }
         return snap;
+    }
+
+    std::size_t GemInventory::NormalizeOrphanGems(RE::PlayerCharacter* player)
+    {
+        const auto generation = SaveLoad::WorldGemGeneration();
+        // 예약 뒤 같은 큐 세대 안에서 보존 모드나 안전 제거 정리로 바뀌었으면 가방을 건드리지 않는다.
+        if (!player || generation < 1 || !ModState::AllowsGameplay() || MapDeviceRuntime::IsUninstallCleanupActive()) {
+            return 0;
+        }
+        auto* changes = player->GetInventoryChanges(true);
+        if (!changes || !changes->entryList) {
+            return 0;
+        }
+
+        struct NumberedStack
+        {
+            RE::TESBoundObject* object = nullptr;
+            Core::InventoryItemKey key;
+        };
+        std::vector<NumberedStack> stacks;
+        std::vector<WorldStampLink::ObservedInventoryExtra> observed;
+        for (auto* entry : *changes->entryList) {
+            if (!entry || !entry->object || !entry->extraLists) {
+                continue;
+            }
+            const auto gemId = GemIdForForm(entry->object->GetFormID());
+            if (gemId.empty()) {
+                continue;
+            }
+            for (auto* extra : *entry->extraLists) {
+                const auto* unique = extra ? extra->GetByType<RE::ExtraUniqueID>() : nullptr;
+                if (!unique) {
+                    continue;
+                }
+                const Core::InventoryItemKey key{ unique->baseID, unique->uniqueID };
+                observed.push_back(WorldStampLink::ObservedInventoryExtra{ stacks.size(), key, std::string(gemId), extra->GetCount() });
+                stacks.push_back(NumberedStack{ entry->object, key });
+            }
+        }
+        if (observed.empty()) {
+            return 0;
+        }
+        std::vector<Core::InventoryItemKey> ledgerKeys;
+        {
+            std::scoped_lock lock(g_mutex);
+            ledgerKeys.reserve(g_entries.size());
+            for (const auto& e : g_entries) {
+                ledgerKeys.push_back(e.key);
+            }
+        }
+
+        std::size_t converted = 0;
+        for (const auto index : WorldStampLink::PlanOrphanNormalization(generation, observed, ledgerKeys)) {
+            const auto& stack = stacks[index];
+            // 앞의 꺼내기·넣기가 목록을 바꿨을 수 있어 묶음을 번호로 다시 찾는다.
+            auto* extra = FindExtraListByUniqueId(player, stack.object, stack.key);
+            const auto count = extra ? extra->GetCount() : 0;
+            if (count <= 0) {
+                continue;
+            }
+            // 성공은 엔진이 돌려주지 않으므로(AddObjectToContainer는 void) 수량으로 확인한다: 실제로 빠진 수만큼만 다시 넣고,
+            // 일반 수량이 실제로 는 만큼만 바꾼 것으로 센다.
+            const auto totalBefore = player->GetItemCount(stack.object);
+            const auto plainBefore = CountPlainItems(player, stack.object);
+            player->RemoveItem(stack.object, count, RE::ITEM_REMOVE_REASON::kRemove, extra, nullptr);
+            const auto removed = totalBefore - player->GetItemCount(stack.object);
+            if (removed <= 0) {
+                SKSE::log::error("GemInventory: orphan gem {:08X} {:08X}:{:04X} was not removed; left as is.",
+                    stack.object->GetFormID(), stack.key.ownerFormId, stack.key.uniqueId);
+                continue;
+            }
+            player->AddObjectToContainer(stack.object, nullptr, removed, nullptr);
+            const auto totalAfter = player->GetItemCount(stack.object);
+            const auto plainGained = CountPlainItems(player, stack.object) - plainBefore;
+            if (totalAfter != totalBefore || plainGained != removed) {
+                SKSE::log::error("GemInventory: orphan gem {:08X} ('{}') made plain only partly: removed {} of {}, total {} -> {}, plain +{}.",
+                    stack.object->GetFormID(), observed[index].kindId, removed, count, totalBefore, totalAfter, plainGained);
+            }
+            const auto gained = std::clamp(plainGained, 0, removed);
+            SKSE::log::info("GemInventory: made {} orphan gem(s) {:08X} ('{}', old key {:08X}:{:04X}) plain (decision 235).",
+                gained, stack.object->GetFormID(), observed[index].kindId, stack.key.ownerFormId, stack.key.uniqueId);
+            converted += static_cast<std::size_t>(gained);
+        }
+        return converted;
     }
 
     std::optional<Core::InventoryItemKey> GemInventory::ReturnGemToPlayerInventory(

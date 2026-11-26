@@ -190,4 +190,35 @@ namespace SkyrimPoE::Core::WorldStampLink
         }
         return linked;
     }
+
+    std::vector<std::size_t> PlanOrphanNormalization(
+        std::uint32_t worldGemGeneration,
+        const std::vector<ObservedInventoryExtra>& extras,
+        const std::vector<InventoryItemKey>& ledgerKeys)
+    {
+        std::vector<std::size_t> orphans;
+        if (worldGemGeneration < 1) {
+            return orphans;
+        }
+        const auto duplicated = [&](const ObservedInventoryExtra& extra) {
+            return std::count_if(extras.begin(), extras.end(), [&](const ObservedInventoryExtra& other) {
+                return other.kindId == extra.kindId && other.extraKey == extra.extraKey;
+            }) > 1;
+        };
+        for (const auto& extra : extras) {
+            if (duplicated(extra)) {
+                continue;
+            }
+            // 소유자 0의 비정상 키는 실행기(번호로 다시 찾기)가 다룰 수 없으므로 고르지 않는다.
+            if (!extra.extraKey.IsValid() || extra.count <= 0) {
+                continue;
+            }
+            const bool tracked = std::any_of(ledgerKeys.begin(), ledgerKeys.end(),
+                [&](const InventoryItemKey& key) { return key.uniqueId == extra.extraKey.uniqueId; });
+            if (!tracked) {
+                orphans.push_back(extra.extraIndex);
+            }
+        }
+        return orphans;
+    }
 }

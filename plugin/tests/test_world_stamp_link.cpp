@@ -501,3 +501,43 @@ POE_TEST("WorldStampLink: ExecuteRelinks counts only real rewrites and reverts t
     POE_CHECK(RunProductRelinkPass(ledger2, extras2, kPlayer, nextUid2) == 0);
     POE_CHECK(ledger2[0].isWorld);
 }
+
+POE_TEST("WorldStampLink: decision 235 picks only untracked numbered gems in generation one and later")
+{
+    // 정리 뒤 실물에만 남은 PoE1 번호(가방 0x7012, 상자에서 가져온 0x7030, 바닥 스탬프 0x7F40)와
+    // 세대 1의 추적 젬(가방 0x7001), 주운 뒤 다시 잇기를 기다리는 세대 1 바닥 젬(장부는 바닥 참조, 묶음은 소유자 정규화).
+    const std::vector<ObservedInventoryExtra> extras = {
+        ObservedInventoryExtra{ 0, InventoryItemKey{ kPlayer, 0x7012 }, "gem.Spark", 1 },
+        ObservedInventoryExtra{ 1, InventoryItemKey{ kPlayer, 0x7001 }, "gem.Spark", 1 },
+        ObservedInventoryExtra{ 2, InventoryItemKey{ kPlayer, 0x7F21 }, "gem.Spark", 1 },
+        ObservedInventoryExtra{ 3, InventoryItemKey{ kPlayer, 0x7030 }, "SupportChain", 2 },
+        ObservedInventoryExtra{ 4, InventoryItemKey{ kPlayer, 0x7F40 }, "ShockNova", 1 },
+        ObservedInventoryExtra{ 5, InventoryItemKey{ kPlayer, 0 }, "gem.Spark", 1 },
+        ObservedInventoryExtra{ 6, InventoryItemKey{ kPlayer, 0x7044 }, "gem.Spark", 0 },
+    };
+    const std::vector<InventoryItemKey> ledger = {
+        InventoryItemKey{ kPlayer, 0x7001 },
+        InventoryItemKey{ kGroundRefA, 0x7F21 },
+    };
+
+    const auto picked = PlanOrphanNormalization(1, extras, ledger);
+    POE_CHECK((picked == std::vector<std::size_t>{ 0, 3, 4 }));
+
+    // 세대 0은 그대로 둔다.
+    POE_CHECK(PlanOrphanNormalization(0, extras, ledger).empty());
+    // 장부가 비어 있으면(정리 직후) 번호가 있고 개수가 양수인 묶음을 모두 고른다.
+    POE_CHECK((PlanOrphanNormalization(1, extras, {}) == std::vector<std::size_t>{ 0, 1, 2, 3, 4 }));
+    // 같은 번호를 다른 소유자 키로 쓰는 장부 항목도 지킨다(번호가 겹치면 보이지 않는 쪽으로 남긴다).
+    POE_CHECK((PlanOrphanNormalization(1, extras, { InventoryItemKey{ kFollower, 0x7012 } }) == std::vector<std::size_t>{ 1, 2, 3, 4 }));
+
+    // 같은 종류·같은 키의 묶음 둘은 번호로 다시 찾을 때 서로를 가리므로 둘 다 고르지 않는다(Codex 지적).
+    // 소유자 0의 비정상 키도 고르지 않는다. 종류가 다르면 같은 키라도 따로 다룬다.
+    const std::vector<ObservedInventoryExtra> tricky = {
+        ObservedInventoryExtra{ 0, InventoryItemKey{ kPlayer, 0x7050 }, "gem.Spark", 1 },
+        ObservedInventoryExtra{ 1, InventoryItemKey{ kPlayer, 0x7050 }, "gem.Spark", 1 },
+        ObservedInventoryExtra{ 2, InventoryItemKey{ 0, 0x7051 }, "gem.Spark", 1 },
+        ObservedInventoryExtra{ 3, InventoryItemKey{ kPlayer, 0x7052 }, "gem.Fireball", 1 },
+        ObservedInventoryExtra{ 4, InventoryItemKey{ kPlayer, 0x7052 }, "gem.Spark", 1 },
+    };
+    POE_CHECK((PlanOrphanNormalization(1, tricky, {}) == std::vector<std::size_t>{ 3, 4 }));
+}

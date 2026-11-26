@@ -35,6 +35,70 @@ namespace SkyrimPoE::Runtime
                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - base).count());
         }
 
+        // 시험 전용 교전 기록 추적(SetEngagementTraceForTest). 훅 스레드에서도 부르므로 잠금 안에서만 상태를 바꾼다.
+        struct EngagementTraceKey
+        {
+            RE::FormID actorId = 0;
+            MonsterRuntime::EngagementSource source = MonsterRuntime::EngagementSource::PlayerSkill;
+            RE::FormID spellId = 0;
+            RE::FormID effectId = 0;
+            bool operator==(const EngagementTraceKey&) const = default;
+        };
+        struct EngagementTraceRun
+        {
+            bool valid = false;
+            EngagementTraceKey key{};
+            std::uint32_t firstMs = 0;
+            std::uint32_t lastMs = 0;
+            std::uint32_t repeats = 0;
+        };
+        std::atomic<bool> g_engagementTrace{ false };
+        std::mutex g_engagementTraceMutex;
+        EngagementTraceRun g_engagementTraceRun{};
+
+        std::string_view EngagementSourceName(MonsterRuntime::EngagementSource source) noexcept
+        {
+            switch (source) {
+                case MonsterRuntime::EngagementSource::PlayerSkill: return "player-skill";
+                case MonsterRuntime::EngagementSource::PlayerHit: return "player-hit";
+                case MonsterRuntime::EngagementSource::PlayerMagic: return "player-magic";
+                case MonsterRuntime::EngagementSource::IncomingHit: return "incoming-hit";
+                case MonsterRuntime::EngagementSource::IncomingMagic: return "incoming-magic";
+            }
+            return "unknown";
+        }
+
+        void FlushEngagementTraceRunLocked()
+        {
+            const auto& run = g_engagementTraceRun;
+            if (run.valid && run.repeats > 0) {
+                SKSE::log::info("MonsterRuntime trace: same engagement 0x{:08X} ({}) repeated {} more time(s) over {} ms.",
+                    run.key.actorId, EngagementSourceName(run.key.source), run.repeats,
+                    static_cast<std::uint32_t>(run.lastMs - run.firstMs));
+            }
+        }
+
+        void TraceEngagement(const EngagementTraceKey& key)
+        {
+            std::scoped_lock lk(g_engagementTraceMutex);
+            if (!g_engagementTrace.load(std::memory_order_acquire)) {
+                return;
+            }
+            // 시각은 잠금 안에서 잰다. 기록 자리끼리 스레드가 달라도 반복 구간이 거꾸로 계산되지 않는다.
+            // 이 추적의 순서는 잠금 순서이며, 실제 교전 기록(원자 변수) 순서와 스레드 사이에서는 어긋날 수 있다.
+            const auto nowMs = EngagedClockMs();
+            auto& run = g_engagementTraceRun;
+            if (run.valid && run.key == key) {
+                ++run.repeats;
+                run.lastMs = nowMs;
+                return;
+            }
+            FlushEngagementTraceRunLocked();
+            run = EngagementTraceRun{ true, key, nowMs, nowMs, 0 };
+            SKSE::log::info("MonsterRuntime trace: engagement -> 0x{:08X} by {} (spell=0x{:08X}, effect=0x{:08X}).",
+                key.actorId, EngagementSourceName(key.source), key.spellId, key.effectId);
+        }
+
         // actorId가 지금 기록된 교전 적이면 지운다(사망·개별 리셋)
         void ClearEngagedEnemyIf(RE::FormID actorId) noexcept
         {
@@ -313,12 +377,38 @@ namespace SkyrimPoE::Runtime
         }
     }
 
-    void MonsterRuntime::NoteEngagedEnemy(RE::FormID actorId) noexcept
+    void MonsterRuntime::NoteEngagedEnemy(
+        RE::FormID actorId, EngagementSource source, RE::FormID spellId, RE::FormID effectId) noexcept
     {
         if (actorId == 0) {
             return;
         }
-        g_engagedEnemy.store((static_cast<std::uint64_t>(actorId) << 32) | EngagedClockMs(), std::memory_order_release);
+        const auto nowMs = EngagedClockMs();
+        g_engagedEnemy.store((static_cast<std::uint64_t>(actorId) << 32) | nowMs, std::memory_order_release);
+        if (g_engagementTrace.load(std::memory_order_acquire)) {
+            // 훅 스레드에서 부르는 noexcept 함수라 잠금·로그의 예외가 밖으로 나가지 않게 한다(시험 추적만 잃음).
+            try {
+                TraceEngagement(EngagementTraceKey{ actorId, source, spellId, effectId });
+            } catch (...) {
+            }
+        }
+    }
+
+    void MonsterRuntime::SetEngagementTraceForTest(bool enabled) noexcept
+    {
+        try {
+            std::scoped_lock lk(g_engagementTraceMutex);
+            if (g_engagementTrace.exchange(enabled, std::memory_order_acq_rel) == enabled) {
+                return;
+            }
+            if (!enabled) {
+                FlushEngagementTraceRunLocked();
+                g_engagementTraceRun = {};
+            }
+            SKSE::log::info("MonsterRuntime: engagement trace {}.", enabled ? "on" : "off");
+        } catch (...) {
+            g_engagementTrace.store(enabled, std::memory_order_release);
+        }
     }
 
     MonsterRuntime::EngagedEnemy MonsterRuntime::GetLastEngagedEnemy() noexcept

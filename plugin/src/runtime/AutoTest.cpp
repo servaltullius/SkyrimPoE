@@ -89,6 +89,8 @@ namespace SkyrimPoE::Runtime
         constexpr RE::FormID kEncSkeeverId = 0x00023AB7;     // EncSkeever (Skyrim.esm 순정, Aggressive, Lv1)
         constexpr RE::FormID kNeutralNpcId = 0x0010D13E;     // AADeleteWhenDoneTestJeremyRegular (순정, 무팩션·Unaggressive·NoCrime)
         constexpr RE::FormID kFireboltId = 0x00012FD0;       // Skyrim.esm Firebolt (프로토타입 6 대조 주문)
+        // Skyrim.esm crSprigganPoisonClaw: 체력 값 변경(crSprigganClawFFContact, 독 저항) 2/초 10초, 조건 없음. 적 ES 진단용 지속 피해
+        constexpr RE::FormID kSprigganPoisonClawId = 0x000F23D2;
         constexpr float kTestIsolationRadius = 1200.0f;
         constexpr auto kFrenzyPlugin = "BerserkerFrenzy.esp"sv;
         constexpr RE::FormID kFrenzyEffectLocalId = 0x800;
@@ -403,24 +405,25 @@ namespace SkyrimPoE::Runtime
         CleanupTestState g_cleanupTest;
 
         enum class GemsCheck : std::size_t {
-            Prepared, LegacyCast, Cleanup, CleanupSave, ChainReturns, NoDuplicate, LegacyRejected,
+            Prepared, LegacyCast, Cleanup, CleanupSave, ChainReturns, BagPlain, IncomingPlain, NoDuplicate, LegacyRejected,
             FrostboltRejected, FrostboltUi, SparkEquipped, Mana, Projectiles, Hit, SparkSave, SparkReload, Restore
         };
         constexpr std::array kGemsChecks{
             "G0_PreparedCatalog", "G0_LegacySparkHandCast", "G1_CleanupCommitted", "G1_FinalSaveWritten",
-            "G2_ChainReturns", "G2_NoDuplicateReturn", "G2_LegacyRejected", "G3_FrostboltRejected",
+            "G2_ChainReturns", "G2_BagGemsPlain", "G2_IncomingGemsPlain", "G2_NoDuplicateReturn", "G2_LegacyRejected", "G3_FrostboltRejected",
             "G3_FrostboltUi", "G4_SparkEquipped", "G4_ManaBilled","G4_FourProjectiles", "G4_LightningHit",
             "G4_FinalSaveWritten", "G4_SparkReload", "G5_WorldRestored"
         };
         enum class GemsStep {
             Prepare, Menu, LegacyLoad, EquipWait, CastResult, CleanupLoad, CleanupCommit,
-            Save, Reload, Reject, Target, RestoreLoad, CastSite
+            Save, Reload, Reject, Target, RestoreLoad, CastSite, BagPlain, IncomingPlain
         };
         constexpr std::array kGemsStepNames{
             "Prepare", "Menu", "LegacyLoad", "EquipWait", "CastResult", "CleanupLoad", "CleanupCommit",
-            "Save", "Reload", "Reject", "Target", "RestoreLoad", "CastSite"
+            "Save", "Reload", "Reject", "Target", "RestoreLoad", "CastSite", "BagPlain", "IncomingPlain"
         };
-        static_assert(kGemsStepNames.size() == static_cast<std::size_t>(GemsStep::CastSite) + 1);
+        static_assert(kGemsStepNames.size() == static_cast<std::size_t>(GemsStep::IncomingPlain) + 1);
+        static_assert(kGemsChecks.size() == static_cast<std::size_t>(GemsCheck::Restore) + 1);
         using AutoTestMarker::GemsRetry;
 
         struct GemsTestState
@@ -458,6 +461,12 @@ namespace SkyrimPoE::Runtime
             int newChain = 0;
             int oldChainAfter = 0;
             int newChainAfter = 0;
+            // 결정 235: 정리 전 가방의 번호 붙은 젬 묶음 수와 전체 수(폼별). 시험이 넣은 PoE1식 번호 Spark 하나를 포함한다.
+            std::map<RE::FormID, std::int32_t> numberedBefore;
+            std::map<RE::FormID, std::int32_t> totalBefore;
+            // 결정 235 유입 경로: 정상 모드에서 번호 Spark 하나를 넣기 전의 Spark 전체·일반 수
+            std::int32_t incomingSparkTotal = 0;
+            std::int32_t incomingSparkPlain = 0;
             std::optional<SaveFiles> files;
             fs::file_time_type requestedAt{};
             std::string buildId;
@@ -489,13 +498,60 @@ namespace SkyrimPoE::Runtime
             bool igniteSeen = false;
             bool dotStoleEngagement = false;
             bool visibleAt3s = false;
+            bool dotEngageOk = false;
             std::set<std::string_view> reported;
         };
         EnemyEsTestState g_esTest{};
 
+        // caster가 플레이어에게 남긴 활성 효과를 적고, dispel이면 걷어낸다. 엔진 실제 타격(CallDealDamage)은 로드 오더의
+        // 온히트 주문(퍽 진입점·공격 데이터·마법부여)을 함께 걸 수 있고, 그 효과의 체력 감소 틱은 결정 185의 받는 마법
+        // 기록 자리에서 시전자를 다시 교전 적으로 기록한다.
+        struct CasterEffects
+        {
+            int found = 0;      // 시전자가 caster인 효과(이미 걷힘 표시가 붙은 것 포함)
+            int dispelled = 0;  // 이번에 걷어내기를 요청한 수
+        };
+        // CommonLib 계약대로 순회 콜백 안에서 값만 복사하고 ActiveEffect*를 들고 나오지 않는다.
+        // ActiveEffect::Dispel은 표시만 하므로 콜백 안에서 불러도 된다(MagicTarget::VisitActiveEffects 설명).
+        CasterEffects ListPlayerEffectsFromCaster(RE::PlayerCharacter* player, RE::Actor* caster, bool dispel, std::string& out)
+        {
+            CasterEffects result;
+            auto* mt = player && caster ? player->AsMagicTarget() : nullptr;
+            if (!mt) {
+                return result;
+            }
+            mt->VisitActiveEffects([&](RE::ActiveEffect* ae) {
+                if (!ae || ae->GetCasterActor().get() != caster) {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                const auto* base = ae->GetBaseObject();
+                const bool alreadyDispelled = ae->flags.any(RE::ActiveEffect::Flag::kDispelled);
+                out += std::format("{}[effect=0x{:08X}, spell=0x{:08X}, av={}, magnitude={:.2f}, elapsed={:.2f}/{:.2f}s, inactive={}, dispelled={}]",
+                    result.found == 0 ? " " : ", ", base ? base->GetFormID() : 0u, ae->spell ? ae->spell->GetFormID() : 0u,
+                    base ? static_cast<int>(base->data.primaryAV) : -1, ae->magnitude, ae->elapsedSeconds, ae->duration,
+                    ae->flags.any(RE::ActiveEffect::Flag::kInactive), alreadyDispelled);
+                ++result.found;
+                if (dispel && !alreadyDispelled) {
+                    ae->Dispel(true);
+                    ++result.dispelled;
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+            return result;
+        }
+
         // 적 ES 단축 시험의 액터를 죽이고 끈다(정상 끝·실패·시간 초과 모두. 이 시험은 저장하지 않음).
         void CleanupEnemyEsActors()
         {
+            MonsterRuntime::SetEngagementTraceForTest(false);
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                std::string ignored;
+                for (auto* handle : { &g_esTest.a, &g_esTest.b, &g_esTest.c }) {
+                    if (auto actor = handle->get()) {
+                        (void)ListPlayerEffectsFromCaster(player, actor.get(), true, ignored);
+                    }
+                }
+            }
             for (auto* handle : { &g_esTest.a, &g_esTest.b, &g_esTest.c }) {
                 if (auto actor = handle->get()) {
                     if (!actor->IsDead()) {
@@ -1315,6 +1371,59 @@ namespace SkyrimPoE::Runtime
 
         void ReleaseGemsCastState();
         void RestoreGemsSaveGuard();
+
+        // 결정 235 시험: 플레이어 가방의 번호 붙은 젬 묶음 수를 폼별로 센다. totals가 있으면 폼별 전체 수도 채운다.
+        std::map<RE::FormID, std::int32_t> CountNumberedGems(
+            RE::PlayerCharacter* player, std::map<RE::FormID, std::int32_t>* totals)
+        {
+            std::map<RE::FormID, std::int32_t> numbered;
+            auto* changes = player ? player->GetInventoryChanges(true) : nullptr;
+            if (!changes || !changes->entryList) {
+                return numbered;
+            }
+            std::set<RE::FormID> gemForms;
+            for (const auto& form : Core::GemForms::kPhysicalForms) {
+                if (const auto* misc = FormIds::Lookup<RE::TESObjectMISC>(form.localFormId)) {
+                    gemForms.insert(misc->GetFormID());
+                }
+            }
+            for (auto* entry : *changes->entryList) {
+                if (!entry || !entry->object || !gemForms.contains(entry->object->GetFormID())) {
+                    continue;
+                }
+                const auto id = entry->object->GetFormID();
+                if (totals) {
+                    (*totals)[id] = player->GetItemCount(entry->object);
+                }
+                if (!entry->extraLists) {
+                    continue;
+                }
+                for (auto* extra : *entry->extraLists) {
+                    if (extra && extra->HasType<RE::ExtraUniqueID>()) {
+                        numbered[id] += extra->GetCount();
+                    }
+                }
+            }
+            return numbered;
+        }
+
+        std::int32_t SumCounts(const std::map<RE::FormID, std::int32_t>& counts)
+        {
+            std::int32_t sum = 0;
+            for (const auto& [form, count] : counts) {
+                sum += count;
+            }
+            return sum;
+        }
+
+        std::string DescribeCounts(const std::map<RE::FormID, std::int32_t>& counts)
+        {
+            std::string out;
+            for (const auto& [form, count] : counts) {
+                out += std::format("{}{:08X}={}", out.empty() ? "" : " ", form, count);
+            }
+            return out.empty() ? "none" : out;
+        }
 
         void FinishAndScheduleQuit(const std::string& reason)
         {
@@ -2928,6 +3037,23 @@ namespace SkyrimPoE::Runtime
                     }
                     g_gems.oldChain = player->GetItemCount(oldChain);
                     g_gems.newChain = player->GetItemCount(newChain);
+                    {
+                        // 결정 235: PoE1 때 탈착해 가방에 둔 추적 젬처럼, 플레이어 번호를 단 Spark 하나를 정리 전에 넣는다.
+                        // 정리는 장부를 비우므로 이 실물은 장부에 없는 번호만 남은 젬이 된다.
+                        auto* extra = UniqueIdUtil::CreateGameExtraDataList();
+                        const auto uid = UniqueIdUtil::AllocateInventoryUniqueId(player);
+                        if (!extra || uid == 0) {
+                            if (extra) UniqueIdUtil::DestroyGameExtraDataList(extra);
+                            fail("Could not build the numbered legacy Spark for the bag check.");
+                            break;
+                        }
+                        extra->Add(new RE::ExtraUniqueID(player->GetFormID(), uid));
+                        player->AddObjectToContainer(spark, extra, 1, nullptr);
+                        g_gems.totalBefore.clear();
+                        g_gems.numberedBefore = CountNumberedGems(player, &g_gems.totalBefore);
+                        LogInfo(std::format("Gems bag check before cleanup: added numbered Spark {:08X}:{:04X}; numbered={}, totals={}.",
+                            player->GetFormID(), uid, DescribeCounts(g_gems.numberedBefore), DescribeCounts(g_gems.totalBefore)));
+                    }
                     SaveLoad::ReleaseForTest();
                     NextGems(Step::CleanupCommit);
                 }
@@ -2946,8 +3072,72 @@ namespace SkyrimPoE::Runtime
                     CheckGems(CheckId::ChainReturns, oldDelta == 1 && newDelta == 0,
                         std::format("legacy 0x882 delta={}, Chain I 0x8D2 delta={}.", oldDelta, newDelta));
                     if (!committed) fail("The cleanup did not commit in the generation-one test world.");
-                    else BeginGemsFinalSave();
+                    else NextGems(Step::BagPlain);
                 }
+                break;
+            }
+            case Step::BagPlain: {
+                // 결정 235: 정리 직후 초기화가 장부에 없는 번호 붙은 젬을 일반 젬으로 바꿨는지 본다(초기화는 다음 틱에 돎).
+                if (!ready) break;
+                std::map<RE::FormID, std::int32_t> totals;
+                const auto numbered = CountNumberedGems(player, &totals);
+                const auto numberedCount = SumCounts(numbered);
+                if (numberedCount > 0 && elapsed < 5.0) break;
+                bool kept = true;
+                for (const auto& [form, before] : g_gems.totalBefore) {
+                    const auto it = totals.find(form);
+                    kept = kept && it != totals.end() && it->second >= before;
+                }
+                std::int32_t sparkPlain = 0;
+                for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
+                    if (stack.gemId == "gem.Spark") sparkPlain += stack.count;
+                }
+                const auto sparkNumbered = g_gems.numberedBefore.contains(spark->GetFormID()) ?
+                    g_gems.numberedBefore.at(spark->GetFormID()) : 0;
+                const bool ok = sparkNumbered >= 1 && numberedCount == 0 && kept && sparkPlain >= sparkNumbered;
+                CheckGems(CheckId::BagPlain, ok, std::format(
+                    "numbered before={}, after={}; totals kept={} (before {}, after {}); plain gem.Spark listed={} (numbered Spark before={}).",
+                    DescribeCounts(g_gems.numberedBefore), DescribeCounts(numbered), kept, DescribeCounts(g_gems.totalBefore),
+                    DescribeCounts(totals), sparkPlain, sparkNumbered));
+                {
+                    // 결정 235 유입 경로: 정상 모드의 세대 1에서 장부에 없는 번호를 단 Spark가 가방에 들어오면, 컨테이너 변경
+                    // 이벤트가 주 갱신 검사를 예약해 일반 젬으로 바꿔야 한다(정리 직후 경로와 따로 본다).
+                    g_gems.incomingSparkTotal = player->GetItemCount(spark);
+                    g_gems.incomingSparkPlain = 0;
+                    for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
+                        if (stack.gemId == "gem.Spark") g_gems.incomingSparkPlain += stack.count;
+                    }
+                    auto* extra = UniqueIdUtil::CreateGameExtraDataList();
+                    const auto uid = UniqueIdUtil::AllocateInventoryUniqueId(player);
+                    if (!extra || uid == 0) {
+                        if (extra) UniqueIdUtil::DestroyGameExtraDataList(extra);
+                        fail("Could not build the numbered Spark for the incoming check.");
+                        break;
+                    }
+                    extra->Add(new RE::ExtraUniqueID(player->GetFormID(), uid));
+                    player->AddObjectToContainer(spark, extra, 1, nullptr);
+                    LogInfo(std::format("Gems incoming check: added numbered Spark {:08X}:{:04X} in normal mode; Spark total={}, plain={}.",
+                        player->GetFormID(), uid, g_gems.incomingSparkTotal, g_gems.incomingSparkPlain));
+                }
+                NextGems(Step::IncomingPlain);
+                break;
+            }
+            case Step::IncomingPlain: {
+                if (!ready) break;
+                const auto numbered = CountNumberedGems(player, nullptr);
+                const auto numberedCount = SumCounts(numbered);
+                if (numberedCount > 0 && elapsed < 3.0) break;
+                std::int32_t sparkPlain = 0;
+                for (const auto& stack : GemInventory::ListPlayerGems(player).plainStacks) {
+                    if (stack.gemId == "gem.Spark") sparkPlain += stack.count;
+                }
+                const auto sparkTotal = player->GetItemCount(spark);
+                const bool ok = numberedCount == 0 && sparkTotal == g_gems.incomingSparkTotal + 1 &&
+                    sparkPlain == g_gems.incomingSparkPlain + 1;
+                CheckGems(CheckId::IncomingPlain, ok, std::format(
+                    "after {:.2f}s: numbered left={}, Spark total {} -> {} (expected +1), plain gem.Spark listed {} -> {} (expected +1).",
+                    elapsed, DescribeCounts(numbered), g_gems.incomingSparkTotal, sparkTotal, g_gems.incomingSparkPlain, sparkPlain));
+                BeginGemsFinalSave();
                 break;
             }
             case Step::Save: {
@@ -10801,6 +10991,8 @@ namespace SkyrimPoE::Runtime
                     FinishAndScheduleQuit("Enemy-ES run skipped because TrueHUD owns the special bars.");
                     break;
                 }
+                // 교전 기록이 어느 자리에서 왜 바뀌는지 SkyrimPoE.log에 남긴다(간헐 실패 조사, 2026-11-26).
+                MonsterRuntime::SetEngagementTraceForTest(true);
                 // 조준점(화면 가운데)에 걸리지 않게 좌우와 뒤에 세운다.
                 g_esTest.a = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 0.0f, 260.0f, 2500.0f, false);
                 g_esTest.b = SpawnNpcInFrontOfPlayer(player, kEncSkeeverId, 0.0f, -260.0f, 2500.0f, false);
@@ -10888,6 +11080,15 @@ namespace SkyrimPoE::Runtime
                 report("ES6_IncomingHitTarget", g_esTest.shownBeforeIncoming && switched,
                     std::format("{}; A shown before={}, incoming hits sent={}",
                         describe("B after hitting the player"), g_esTest.shownBeforeIncoming, g_esTest.incomingTries));
+                // ES6의 엔진 타격이 B의 온히트 주문을 플레이어에게 걸었으면 걷어낸다. 남겨 두면 그 체력 감소 틱이
+                // 받는 마법 자리에서 B를 계속 교전 적으로 다시 기록해 ES7 뒤의 A 교전을 덮을 수 있다(2026-11-25 ES4·ES5 실패 조사).
+                {
+                    std::string effects;
+                    const auto fromB = ListPlayerEffectsFromCaster(player, bActor.get(), true, effects);
+                    // 걷어낸 뒤에는 판정에 영향이 없으므로 경고(요약 FAIL)로 올리지 않는다. 0보다 크면 출처 조사 단서다.
+                    LogInfo(std::format("Enemy-ES: ES6 left {} active effect(s) from B on the player{}; dispel requested for {} before ES7.",
+                        fromB.found, effects, fromB.dispelled));
+                }
                 // ES7 준비: A에 점화를 걸고 B를 마지막 교전 적으로 둔다.
                 if (a) {
                     Core::DamagePacket firePkt{};
@@ -10918,6 +11119,13 @@ namespace SkyrimPoE::Runtime
                 report("ES7_DamageOverTimeKeepsTarget", ok,
                     std::format("{}; ignite on A seen={}, engagement moved during ticks={}",
                         describe("B while A burns"), g_esTest.igniteSeen, g_esTest.dotStoleEngagement));
+                {
+                    std::string effects;
+                    // ES6 판정 뒤 늦게 걸린 효과(스크립트형 온히트 등)도 A 교전을 덮지 않게 여기서 한 번 더 걷어낸다.
+                    const auto fromB = ListPlayerEffectsFromCaster(player, bActor.get(), true, effects);
+                    LogInfo(std::format("Enemy-ES: before engaging A again, {} active effect(s) from B on the player{}; dispel requested for {}.",
+                        fromB.found, effects, fromB.dispelled));
+                }
                 (void)engage(a.get());
                 next(7);
                 break;
@@ -10965,6 +11173,59 @@ namespace SkyrimPoE::Runtime
                 report("ES5_EngagedHoldExpires", g_esTest.visibleAt3s && hiddenInWindow,
                     std::format("{}; visible at 3 s={}", describe("B after the hold"), g_esTest.visibleAt3s));
                 failRemaining("Not reached.");
+                // 진단(판정 아님): 적이 플레이어에게 건 지속 피해의 틱이 교전 기록을 계속 다시 쓰는지 본다.
+                // 결정 185는 플레이어 쪽 지속 피해 틱만 제외하고 받는 쪽 틱은 정하지 않았다(설계-현황 7장, 2026-11-26 조사).
+                auto* poison = RE::TESForm::LookupByID<RE::SpellItem>(kSprigganPoisonClawId);
+                auto* bCaster = bActor ? bActor->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant) : nullptr;
+                if (!poison || !bCaster || bActor->IsDead() || !c || c->IsDead()) {
+                    LogInfo("Enemy-ES diagnostic skipped: the poison spell, B's caster, or a living B and C is missing.");
+                    FinishAndScheduleQuit("Enemy-ES investigation run finished.");
+                    break;
+                }
+                // 기록은 만료돼도 대상이 남으므로 먼저 C를 교전해 두고, 독 틱이 B로 되돌리는지 본다.
+                // C 교전이 실패하면 기록이 B로 남아 재기록처럼 보이므로 진단을 하지 않는다.
+                g_esTest.dotEngageOk = engage(c.get());
+                if (!g_esTest.dotEngageOk) {
+                    LogInfo("Enemy-ES diagnostic skipped: engaging C before the poison failed.");
+                    FinishAndScheduleQuit("Enemy-ES investigation run finished.");
+                    break;
+                }
+                bCaster->CastSpellImmediate(poison, false, player, 1.0f, false, 0.0f, bActor.get());
+                next(11);
+                break;
+            }
+            case 11:
+                // B의 독 틱이 C 대신 B를 기록하면 C를 다시 교전한다.
+                if (!(bActor && engagedId == bActor->GetFormID())) {
+                    if (waited < kEnemyEsWaitSec) {
+                        break;
+                    }
+                    LogInfo(std::format("Enemy-ES diagnostic: B's poison on the player did not record B within {:.1f} s "
+                                        "after engaging C (ok={}) ({}).",
+                        kEnemyEsWaitSec, g_esTest.dotEngageOk, describe("poison from B")));
+                    FinishAndScheduleQuit("Enemy-ES investigation run finished.");
+                    break;
+                }
+                g_esTest.dotEngageOk = engage(c.get());
+                if (!g_esTest.dotEngageOk) {
+                    LogInfo("Enemy-ES diagnostic skipped: engaging C again after B's poison recorded B failed.");
+                    FinishAndScheduleQuit("Enemy-ES investigation run finished.");
+                    break;
+                }
+                next(12);
+                break;
+            case 12: {
+                if (waited < 0.5) {
+                    break;
+                }
+                const bool stillB = bActor && engagedId == bActor->GetFormID();
+                std::string effects;
+                const auto fromB = ListPlayerEffectsFromCaster(player, bActor.get(), true, effects);
+                LogInfo(std::format("Enemy-ES diagnostic: 0.5 s after engaging C (ok={}) while B's poison ticks on the player, "
+                                    "engaged=0x{:08X} (B=0x{:08X}, C=0x{:08X}) -> incoming DoT ticks {} the attacker "
+                                    "(see the MonsterRuntime trace lines for the source); found {} effect(s) from B{}, dispel requested for {}.",
+                    g_esTest.dotEngageOk, engagedId, bActor ? bActor->GetFormID() : 0u, c ? c->GetFormID() : 0u,
+                    stillB ? "re-record" : "do not re-record", fromB.found, effects, fromB.dispelled));
                 FinishAndScheduleQuit("Enemy-ES investigation run finished.");
                 break;
             }

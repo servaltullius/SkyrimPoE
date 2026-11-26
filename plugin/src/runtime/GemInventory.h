@@ -47,6 +47,11 @@ namespace SkyrimPoE::Runtime
         // 줍기 예약이 실행되지 못한 경우(예약 전 저장·로드, 로드 세대 폐기)의 보완 경로이기도 하다.
         static std::size_t RelinkPickedUpGems(RE::TESObjectREFR* owner, bool postLoadOwnerNormalized = false);
 
+        // 주 갱신 스레드 전용(결정 235): 세대 1 이상에서 플레이어 인벤토리의 장부에 없는 번호 붙은 젬 묶음
+        // (PoE1 시절 추적 젬이 정리 뒤 실물에만 남긴 번호)을 꺼내고 번호 없는 일반 젬으로 다시 넣는다. 바꾼 개수를 돌려준다.
+        // 세대 0이면 아무것도 하지 않는다. 판정 규칙은 Core::WorldStampLink::PlanOrphanNormalization.
+        static std::size_t NormalizeOrphanGems(RE::PlayerCharacter* player);
+
         // 주 갱신 스레드 전용: 탈착·보관된 데이터 젬을 ExtraUniqueID와 함께 플레이어 인벤토리에 넣는다.
         static std::optional<Core::InventoryItemKey> ReturnGemToPlayerInventory(
             RE::PlayerCharacter* player,

@@ -121,6 +121,18 @@ namespace SkyrimPoE::Core::WorldStampLink
         std::uint32_t postLoadNormalizedOwnerId = 0,
         const std::vector<InventoryItemKey>& heldInventoryKeys = {});
 
+    // 결정 235: 세대 1 이상 세계에서 장부에 없는 번호 붙은 젬 묶음(PoE1 시절 추적 젬이 정리 뒤 실물에만 남긴 번호)을 고른다.
+    // 고른 묶음은 일반 젬으로 바꾼다(번호 없이 다시 넣기). 장부의 어떤 항목이든 같은 번호를 쓰면 소유자와 상관없이 건드리지 않는다:
+    // 인벤토리 키와, 주운 뒤 다시 잇기를 기다리는 바닥 스탬프(로드 직후 소유자가 정규화된 묶음 포함)를 모두 지킨다.
+    // 세대 0에서는 아무것도 고르지 않는다(결정 235, 세대 0 동작 불변). 무효한 키(소유자 0 또는 번호 0)와
+    // 개수 0 이하는 고르지 않는다. 같은 키의 묶음이 둘 이상이면 실행기가 번호로 다시 찾을 때 서로를 가리므로
+    // 그 키의 묶음은 모두 고르지 않는다.
+    // 반환값은 고른 묶음의 extraIndex 목록이다(입력 순서 유지).
+    [[nodiscard]] std::vector<std::size_t> PlanOrphanNormalization(
+        std::uint32_t worldGemGeneration,
+        const std::vector<ObservedInventoryExtra>& extras,
+        const std::vector<InventoryItemKey>& ledgerKeys);
+
     // 바닥 키를 새 소유자의 인벤토리 키로 옮긴다. 항목이 아직 기대한 바닥 키일 때만 바꾸고 true를 반환한다.
     // 이미 이어졌거나 그사이 다른 이벤트로 키가 바뀐 경우, 새 키가 무효한 경우 아무것도 바꾸지 않는다.
     [[nodiscard]] bool CommitRelink(

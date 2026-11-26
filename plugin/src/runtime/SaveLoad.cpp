@@ -1631,6 +1631,11 @@ namespace SkyrimPoE::Runtime
             if (!isNewGame) {
                 (void)GemInventory::RelinkPickedUpGems(player, true);
                 (void)ItemTracker::RelinkPickedUpItems(player, true);
+                // 결정 235: 다시 잇기 뒤, 세대 1 이상이면 장부에 없는 번호 붙은 젬(정리 뒤 남은 PoE1 번호)을 일반 젬으로 바꾼다.
+                // 정리 직후의 초기화(afterCleanup)도 이 자리를 지난다.
+                if (const auto plain = GemInventory::NormalizeOrphanGems(player); plain > 0) {
+                    SKSE::log::info("SaveLoad::PostLoadInit: made {} orphan gem(s) plain (decision 235).", plain);
+                }
 
                 // Q-1 + M-2: .ess에 남은 NPC kTemporary SpeedMult(냉각/빙결/가속)를 로드 직후 원복한다.
                 // 찾지 못한 액터는 버리지 않고 남겨 두며, 재검수 R-9에 따라 주 갱신에서 주기적으로 다시 시도한다.

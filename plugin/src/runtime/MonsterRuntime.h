@@ -42,8 +42,20 @@ namespace SkyrimPoE::Runtime
             RE::FormID actorId = 0;
             double ageSec = -1.0;  // 기록이 없으면 음수
         };
-        static void NoteEngagedEnemy(RE::FormID actorId) noexcept;
+        // 기록한 자리(시험 추적 기록에만 쓰임). 마법 기록은 주문과 효과의 FormID를 함께 넘긴다.
+        enum class EngagementSource : std::uint8_t
+        {
+            PlayerSkill,       // DLL 스킬 직접 피해
+            PlayerHit,         // 플레이어의 엔진 물리 타격
+            PlayerMagic,       // 플레이어가 건 해로운 마법의 체력 감소
+            IncomingHit,       // 적의 물리 피격(회피·막음 뒤)
+            IncomingMagic,     // 적이 건 해로운 마법의 체력 감소(주문 회피·막음 뒤)
+        };
+        static void NoteEngagedEnemy(RE::FormID actorId, EngagementSource source, RE::FormID spellId = 0,
+            RE::FormID effectId = 0) noexcept;
         [[nodiscard]] static EngagedEnemy GetLastEngagedEnemy() noexcept;
+        // 시험 전용: 켜 둔 동안 기록 대상·자리·주문이 바뀔 때마다 한 줄, 같은 기록이 이어지면 끝날 때 반복 수를 남긴다.
+        static void SetEngagementTraceForTest(bool enabled) noexcept;
 
         // 결정 186: ES가 있는(최대 ES > 0) 프로필의 현재·최대 ES 사본(TrueHUD 값 표를 만들 때 주 갱신 스레드가 씀)
         struct EnergyShieldEntry
